@@ -1,0 +1,26 @@
+# The checks every pull request, and every change to main, must pass.
+name: Checks
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+concurrency:
+  group: checks-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  nix:
+    name: Formatting and flake
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: cachix/install-nix-action@v31
+      - name: Cache the Nix store
+        uses: nix-community/cache-nix-action@v6
+        with:
+          primary-key: nix-${{ runner.os }}-${{ hashFiles('flake.lock', 'nix/**') }}
+          restore-prefixes-first-match: nix-${{ runner.os }}-
+      - name: Check the flake
+        run: nix flake check --print-build-logs

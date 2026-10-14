@@ -1,0 +1,6 @@
+# Symlinks to Nix build outputs.
+result
+result-*
+
+# Cargo build outputs.
+/target/
