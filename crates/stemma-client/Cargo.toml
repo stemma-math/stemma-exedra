@@ -1,0 +1,32 @@
+[package]
+name = "stemma-client"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+description = "Stemma's client: the hub's API over HTTP, Stemma's tools and their MCP server"
+repository.workspace = true
+license.workspace = true
+
+[dependencies]
+anyhow.workspace = true
+dirs.workspace = true
+reqwest.workspace = true
+rmcp.workspace = true
+rustls.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+stemma-core.workspace = true
+thiserror.workspace = true
+time.workspace = true
+tokio.workspace = true
+toml.workspace = true
+tracing.workspace = true
+
+[dev-dependencies]
+axum.workspace = true
+rmcp = { workspace = true, features = ["client"] }
+stemma-hub.workspace = true
+tempfile.workspace = true
+
+[lints]
+workspace = true
