@@ -1,0 +1,25 @@
+# A minimal hub. Put it behind a reverse proxy that serves HTTPS, and set
+# STEMMA_PUBLIC_URL to the address people use.
+#
+#     docker compose -f docker/compose.yaml up -d
+#     docker compose -f docker/compose.yaml logs hub   # the setup link
+#
+# Or create the first account from the command line:
+#
+#     docker compose -f docker/compose.yaml exec hub stemma hub create-admin --username ada
+
+services:
+  hub:
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile
+    restart: unless-stopped
+    environment:
+      STEMMA_PUBLIC_URL: https://stemma.example.org
+    ports:
+      - "127.0.0.1:8080:8080"
+    volumes:
+      - stemma-data:/var/lib/stemma
+
+volumes:
+  stemma-data:
