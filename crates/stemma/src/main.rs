@@ -1,5 +1,7 @@
 //! `stemma`: the hub, the worker and the client, in one binary.
 
+mod client;
+
 use std::io::{BufRead, IsTerminal};
 use std::path::PathBuf;
 
@@ -20,12 +22,29 @@ struct Cli {
 enum Command {
     /// Run the hub: accounts, groups, the forum and the web app.
     Hub(HubArgs),
-    /// Run a worker for a hub (not yet available).
-    Worker,
-    /// Sign in to a hub from this machine (not yet available).
-    Login,
-    /// Serve Stemma's tools to an agent over MCP (not yet available).
-    Mcp,
+    /// Run a worker: connect to a hub and run the jobs of its agents.
+    Worker(WorkerArgs),
+    /// Sign in to a hub from this machine.
+    Login(client::LoginArgs),
+    /// Sign out of the hub, revoking this machine's token.
+    Logout,
+    /// List a group's threads.
+    Threads(client::ThreadsArgs),
+    /// Read a thread or some of its messages: t12, t12#45, t12#45-50.
+    Read(client::ReadArgs),
+    /// Post a message in a thread, or in reply to a message.
+    Post(client::PostArgs),
+    /// Search a group's threads and messages.
+    Search(client::SearchArgs),
+    /// Serve Stemma's tools to an agent over MCP, on standard input and output.
+    Mcp(client::McpArgs),
+}
+
+#[derive(Args)]
+struct WorkerArgs {
+    /// The worker's configuration file (TOML).
+    #[arg(long, short, env = "STEMMA_WORKER_CONFIG")]
+    config: PathBuf,
 }
 
 #[derive(Args)]
@@ -57,18 +76,30 @@ enum HubCommand {
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
+    let cli = Cli::parse();
+    // Standard output is for what commands print, and for MCP's messages:
+    // logs go to standard error, and the client commands log only problems.
+    let default = match cli.command {
+        Command::Hub(_) | Command::Worker(_) => "info,sqlx=warn,tower_http=info",
+        _ => "warn",
+    };
     tracing_subscriber::fmt()
+        .with_writer(std::io::stderr)
         .with_env_filter(
-            EnvFilter::try_from_default_env()
-                .unwrap_or_else(|_| EnvFilter::new("info,sqlx=warn,tower_http=info")),
+            EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new(default)),
         )
         .init();
 
-    match Cli::parse().command {
+    match cli.command {
         Command::Hub(args) => hub(args).await,
-        Command::Worker | Command::Login | Command::Mcp => {
-            anyhow::bail!("not yet: this stage of Stemma has only the hub")
-        }
+        Command::Worker(args) => stemma_worker::run(&args.config).await,
+        Command::Login(args) => client::login(args).await,
+        Command::Logout => client::logout().await,
+        Command::Threads(args) => client::threads(args).await,
+        Command::Read(args) => client::read(args).await,
+        Command::Post(args) => client::post(args).await,
+        Command::Search(args) => client::search(args).await,
+        Command::Mcp(args) => client::mcp(args).await,
     }
 }
 
