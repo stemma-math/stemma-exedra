@@ -140,8 +140,18 @@ pub async fn sign_out(
     Ok((StatusCode::NO_CONTENT, cookie))
 }
 
+/// The person signed in. A job's token sees only its job's group.
 pub async fn me(State(state): State<AppState>, viewer: Viewer) -> ApiResult<Json<Me>> {
-    Ok(Json(me_of(&state, viewer.id).await?))
+    let mut me = me_of(&state, viewer.id).await?;
+    if let Some(job) = viewer.job() {
+        let slug: String = sqlx::query_scalar("SELECT slug FROM groups WHERE id = ?")
+            .bind(job.group_id)
+            .fetch_one(&state.db)
+            .await?;
+        me.groups.retain(|g| g.slug == slug);
+        me.hub_admin = false;
+    }
+    Ok(Json(me))
 }
 
 pub async fn me_of(state: &AppState, user_id: i64) -> ApiResult<Me> {

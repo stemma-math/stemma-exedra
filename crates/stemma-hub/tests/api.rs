@@ -999,6 +999,9 @@ async fn job_tokens_read_one_group_and_post_only_where_allowed() {
     };
 
     let reader = job(None).await;
+    let me = hub.get(&reader, "/me").await.json();
+    assert_eq!(me["groups"].as_array().unwrap().len(), 1);
+    assert_eq!(me["groups"][0]["slug"], "geometry");
     assert_eq!(
         hub.get(&reader, "/groups/geometry/threads/1").await.status,
         StatusCode::OK
