@@ -4,3 +4,11 @@ result-*
 
 # Cargo build outputs.
 /target/
+
+# The web app.
+/web/build/
+/web/.svelte-kit/
+node_modules/
+
+# The hub's data, when run from the repository.
+/data/
