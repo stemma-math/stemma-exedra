@@ -1,10 +1,11 @@
-# The checks every pull request, and every change to main, must pass.
+# The checks every pull request, and every change to main and develop, must
+# pass: the same as `just check`.
 name: Checks
 
 on:
   pull_request:
   push:
-    branches: [main]
+    branches: [main, develop]
 
 concurrency:
   group: checks-${{ github.ref }}
@@ -24,3 +25,48 @@ jobs:
           restore-prefixes-first-match: nix-${{ runner.os }}-
       - name: Check the flake
         run: nix flake check --print-build-logs
+
+  rust:
+    name: Rust
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy, rustfmt
+      - uses: Swatinem/rust-cache@v2
+      - name: Check formatting
+        run: cargo fmt --all --check
+      - name: Lint
+        run: cargo clippy --all-targets -- --deny warnings
+      - name: Test
+        run: cargo test
+
+  web:
+    name: Web app
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: web
+    steps:
+      - uses: actions/checkout@v5
+      - uses: pnpm/action-setup@v4
+        with:
+          package_json_file: web/package.json
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 24
+          cache: pnpm
+          cache-dependency-path: web/pnpm-lock.yaml
+      - name: Install
+        run: pnpm install --frozen-lockfile
+      - name: Check formatting
+        run: pnpm format:check
+      - name: Lint
+        run: pnpm lint
+      - name: Check types
+        run: pnpm check
+      - name: Test
+        run: pnpm test
+      - name: Build
+        run: pnpm build
