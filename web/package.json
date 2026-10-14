@@ -1,0 +1,43 @@
+{
+  "name": "stemma-web",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Stemma's web app, served by the hub",
+  "license": "MIT",
+  "type": "module",
+  "scripts": {
+    "dev": "vite dev",
+    "build": "vite build",
+    "preview": "vite preview",
+    "check": "svelte-kit sync && svelte-check --tsconfig ./tsconfig.json --fail-on-warnings",
+    "lint": "biome lint --error-on-warnings .",
+    "format": "biome format --write .",
+    "format:check": "biome format .",
+    "test": "vitest run",
+    "prepare": "svelte-kit sync || echo ''"
+  },
+  "devDependencies": {
+    "@biomejs/biome": "2.5.15",
+    "@sveltejs/adapter-static": "^4.0.0",
+    "@sveltejs/kit": "^3.0.1",
+    "@sveltejs/vite-plugin-svelte": "^7.3.1",
+    "@types/node": "^22.20.5",
+    "svelte": "^5.57.2",
+    "svelte-check": "^4.7.6",
+    "typescript": "^6.0.3",
+    "vite": "^8.3.4",
+    "vitest": "^5.0.4"
+  },
+  "dependencies": {
+    "@stemma-math/design": "https://github.com/stemma-math/design/releases/download/v0.3.1/stemma-math-design-0.3.1.tgz",
+    "@stemma-math/design-elements": "https://github.com/stemma-math/design/releases/download/v0.3.1/stemma-math-design-elements-0.3.1.tgz",
+    "katex": "^0.19.0",
+    "markdown-it": "^15.0.2"
+  },
+  "imports": {
+    "#lib/*": "./src/lib/*"
+  },
+  "engines": {
+    "node": ">=22"
+  }
+}

@@ -1,0 +1,181 @@
+<script lang="ts">
+  import { page } from "$app/state";
+  import { tick } from "svelte";
+  import { ApiError, api, type Message, type Thread } from "#lib/api.ts";
+  import Composer from "#lib/components/Composer.svelte";
+  import MessageItem from "#lib/components/MessageItem.svelte";
+  import { listen } from "#lib/events.ts";
+  import { exactly } from "#lib/format.ts";
+  import { groupContext } from "#lib/group.svelte.ts";
+  import { forgetReferences } from "#lib/references.ts";
+  import { session } from "#lib/session.svelte.ts";
+  import { toastError } from "#lib/toast.ts";
+
+  const context = groupContext();
+  const group = $derived(context.group);
+  const number = $derived(Number(page.params.number));
+
+  let thread = $state<Thread | null>(null);
+  let messages = $state<Message[]>([]);
+  let missing = $state(false);
+  let replyTo = $state<number | null>(null);
+  let renaming = $state(false);
+  let title = $state("");
+  let composer: Composer | undefined = $state();
+
+  const viewer = $derived(session.me?.id ?? 0);
+  const admin = $derived(group.role === "admin");
+  const canRename = $derived(thread !== null && (admin || thread.created_by.id === viewer));
+
+  async function load() {
+    try {
+      const found = await api.thread(group.slug, number);
+      thread = found.thread;
+      messages = found.messages;
+      missing = false;
+    } catch (error) {
+      if (error instanceof ApiError && error.status === 404) missing = true;
+      else toastError(error);
+    }
+  }
+
+  /** Puts a message in place, new or changed. */
+  function upsert(message: Message) {
+    const index = messages.findIndex((m) => m.number === message.number);
+    if (index === -1) {
+      messages.push(message);
+      messages.sort((a, b) => a.number - b.number);
+    } else {
+      messages[index] = message;
+    }
+  }
+
+  $effect(() => {
+    void number;
+    thread = null;
+    messages = [];
+    replyTo = null;
+    load();
+    return listen(group.slug, (event) => {
+      if (event.type === "resync") return load();
+      if ((event.type === "message_created" || event.type === "message_updated") && event.thread === number) {
+        upsert(event.message);
+      } else if (event.type === "thread_updated" && event.thread.number === number) {
+        thread = event.thread;
+      }
+      if (event.type === "thread_created" || event.type === "message_created") forgetReferences(group.slug);
+    });
+  });
+
+  // Show the message the address points to, once it is there.
+  let shown = "";
+  $effect(() => {
+    const target = page.url.hash.slice(1);
+    if (!thread || !target || shown === `${number}#${target}`) return;
+    tick().then(() => {
+      const element = document.getElementById(target);
+      if (!element) return;
+      shown = `${number}#${target}`;
+      for (const other of document.querySelectorAll(".is-targeted")) other.classList.remove("is-targeted");
+      element.classList.add("is-targeted");
+      element.scrollIntoView({ block: "center" });
+    });
+  });
+
+  async function post(body: string, attachments: number[]) {
+    const message = await api.postMessage(group.slug, number, { body, reply_to: replyTo, attachments });
+    upsert(message);
+    replyTo = null;
+    await tick();
+    document.getElementById(String(message.number))?.scrollIntoView({ block: "nearest" });
+  }
+
+  async function rename(event: Event) {
+    event.preventDefault();
+    try {
+      thread = await api.renameThread(group.slug, number, title);
+      renaming = false;
+    } catch (error) {
+      toastError(error);
+    }
+  }
+
+  function reply(to: number) {
+    replyTo = to;
+    composer?.focus();
+  }
+</script>
+
+<svelte:head><title>{thread ? `${thread.title} · ` : ""}{group.name} · Stemma</title></svelte:head>
+
+<main class="page page--narrow">
+  {#if missing}
+    <h1>Thread not found</h1>
+    <p>There is no thread <span class="identifier">t{number}</span> in {group.name}.</p>
+  {:else if thread}
+    <header class="stack stack--tight">
+      {#if renaming}
+        <form class="row" onsubmit={rename}>
+          <label class="visually-hidden" for="thread-title">Title</label>
+          <input id="thread-title" class="input grow" bind:value={title} required maxlength="200" />
+          <button type="submit" class="button button--primary">Rename</button>
+          <button type="button" class="button button--quiet" onclick={() => (renaming = false)}>Cancel</button>
+        </form>
+      {:else}
+        <div class="thread-head">
+          <h1>{thread.title}</h1>
+          <span class="row" data-density="compact">
+            <span class="identifier quiet">t{thread.number}</span>
+            <stemma-copy-button value="t{thread.number}" label="Copy the address t{thread.number}"></stemma-copy-button>
+            {#if canRename}
+              <button
+                type="button"
+                class="button button--quiet button--small"
+                onclick={() => {
+                  title = thread?.title ?? "";
+                  renaming = true;
+                }}
+              >
+                Rename
+              </button>
+            {/if}
+          </span>
+        </div>
+      {/if}
+      <p class="quiet">
+        {#if thread.kind === "chat"}
+          <span class="chip chip--info">Chat{thread.resident_agent ? ` with @${thread.resident_agent}` : ""}</span>
+        {/if}
+        Started by {thread.created_by.display_name},
+        <time datetime={thread.created_at}>{exactly(thread.created_at)}</time>.
+      </p>
+    </header>
+
+    <section class="messages" aria-label="Messages">
+      {#each messages as message (message.number)}
+        <MessageItem
+          {message}
+          group={group.slug}
+          thread={number}
+          {viewer}
+          {admin}
+          onreply={reply}
+          onchange={upsert}
+        />
+      {:else}
+        <p class="empty">No messages yet. Say the first thing.</p>
+      {/each}
+    </section>
+
+    <Composer
+      bind:this={composer}
+      group={group.slug}
+      label="Reply"
+      {replyTo}
+      oncancelreply={() => (replyTo = null)}
+      onsubmit={post}
+    />
+  {:else}
+    <span class="spinner" role="status" aria-label="Loading"></span>
+  {/if}
+</main>

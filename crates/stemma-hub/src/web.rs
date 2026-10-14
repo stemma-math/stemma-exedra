@@ -31,13 +31,16 @@ pub async fn serve(uri: Uri) -> Response {
     {
         return StatusCode::NOT_FOUND.into_response();
     }
-    asset("index.html").unwrap_or_else(|| {
-        (
-            [(header::CONTENT_TYPE, "text/html; charset=utf-8")],
-            PLACEHOLDER,
-        )
-            .into_response()
-    })
+    // The app's entry point, which adapter-static names `200.html`.
+    asset("200.html")
+        .or_else(|| asset("index.html"))
+        .unwrap_or_else(|| {
+            (
+                [(header::CONTENT_TYPE, "text/html; charset=utf-8")],
+                PLACEHOLDER,
+            )
+                .into_response()
+        })
 }
 
 fn asset(path: &str) -> Option<Response> {
