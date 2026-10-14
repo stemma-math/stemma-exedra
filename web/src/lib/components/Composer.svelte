@@ -16,6 +16,10 @@
     allowEmpty?: boolean;
     replyTo?: number | null;
     oncancelreply?: () => void;
+    /** The handles of the agents that can be summoned here. */
+    agents?: string[];
+    /** The agent that answers every message, in a chat. */
+    resident?: string | null;
   }
 
   let {
@@ -27,7 +31,16 @@
     allowEmpty = false,
     replyTo = null,
     oncancelreply,
+    agents = [],
+    resident = null,
   }: Props = $props();
+
+  const summon = $derived(
+    agents
+      .filter((a) => a !== resident)
+      .map((a) => `@${a}`)
+      .join(", "),
+  );
 
   interface Upload {
     key: number;
@@ -201,6 +214,8 @@
     </label>
     <span class="field__hint grow">
       Markdown, <code>$math$</code> and <code>[[t12#4]]</code> references. Drop or paste files.
+      {#if resident}@{resident} answers every message.{/if}
+      {#if summon}Ask {summon} by mentioning them.{/if}
     </span>
     <button class="button button--primary" type="submit" disabled={!canSend}>
       {#if sending}<span class="spinner" aria-hidden="true"></span>{/if}

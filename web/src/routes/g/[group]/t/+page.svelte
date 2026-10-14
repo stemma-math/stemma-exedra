@@ -69,7 +69,10 @@
         </button>
       {/each}
     </div>
-    <a class="button button--primary push" href="/g/{group.slug}/t/new">New thread</a>
+    <span class="row push">
+      <a class="button" href="/g/{group.slug}/t/new?kind=chat">New chat</a>
+      <a class="button button--primary" href="/g/{group.slug}/t/new">New thread</a>
+    </span>
   </div>
 
   {#if threads === null}

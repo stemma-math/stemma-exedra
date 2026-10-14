@@ -37,7 +37,7 @@
     },
     {
       href: `/g/${slug}/settings`,
-      label: "Members",
+      label: "Settings",
       current: page.url.pathname.startsWith(`/g/${slug}/settings`),
     },
   ]);

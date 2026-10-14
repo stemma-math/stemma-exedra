@@ -5,7 +5,9 @@
   import { groupContext } from "#lib/group.svelte.ts";
   import { loadSession, session } from "#lib/session.svelte.ts";
   import { toastError } from "#lib/toast.ts";
+  import AgentSettings from "#lib/components/AgentSettings.svelte";
   import Avatar from "#lib/components/Avatar.svelte";
+  import WorkerSettings from "#lib/components/WorkerSettings.svelte";
 
   const context = groupContext();
   const group = $derived(context.group);
@@ -83,7 +85,7 @@
   }
 </script>
 
-<svelte:head><title>Members · {group.name} · Stemma</title></svelte:head>
+<svelte:head><title>Settings · {group.name} · Stemma</title></svelte:head>
 
 <main class="page page--narrow stack stack--loose">
   <section class="stack">
@@ -195,4 +197,25 @@
       {/if}
     </section>
   {/if}
+
+  <section class="stack">
+    <h2>Agents</h2>
+    <p>
+      Agents answer when someone mentions them, as in <code>@claude what do you think?</code>, and in
+      a chat, their resident agent answers every message. Each answer is signed by the agent, for the
+      person who asked. A personal agent runs on the worker of whoever asks, with their own login; a
+      group agent runs on the group's workers.
+    </p>
+    <AgentSettings group={group.slug} {admin} />
+  </section>
+
+  <section class="stack">
+    <h2>Group workers</h2>
+    <p>
+      A group worker runs the group's agents, with the API keys in its own configuration: the hub
+      never holds them. It connects to the hub from wherever it runs. Each person's own worker, for
+      their personal agents, is in their <a href="/settings">settings</a>.
+    </p>
+    <WorkerSettings group={group.slug} manage={admin} />
+  </section>
 </main>

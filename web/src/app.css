@@ -224,6 +224,17 @@ body {
   max-width: var(--measure);
 }
 
+.job-item__progress {
+  margin: 0;
+}
+
+/* A configuration to copy, as it is. */
+pre.identifier {
+  margin: 0;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
 .attachments {
   display: flex;
   flex-wrap: wrap;

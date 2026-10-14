@@ -1,12 +1,14 @@
 <script lang="ts">
   import { page } from "$app/state";
   import { tick } from "svelte";
-  import { ApiError, api, type Message, type Thread } from "#lib/api.ts";
+  import { ApiError, api, type Job, type Message, type Thread } from "#lib/api.ts";
   import Composer from "#lib/components/Composer.svelte";
+  import JobItem from "#lib/components/JobItem.svelte";
   import MessageItem from "#lib/components/MessageItem.svelte";
   import { listen } from "#lib/events.ts";
   import { exactly } from "#lib/format.ts";
   import { groupContext } from "#lib/group.svelte.ts";
+  import { applyJob } from "#lib/jobs.ts";
   import { forgetReferences } from "#lib/references.ts";
   import { session } from "#lib/session.svelte.ts";
   import { toastError } from "#lib/toast.ts";
@@ -17,6 +19,8 @@
 
   let thread = $state<Thread | null>(null);
   let messages = $state<Message[]>([]);
+  let jobs = $state<Job[]>([]);
+  let agents = $state<string[]>([]);
   let missing = $state(false);
   let replyTo = $state<number | null>(null);
   let renaming = $state(false);
@@ -29,9 +33,13 @@
 
   async function load() {
     try {
-      const found = await api.thread(group.slug, number);
+      const [found, waiting] = await Promise.all([
+        api.thread(group.slug, number),
+        api.threadJobs(group.slug, number),
+      ]);
       thread = found.thread;
       messages = found.messages;
+      jobs = waiting;
       missing = false;
     } catch (error) {
       if (error instanceof ApiError && error.status === 404) missing = true;
@@ -51,9 +59,28 @@
   }
 
   $effect(() => {
+    api
+      .agents(group.slug)
+      .then((found) => {
+        agents = found.map((a) => a.handle);
+      })
+      .catch(() => {});
+  });
+
+  async function cancel(job: Job) {
+    try {
+      await api.cancelJob(group.slug, job.id);
+      jobs = jobs.filter((j) => j.id !== job.id);
+    } catch (error) {
+      toastError(error);
+    }
+  }
+
+  $effect(() => {
     void number;
     thread = null;
     messages = [];
+    jobs = [];
     replyTo = null;
     load();
     return listen(group.slug, (event) => {
@@ -62,6 +89,8 @@
         upsert(event.message);
       } else if (event.type === "thread_updated" && event.thread.number === number) {
         thread = event.thread;
+      } else if (event.type === "job_updated" && event.job.thread === number) {
+        jobs = applyJob(jobs, event.job);
       }
       if (event.type === "thread_created" || event.type === "message_created") forgetReferences(group.slug);
     });
@@ -165,6 +194,9 @@
       {:else}
         <p class="empty">No messages yet. Say the first thing.</p>
       {/each}
+      {#each jobs as job (job.id)}
+        <JobItem {job} canCancel={admin || job.requester.id === viewer} oncancel={cancel} />
+      {/each}
     </section>
 
     <Composer
@@ -174,6 +206,8 @@
       {replyTo}
       oncancelreply={() => (replyTo = null)}
       onsubmit={post}
+      {agents}
+      resident={thread.kind === "chat" ? thread.resident_agent : null}
     />
   {:else}
     <span class="spinner" role="status" aria-label="Loading"></span>

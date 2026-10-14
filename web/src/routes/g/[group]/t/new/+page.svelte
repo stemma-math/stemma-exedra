@@ -1,6 +1,7 @@
 <script lang="ts">
   import { goto } from "$app/navigation";
-  import { api, type ThreadKind } from "#lib/api.ts";
+  import { page } from "$app/state";
+  import { type AgentProfile, api, type ThreadKind } from "#lib/api.ts";
   import Composer from "#lib/components/Composer.svelte";
   import { groupContext } from "#lib/group.svelte.ts";
 
@@ -8,8 +9,19 @@
   const group = $derived(context.group);
 
   let title = $state("");
-  let kind = $state<ThreadKind>("discussion");
-  let agent = $state("");
+  let kind = $state<ThreadKind>(page.url.searchParams.get("kind") === "chat" ? "chat" : "discussion");
+  let agent = $state(page.url.searchParams.get("agent") ?? "");
+  let agents = $state<AgentProfile[]>([]);
+
+  $effect(() => {
+    api
+      .agents(group.slug)
+      .then((found) => {
+        agents = found;
+        if (!agent && found.length) agent = found[0].handle;
+      })
+      .catch(() => {});
+  });
 
   async function start(body: string, attachments: number[]) {
     if (!title.trim()) throw new Error("Give the thread a title.");
@@ -44,10 +56,13 @@
   {#if kind === "chat"}
     <div class="field">
       <label class="field__label" for="thread-agent">Resident agent</label>
-      <input id="thread-agent" class="input input--mono" bind:value={agent} placeholder="claude" />
+      <select id="thread-agent" class="input" bind:value={agent}>
+        {#each agents as profile (profile.handle)}
+          <option value={profile.handle}>{profile.display_name} (@{profile.handle})</option>
+        {/each}
+      </select>
       <span class="field__hint">
-        In a chat, this agent answers every message. Agents arrive in a later version of Stemma; for
-        now a chat is a thread like any other.
+        In a chat, this agent answers every message. Others can join, and mention other agents too.
       </span>
     </div>
   {/if}

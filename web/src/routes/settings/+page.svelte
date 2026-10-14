@@ -1,5 +1,6 @@
 <script lang="ts">
   import { api, type ApiToken, type CreatedToken } from "#lib/api.ts";
+  import WorkerSettings from "#lib/components/WorkerSettings.svelte";
   import { exactly, when } from "#lib/format.ts";
   import { session, setSession } from "#lib/session.svelte.ts";
   import { toast, toastError } from "#lib/toast.ts";
@@ -119,7 +120,8 @@
       <h2>API tokens</h2>
       <p>
         A token lets the command line and agents act as you, with everything you can do. Keep it
-        like a password, and revoke it when you no longer use it.
+        like a password, and revoke it when you no longer use it. <code>stemma login {location.origin}</code>
+        makes one for the machine it runs on.
       </p>
 
       {#if created}
@@ -166,6 +168,18 @@
           {/each}
         </div>
       {/if}
+    </div>
+  </section>
+
+  <section class="card">
+    <div class="card__body stack">
+      <h2>Your workers</h2>
+      <p>
+        Your worker runs your personal agents, such as <code>@claude</code>, with your own login to
+        Claude Code or Codex, and only when you ask. It connects to the hub from your machine, and
+        your credentials stay there.
+      </p>
+      <WorkerSettings manage />
     </div>
   </section>
 </main>

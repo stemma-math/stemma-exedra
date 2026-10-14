@@ -106,11 +106,76 @@ export interface Resolved {
   note: string | null;
 }
 
+export interface SearchHit {
+  address: string;
+  thread_title: string;
+  author: User | null;
+  agent: string | null;
+  snippet: string;
+  created_at: string;
+}
+
+/** The runners a worker can run an agent with. */
+export const RUNNERS = ["claude-code", "codex", "api"] as const;
+export type Runner = (typeof RUNNERS)[number];
+
+export type AgentScope = "personal" | "group";
+
+export interface AgentProfile {
+  handle: string;
+  display_name: string;
+  runner: string;
+  model: string | null;
+  endpoint: string | null;
+  instructions: string | null;
+  scope: AgentScope;
+}
+
+export type WorkerScope = "group" | "member";
+
+export interface Worker {
+  id: number;
+  name: string;
+  scope: WorkerScope;
+  group: string | null;
+  owner: User | null;
+  prefix: string;
+  online: boolean;
+  runners: string[];
+  lean: boolean;
+  version: string | null;
+  created_at: string;
+  last_seen_at: string | null;
+}
+
+export interface CreatedWorker extends Worker {
+  secret: string;
+}
+
+export type JobState = "queued" | "running" | "done" | "failed" | "cancelled";
+
+export interface Job {
+  id: number;
+  thread: number;
+  trigger: number;
+  agent: string;
+  agent_name: string;
+  requester: User;
+  state: JobState;
+  progress: string | null;
+  note: string | null;
+  error: string | null;
+  answer: number | null;
+  created_at: string;
+  updated_at: string;
+}
+
 export type GroupEvent =
   | { type: "thread_created"; thread: Thread }
   | { type: "thread_updated"; thread: Thread }
   | { type: "message_created"; thread: number; message: Message }
-  | { type: "message_updated"; thread: number; message: Message };
+  | { type: "message_updated"; thread: number; message: Message }
+  | { type: "job_updated"; job: Job };
 
 /** An error the hub returned, with its code and words. */
 export class ApiError extends Error {
@@ -155,6 +220,7 @@ async function parse<T>(response: Response): Promise<T> {
 
 const get = <T>(path: string) => request<T>("GET", path);
 const post = <T>(path: string, body: unknown) => request<T>("POST", path, body);
+const put = <T>(path: string, body: unknown) => request<T>("PUT", path, body);
 const patch = <T>(path: string, body: unknown) => request<T>("PATCH", path, body);
 const del = <T>(path: string) => request<T>("DELETE", path);
 
@@ -228,6 +294,27 @@ export const api = {
     del<Message>(`${g(group)}/threads/${n}/messages/${m}`),
   resolve: (group: string, addresses: string[]) =>
     post<Resolved[]>(`${g(group)}/resolve`, { addresses }),
+  search: (group: string, q: string) =>
+    get<SearchHit[]>(`${g(group)}/search?${new URLSearchParams({ q })}`),
+
+  agents: (group: string) => get<AgentProfile[]>(`${g(group)}/agents`),
+  createAgent: (group: string, agent: AgentProfile) =>
+    post<AgentProfile>(`${g(group)}/agents`, agent),
+  updateAgent: (group: string, agent: AgentProfile) =>
+    put<AgentProfile>(`${g(group)}/agents/${encodeURIComponent(agent.handle)}`, agent),
+  deleteAgent: (group: string, handle: string) =>
+    del<void>(`${g(group)}/agents/${encodeURIComponent(handle)}`),
+
+  groupWorkers: (group: string) => get<Worker[]>(`${g(group)}/workers`),
+  createGroupWorker: (group: string, name: string) =>
+    post<CreatedWorker>(`${g(group)}/workers`, { name }),
+  revokeGroupWorker: (group: string, id: number) => del<void>(`${g(group)}/workers/${id}`),
+  myWorkers: () => get<Worker[]>("/me/workers"),
+  createMyWorker: (name: string) => post<CreatedWorker>("/me/workers", { name }),
+  revokeMyWorker: (id: number) => del<void>(`/me/workers/${id}`),
+
+  threadJobs: (group: string, n: number) => get<Job[]>(`${g(group)}/threads/${n}/jobs`),
+  cancelJob: (group: string, id: number) => del<void>(`${g(group)}/jobs/${id}`),
 
   async upload(group: string, file: File): Promise<Attachment> {
     const form = new FormData();

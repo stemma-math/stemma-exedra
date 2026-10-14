@@ -2,6 +2,7 @@
   import { api, type Message } from "#lib/api.ts";
   import { exactly, fileSize, when } from "#lib/format.ts";
   import { toastError } from "#lib/toast.ts";
+  import AgentAvatar from "./AgentAvatar.svelte";
   import Avatar from "./Avatar.svelte";
   import Glyph from "./Glyph.svelte";
   import Markdown from "./Markdown.svelte";
@@ -62,13 +63,20 @@
 </script>
 
 <article class="message-item" id={String(message.number)} aria-label="Message {message.number}">
-  <Avatar user={message.author} />
+  {#if message.agent}
+    <AgentAvatar name={message.agent} />
+  {:else}
+    <Avatar user={message.author} />
+  {/if}
   <div>
     <header class="message-item__head">
-      <strong>
-        {#if message.agent}{message.agent}, for {message.author.display_name}{:else}{message.author
-            .display_name}{/if}
-      </strong>
+      {#if message.agent}
+        <strong>{message.agent}</strong>
+        <span class="quiet">for {message.author.display_name}</span>
+        <span class="chip chip--outline">Agent</span>
+      {:else}
+        <strong>{message.author.display_name}</strong>
+      {/if}
       <a class="message-item__number quiet numeric" href="#{message.number}" title={address}>
         #{message.number}
       </a>
