@@ -46,7 +46,7 @@ pub fn references(text: &str) -> Vec<Reference<'_>> {
 }
 
 /// The fence a line opens or closes, if it is one: its character and length.
-fn fence_marker(line: &str) -> Option<(u8, usize)> {
+pub(crate) fn fence_marker(line: &str) -> Option<(u8, usize)> {
     let indent = line.len() - line.trim_start_matches(' ').len();
     if indent > 3 {
         return None;
@@ -61,7 +61,7 @@ fn fence_marker(line: &str) -> Option<(u8, usize)> {
 }
 
 /// A closing fence has nothing after its marker but spaces.
-fn is_closing(line: &str) -> bool {
+pub(crate) fn is_closing(line: &str) -> bool {
     let trimmed = line.trim();
     trimmed.bytes().all(|b| b == trimmed.as_bytes()[0])
 }
@@ -104,7 +104,7 @@ fn scan_line<'a>(line: &'a str, base: usize, found: &mut Vec<Reference<'a>>) {
 }
 
 /// Where a run of exactly `run` backticks starts in `bytes`.
-fn closing_run(bytes: &[u8], run: usize) -> Option<usize> {
+pub(crate) fn closing_run(bytes: &[u8], run: usize) -> Option<usize> {
     let mut j = 0;
     while j < bytes.len() {
         if bytes[j] == b'`' {

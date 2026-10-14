@@ -3,7 +3,7 @@ name = "stemma-core"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
-description = "Types shared by every part of Stemma: addresses, references and the API"
+description = "Types shared by every part of Stemma: addresses, references, the API and the worker protocol"
 repository.workspace = true
 license.workspace = true
 
