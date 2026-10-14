@@ -1,0 +1,21 @@
+[package]
+name = "stemma"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+description = "Stemma: where a research group does mathematics by talking"
+repository.workspace = true
+license.workspace = true
+
+[dependencies]
+anyhow.workspace = true
+clap.workspace = true
+rpassword.workspace = true
+stemma-core.workspace = true
+stemma-hub.workspace = true
+tokio.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true
+
+[lints]
+workspace = true
