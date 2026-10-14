@@ -12,6 +12,7 @@ use tower::ServiceExt;
 
 struct TestHub {
     app: Router,
+    state: stemma_hub::AppState,
     _data: tempfile::TempDir,
 }
 
@@ -45,7 +46,8 @@ impl TestHub {
         let hub = Arc::new(Hub::new(db::in_memory().await.unwrap(), config));
         *hub.setup_token.lock().unwrap() = Some("setup-secret".into());
         TestHub {
-            app: app(hub),
+            app: app(hub.clone()),
+            state: hub,
             _data: data,
         }
     }
@@ -907,5 +909,365 @@ async fn the_web_app_is_served_for_any_page() {
     assert_eq!(
         hub.send(&Client::default(), request).await.status,
         StatusCode::NOT_FOUND
+    );
+}
+
+/// A client with a personal API token of `client`'s.
+async fn with_token(hub: &TestHub, client: &Client) -> Client {
+    let reply = hub
+        .post(client, "/me/tokens", json!({"name": "agent"}))
+        .await;
+    Client {
+        cookie: None,
+        token: Some(reply.json()["secret"].as_str().unwrap().to_owned()),
+    }
+}
+
+#[tokio::test]
+async fn agents_post_for_people_with_their_tokens() {
+    let hub = TestHub::new().await;
+    let ada = hub.admin_with_group().await;
+    hub.post(&ada, "/groups/geometry/threads", json!({"title": "Gluing"}))
+        .await;
+    let token = with_token(&hub, &ada).await;
+
+    let reply = hub
+        .post(
+            &token,
+            "/groups/geometry/threads/1/messages",
+            json!({"body": "A summary of #1", "agent": "Claude Code"}),
+        )
+        .await;
+    assert_eq!(reply.status, StatusCode::CREATED, "{:?}", reply.json());
+    assert_eq!(reply.json()["agent"], "Claude Code");
+    assert_eq!(reply.json()["author"]["username"], "ada");
+
+    // A session is a person at the web app, not an agent.
+    let reply = hub
+        .post(
+            &ada,
+            "/groups/geometry/threads/1/messages",
+            json!({"body": "Me", "agent": "Claude"}),
+        )
+        .await;
+    assert_eq!(reply.status, StatusCode::UNPROCESSABLE_ENTITY);
+}
+
+#[tokio::test]
+async fn job_tokens_read_one_group_and_post_only_where_allowed() {
+    let hub = TestHub::new().await;
+    let ada = hub.admin_with_group().await;
+    hub.post(
+        &ada,
+        "/groups",
+        json!({"slug": "algebra", "name": "Algebra"}),
+    )
+    .await;
+    hub.post(
+        &ada,
+        "/groups/geometry/threads",
+        json!({"title": "Gluing", "body": "First"}),
+    )
+    .await;
+    hub.post(&ada, "/groups/geometry/threads", json!({"title": "Other"}))
+        .await;
+    let (group_id, thread_id): (i64, i64) = sqlx::query_as(
+        "SELECT g.id, t.id FROM groups g JOIN threads t ON t.group_id = g.id
+         WHERE g.slug = 'geometry' AND t.number = 1",
+    )
+    .fetch_one(&hub.state.db)
+    .await
+    .unwrap();
+    let job = |post_in| {
+        let db = hub.state.db.clone();
+        async move {
+            let (_, secret) = stemma_hub::auth::create_job_token(
+                &db,
+                1,
+                group_id,
+                post_in,
+                "Claude",
+                stemma_hub::db::now() + 60_000,
+            )
+            .await
+            .unwrap();
+            Client {
+                cookie: None,
+                token: Some(secret),
+            }
+        }
+    };
+
+    let reader = job(None).await;
+    assert_eq!(
+        hub.get(&reader, "/groups/geometry/threads/1").await.status,
+        StatusCode::OK
+    );
+    assert_eq!(
+        hub.get(&reader, "/groups/algebra/threads").await.status,
+        StatusCode::NOT_FOUND
+    );
+    for (path, body) in [
+        ("/me/tokens", json!({"name": "more"})),
+        ("/groups/geometry/threads", json!({"title": "New"})),
+        ("/groups/geometry/invitations", json!({})),
+    ] {
+        let reply = hub.post(&reader, path, body).await;
+        assert_eq!(reply.status, StatusCode::FORBIDDEN, "{path}");
+    }
+    let reply = hub
+        .post(
+            &reader,
+            "/groups/geometry/threads/1/messages",
+            json!({"body": "Hello"}),
+        )
+        .await;
+    assert_eq!(reply.status, StatusCode::FORBIDDEN);
+
+    let poster = job(Some(thread_id)).await;
+    let reply = hub
+        .post(
+            &poster,
+            "/groups/geometry/threads/1/messages",
+            json!({"body": "Hello", "agent": "Someone else"}),
+        )
+        .await;
+    assert_eq!(reply.status, StatusCode::CREATED);
+    assert_eq!(reply.json()["agent"], "Claude");
+    let reply = hub
+        .post(
+            &poster,
+            "/groups/geometry/threads/2/messages",
+            json!({"body": "Hello"}),
+        )
+        .await;
+    assert_eq!(reply.status, StatusCode::FORBIDDEN);
+}
+
+#[tokio::test]
+async fn search_finds_titles_and_messages() {
+    let hub = TestHub::new().await;
+    let ada = hub.admin_with_group().await;
+    hub.post(
+        &ada,
+        "/groups/geometry/threads",
+        json!({"title": "The gluing lemma", "body": "Start"}),
+    )
+    .await;
+    hub.post(
+        &ada,
+        "/groups/geometry/threads/1/messages",
+        json!({"body": "Is the Gluing map proper? Compactness says so."}),
+    )
+    .await;
+    let hits = hub
+        .get(&ada, "/groups/geometry/search?q=gluing%20PROPER")
+        .await
+        .json();
+    assert_eq!(hits.as_array().unwrap().len(), 1, "{hits}");
+    assert_eq!(hits[0]["address"], "t1#2");
+    assert!(hits[0]["snippet"].as_str().unwrap().contains("Gluing map"));
+
+    let hits = hub
+        .get(&ada, "/groups/geometry/search?q=gluing")
+        .await
+        .json();
+    assert_eq!(hits[0]["address"], "t1");
+    assert_eq!(hits[1]["address"], "t1#2");
+
+    let reply = hub.get(&ada, "/groups/geometry/search?q=%20").await;
+    assert_eq!(reply.status, StatusCode::UNPROCESSABLE_ENTITY);
+}
+
+#[tokio::test]
+async fn admins_keep_the_agents_of_a_group() {
+    let hub = TestHub::new().await;
+    let ada = hub.admin_with_group().await;
+    let bob = hub.member(&ada, "bob").await;
+
+    let agents = hub.get(&bob, "/groups/geometry/agents").await.json();
+    let handles: Vec<&str> = agents
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|a| a["handle"].as_str().unwrap())
+        .collect();
+    assert_eq!(handles, ["claude", "codex"]);
+
+    let qwen = json!({"handle": "@Qwen", "display_name": "Qwen", "runner": "api",
+                      "model": "qwen/qwen3", "endpoint": "openrouter", "scope": "group"});
+    let reply = hub
+        .post(&bob, "/groups/geometry/agents", qwen.clone())
+        .await;
+    assert_eq!(reply.status, StatusCode::FORBIDDEN);
+    let reply = hub
+        .post(&ada, "/groups/geometry/agents", qwen.clone())
+        .await;
+    assert_eq!(reply.status, StatusCode::CREATED, "{:?}", reply.json());
+    assert_eq!(reply.json()["handle"], "qwen");
+    let reply = hub.post(&ada, "/groups/geometry/agents", qwen).await;
+    assert_eq!(reply.status, StatusCode::CONFLICT);
+
+    let reply = hub
+        .post(
+            &ada,
+            "/groups/geometry/agents",
+            json!({"handle": "x", "display_name": "X", "runner": "nope", "scope": "group"}),
+        )
+        .await;
+    assert_eq!(reply.status, StatusCode::UNPROCESSABLE_ENTITY);
+
+    let reply = hub
+        .call(
+            &ada,
+            Method::PUT,
+            "/groups/geometry/agents/qwen",
+            Some(
+                json!({"handle": "ignored", "display_name": "Qwen 3", "runner": "api",
+                        "model": "", "scope": "group"}),
+            ),
+        )
+        .await;
+    assert_eq!(reply.status, StatusCode::OK, "{:?}", reply.json());
+    assert_eq!(reply.json()["handle"], "qwen");
+    assert!(reply.json()["model"].is_null());
+
+    let reply = hub
+        .call(&ada, Method::DELETE, "/groups/geometry/agents/qwen", None)
+        .await;
+    assert_eq!(reply.status, StatusCode::NO_CONTENT);
+}
+
+#[tokio::test]
+async fn mentions_and_chats_queue_jobs() {
+    let hub = TestHub::new().await;
+    let ada = hub.admin_with_group().await;
+    hub.post(
+        &ada,
+        "/groups/geometry/threads",
+        json!({"title": "Gluing", "body": "@claude @codex @nobody what do you think?"}),
+    )
+    .await;
+    let jobs = hub
+        .get(&ada, "/groups/geometry/threads/1/jobs")
+        .await
+        .json();
+    assert_eq!(jobs.as_array().unwrap().len(), 2, "{jobs}");
+    assert_eq!(jobs[0]["agent"], "claude");
+    assert_eq!(jobs[0]["state"], "queued");
+    assert_eq!(jobs[0]["trigger"], 1);
+    assert_eq!(
+        jobs[0]["note"],
+        "Waiting for Ada's worker, with Claude Code, to come online"
+    );
+
+    // An agent's message summons no one.
+    let token = with_token(&hub, &ada).await;
+    hub.post(
+        &token,
+        "/groups/geometry/threads/1/messages",
+        json!({"body": "@codex, over to you", "agent": "Claude Code"}),
+    )
+    .await;
+    let jobs = hub
+        .get(&ada, "/groups/geometry/threads/1/jobs")
+        .await
+        .json();
+    assert_eq!(jobs.as_array().unwrap().len(), 2);
+
+    // Cancelling one.
+    let id = jobs[1]["id"].as_i64().unwrap();
+    let reply = hub
+        .call(
+            &ada,
+            Method::DELETE,
+            &format!("/groups/geometry/jobs/{id}"),
+            None,
+        )
+        .await;
+    assert_eq!(reply.status, StatusCode::NO_CONTENT);
+    let jobs = hub
+        .get(&ada, "/groups/geometry/threads/1/jobs")
+        .await
+        .json();
+    assert_eq!(jobs.as_array().unwrap().len(), 1);
+
+    // A chat's resident agent answers every message.
+    let reply = hub
+        .post(
+            &ada,
+            "/groups/geometry/threads",
+            json!({"title": "Chat", "kind": "chat", "resident_agent": "codex", "body": "Hi"}),
+        )
+        .await;
+    assert_eq!(reply.status, StatusCode::CREATED);
+    hub.post(
+        &ada,
+        "/groups/geometry/threads/2/messages",
+        json!({"body": "And @codex, once more"}),
+    )
+    .await;
+    let jobs = hub
+        .get(&ada, "/groups/geometry/threads/2/jobs")
+        .await
+        .json();
+    assert_eq!(jobs.as_array().unwrap().len(), 2);
+    assert_eq!(jobs[1]["trigger"], 2);
+
+    let reply = hub
+        .post(
+            &ada,
+            "/groups/geometry/threads",
+            json!({"title": "Chat", "kind": "chat", "resident_agent": "nobody"}),
+        )
+        .await;
+    assert_eq!(reply.status, StatusCode::UNPROCESSABLE_ENTITY);
+}
+
+#[tokio::test]
+async fn workers_are_registered_by_whom_they_serve() {
+    let hub = TestHub::new().await;
+    let ada = hub.admin_with_group().await;
+    let bob = hub.member(&ada, "bob").await;
+
+    let reply = hub
+        .post(&bob, "/groups/geometry/workers", json!({"name": "server"}))
+        .await;
+    assert_eq!(reply.status, StatusCode::FORBIDDEN);
+    let reply = hub
+        .post(&ada, "/groups/geometry/workers", json!({"name": "server"}))
+        .await;
+    assert_eq!(reply.status, StatusCode::CREATED);
+    assert!(reply.json()["secret"].as_str().unwrap().starts_with("stw_"));
+    assert_eq!(reply.json()["scope"], "group");
+
+    let reply = hub
+        .post(&bob, "/me/workers", json!({"name": "laptop"}))
+        .await;
+    assert_eq!(reply.status, StatusCode::CREATED);
+    assert_eq!(reply.json()["owner"]["username"], "bob");
+    let id = reply.json()["id"].as_i64().unwrap();
+
+    let group = hub.get(&bob, "/groups/geometry/workers").await.json();
+    assert_eq!(group[0]["name"], "server");
+    assert_eq!(group[0]["online"], false);
+    let mine = hub.get(&bob, "/me/workers").await.json();
+    assert_eq!(mine.as_array().unwrap().len(), 1);
+
+    let reply = hub
+        .call(&ada, Method::DELETE, &format!("/me/workers/{id}"), None)
+        .await;
+    assert_eq!(reply.status, StatusCode::NOT_FOUND);
+    let reply = hub
+        .call(&bob, Method::DELETE, &format!("/me/workers/{id}"), None)
+        .await;
+    assert_eq!(reply.status, StatusCode::NO_CONTENT);
+    assert!(
+        hub.get(&bob, "/me/workers")
+            .await
+            .json()
+            .as_array()
+            .unwrap()
+            .is_empty()
     );
 }

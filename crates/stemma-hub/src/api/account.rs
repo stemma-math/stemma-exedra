@@ -166,6 +166,7 @@ pub async fn update_me(
     viewer: Viewer,
     Json(body): Json<UpdateMe>,
 ) -> ApiResult<Json<Me>> {
+    viewer.require_full()?;
     let display_name = required_text(&body.display_name, "The name", 80)?;
     sqlx::query("UPDATE users SET display_name = ? WHERE id = ?")
         .bind(display_name)
@@ -182,6 +183,7 @@ pub async fn change_password(
     headers: HeaderMap,
     Json(body): Json<ChangePassword>,
 ) -> ApiResult<StatusCode> {
+    viewer.require_full()?;
     let hash: String = sqlx::query_scalar("SELECT password_hash FROM users WHERE id = ?")
         .bind(viewer.id)
         .fetch_one(&state.db)
@@ -234,9 +236,11 @@ pub async fn list_tokens(
     State(state): State<AppState>,
     viewer: Viewer,
 ) -> ApiResult<Json<Vec<ApiToken>>> {
+    viewer.require_full()?;
     let rows: Vec<TokenRow> = sqlx::query_as(
         "SELECT id, name, prefix, created_at, last_used_at FROM api_tokens
-         WHERE user_id = ? AND revoked_at IS NULL ORDER BY created_at DESC",
+         WHERE user_id = ? AND kind = 'personal' AND revoked_at IS NULL
+         ORDER BY created_at DESC",
     )
     .bind(viewer.id)
     .fetch_all(&state.db)
@@ -249,6 +253,7 @@ pub async fn create_token(
     viewer: Viewer,
     Json(body): Json<CreateToken>,
 ) -> ApiResult<(StatusCode, Json<CreatedToken>)> {
+    viewer.require_full()?;
     let name = required_text(&body.name, "The name", 80)?;
     let secret = secret::token(API_TOKEN_PREFIX);
     let prefix: String = secret.chars().take(API_TOKEN_PREFIX.len() + 6).collect();
@@ -280,8 +285,10 @@ pub async fn revoke_token(
     viewer: Viewer,
     Path(id): Path<i64>,
 ) -> ApiResult<StatusCode> {
+    viewer.require_full()?;
     let done = sqlx::query(
-        "UPDATE api_tokens SET revoked_at = ? WHERE id = ? AND user_id = ? AND revoked_at IS NULL",
+        "UPDATE api_tokens SET revoked_at = ?
+         WHERE id = ? AND user_id = ? AND kind = 'personal' AND revoked_at IS NULL",
     )
     .bind(db::now())
     .bind(id)

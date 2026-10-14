@@ -54,6 +54,7 @@ pub async fn create(
     viewer: Viewer,
     Json(body): Json<CreateGroup>,
 ) -> ApiResult<(StatusCode, Json<Group>)> {
+    viewer.require_full()?;
     if !viewer.hub_admin {
         return Err(ApiError::forbidden(
             "Only the hub's admins can create groups",
@@ -91,6 +92,9 @@ pub async fn create(
     .bind(now)
     .execute(&mut *tx)
     .await?;
+    for profile in crate::jobs::default_profiles() {
+        super::agents::insert(&mut *tx, group_id, &profile).await?;
+    }
     tx.commit().await?;
     let group = Group {
         slug,
@@ -162,6 +166,7 @@ pub async fn update_member(
     Path((slug, user_id)): Path<(String, i64)>,
     Json(body): Json<UpdateMember>,
 ) -> ApiResult<StatusCode> {
+    viewer.require_full()?;
     let group = Membership::of(&state, &viewer, &slug).await?;
     group.require_admin()?;
     let current = role_of(&state, group.group_id, user_id).await?;
@@ -186,6 +191,7 @@ pub async fn remove_member(
     viewer: Viewer,
     Path((slug, user_id)): Path<(String, i64)>,
 ) -> ApiResult<StatusCode> {
+    viewer.require_full()?;
     let group = Membership::of(&state, &viewer, &slug).await?;
     if user_id != viewer.id {
         group.require_admin()?;
@@ -234,6 +240,7 @@ pub async fn invitations(
     viewer: Viewer,
     Path(slug): Path<String>,
 ) -> ApiResult<Json<Vec<Invitation>>> {
+    viewer.require_full()?;
     let group = Membership::of(&state, &viewer, &slug).await?;
     group.require_admin()?;
     let rows: Vec<InvitationRow> = sqlx::query_as(
@@ -258,6 +265,7 @@ pub async fn create_invitation(
     Path(slug): Path<String>,
     Json(body): Json<CreateInvitation>,
 ) -> ApiResult<(StatusCode, Json<CreatedInvitation>)> {
+    viewer.require_full()?;
     let group = Membership::of(&state, &viewer, &slug).await?;
     group.require_admin()?;
     if body.max_uses == Some(0) || body.expires_in_days == Some(0) {
@@ -305,6 +313,7 @@ pub async fn revoke_invitation(
     viewer: Viewer,
     Path((slug, id)): Path<(String, i64)>,
 ) -> ApiResult<StatusCode> {
+    viewer.require_full()?;
     let group = Membership::of(&state, &viewer, &slug).await?;
     group.require_admin()?;
     let done = sqlx::query(
@@ -383,7 +392,10 @@ pub async fn accept_invitation(
             let id = super::account::create_user(&state, account, false).await?;
             (id, auth::start_session(&state, id).await?)
         }
-        (None, Some(viewer)) => (viewer.id, HeaderMap::new()),
+        (None, Some(viewer)) => {
+            viewer.require_full()?;
+            (viewer.id, HeaderMap::new())
+        }
         (None, None) => return Err(ApiError::unauthenticated()),
     };
 

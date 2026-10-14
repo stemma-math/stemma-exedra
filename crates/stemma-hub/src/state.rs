@@ -1,5 +1,6 @@
 //! What every request handler shares.
 
+use std::sync::atomic::AtomicU64;
 use std::sync::{Arc, Mutex};
 
 use sqlx::SqlitePool;
@@ -7,6 +8,7 @@ use stemma_core::api::Event;
 use tokio::sync::broadcast;
 
 use crate::config::Config;
+use crate::jobs::Workers;
 
 pub type AppState = Arc<Hub>;
 
@@ -18,6 +20,10 @@ pub struct Hub {
     pub events: broadcast::Sender<GroupEvent>,
     /// The secret that creates the first account, while there is none.
     pub setup_token: Mutex<Option<String>>,
+    /// The workers connected now.
+    pub workers: tokio::sync::Mutex<Workers>,
+    /// The number of the last worker connection.
+    pub connections: AtomicU64,
 }
 
 #[derive(Clone, Debug)]
@@ -34,6 +40,8 @@ impl Hub {
             config,
             events,
             setup_token: Mutex::new(None),
+            workers: tokio::sync::Mutex::new(Workers::default()),
+            connections: AtomicU64::new(0),
         }
     }
 

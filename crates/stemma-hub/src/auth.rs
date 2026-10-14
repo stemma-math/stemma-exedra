@@ -1,5 +1,7 @@
-//! Who is asking: a session cookie from the web app, or a personal API
-//! token in an `Authorization: Bearer` header.
+//! Who is asking: a session cookie from the web app, or an API token in an
+//! `Authorization: Bearer` header: a personal token, which can do whatever
+//! its owner can, or a job's token, which reads one group for a job's
+//! requester while the job lasts.
 
 use axum::extract::{FromRequestParts, OptionalFromRequestParts};
 use axum::http::header::{AUTHORIZATION, COOKIE, SET_COOKIE};
@@ -14,6 +16,7 @@ use crate::state::AppState;
 
 pub const SESSION_COOKIE: &str = "stemma_session";
 pub const API_TOKEN_PREFIX: &str = "stm_";
+pub const JOB_TOKEN_PREFIX: &str = "stj_";
 const SESSION_DAYS: i64 = 30;
 
 /// The person making a request.
@@ -23,6 +26,28 @@ pub struct Viewer {
     pub username: String,
     pub display_name: String,
     pub hub_admin: bool,
+    /// Whether the request came with an API token, not a session.
+    pub with_token: bool,
+    pub scope: Scope,
+}
+
+/// What a request may do.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Scope {
+    /// Whatever the person can: a session or a personal token.
+    Full,
+    /// A job's token.
+    Job(JobScope),
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct JobScope {
+    pub group_id: i64,
+    /// The thread it may post in, if it may post.
+    pub thread_id: Option<i64>,
+    /// The agent its posts are written by.
+    pub agent: String,
+    pub can_post: bool,
 }
 
 impl Viewer {
@@ -31,6 +56,21 @@ impl Viewer {
             id: self.id,
             username: self.username.clone(),
             display_name: self.display_name.clone(),
+        }
+    }
+
+    pub fn job(&self) -> Option<&JobScope> {
+        match &self.scope {
+            Scope::Full => None,
+            Scope::Job(job) => Some(job),
+        }
+    }
+
+    /// Fails for a job's token: what follows needs the person.
+    pub fn require_full(&self) -> Result<(), ApiError> {
+        match self.scope {
+            Scope::Full => Ok(()),
+            Scope::Job(_) => Err(ApiError::forbidden("A job's token cannot do this")),
         }
     }
 }
@@ -43,15 +83,28 @@ struct ViewerRow {
     hub_admin: bool,
 }
 
-impl From<ViewerRow> for Viewer {
-    fn from(row: ViewerRow) -> Self {
+impl ViewerRow {
+    fn viewer(self, with_token: bool, scope: Scope) -> Viewer {
         Viewer {
-            id: row.id,
-            username: row.username,
-            display_name: row.display_name,
-            hub_admin: row.hub_admin,
+            id: self.id,
+            username: self.username,
+            display_name: self.display_name,
+            hub_admin: self.hub_admin,
+            with_token,
+            scope,
         }
     }
+}
+
+#[derive(sqlx::FromRow)]
+struct TokenRow {
+    #[sqlx(flatten)]
+    user: ViewerRow,
+    kind: String,
+    group_id: Option<i64>,
+    thread_id: Option<i64>,
+    agent: Option<String>,
+    can_post: bool,
 }
 
 impl FromRequestParts<AppState> for Viewer {
@@ -80,12 +133,15 @@ async fn authenticate(headers: &HeaderMap, state: &AppState) -> Result<Option<Vi
 
     if let Some(token) = bearer_token(headers) {
         let hash = secret::token_hash(token);
-        let row = sqlx::query_as::<_, ViewerRow>(
-            "SELECT u.id, u.username, u.display_name, u.hub_admin
+        let row = sqlx::query_as::<_, TokenRow>(
+            "SELECT u.id, u.username, u.display_name, u.hub_admin,
+                    t.kind, t.group_id, t.thread_id, t.agent, t.can_post
              FROM api_tokens t JOIN users u ON u.id = t.user_id
-             WHERE t.token_hash = ? AND t.revoked_at IS NULL",
+             WHERE t.token_hash = ? AND t.revoked_at IS NULL
+               AND (t.expires_at IS NULL OR t.expires_at > ?)",
         )
         .bind(&hash)
+        .bind(now)
         .fetch_optional(&state.db)
         .await?
         .ok_or_else(|| {
@@ -105,7 +161,17 @@ async fn authenticate(headers: &HeaderMap, state: &AppState) -> Result<Option<Vi
         .bind(now - 60_000)
         .execute(&state.db)
         .await?;
-        return Ok(Some(row.into()));
+        let scope = match (row.kind.as_str(), row.group_id) {
+            ("job", Some(group_id)) => Scope::Job(JobScope {
+                group_id,
+                thread_id: row.thread_id,
+                agent: row.agent.unwrap_or_else(|| "Agent".into()),
+                can_post: row.can_post,
+            }),
+            ("job", None) => return Err(ApiError::internal("a job token without a group")),
+            _ => Scope::Full,
+        };
+        return Ok(Some(row.user.viewer(true, scope)));
     }
 
     let Some(token) = cookie(headers, SESSION_COOKIE) else {
@@ -120,16 +186,50 @@ async fn authenticate(headers: &HeaderMap, state: &AppState) -> Result<Option<Vi
     .bind(now)
     .fetch_optional(&state.db)
     .await?;
-    Ok(row.map(Viewer::from))
+    Ok(row.map(|row| row.viewer(false, Scope::Full)))
 }
 
-fn bearer_token(headers: &HeaderMap) -> Option<&str> {
+pub fn bearer_token(headers: &HeaderMap) -> Option<&str> {
     headers
         .get(AUTHORIZATION)?
         .to_str()
         .ok()?
         .strip_prefix("Bearer ")
         .map(str::trim)
+}
+
+/// A token for a job, acting for `user_id` in `group_id` until
+/// `expires_at`; it posts only in `post_in`, a thread, if given. Returns
+/// its id and secret.
+pub async fn create_job_token(
+    db: &sqlx::SqlitePool,
+    user_id: i64,
+    group_id: i64,
+    post_in: Option<i64>,
+    agent: &str,
+    expires_at: i64,
+) -> Result<(i64, String), ApiError> {
+    let secret = secret::token(JOB_TOKEN_PREFIX);
+    let prefix: String = secret.chars().take(JOB_TOKEN_PREFIX.len() + 6).collect();
+    let id = sqlx::query(
+        "INSERT INTO api_tokens (user_id, name, token_hash, prefix, created_at, kind, group_id,
+                                 thread_id, agent, can_post, expires_at)
+         VALUES (?, ?, ?, ?, ?, 'job', ?, ?, ?, ?, ?)",
+    )
+    .bind(user_id)
+    .bind(format!("{agent}, for a job"))
+    .bind(secret::token_hash(&secret))
+    .bind(&prefix)
+    .bind(db::now())
+    .bind(group_id)
+    .bind(post_in)
+    .bind(agent)
+    .bind(post_in.is_some())
+    .bind(expires_at)
+    .execute(db)
+    .await?
+    .last_insert_rowid();
+    Ok((id, secret))
 }
 
 /// The value of a cookie in the request.

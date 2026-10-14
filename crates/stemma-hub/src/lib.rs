@@ -1,11 +1,12 @@
-//! The Stemma hub: accounts, groups and the forum, behind a JSON API, with
-//! the web app.
+//! The Stemma hub: accounts, groups, the forum and the agents in it, behind
+//! a JSON API, with the web app and the workers' WebSocket.
 
 pub mod api;
 pub mod auth;
 pub mod config;
 pub mod db;
 pub mod error;
+pub mod jobs;
 pub mod secret;
 pub mod state;
 pub mod web;
@@ -41,6 +42,7 @@ pub async fn open(config: Config) -> anyhow::Result<AppState> {
 pub async fn run(config: Config) -> anyhow::Result<()> {
     let state = open(config).await?;
     remove_unclaimed_uploads(&state).await?;
+    jobs::recover(&state).await?;
 
     if user_count(&state.db).await? == 0 {
         let token = secret::token("");

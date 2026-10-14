@@ -25,6 +25,7 @@ pub async fn upload(
     Path(slug): Path<String>,
     mut multipart: Multipart,
 ) -> ApiResult<(StatusCode, Json<Attachment>)> {
+    viewer.require_full()?;
     let group = Membership::of(&state, &viewer, &slug).await?;
     let limit = state.config.max_upload_mb * 1024 * 1024;
     let bad = |e: axum::extract::multipart::MultipartError| {

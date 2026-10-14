@@ -2,17 +2,20 @@
 
 mod account;
 pub use account::create_user;
+mod agents;
 mod attachments;
 mod events;
-mod forum;
+pub(crate) mod forum;
 mod groups;
+mod jobs;
+pub mod workers;
 
 use axum::Router;
 use axum::extract::rejection::JsonRejection;
 use axum::extract::{DefaultBodyLimit, FromRequest, Request};
 use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
-use axum::routing::{delete, get, patch, post};
+use axum::routing::{delete, get, patch, post, put};
 use serde::Serialize;
 use serde::de::DeserializeOwned;
 use stemma_core::api::{Role, User};
@@ -75,6 +78,34 @@ pub fn router(state: AppState) -> Router {
                 .delete(forum::delete_message),
         )
         .route("/groups/{group}/resolve", post(forum::resolve))
+        .route("/groups/{group}/search", get(forum::search))
+        .route(
+            "/groups/{group}/agents",
+            get(agents::list).post(agents::create),
+        )
+        .route(
+            "/groups/{group}/agents/{handle}",
+            put(agents::update).delete(agents::remove),
+        )
+        .route(
+            "/groups/{group}/workers",
+            get(workers::list_group).post(workers::create_group),
+        )
+        .route(
+            "/groups/{group}/workers/{id}",
+            delete(workers::revoke_group),
+        )
+        .route(
+            "/me/workers",
+            get(workers::list_mine).post(workers::create_mine),
+        )
+        .route("/me/workers/{id}", delete(workers::revoke_mine))
+        .route(
+            "/groups/{group}/threads/{thread}/jobs",
+            get(jobs::of_thread),
+        )
+        .route("/groups/{group}/jobs/{id}", delete(jobs::cancel))
+        .route(stemma_core::protocol::WORKER_PATH, get(workers::connect))
         .route(
             "/groups/{group}/attachments",
             post(attachments::upload).layer(DefaultBodyLimit::max(upload_limit)),
@@ -131,6 +162,8 @@ pub struct Membership {
 impl Membership {
     /// Finds the group `slug` among the viewer's. A group they are not in
     /// is not found, so its existence is not revealed.
+    ///
+    /// A job's token sees only its job's group, as a member.
     pub async fn of(state: &AppState, viewer: &Viewer, slug: &str) -> ApiResult<Membership> {
         let row: Option<(i64, String, String, i64, String)> = sqlx::query_as(
             "SELECT g.id, g.slug, g.name, g.created_at, m.role
@@ -143,12 +176,34 @@ impl Membership {
         .await?;
         let (group_id, slug, name, created_at, role) =
             row.ok_or_else(|| ApiError::not_found("Group"))?;
+        let role = match viewer.job() {
+            Some(job) if job.group_id != group_id => return Err(ApiError::not_found("Group")),
+            Some(_) => Role::Member,
+            None => Role::parse(&role).unwrap_or(Role::Member),
+        };
         Ok(Membership {
             group_id,
             slug,
             name,
             created_at,
-            role: Role::parse(&role).unwrap_or(Role::Member),
+            role,
+        })
+    }
+
+    /// A group as the hub itself acts in it, for what it posts.
+    pub async fn of_group(state: &AppState, group_id: i64) -> ApiResult<Membership> {
+        let (slug, name, created_at): (String, String, i64) =
+            sqlx::query_as("SELECT slug, name, created_at FROM groups WHERE id = ?")
+                .bind(group_id)
+                .fetch_optional(&state.db)
+                .await?
+                .ok_or_else(|| ApiError::not_found("Group"))?;
+        Ok(Membership {
+            group_id,
+            slug,
+            name,
+            created_at,
+            role: Role::Member,
         })
     }
 

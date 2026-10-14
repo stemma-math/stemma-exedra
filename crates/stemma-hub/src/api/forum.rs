@@ -6,10 +6,10 @@ use std::collections::hash_map::Entry;
 use axum::extract::{Path, Query, State};
 use axum::http::StatusCode;
 use serde::Deserialize;
-use sqlx::{Sqlite, Transaction};
+use sqlx::{AssertSqlSafe, Sqlite, Transaction};
 use stemma_core::api::{
-    CreateThread, EditMessage, Event, Message, PostMessage, Resolve, Resolved, Thread, ThreadKind,
-    ThreadPage, UpdateThread,
+    CreateThread, EditMessage, Event, Message, PostMessage, Resolve, Resolved, SearchHit, Thread,
+    ThreadKind, ThreadPage, UpdateThread,
 };
 use stemma_core::{Address, AddressKind};
 
@@ -23,7 +23,7 @@ use crate::state::AppState;
 const MAX_BODY_CHARS: usize = 100_000;
 
 #[derive(sqlx::FromRow)]
-pub(super) struct ThreadRow {
+pub(crate) struct ThreadRow {
     pub id: i64,
     number: i64,
     title: String,
@@ -53,7 +53,21 @@ impl From<ThreadRow> for Thread {
     }
 }
 
-pub(super) async fn find_thread(
+pub(crate) async fn find_thread_by_id(state: &AppState, thread_id: i64) -> ApiResult<ThreadRow> {
+    sqlx::query_as(
+        "SELECT t.id, t.number, t.title, t.kind, t.resident_agent, t.anchor, t.created_at,
+                t.last_activity_at, t.last_message,
+                u.id AS user_id, u.username, u.display_name
+         FROM threads t JOIN users u ON u.id = t.created_by
+         WHERE t.id = ?",
+    )
+    .bind(thread_id)
+    .fetch_optional(&state.db)
+    .await?
+    .ok_or_else(|| ApiError::not_found("Thread"))
+}
+
+pub(crate) async fn find_thread(
     state: &AppState,
     group_id: i64,
     number: u32,
@@ -106,27 +120,29 @@ pub async fn list_threads(
     Ok(Json(rows.into_iter().map(Thread::from).collect()))
 }
 
-fn valid_agent_handle(handle: &str) -> bool {
-    let mut bytes = handle.bytes();
-    handle.len() <= 32
-        && bytes.next().is_some_and(|b| b.is_ascii_lowercase())
-        && bytes.all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-' || b == b'_')
-}
-
 pub async fn create_thread(
     State(state): State<AppState>,
     viewer: Viewer,
     Path(slug): Path<String>,
     Json(body): Json<CreateThread>,
 ) -> ApiResult<(StatusCode, Json<ThreadPage>)> {
+    viewer.require_full()?;
     let group = Membership::of(&state, &viewer, &slug).await?;
     let title = required_text(&body.title, "The title", 200)?;
     let resident_agent = match (body.kind, body.resident_agent) {
         (_, None) => None,
         (ThreadKind::Chat, Some(agent)) => {
-            let agent = agent.trim().trim_start_matches('@').to_owned();
-            if !valid_agent_handle(&agent) {
+            let agent = agent.trim().trim_start_matches('@').to_lowercase();
+            if !stemma_core::mention::is_handle(&agent) {
                 return Err(ApiError::invalid("That is not an agent's handle"));
+            }
+            if crate::jobs::find_profile(&state, group.group_id, &agent)
+                .await?
+                .is_none()
+            {
+                return Err(ApiError::invalid(format!(
+                    "There is no agent @{agent} in this group"
+                )));
             }
             Some(agent)
         }
@@ -179,7 +195,8 @@ pub async fn create_thread(
             &mut tx,
             &group,
             thread_id,
-            &viewer,
+            viewer.id,
+            None,
             text,
             None,
             &body.attachments,
@@ -206,6 +223,7 @@ pub async fn create_thread(
                 message: message.clone(),
             },
         );
+        crate::jobs::summon(&state, &group, thread_id, &thread, message).await?;
     }
     Ok((StatusCode::CREATED, Json(ThreadPage { thread, messages })))
 }
@@ -232,6 +250,7 @@ pub async fn update_thread(
     Path((slug, number)): Path<(String, u32)>,
     Json(body): Json<UpdateThread>,
 ) -> ApiResult<Json<Thread>> {
+    viewer.require_full()?;
     let group = Membership::of(&state, &viewer, &slug).await?;
     let row = find_thread(&state, group.group_id, number).await?;
     if row.creator.user_id != viewer.id {
@@ -293,6 +312,21 @@ pub async fn post_message(
 ) -> ApiResult<(StatusCode, Json<Message>)> {
     let group = Membership::of(&state, &viewer, &slug).await?;
     let row = find_thread(&state, group.group_id, number).await?;
+    let agent = match viewer.job() {
+        Some(job) if job.can_post && job.thread_id == Some(row.id) => Some(job.agent.clone()),
+        Some(_) => {
+            return Err(ApiError::forbidden(
+                "This job's token cannot post in this thread",
+            ));
+        }
+        None => match body.agent.as_deref().map(str::trim) {
+            Some(_) if !viewer.with_token => {
+                return Err(ApiError::invalid("Only an API token posts for an agent"));
+            }
+            Some(agent) => Some(required_text(agent, "The agent's name", 60)?),
+            None => None,
+        },
+    };
     if body.body.trim().is_empty() && body.attachments.is_empty() {
         return Err(ApiError::invalid("A message needs words or a file"));
     }
@@ -305,33 +339,64 @@ pub async fn post_message(
         )));
     }
 
-    let mut tx = state.db.begin().await?;
-    let message = insert_message(
-        &mut tx,
+    let message = post(
+        &state,
         &group,
         row.id,
-        &viewer,
+        viewer.id,
+        agent.as_deref(),
         &text,
         body.reply_to,
         &body.attachments,
     )
     .await?;
+    if agent.is_none() {
+        let thread: Thread = find_thread(&state, group.group_id, number).await?.into();
+        crate::jobs::summon(&state, &group, row.id, &thread, &message).await?;
+    }
+    Ok((StatusCode::CREATED, Json(message)))
+}
+
+/// Posts a message in a thread, and tells the group's listeners.
+#[allow(clippy::too_many_arguments)]
+pub(crate) async fn post(
+    state: &AppState,
+    group: &Membership,
+    thread_id: i64,
+    author_id: i64,
+    agent: Option<&str>,
+    text: &str,
+    reply_to: Option<u32>,
+    attachments: &[i64],
+) -> ApiResult<Message> {
+    let mut tx = state.db.begin().await?;
+    let number = insert_message(
+        &mut tx,
+        group,
+        thread_id,
+        author_id,
+        agent,
+        text,
+        reply_to,
+        attachments,
+    )
+    .await?;
     tx.commit().await?;
 
-    let message = load_message(&state, &group, row.id, message).await?;
-    let thread: Thread = find_thread(&state, group.group_id, number).await?.into();
+    let message = load_message(state, group, thread_id, number).await?;
+    let thread: Thread = find_thread_by_id(state, thread_id).await?.into();
     state.publish(
         group.group_id,
         Event::MessageCreated {
-            thread: number,
+            thread: thread.number,
             message: message.clone(),
         },
     );
     state.publish(group.group_id, Event::ThreadUpdated { thread });
-    Ok((StatusCode::CREATED, Json(message)))
+    Ok(message)
 }
 
-fn check_body(text: &str) -> ApiResult<String> {
+pub(crate) fn check_body(text: &str) -> ApiResult<String> {
     if text.chars().count() > MAX_BODY_CHARS {
         return Err(ApiError::invalid(format!(
             "A message has at most {MAX_BODY_CHARS} characters"
@@ -341,12 +406,14 @@ fn check_body(text: &str) -> ApiResult<String> {
 }
 
 /// Adds a message to a thread with the next number, and attaches the
-/// viewer's uploads to it. Returns its number.
+/// author's uploads to it. Returns its number.
+#[allow(clippy::too_many_arguments)]
 async fn insert_message(
     tx: &mut Transaction<'_, Sqlite>,
     group: &Membership,
     thread_id: i64,
-    viewer: &Viewer,
+    author_id: i64,
+    agent: Option<&str>,
     text: &str,
     reply_to: Option<u32>,
     attachment_ids: &[i64],
@@ -361,12 +428,13 @@ async fn insert_message(
     .fetch_one(&mut **tx)
     .await?;
     let message_id = sqlx::query(
-        "INSERT INTO messages (thread_id, number, author_id, body, reply_to, created_at)
-         VALUES (?, ?, ?, ?, ?, ?)",
+        "INSERT INTO messages (thread_id, number, author_id, agent, body, reply_to, created_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?)",
     )
     .bind(thread_id)
     .bind(number)
-    .bind(viewer.id)
+    .bind(author_id)
+    .bind(agent)
     .bind(text)
     .bind(reply_to)
     .bind(now)
@@ -381,7 +449,7 @@ async fn insert_message(
         .bind(message_id)
         .bind(id)
         .bind(group.group_id)
-        .bind(viewer.id)
+        .bind(author_id)
         .execute(&mut **tx)
         .await?;
         if done.rows_affected() == 0 {
@@ -407,7 +475,7 @@ struct MessageRow {
     author: UserColumns,
 }
 
-async fn load_messages(
+pub(crate) async fn load_messages(
     state: &AppState,
     group: &Membership,
     thread_id: i64,
@@ -436,7 +504,7 @@ async fn load_messages(
         .collect())
 }
 
-async fn load_message(
+pub(crate) async fn load_message(
     state: &AppState,
     group: &Membership,
     thread_id: i64,
@@ -482,6 +550,7 @@ pub async fn edit_message(
     Path((slug, number, message)): Path<(String, u32, u32)>,
     Json(body): Json<EditMessage>,
 ) -> ApiResult<Json<Message>> {
+    viewer.require_full()?;
     let group = Membership::of(&state, &viewer, &slug).await?;
     let row = find_thread(&state, group.group_id, number).await?;
     let (id, author) = editable_message(&state, row.id, message).await?;
@@ -513,6 +582,7 @@ pub async fn delete_message(
     viewer: Viewer,
     Path((slug, number, message)): Path<(String, u32, u32)>,
 ) -> ApiResult<Json<Message>> {
+    viewer.require_full()?;
     let group = Membership::of(&state, &viewer, &slug).await?;
     let row = find_thread(&state, group.group_id, number).await?;
     let (id, author) = editable_message(&state, row.id, message).await?;
@@ -626,16 +696,150 @@ pub async fn resolve(
     Ok(Json(resolved))
 }
 
+#[derive(Deserialize)]
+pub struct SearchQuery {
+    q: String,
+    limit: Option<u32>,
+}
+
+/// Threads whose title, and messages whose text, contain every word of the
+/// query, regardless of case: titles first, then messages, newest first.
+pub async fn search(
+    State(state): State<AppState>,
+    viewer: Viewer,
+    Path(slug): Path<String>,
+    Query(query): Query<SearchQuery>,
+) -> ApiResult<Json<Vec<SearchHit>>> {
+    let group = Membership::of(&state, &viewer, &slug).await?;
+    let words: Vec<String> = query
+        .q
+        .split_whitespace()
+        .take(8)
+        .map(str::to_lowercase)
+        .collect();
+    if words.is_empty() {
+        return Err(ApiError::invalid("Search for at least a word"));
+    }
+    let limit = query.limit.unwrap_or(20).clamp(1, 100);
+    // Only placeholders are added to the queries: the words are bound.
+    let all_in = |column: &str| {
+        words
+            .iter()
+            .map(|_| format!("instr(lower({column}), ?) > 0"))
+            .collect::<Vec<_>>()
+            .join(" AND ")
+    };
+
+    let sql = format!(
+        "SELECT t.number, t.title, t.created_at FROM threads t
+         WHERE t.group_id = ? AND {}
+         ORDER BY t.last_activity_at DESC LIMIT ?",
+        all_in("t.title")
+    );
+    let mut threads =
+        sqlx::query_as::<_, (i64, String, i64)>(AssertSqlSafe(sql)).bind(group.group_id);
+    for word in &words {
+        threads = threads.bind(word);
+    }
+    let mut hits: Vec<SearchHit> = threads
+        .bind(limit)
+        .fetch_all(&state.db)
+        .await?
+        .into_iter()
+        .map(|(number, title, created_at)| SearchHit {
+            address: Address::Thread(number as u32),
+            snippet: title.clone(),
+            thread_title: title,
+            author: None,
+            agent: None,
+            created_at: db::from_millis(created_at),
+        })
+        .collect();
+
+    let sql = format!(
+        "SELECT t.number, t.title, m.number, m.body, m.agent, m.created_at,
+                u.id, u.username, u.display_name
+         FROM messages m JOIN threads t ON t.id = m.thread_id JOIN users u ON u.id = m.author_id
+         WHERE t.group_id = ? AND m.deleted_at IS NULL AND {}
+         ORDER BY m.created_at DESC LIMIT ?",
+        all_in("m.body")
+    );
+    type Row = (
+        i64,
+        String,
+        i64,
+        String,
+        Option<String>,
+        i64,
+        i64,
+        String,
+        String,
+    );
+    let mut messages = sqlx::query_as::<_, Row>(AssertSqlSafe(sql)).bind(group.group_id);
+    for word in &words {
+        messages = messages.bind(word);
+    }
+    let rows = messages.bind(limit).fetch_all(&state.db).await?;
+    for (thread, title, number, body, agent, created_at, id, username, display_name) in rows {
+        hits.push(SearchHit {
+            address: Address::Message {
+                thread: thread as u32,
+                message: number as u32,
+            },
+            thread_title: title,
+            author: Some(stemma_core::api::User {
+                id,
+                username,
+                display_name,
+            }),
+            agent,
+            snippet: snippet(&body, &words[0]),
+            created_at: db::from_millis(created_at),
+        });
+    }
+    hits.truncate(limit as usize);
+    Ok(Json(hits))
+}
+
+/// A line's worth of `text` around the first place `word` is in it.
+fn snippet(text: &str, word: &str) -> String {
+    const BEFORE: usize = 60;
+    const AFTER: usize = 140;
+    let chars: Vec<char> = text.chars().collect();
+    let lower: Vec<char> = text.chars().flat_map(char::to_lowercase).collect();
+    let word: Vec<char> = word.chars().collect();
+    // Lowercasing can change the number of characters; then start at the top.
+    let at = if lower.len() == chars.len() {
+        lower
+            .windows(word.len().max(1))
+            .position(|w| w == word.as_slice())
+            .unwrap_or(0)
+    } else {
+        0
+    };
+    let start = at.saturating_sub(BEFORE);
+    let end = (at + AFTER).min(chars.len());
+    let mut piece: String = chars[start..end].iter().collect();
+    piece = piece.split_whitespace().collect::<Vec<_>>().join(" ");
+    if start > 0 {
+        piece.insert(0, '…');
+    }
+    if end < chars.len() {
+        piece.push('…');
+    }
+    piece
+}
+
 #[cfg(test)]
 mod tests {
-    use super::valid_agent_handle;
+    use super::snippet;
 
     #[test]
-    fn agent_handles() {
-        assert!(valid_agent_handle("claude"));
-        assert!(valid_agent_handle("qwen-3_b"));
-        assert!(!valid_agent_handle("Claude"));
-        assert!(!valid_agent_handle("1bot"));
-        assert!(!valid_agent_handle(""));
+    fn snippets_show_the_match() {
+        assert_eq!(snippet("The Gluing\nlemma", "gluing"), "The Gluing lemma");
+        let long = format!("{} needle {}", "a ".repeat(100), "b ".repeat(100));
+        let piece = snippet(&long, "needle");
+        assert!(piece.starts_with('…') && piece.ends_with('…'));
+        assert!(piece.contains("needle"));
     }
 }
