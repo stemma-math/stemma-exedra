@@ -3,17 +3,25 @@ The inspection of a Stemma library.
 
 Stemma's workers run it after building a commit of a group's library, with
 the library's own toolchain and dependencies, from the library's folder:
+compiled, as a program built with that toolchain, or else interpreted:
 
-    lake env lean --run Inspect.lean Library.Basic Library.Other …
+    lake env inspect Library Library.Basic Library.Other …
+    lake env lean --run Inspect.lean Library Library.Basic Library.Other …
 
-It imports the modules named, and prints on standard output, as JSON, a
-report on each declaration of the library (not of its dependencies): its
-name, module, kind, pretty-printed type, docstring and place in its file;
-whether it depends on `sorry`, and for a definition, whether its data (not
-only its proofs) does; the axioms it depends on; and the declarations of
-the library it uses. Declarations the compiler makes (recursors, matchers,
-auxiliary lemmas…) are left out, and what they use is counted as used by
-the declaration they belong to.
+The modules named are the library's. It imports them, and prints on
+standard output, as JSON, a report on each declaration of the library (not
+of its dependencies): its name, module, kind, pretty-printed type, docstring
+and place in its file; whether it depends on `sorry`, and for a definition,
+whether its data (not only its proofs) does; the axioms it depends on; and
+the declarations of the library it uses. Declarations the compiler makes
+(recursors, matchers, auxiliary lemmas…) are left out, and what they use is
+counted as used by the declaration they belong to. It also says which of the
+library's modules each module imports.
+
+A module named with a `+` before it, as `+Library.Other`, is one to report
+on: if any is, only those are imported and reported on, so that a worker
+inspects again only the modules a commit changed, and those that import
+them, and keeps what it found of the others.
 
 It uses only Lean itself, so that it runs with whatever version of Lean
 the library uses.
@@ -148,22 +156,27 @@ def inspect (inLibrary : Name → Bool) (module : Name) (info : ConstantInfo) : 
     ("axioms", toJson ((axioms.map toString).qsort (· < ·))),
     ("uses", toJson (sortedNames uses))]
 
-/-- The report on the library made of `modules`, in the environment that
-imports them. -/
-def report (modules : Array Name) : MetaM Json := do
+/-- The report on the modules `reported` of the library made of `modules`,
+in the environment that imports them. -/
+def report (modules reported : Array Name) : MetaM Json := do
   let env ← getEnv
   let moduleNames := env.header.moduleNames
-  let moduleOf (name : Name) : Option Name :=
-    (env.getModuleIdxFor? name).map fun idx => moduleNames[idx.toNat]!
+  let library : NameSet := modules.foldl (·.insert ·) {}
   let inLibrary (name : Name) : Bool :=
-    match moduleOf name with
-    | some m => modules.contains m
+    match env.getModuleIdxFor? name with
+    | some idx => library.contains moduleNames[idx.toNat]!
     | none => false
   let mut found : Array (Name × Name × ConstantInfo) := #[]
-  for (name, info) in env.constants.map₁.toList do
-    let some module := moduleOf name | continue
-    if !modules.contains module || isMachineMade env name then continue
-    found := found.push (module, name, info)
+  let mut imports : Array (String × Json) := #[]
+  for module in reported do
+    let some idx := env.getModuleIdx? module | continue
+    let data := env.header.moduleData[idx.toNat]!
+    let imported := data.imports.filterMap fun i =>
+      if library.contains i.module then some (toString i.module) else none
+    imports := imports.push (toString module, toJson imported)
+    for info in data.constants do
+      if isMachineMade env info.name then continue
+      found := found.push (module, info.name, info)
   found := found.qsort fun (a b : Name × Name × ConstantInfo) =>
     a.1.toString < b.1.toString || (a.1 == b.1 && a.2.1.toString < b.2.1.toString)
   let (declarations, _) ← (found.mapM fun (entry : Name × Name × ConstantInfo) =>
@@ -171,22 +184,27 @@ def report (modules : Array Name) : MetaM Json := do
   return Json.mkObj [
     ("lean", Lean.versionString),
     ("modules", toJson (modules.map toString)),
+    ("reported", toJson (reported.map toString)),
+    ("imports", Json.mkObj imports.toList),
     ("declarations", Json.arr declarations)]
 
 end StemmaInspect
 
 unsafe def main (args : List String) : IO UInt32 := do
   if args.isEmpty then
-    IO.eprintln "usage: lake env lean --run Inspect.lean Module …"
+    IO.eprintln "usage: lake env lean --run Inspect.lean Module +Module …"
     return 2
-  let modules := args.toArray.map String.toName
+  let named := args.toArray.map fun arg => ((arg.dropWhile (· == '+')).toString.toName, arg.startsWith "+")
+  let modules := named.map (·.1)
+  let marked := (named.filter (·.2)).map (·.1)
+  let reported := if marked.isEmpty then modules else marked
   initSearchPath (← findSysroot)
   enableInitializersExecution
-  let env ← importModules (modules.map fun m => { module := m }) {} (loadExts := true)
+  let env ← importModules (reported.map fun m => { module := m }) {} (loadExts := true)
   let context : Core.Context := {
     fileName := "<inspection>"
     fileMap := default
     maxHeartbeats := 0 }
-  let (json, _) ← (StemmaInspect.report modules).run' {} {} |>.toIO context { env }
+  let (json, _) ← (StemmaInspect.report modules reported).run' {} {} |>.toIO context { env }
   IO.println json.compress
   return 0
