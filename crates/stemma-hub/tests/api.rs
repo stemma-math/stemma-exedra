@@ -1095,9 +1095,12 @@ async fn admins_keep_the_agents_of_a_group() {
         .iter()
         .map(|a| a["handle"].as_str().unwrap())
         .collect();
-    assert_eq!(handles, ["claude", "codex", "editor"]);
+    assert_eq!(handles, ["claude", "codex", "editor", "workshop"]);
     assert_eq!(agents[0]["role"], "answer");
     assert_eq!(agents[2]["role"], "editor");
+    assert_eq!(agents[3]["role"], "workshop");
+    assert_eq!(agents[3]["runner"], "opencode");
+    assert_eq!(agents[3]["scope"], "group");
 
     let qwen = json!({"handle": "@Qwen", "display_name": "Qwen", "runner": "api",
                       "model": "qwen/qwen3", "endpoint": "openrouter", "scope": "group"});
@@ -1556,4 +1559,194 @@ async fn editors_are_asked_to_update_papers() {
         jobs[1]["error"],
         "Say which paper @editor should update, as p/its-name"
     );
+}
+
+#[tokio::test]
+async fn the_workshop_takes_tasks_from_conversation() {
+    let hub = TestHub::new().await;
+    let ada = hub.admin_with_group().await;
+    let bob = hub.member(&ada, "bob").await;
+
+    // A message to the workshop hands it a task, for the night: a night
+    // that never comes, so that the test does not depend on the time.
+    let reply = hub
+        .call(
+            &ada,
+            Method::PUT,
+            "/groups/geometry/workshop",
+            Some(json!({"night_from": "03:00", "night_to": "03:00"})),
+        )
+        .await;
+    assert_eq!(reply.status, StatusCode::OK);
+    assert_eq!(reply.json()["night_now"], false);
+    hub.post(
+        &ada,
+        "/groups/geometry/threads",
+        json!({"title": "Gluing", "body": "The charts glue."}),
+    )
+    .await;
+    let reply = hub
+        .post(
+            &ada,
+            "/groups/geometry/threads/1/messages",
+            json!({"body": "@workshop formalize the gluing of t1#1 tonight, with a docstring."}),
+        )
+        .await;
+    assert_eq!(reply.status, StatusCode::CREATED);
+    let tasks = hub.get(&bob, "/groups/geometry/tasks").await.json();
+    assert_eq!(tasks.as_array().unwrap().len(), 1, "{tasks}");
+    let task = &tasks[0];
+    assert_eq!(task["number"], 1);
+    assert_eq!(
+        task["title"],
+        "Formalize the gluing of t1#1 tonight, with a docstring"
+    );
+    assert_eq!(task["state"], "open");
+    assert_eq!(task["schedule"], "night");
+    assert_eq!(task["origin"], "t1#2");
+    assert_eq!(task["requester"]["username"], "ada");
+    assert_eq!(task["progress"], "Waiting for the night, 03:00–03:00 (UTC)");
+    // The thread shows it on its way.
+    let jobs = hub
+        .get(&ada, "/groups/geometry/threads/1/jobs")
+        .await
+        .json();
+    assert_eq!(jobs[0]["kind"], "task_run");
+    assert_eq!(jobs[0]["task"], 1);
+    assert_eq!(jobs[0]["agent_name"], "Workshop");
+
+    // Handed over by a person, naming the message that asks.
+    let reply = hub
+        .post(
+            &bob,
+            "/groups/geometry/tasks",
+            json!({"title": "State the lemma", "instructions": "As in t1#1.", "origin": "t1#1"}),
+        )
+        .await;
+    assert_eq!(reply.status, StatusCode::CREATED, "{:?}", reply.json());
+    let task = reply.json();
+    assert_eq!(task["number"], 2);
+    assert_eq!(task["schedule"], "now");
+    let page = hub.get(&bob, "/groups/geometry/tasks/2").await.json();
+    assert_eq!(page["instructions"], "As in t1#1.");
+    assert_eq!(
+        page["progress"],
+        "Waiting for a group worker with Lean and OpenCode to come online"
+    );
+    assert_eq!(page["log"], "");
+    let reply = hub
+        .post(
+            &bob,
+            "/groups/geometry/tasks",
+            json!({"title": "No origin", "instructions": "Something."}),
+        )
+        .await;
+    assert_eq!(reply.status, StatusCode::UNPROCESSABLE_ENTITY);
+    let reply = hub
+        .post(
+            &bob,
+            "/groups/geometry/tasks",
+            json!({"title": "Far", "instructions": "Something.", "origin": "t1#9"}),
+        )
+        .await;
+    assert_eq!(reply.status, StatusCode::UNPROCESSABLE_ENTITY);
+
+    // A job's token hands tasks over only for an agent answering a thread.
+    let bob_id: i64 = sqlx::query_scalar("SELECT id FROM users WHERE username = 'bob'")
+        .fetch_one(&hub.state.db)
+        .await
+        .unwrap();
+    let job = job_token(&hub, bob_id).await;
+    let reply = hub
+        .post(
+            &job,
+            "/groups/geometry/tasks",
+            json!({"title": "Sneaky", "instructions": "Something.", "origin": "t1#1"}),
+        )
+        .await;
+    assert_eq!(reply.status, StatusCode::FORBIDDEN);
+
+    // References to tasks resolve.
+    let resolved = hub
+        .post(
+            &ada,
+            "/groups/geometry/resolve",
+            json!({"addresses": ["w2", "w9"]}),
+        )
+        .await
+        .json();
+    assert_eq!(resolved[0]["exists"], true);
+    assert_eq!(resolved[0]["title"], "w2: State the lemma");
+    assert_eq!(resolved[0]["path"], "/g/geometry/w/2");
+    assert_eq!(resolved[1]["exists"], false);
+
+    // Only its requester or an admin cancels a task.
+    let reply = hub
+        .call(&bob, Method::DELETE, "/groups/geometry/tasks/1", None)
+        .await;
+    assert_eq!(reply.status, StatusCode::FORBIDDEN);
+    let reply = hub
+        .call(&ada, Method::DELETE, "/groups/geometry/tasks/1", None)
+        .await;
+    assert_eq!(reply.status, StatusCode::NO_CONTENT);
+    let page = hub.get(&ada, "/groups/geometry/tasks/1").await.json();
+    assert_eq!(page["state"], "cancelled");
+    let reply = hub
+        .call(&ada, Method::DELETE, "/groups/geometry/tasks/1", None)
+        .await;
+    assert_eq!(reply.status, StatusCode::CONFLICT);
+    let open = hub
+        .get(&ada, "/groups/geometry/tasks?state=open")
+        .await
+        .json();
+    assert_eq!(open.as_array().unwrap().len(), 1);
+    assert_eq!(open[0]["number"], 2);
+
+    // The night window is the admins'; lending one's worker, anyone's.
+    let settings = hub.get(&bob, "/groups/geometry/workshop").await.json();
+    assert_eq!(settings["night_from"], "03:00");
+    assert_eq!(settings["night_to"], "03:00");
+    assert_eq!(settings["time_zone"], "UTC");
+    assert_eq!(settings["lend"], false);
+    let reply = hub
+        .call(
+            &bob,
+            Method::PUT,
+            "/groups/geometry/workshop",
+            Some(json!({"night_from": "22:00"})),
+        )
+        .await;
+    assert_eq!(reply.status, StatusCode::FORBIDDEN);
+    let reply = hub
+        .call(
+            &bob,
+            Method::PUT,
+            "/groups/geometry/workshop",
+            Some(json!({"lend": true})),
+        )
+        .await;
+    assert_eq!(reply.status, StatusCode::OK);
+    assert_eq!(reply.json()["lend"], true);
+    assert_eq!(reply.json()["lenders"][0]["username"], "bob");
+    let reply = hub
+        .call(
+            &ada,
+            Method::PUT,
+            "/groups/geometry/workshop",
+            Some(json!({"night_from": "22:30", "night_to": "6:00", "time_zone": "Europe/Madrid"})),
+        )
+        .await;
+    assert_eq!(reply.status, StatusCode::OK, "{:?}", reply.json());
+    assert_eq!(reply.json()["night_from"], "22:30");
+    assert_eq!(reply.json()["night_to"], "06:00");
+    assert_eq!(reply.json()["lend"], false);
+    let reply = hub
+        .call(
+            &ada,
+            Method::PUT,
+            "/groups/geometry/workshop",
+            Some(json!({"time_zone": "Mars/Olympus"})),
+        )
+        .await;
+    assert_eq!(reply.status, StatusCode::UNPROCESSABLE_ENTITY);
 }

@@ -2,8 +2,11 @@
 //! `git http-backend`.
 //!
 //! Members clone and push with a personal token as the password (any user
-//! name), or as a bearer token; a job's token only clones. After a push the
-//! hub looks at `main`, and builds its new commit.
+//! name), or as a bearer token; a job's token only clones, unless it is a
+//! task's, which pushes too. After a person's push the hub looks at `main`,
+//! and builds its new commit; after a task's, the task's own build and
+//! inspection of what it pushed become the library's state when the task
+//! ends (see [`crate::workshop`]).
 
 use std::process::Stdio;
 
@@ -84,7 +87,7 @@ async fn handle(
     };
     let query = request.uri().query().unwrap_or_default().to_owned();
     let pushing = path == "git-receive-pack" || query.contains("service=git-receive-pack");
-    if pushing && viewer.job().is_some() {
+    if pushing && viewer.job().is_some_and(|job| !job.can_push) {
         return refused(
             StatusCode::FORBIDDEN,
             "A job's token cannot push to the library",
@@ -207,11 +210,12 @@ async fn backend(
         }
     }
 
-    // After a push, the hub looks at where `main` is.
+    // After a person's push, the hub looks at where `main` is.
     let (state, user) = (state.clone(), viewer.id);
+    let refresh = pushing && viewer.job().is_none();
     tokio::spawn(async move {
         let _ = child.wait().await;
-        if pushing && let Err(error) = library::refresh(&state, group_id, user).await {
+        if refresh && let Err(error) = library::refresh(&state, group_id, user).await {
             tracing::error!(group_id, error = error.message, "could not look at a push");
         }
     });

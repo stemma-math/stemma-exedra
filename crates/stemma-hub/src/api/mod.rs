@@ -10,6 +10,7 @@ mod groups;
 mod jobs;
 mod library;
 pub(crate) mod papers;
+mod tasks;
 pub mod workers;
 
 use axum::Router;
@@ -141,6 +142,18 @@ pub fn router(state: AppState) -> Router {
             get(jobs::of_thread),
         )
         .route("/groups/{group}/jobs/{id}", delete(jobs::cancel))
+        .route(
+            "/groups/{group}/tasks",
+            get(tasks::list).post(tasks::create),
+        )
+        .route(
+            "/groups/{group}/tasks/{number}",
+            get(tasks::get).delete(tasks::cancel),
+        )
+        .route(
+            "/groups/{group}/workshop",
+            get(tasks::settings).put(tasks::update_settings),
+        )
         .route(stemma_core::protocol::WORKER_PATH, get(workers::connect))
         .route(
             "/groups/{group}/attachments",

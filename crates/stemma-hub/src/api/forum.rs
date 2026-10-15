@@ -32,7 +32,7 @@ pub(crate) struct ThreadRow {
     anchor: Option<String>,
     created_at: i64,
     last_activity_at: i64,
-    last_message: i64,
+    pub(crate) last_message: i64,
     #[sqlx(flatten)]
     creator: UserColumns,
 }
@@ -709,7 +709,16 @@ pub async fn resolve(
                     entry.note = found.note;
                     entry.state = found.state;
                 }
-                _ => entry.note = Some("The workshop is not here yet".into()),
+                Address::Task(number) => {
+                    let (exists, title) =
+                        crate::workshop::resolve(&state, group.group_id, *number).await?;
+                    entry.exists = exists;
+                    entry.title = title;
+                    if !exists {
+                        entry.note = Some("There is no such task".into());
+                    }
+                }
+                _ => {}
             },
         }
         resolved.push(entry);

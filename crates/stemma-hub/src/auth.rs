@@ -2,7 +2,8 @@
 //! `Authorization: Bearer` header (or as the password of basic credentials,
 //! as git sends it): a personal token, which can do whatever
 //! its owner can, or a job's token, which reads one group for a job's
-//! requester while the job lasts.
+//! requester while the job lasts, and for a task of the workshop, pushes
+//! to the group's library.
 
 use axum::extract::{FromRequestParts, OptionalFromRequestParts};
 use axum::http::header::{AUTHORIZATION, COOKIE, SET_COOKIE};
@@ -43,12 +44,16 @@ pub enum Scope {
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct JobScope {
+    /// The token's own id, which its job records.
+    pub token_id: i64,
     pub group_id: i64,
     /// The thread it may post in, if it may post.
     pub thread_id: Option<i64>,
     /// The agent its posts are written by.
     pub agent: String,
     pub can_post: bool,
+    /// Whether it pushes to the library, as a task's token does.
+    pub can_push: bool,
 }
 
 impl Viewer {
@@ -101,11 +106,13 @@ impl ViewerRow {
 struct TokenRow {
     #[sqlx(flatten)]
     user: ViewerRow,
+    token_id: i64,
     kind: String,
     group_id: Option<i64>,
     thread_id: Option<i64>,
     agent: Option<String>,
     can_post: bool,
+    can_push: bool,
 }
 
 impl FromRequestParts<AppState> for Viewer {
@@ -135,8 +142,8 @@ async fn authenticate(headers: &HeaderMap, state: &AppState) -> Result<Option<Vi
     if let Some(token) = request_token(headers) {
         let hash = secret::token_hash(&token);
         let row = sqlx::query_as::<_, TokenRow>(
-            "SELECT u.id, u.username, u.display_name, u.hub_admin,
-                    t.kind, t.group_id, t.thread_id, t.agent, t.can_post
+            "SELECT u.id, u.username, u.display_name, u.hub_admin, t.id AS token_id,
+                    t.kind, t.group_id, t.thread_id, t.agent, t.can_post, t.can_push
              FROM api_tokens t JOIN users u ON u.id = t.user_id
              WHERE t.token_hash = ? AND t.revoked_at IS NULL
                AND (t.expires_at IS NULL OR t.expires_at > ?)",
@@ -164,10 +171,12 @@ async fn authenticate(headers: &HeaderMap, state: &AppState) -> Result<Option<Vi
         .await?;
         let scope = match (row.kind.as_str(), row.group_id) {
             ("job", Some(group_id)) => Scope::Job(JobScope {
+                token_id: row.token_id,
                 group_id,
                 thread_id: row.thread_id,
                 agent: row.agent.unwrap_or_else(|| "Agent".into()),
                 can_post: row.can_post,
+                can_push: row.can_push,
             }),
             ("job", None) => return Err(ApiError::internal("a job token without a group")),
             _ => Scope::Full,
@@ -250,6 +259,15 @@ pub async fn create_job_token(
     .await?
     .last_insert_rowid();
     Ok((id, secret))
+}
+
+/// Lets a job's token push to its group's library, as a task's does.
+pub async fn grant_push(db: &sqlx::SqlitePool, token_id: i64) -> Result<(), ApiError> {
+    sqlx::query("UPDATE api_tokens SET can_push = 1 WHERE id = ? AND kind = 'job'")
+        .bind(token_id)
+        .execute(db)
+        .await?;
+    Ok(())
 }
 
 /// The value of a cookie in the request.

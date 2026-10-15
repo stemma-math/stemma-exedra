@@ -253,6 +253,29 @@ pub async fn refresh(state: &AppState, group_id: i64, requester_id: i64) -> ApiR
     Ok(())
 }
 
+/// Drops the builds of the group still waiting for a commit that is not
+/// where `main` is now, as after a task's run put its own build of `main`
+/// in place; then looks at `main`, for `requester_id`.
+pub async fn settle(state: &AppState, group_id: i64, requester_id: i64) -> ApiResult<()> {
+    let head: Option<Option<String>> =
+        sqlx::query_scalar("SELECT head FROM libraries WHERE group_id = ?")
+            .bind(group_id)
+            .fetch_optional(&state.db)
+            .await?;
+    let stale: Vec<i64> = sqlx::query_scalar(
+        "SELECT j.id FROM library_builds b JOIN jobs j ON j.id = b.job_id
+         WHERE b.group_id = ? AND j.state = 'queued' AND b.commit_sha IS NOT ?",
+    )
+    .bind(group_id)
+    .bind(head.flatten())
+    .fetch_all(&state.db)
+    .await?;
+    for job in stale {
+        let _ = jobs::stop(state, job).await;
+    }
+    refresh(state, group_id, requester_id).await
+}
+
 /// Queues a build of `commit`, and drops the builds of the group still
 /// waiting: only the newest commit matters.
 pub async fn queue(
@@ -457,6 +480,52 @@ pub async fn build_finished(
     job_id: i64,
     built: Built,
 ) -> ApiResult<()> {
+    let build_id: i64 =
+        sqlx::query_scalar("SELECT id FROM library_builds WHERE job_id = ? AND group_id = ?")
+            .bind(job_id)
+            .bind(group_id)
+            .fetch_optional(&state.db)
+            .await?
+            .ok_or_else(|| ApiError::internal("a build's job without its build"))?;
+    keep(state, group_id, build_id, built).await
+}
+
+/// Keeps a build that a task's run made of the commit it pushed: when that
+/// commit is where `main` is, the build is the library's, as if the hub had
+/// asked for it.
+pub async fn record_build(
+    state: &AppState,
+    group_id: i64,
+    commit: &str,
+    built: Built,
+) -> ApiResult<()> {
+    if main_commit(&repository(state, group_id)).await.as_deref() != Some(commit) {
+        return Ok(());
+    }
+    let now = db::now();
+    let build_id = sqlx::query(
+        "INSERT INTO library_builds (group_id, commit_sha, created_at) VALUES (?, ?, ?)",
+    )
+    .bind(group_id)
+    .bind(commit)
+    .bind(now)
+    .execute(&state.db)
+    .await?
+    .last_insert_rowid();
+    sqlx::query("UPDATE libraries SET head = ? WHERE group_id = ?")
+        .bind(commit)
+        .bind(group_id)
+        .execute(&state.db)
+        .await?;
+    keep(state, group_id, build_id, built).await?;
+    if let Some(build) = builds(state, group_id, 1).await?.pop() {
+        state.publish(group_id, stemma_core::api::Event::BuildUpdated { build });
+    }
+    Ok(())
+}
+
+/// Stores how a build went: its log, and if it passed, its report.
+async fn keep(state: &AppState, group_id: i64, build_id: i64, built: Built) -> ApiResult<()> {
     let succeeded = built.succeeded && built.report.is_some();
     let error = match (&built.error, succeeded) {
         (Some(error), _) => Some(error.chars().take(2_000).collect::<String>()),
@@ -464,20 +533,18 @@ pub async fn build_finished(
         (None, true) => None,
     };
     let mut tx = state.db.begin().await?;
-    let build_id: i64 = sqlx::query_scalar(
+    sqlx::query(
         "UPDATE library_builds SET succeeded = ?, error = ?, log = ?, lean = ?, finished_at = ?
-         WHERE job_id = ? AND group_id = ? RETURNING id",
+         WHERE id = ?",
     )
     .bind(succeeded)
     .bind(&error)
     .bind(tail(&built.log))
     .bind(built.report.as_ref().map(|r| r.lean.clone()))
     .bind(db::now())
-    .bind(job_id)
-    .bind(group_id)
-    .fetch_optional(&mut *tx)
-    .await?
-    .ok_or_else(|| ApiError::internal("a build's job without its build"))?;
+    .bind(build_id)
+    .execute(&mut *tx)
+    .await?;
     if let (true, Some(report)) = (succeeded, &built.report) {
         store_report(&mut tx, build_id, report).await?;
         // Older reports than the last few are not needed any more.
@@ -502,6 +569,50 @@ pub async fn build_finished(
     }
     tx.commit().await?;
     Ok(())
+}
+
+/// The declarations a report adds, removes or changes (in kind, type or
+/// state) from the library's state, by name.
+pub async fn changed_declarations(
+    state: &AppState,
+    group_id: i64,
+    report: &LibraryReport,
+) -> ApiResult<Vec<String>> {
+    type Seen = (String, String, bool, bool);
+    let before: std::collections::HashMap<String, Seen> =
+        match current_build_id(state, group_id).await? {
+            Some(build) => sqlx::query_as::<_, (String, String, String, bool, bool)>(
+                "SELECT name, kind, type, sorry, data_sorry FROM library_declarations
+                 WHERE build_id = ?",
+            )
+            .bind(build)
+            .fetch_all(&state.db)
+            .await?
+            .into_iter()
+            .map(|(name, kind, type_, sorry, data)| (name, (kind, type_, sorry, data)))
+            .collect(),
+            None => Default::default(),
+        };
+    let mut changed: Vec<String> = report
+        .declarations
+        .iter()
+        .filter(|d| {
+            before.get(&d.name) != Some(&(d.kind.clone(), d.type_.clone(), d.sorry, d.data_sorry))
+        })
+        .map(|d| d.name.clone())
+        .collect();
+    let now: std::collections::HashSet<&str> = report
+        .declarations
+        .iter()
+        .map(|d| d.name.as_str())
+        .collect();
+    let mut removed: Vec<String> = before
+        .into_keys()
+        .filter(|name| !now.contains(name.as_str()))
+        .collect();
+    removed.sort();
+    changed.extend(removed);
+    Ok(changed)
 }
 
 async fn store_report(

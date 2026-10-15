@@ -43,6 +43,7 @@ struct WorkerRow {
     owner_display_name: Option<String>,
     runners: String,
     lean: bool,
+    workshop: bool,
     version: Option<String>,
     created_at: i64,
     last_seen_at: Option<i64>,
@@ -52,7 +53,7 @@ macro_rules! worker_query {
     () => {
         "SELECT w.id, w.name, w.prefix, g.slug AS group_slug,
         g.name AS group_name, w.owner_id, u.username AS owner_username,
-        u.display_name AS owner_display_name, w.runners, w.lean, w.version, w.created_at,
+        u.display_name AS owner_display_name, w.runners, w.lean, w.workshop, w.version, w.created_at,
         w.last_seen_at
          FROM workers w LEFT JOIN groups g ON g.id = w.group_id
               LEFT JOIN users u ON u.id = w.owner_id"
@@ -83,6 +84,7 @@ impl WorkerRow {
             online,
             runners: serde_json::from_str(&self.runners).unwrap_or_default(),
             lean: self.lean,
+            workshop: self.workshop,
             version: self.version.clone(),
             created_at: db::from_millis(self.created_at),
             last_seen_at: self.last_seen_at.map(db::from_millis),
@@ -342,11 +344,13 @@ async fn serve(
         return Ok(());
     }
     sqlx::query(
-        "UPDATE workers SET last_seen_at = ?, runners = ?, lean = ?, version = ? WHERE id = ?",
+        "UPDATE workers SET last_seen_at = ?, runners = ?, lean = ?, workshop = ?, version = ?
+         WHERE id = ?",
     )
     .bind(db::now())
     .bind(serde_json::to_string(&hello.runners)?)
     .bind(hello.lean)
+    .bind(hello.workshop)
     .bind(&hello.version)
     .bind(worker.id)
     .execute(&state.db)
@@ -373,6 +377,7 @@ async fn serve(
             owner_id: worker.owner_id,
             runners: hello.runners,
             lean: hello.lean,
+            workshop: hello.workshop,
             concurrency: hello.concurrency.clamp(1, 64),
             running: HashSet::new(),
             sender,

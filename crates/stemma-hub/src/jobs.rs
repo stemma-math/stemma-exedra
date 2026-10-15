@@ -3,18 +3,23 @@
 //!
 //! A message that mentions an agent (`@claude`), or any message in a chat
 //! with a resident agent, creates a job per agent: an answer, or for an
-//! editor, an update of the paper the message names. A new commit of a
-//! group's library creates a build. A job waits until a worker that can
-//! run it is connected and free:
+//! editor, an update of the paper the message names; for the workshop, a
+//! task (see [`crate::workshop`]). A new commit of a group's library
+//! creates a build. A job waits until a worker that can run it is connected
+//! and free:
 //!
 //! - an agent of personal scope runs on a worker of the person who asked;
 //! - an agent of group scope, on a worker of the group with its runner;
-//! - a build, on a worker of the group with Lean, one at a time per group.
+//! - a build, on a worker of the group with Lean, one at a time per group;
+//! - a task, on a worker of the group that offers the workshop, with Lean
+//!   and the workshop agent's runner, or during the group's night window on
+//!   a member's worker its owner lends; one at a time per group, and those
+//!   asked for the night only in the night window.
 //!
 //! An answer is posted in the thread as a message by the agent, for the
 //! person who asked; an editor's revision is stored as the paper's next,
 //! and a message in the thread says so; a build's report becomes the
-//! library's state.
+//! library's state; a task's run is reported in its thread.
 //!
 //! Jobs live in the database, so they survive the hub's restarts; a job
 //! whose worker goes away is queued again, up to [`MAX_ATTEMPTS`] times.
@@ -24,7 +29,7 @@ use std::collections::{HashMap, HashSet};
 use sqlx::FromRow;
 use stemma_core::api::{
     AgentProfile, AgentRole, AgentScope, Event, Job, JobKind, JobState, Message, Thread,
-    ThreadKind, User,
+    ThreadKind, User, runners,
 };
 use stemma_core::protocol::{
     Conversation, GroupRef, HubMessage, JobSpec, Outcome, PaperSpec, PaperUpdate, RelatedThread,
@@ -41,6 +46,7 @@ use crate::db;
 use crate::error::{ApiError, ApiResult};
 use crate::library;
 use crate::state::AppState;
+use crate::workshop::{self, Night};
 
 /// How many times a job is handed to a worker before it fails.
 pub const MAX_ATTEMPTS: i64 = 3;
@@ -48,7 +54,7 @@ pub const MAX_ATTEMPTS: i64 = 3;
 /// How long a job's token lasts, in milliseconds.
 const JOB_TOKEN_MILLIS: i64 = 2 * 60 * 60 * 1000;
 
-/// How long a build's token lasts: builds can be long.
+/// How long a build's or a task's token lasts: they can be long.
 const BUILD_TOKEN_MILLIS: i64 = 12 * 60 * 60 * 1000;
 
 /// About how many characters of a thread an agent is given.
@@ -69,6 +75,8 @@ pub const LEAN: &str = "lean";
 #[derive(Default)]
 pub struct Workers {
     connected: HashMap<i64, Connected>,
+    /// Each group's night, as the last dispatch saw it.
+    pub nights: HashMap<i64, Night>,
 }
 
 /// A connected worker.
@@ -80,6 +88,8 @@ pub struct Connected {
     pub owner_id: Option<i64>,
     pub runners: Vec<String>,
     pub lean: bool,
+    /// Whether it works on the workshop's tasks.
+    pub workshop: bool,
     pub concurrency: u32,
     pub running: HashSet<i64>,
     pub sender: mpsc::UnboundedSender<HubMessage>,
@@ -90,9 +100,11 @@ impl Workers {
         self.connected.contains_key(&worker_id)
     }
 
-    fn can_run(worker: &Connected, job: &JobRow) -> bool {
-        if job.kind() == JobKind::LibraryBuild {
-            return worker.lean && worker.group_id == Some(job.group_id);
+    fn can_run(&self, worker: &Connected, job: &JobRow) -> bool {
+        match job.kind() {
+            JobKind::LibraryBuild => return worker.lean && worker.group_id == Some(job.group_id),
+            JobKind::TaskRun => return self.task_runner(worker, job).is_some(),
+            _ => {}
         }
         worker.runners.contains(&job.runner)
             && match AgentScope::parse(&job.scope) {
@@ -102,18 +114,67 @@ impl Workers {
             }
     }
 
+    /// The runner a worker would work on a task with, if it can now: a
+    /// group worker, with the workshop agent's runner; a member's worker
+    /// lent to the group, at night, with that runner or another of the
+    /// workshop's it has. Tasks asked for the night wait for it.
+    fn task_runner(&self, worker: &Connected, job: &JobRow) -> Option<String> {
+        if !(worker.lean && worker.workshop) {
+            return None;
+        }
+        let night = self.nights.get(&job.group_id);
+        let night_now = night.is_some_and(|n| n.now);
+        if job.task_schedule.as_deref() == Some("night") && !night_now {
+            return None;
+        }
+        let offers = |runner: &str| worker.runners.iter().any(|r| r == runner);
+        if worker.group_id == Some(job.group_id) {
+            return offers(&job.runner).then(|| job.runner.clone());
+        }
+        let lent = worker
+            .owner_id
+            .is_some_and(|owner| night.is_some_and(|n| n.now && n.lenders.contains(&owner)));
+        if !lent {
+            return None;
+        }
+        if offers(&job.runner) {
+            return Some(job.runner.clone());
+        }
+        runners::WORKSHOP
+            .iter()
+            .find(|runner| offers(runner))
+            .map(|runner| (*runner).to_owned())
+    }
+
     /// A connected worker that can run `job` and has room for it.
     fn free_for(&self, job: &JobRow) -> Option<i64> {
         self.connected
             .iter()
-            .filter(|(_, w)| Self::can_run(w, job) && (w.running.len() as u32) < w.concurrency)
+            .filter(|(_, w)| self.can_run(w, job) && (w.running.len() as u32) < w.concurrency)
             .min_by_key(|(_, w)| w.running.len())
             .map(|(id, _)| *id)
     }
 
     /// Why a queued job waits.
     fn note(&self, job: &JobRow) -> String {
-        let any = self.connected.values().any(|w| Self::can_run(w, job));
+        let any = self.connected.values().any(|w| self.can_run(w, job));
+        if job.kind() == JobKind::TaskRun {
+            let night = self.nights.get(&job.group_id);
+            if job.task_schedule.as_deref() == Some("night") && !night.is_some_and(|n| n.now) {
+                return match night {
+                    Some(night) => format!("Waiting for the night, {}", night.window),
+                    None => "Waiting for the night".into(),
+                };
+            }
+            return if any {
+                "Waiting for the workshop to be free".into()
+            } else {
+                format!(
+                    "Waiting for a group worker with Lean and {} to come online",
+                    runner_name(&job.runner)
+                )
+            };
+        }
         if job.kind() == JobKind::LibraryBuild {
             return if any {
                 "Waiting for a free worker with Lean".into()
@@ -139,6 +200,7 @@ pub fn runner_name(runner: &str) -> &str {
         "claude-code" => "Claude Code",
         "codex" => "Codex",
         "api" => "an API model",
+        "opencode" => "OpenCode",
         other => other,
     }
 }
@@ -207,7 +269,8 @@ pub async fn find_profile(
 }
 
 /// The agents every group starts with: each person's own Claude and
-/// Codex, and an editor of papers, with each person's own Claude.
+/// Codex, an editor of papers, with each person's own Claude, and the
+/// workshop, on the group's workers, with OpenCode.
 pub fn default_profiles() -> Vec<AgentProfile> {
     let personal = |handle: &str, name: &str, runner: &str, role: AgentRole| AgentProfile {
         handle: handle.into(),
@@ -223,6 +286,15 @@ pub fn default_profiles() -> Vec<AgentProfile> {
         personal("claude", "Claude", "claude-code", AgentRole::Answer),
         personal("codex", "Codex", "codex", AgentRole::Answer),
         personal("editor", "Editor", "claude-code", AgentRole::Editor),
+        AgentProfile {
+            scope: AgentScope::Group,
+            ..personal(
+                "workshop",
+                "Workshop",
+                runners::OPENCODE,
+                AgentRole::Workshop,
+            )
+        },
     ]
 }
 
@@ -254,6 +326,9 @@ struct JobRow {
     base_revision: Option<i64>,
     created_at: i64,
     updated_at: i64,
+    /// For a task's run, the task's number and schedule.
+    task_number: Option<i64>,
+    task_schedule: Option<String>,
 }
 
 macro_rules! job_query {
@@ -261,9 +336,11 @@ macro_rules! job_query {
         "SELECT j.id, j.group_id, j.kind, j.thread_id, t.number AS thread_number,
         j.trigger_message, j.requester_id, u.username, u.display_name, j.agent_handle, j.agent,
         j.runner, j.scope, j.state, j.worker_id, j.token_id, j.attempts, j.progress, j.error,
-        j.answer, j.paper_slug, j.base_revision, j.created_at, j.updated_at
+        j.answer, j.paper_slug, j.base_revision, j.created_at, j.updated_at,
+        k.number AS task_number, k.schedule AS task_schedule
          FROM jobs j LEFT JOIN threads t ON t.id = j.thread_id
-              JOIN users u ON u.id = j.requester_id"
+              JOIN users u ON u.id = j.requester_id
+              LEFT JOIN tasks k ON k.job_id = j.id"
     };
 }
 
@@ -311,6 +388,7 @@ impl JobRow {
             thread: self.thread_number.map(|n| n as u32),
             trigger: self.trigger_message.map(|n| n as u32),
             paper: self.paper_slug.clone(),
+            task: self.task_number.map(|n| n as u32),
             agent,
             agent_name,
             requester: self.requester(),
@@ -342,6 +420,9 @@ async fn publish(state: &AppState, workers: &Workers, job_id: i64) -> ApiResult<
         && let Some(build) = library::build_of_job(state, job_id, job.note.clone()).await?
     {
         state.publish(row.group_id, Event::BuildUpdated { build });
+    }
+    if row.kind() == JobKind::TaskRun {
+        workshop::publish_of_job(state, job_id, job.note.clone()).await?;
     }
     state.publish(row.group_id, Event::JobUpdated { job });
     Ok(())
@@ -425,8 +506,28 @@ pub async fn summon(
         let Some(profile) = find_profile(state, group.group_id, &handle).await? else {
             continue;
         };
+        if profile.role == AgentRole::Workshop {
+            let (title, schedule) = workshop::from_message(&message.body, &profile.handle);
+            let task = workshop::NewTask {
+                title,
+                instructions: message.body.clone(),
+                thread_id,
+                origin_message: message.number,
+                requester_id: message.author.id,
+                agent: None,
+                schedule,
+            };
+            match workshop::create(state, group, task).await {
+                Ok(_) => created = true,
+                Err(error) if error.status.is_client_error() => {
+                    tracing::warn!(error = error.message, "could not hand a task over");
+                }
+                Err(error) => return Err(error),
+            }
+            continue;
+        }
         let (kind, paper, error) = match profile.role {
-            AgentRole::Answer => (JobKind::Reply, None, None),
+            AgentRole::Answer | AgentRole::Workshop => (JobKind::Reply, None, None),
             AgentRole::Editor => match paper_named(&message.body, thread.anchor.as_ref()) {
                 Some(slug) => (JobKind::PaperUpdate, Some(slug), None),
                 None => (
@@ -439,30 +540,18 @@ pub async fn summon(
                 ),
             },
         };
-        let now = db::now();
-        let job_id = sqlx::query(
-            "INSERT INTO jobs (group_id, thread_id, kind, trigger_message, requester_id,
-                               agent_handle, agent, runner, scope, state, error, paper_slug,
-                               created_at, updated_at)
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        let job_id = insert_agent_job(
+            state,
+            group.group_id,
+            thread_id,
+            message.number,
+            message.author.id,
+            &profile,
+            kind,
+            paper.as_deref(),
+            error.as_deref(),
         )
-        .bind(group.group_id)
-        .bind(thread_id)
-        .bind(kind.as_str())
-        .bind(message.number)
-        .bind(message.author.id)
-        .bind(&profile.handle)
-        .bind(serde_json::to_string(&profile).map_err(ApiError::internal)?)
-        .bind(&profile.runner)
-        .bind(profile.scope.as_str())
-        .bind(if error.is_some() { "failed" } else { "queued" })
-        .bind(&error)
-        .bind(&paper)
-        .bind(now)
-        .bind(now)
-        .execute(&state.db)
-        .await?
-        .last_insert_rowid();
+        .await?;
         if error.is_some() {
             let workers = state.workers.lock().await;
             publish(state, &workers, job_id).await?;
@@ -474,6 +563,72 @@ pub async fn summon(
         dispatch(state).await?;
     }
     Ok(())
+}
+
+/// Records an agent's job for a message: queued, or failed with `error`.
+#[allow(clippy::too_many_arguments)]
+async fn insert_agent_job(
+    state: &AppState,
+    group_id: i64,
+    thread_id: i64,
+    trigger: u32,
+    requester_id: i64,
+    profile: &AgentProfile,
+    kind: JobKind,
+    paper: Option<&str>,
+    error: Option<&str>,
+) -> ApiResult<i64> {
+    let now = db::now();
+    Ok(sqlx::query(
+        "INSERT INTO jobs (group_id, thread_id, kind, trigger_message, requester_id,
+                           agent_handle, agent, runner, scope, state, error, paper_slug,
+                           created_at, updated_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+    )
+    .bind(group_id)
+    .bind(thread_id)
+    .bind(kind.as_str())
+    .bind(trigger)
+    .bind(requester_id)
+    .bind(&profile.handle)
+    .bind(serde_json::to_string(profile).map_err(ApiError::internal)?)
+    .bind(&profile.runner)
+    .bind(profile.scope.as_str())
+    .bind(if error.is_some() { "failed" } else { "queued" })
+    .bind(error)
+    .bind(paper)
+    .bind(now)
+    .bind(now)
+    .execute(&state.db)
+    .await?
+    .last_insert_rowid())
+}
+
+/// Queues an agent's job for a message, as when the workshop asks the
+/// editor to update a paper; the caller then dispatches.
+#[allow(clippy::too_many_arguments)]
+pub async fn queue_agent_job(
+    state: &AppState,
+    group_id: i64,
+    thread_id: i64,
+    trigger: u32,
+    requester_id: i64,
+    profile: &AgentProfile,
+    kind: JobKind,
+    paper: Option<&str>,
+) -> ApiResult<i64> {
+    insert_agent_job(
+        state,
+        group_id,
+        thread_id,
+        trigger,
+        requester_id,
+        profile,
+        kind,
+        paper,
+        None,
+    )
+    .await
 }
 
 /// Queues a build of a group's library, for `requester_id`: whoever made
@@ -500,6 +655,7 @@ pub async fn queue_build(state: &AppState, group_id: i64, requester_id: i64) -> 
 /// and tells everyone how the queued ones are.
 pub async fn dispatch(state: &AppState) -> ApiResult<()> {
     let mut workers = state.workers.lock().await;
+    workers.nights = workshop::nights(state).await?;
     let queued: Vec<JobRow> = sqlx::query_as(concat!(
         job_query!(),
         " WHERE j.state = 'queued' ORDER BY j.id LIMIT 500"
@@ -514,18 +670,33 @@ pub async fn dispatch(state: &AppState) -> ApiResult<()> {
     .await?
     .into_iter()
     .collect();
+    // And a group's tasks, one at a time.
+    let mut tasking: HashSet<i64> = sqlx::query_scalar(
+        "SELECT group_id FROM jobs WHERE kind = 'task_run' AND state = 'running'",
+    )
+    .fetch_all(&state.db)
+    .await?
+    .into_iter()
+    .collect();
     for job in queued {
         let is_build = job.kind() == JobKind::LibraryBuild;
-        let worker_id = if is_build && building.contains(&job.group_id) {
-            None
-        } else {
-            workers.free_for(&job)
-        };
+        let is_task = job.kind() == JobKind::TaskRun;
+        let busy = (is_build && building.contains(&job.group_id))
+            || (is_task && tasking.contains(&job.group_id));
+        let worker_id = if busy { None } else { workers.free_for(&job) };
         let Some(worker_id) = worker_id else {
             publish(state, &workers, job.id).await?;
             continue;
         };
-        match start(state, &job, worker_id).await {
+        let runner = if is_task {
+            workers
+                .connected
+                .get(&worker_id)
+                .and_then(|worker| workers.task_runner(worker, &job))
+        } else {
+            None
+        };
+        match start(state, &job, worker_id, runner).await {
             Ok(spec) => {
                 let worker = workers
                     .connected
@@ -535,6 +706,9 @@ pub async fn dispatch(state: &AppState) -> ApiResult<()> {
                 let _ = worker.sender.send(HubMessage::Job(Box::new(spec)));
                 if is_build {
                     building.insert(job.group_id);
+                }
+                if is_task {
+                    tasking.insert(job.group_id);
                 }
             }
             Err(error) => {
@@ -548,10 +722,16 @@ pub async fn dispatch(state: &AppState) -> ApiResult<()> {
 }
 
 /// Marks a job as running on a worker, with a new token, and returns what
-/// the worker needs.
-async fn start(state: &AppState, job: &JobRow, worker_id: i64) -> ApiResult<JobSpec> {
+/// the worker needs; a task's run, with `runner`.
+async fn start(
+    state: &AppState,
+    job: &JobRow,
+    worker_id: i64,
+    runner: Option<String>,
+) -> ApiResult<JobSpec> {
     let group = Membership::of_group(state, job.group_id).await?;
     let now = db::now();
+    let mut task_profile = None;
     let (work, base_revision) = match job.kind() {
         JobKind::Reply => (Work::Reply(conversation(state, &group, job).await?), None),
         JobKind::PaperUpdate => {
@@ -563,9 +743,25 @@ async fn start(state: &AppState, job: &JobRow, worker_id: i64) -> ApiResult<JobS
             Work::LibraryBuild(library::work_for(state, &group, job.id).await?),
             None,
         ),
+        JobKind::TaskRun => {
+            // The worker's runner, if it is not the agent's: then the
+            // agent's model is not for it.
+            let mut profile = job.profile()?;
+            let runner = runner.unwrap_or_else(|| profile.runner.clone());
+            if runner != profile.runner {
+                profile.runner = runner;
+                profile.model = None;
+            }
+            let mut conversation = conversation(state, &group, job).await?;
+            conversation.agent = profile.clone();
+            let run = workshop::work_for(state, &group, job.id, conversation).await?;
+            task_profile = Some(profile);
+            (Work::TaskRun(Box::new(run)), None)
+        }
     };
     let (agent, lasts) = match job.kind() {
         JobKind::LibraryBuild => ("Lean".to_owned(), BUILD_TOKEN_MILLIS),
+        JobKind::TaskRun => (job.profile()?.display_name, BUILD_TOKEN_MILLIS),
         _ => (job.profile()?.display_name, JOB_TOKEN_MILLIS),
     };
     let (token_id, token) = auth::create_job_token(
@@ -577,6 +773,9 @@ async fn start(state: &AppState, job: &JobRow, worker_id: i64) -> ApiResult<JobS
         now + lasts,
     )
     .await?;
+    if task_profile.is_some() {
+        auth::grant_push(&state.db, token_id).await?;
+    }
     sqlx::query(
         "UPDATE jobs SET state = 'running', worker_id = ?, token_id = ?, attempts = attempts + 1,
                          progress = NULL, base_revision = ?, updated_at = ?
@@ -589,6 +788,9 @@ async fn start(state: &AppState, job: &JobRow, worker_id: i64) -> ApiResult<JobS
     .bind(job.id)
     .execute(&state.db)
     .await?;
+    if let Some(profile) = &task_profile {
+        workshop::started(state, job.id, &profile.runner, profile.model.as_deref()).await?;
+    }
     Ok(JobSpec {
         id: job.id,
         group: GroupRef {
@@ -701,7 +903,8 @@ async fn fail(state: &AppState, job_id: i64, error: &str) -> ApiResult<()> {
     .bind(job_id)
     .fetch_optional(&state.db)
     .await?;
-    revoke_token(state, token.flatten()).await
+    revoke_token(state, token.flatten()).await?;
+    workshop::job_ended(state, job_id, false, Some(error)).await
 }
 
 /// Marks a job done, with the message that tells of it, if any.
@@ -771,6 +974,11 @@ pub async fn finished(
             (JobKind::LibraryBuild, Outcome::Built(built)) => {
                 library::build_finished(state, job.group_id, job_id, *built).await?;
                 done(state, &job, None).await?;
+                None
+            }
+            (JobKind::TaskRun, Outcome::Task(outcome)) => {
+                let number = workshop::finished(state, job_id, *outcome).await?;
+                done(state, &job, Some(number)).await?;
                 None
             }
             _ => Some("The worker answered with something else than was asked".into()),
@@ -937,6 +1145,9 @@ async fn requeue(state: &AppState, worker_id: i64, jobs: HashSet<i64>) -> ApiRes
             .bind(job_id)
             .execute(&state.db)
             .await?;
+            if job.kind() == JobKind::TaskRun {
+                workshop::requeued(state, job_id).await?;
+            }
         }
     }
     Ok(())
@@ -955,6 +1166,9 @@ pub async fn recover(state: &AppState) -> anyhow::Result<()> {
             .await
             .map_err(|e| anyhow::anyhow!(e.message))?;
     }
+    sqlx::query("UPDATE tasks SET state = 'open' WHERE state = 'running'")
+        .execute(&state.db)
+        .await?;
     Ok(())
 }
 
@@ -999,6 +1213,7 @@ pub async fn stop(state: &AppState, job_id: i64) -> ApiResult<()> {
     .execute(&state.db)
     .await?;
     revoke_token(state, job.token_id).await?;
+    workshop::job_ended(state, job_id, true, None).await?;
     publish(state, &workers, job_id).await?;
     drop(workers);
     dispatch(state).await
