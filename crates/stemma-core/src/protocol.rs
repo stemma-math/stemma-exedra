@@ -13,10 +13,12 @@
 
 use serde::{Deserialize, Serialize};
 
-use crate::api::{AgentProfile, Message, ThreadKind, User};
+use crate::address::Address;
+pub use crate::api::JobKind;
+use crate::api::{AgentProfile, LibraryReport, Message, ThreadKind, User};
 
 /// The version of this protocol. A hub refuses workers that speak another.
-pub const PROTOCOL_VERSION: u32 = 1;
+pub const PROTOCOL_VERSION: u32 = 2;
 
 /// The path of the workers' WebSocket, under the API's prefix.
 pub const WORKER_PATH: &str = "/worker";
@@ -40,7 +42,7 @@ pub struct Hello {
     pub version: String,
     /// The runners it can run, such as `claude-code` or `api`.
     pub runners: Vec<String>,
-    /// Whether it has Lean (elan), for library builds.
+    /// Whether it has Lean (elan or lake), for library builds.
     pub lean: bool,
     /// How many jobs it runs at once.
     pub concurrency: u32,
@@ -53,9 +55,30 @@ pub enum Outcome {
     Answer {
         body: String,
     },
+    /// An editor's new revision of a paper, for the hub to store.
+    Paper {
+        title: String,
+        body: String,
+        reason: String,
+    },
+    /// A build of the library, whether it passed or not.
+    Built(Box<Built>),
     Failed {
         error: String,
     },
+}
+
+/// How a build of the library went.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct Built {
+    /// Whether `lake build` passed and the library could be inspected.
+    pub succeeded: bool,
+    /// Why not, in a line, if it did not.
+    pub error: Option<String>,
+    /// What the build wrote, trimmed to its end when long.
+    pub log: String,
+    /// What the inspection found, if it ran.
+    pub report: Option<LibraryReport>,
 }
 
 /// From the hub to a worker.
@@ -92,31 +115,103 @@ pub enum WorkerOwner {
     Member { user: User },
 }
 
-/// What a job is for.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum JobKind {
-    /// Answer a message that summoned the agent, or a message in its chat.
-    Reply,
-}
-
 /// A job, with what its runner needs.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct JobSpec {
     pub id: i64,
-    pub kind: JobKind,
-    pub agent: AgentProfile,
     pub group: GroupRef,
-    pub thread: ThreadRef,
-    /// The number of the message to answer.
-    pub trigger: u32,
-    /// Who asked: the answer is theirs, written by the agent.
-    pub requester: User,
-    /// The thread up to the trigger, trimmed when long.
-    pub context: Vec<ContextItem>,
     /// A token for the hub's API while the job lasts, scoped to its group;
     /// it reads, and does not post.
     pub token: String,
+    pub work: Work,
+}
+
+/// What a job is to do.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum Work {
+    /// Answer a message, with [`Outcome::Answer`].
+    Reply(Conversation),
+    /// Update a paper, with [`Outcome::Paper`].
+    PaperUpdate(PaperUpdate),
+    /// Build a commit of the library and inspect it, with
+    /// [`Outcome::Built`].
+    LibraryBuild(LibraryBuild),
+}
+
+impl JobSpec {
+    pub fn kind(&self) -> JobKind {
+        match self.work {
+            Work::Reply(_) => JobKind::Reply,
+            Work::PaperUpdate(_) => JobKind::PaperUpdate,
+            Work::LibraryBuild(_) => JobKind::LibraryBuild,
+        }
+    }
+
+    /// The conversation an agent's job comes from.
+    pub fn conversation(&self) -> Option<&Conversation> {
+        match &self.work {
+            Work::Reply(conversation) => Some(conversation),
+            Work::PaperUpdate(update) => Some(&update.conversation),
+            Work::LibraryBuild(_) => None,
+        }
+    }
+}
+
+/// A message that asks an agent for something, in its thread.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct Conversation {
+    pub agent: AgentProfile,
+    pub thread: ThreadRef,
+    /// The number of the message that asks.
+    pub trigger: u32,
+    /// Who asked: what the agent does is theirs, written by the agent.
+    pub requester: User,
+    /// The thread up to the trigger, trimmed when long.
+    pub context: Vec<ContextItem>,
+}
+
+/// An editor's job: a paper to update from the conversation that asked,
+/// and the threads about the paper.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct PaperUpdate {
+    pub conversation: Conversation,
+    pub paper: PaperSpec,
+    /// Threads anchored to the paper, or that reference it, trimmed.
+    pub related: Vec<RelatedThread>,
+}
+
+/// A paper as an editor gets it.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct PaperSpec {
+    pub slug: String,
+    /// Its title; none if the paper is new.
+    pub title: Option<String>,
+    /// Its current revision; 0 if the paper is new.
+    pub revision: u32,
+    pub body: String,
+}
+
+/// A thread about a paper, as an editor gets it.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct RelatedThread {
+    pub thread: ThreadRef,
+    /// The section it is anchored to, if it is.
+    pub anchor: Option<Address>,
+    /// Its messages, trimmed to its end when long.
+    pub context: Vec<ContextItem>,
+}
+
+/// A commit of the library to build.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct LibraryBuild {
+    /// The build's number on the hub.
+    pub build: i64,
+    /// Where to fetch the library from, relative to the hub:
+    /// `/git/geometry.git`, with the job's token.
+    pub repository: String,
+    /// The commit, in full.
+    pub commit: String,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]

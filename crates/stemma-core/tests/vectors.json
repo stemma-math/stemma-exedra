@@ -1,5 +1,5 @@
 {
-  "comment": "Addresses and references, shared by the Rust and web parsers. Each valid address maps to its canonical spelling.",
+  "comment": "Addresses, references and the slugs of a paper's sections, shared by the Rust and web parsers. Each valid address maps to its canonical spelling.",
   "valid": {
     "t1": "t1",
     "t12": "t12",
@@ -60,5 +60,15 @@
     { "text": "[[t1] [t2]] [[t3", "found": [] },
     { "text": "[[[t1]]]", "found": ["t1"] },
     { "text": "[[t1\n]]", "found": [] }
+  ],
+  "sections": [
+    {
+      "text": "Intro.\n\n# Setting\n\n## The map $f$ is *proper*\n\n```\n# not a heading\n```\n\n## Théorème ##\n\n#hashtag\n\n## Proof\n\n### Proof\n\n# ∀\n",
+      "slugs": ["setting", "the-map-f-is-proper", "theoreme", "proof", "proof-2", "section"]
+    },
+    {
+      "text": "    # indented code\n~~~\n# fenced\n~~~\n####### seven\n###### Six, 6 ######\n",
+      "slugs": ["six-6"]
+    }
   ]
 }

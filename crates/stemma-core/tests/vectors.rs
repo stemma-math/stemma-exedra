@@ -1,4 +1,4 @@
-//! The vectors the web app's parser is tested against too.
+//! The vectors the web app's parsers are tested against too.
 
 use std::collections::BTreeMap;
 
@@ -10,6 +10,13 @@ struct Vectors {
     valid: BTreeMap<String, String>,
     invalid: Vec<String>,
     references: Vec<ReferenceCase>,
+    sections: Vec<SectionCase>,
+}
+
+#[derive(Deserialize)]
+struct SectionCase {
+    text: String,
+    slugs: Vec<String>,
 }
 
 #[derive(Deserialize)]
@@ -47,5 +54,16 @@ fn references_are_found() {
     for case in vectors().references {
         let found: Vec<&str> = references(&case.text).iter().map(|r| r.raw).collect();
         assert_eq!(found, case.found, "in {:?}", case.text);
+    }
+}
+
+#[test]
+fn sections_have_their_slugs() {
+    for case in vectors().sections {
+        let slugs: Vec<String> = stemma_core::paper::sections(&case.text)
+            .into_iter()
+            .map(|s| s.slug)
+            .collect();
+        assert_eq!(slugs, case.slugs, "in {:?}", case.text);
     }
 }

@@ -362,6 +362,9 @@ pub struct Resolved {
     pub title: Option<String>,
     /// Why it cannot be shown, when it cannot.
     pub note: Option<String>,
+    /// For a declaration, its state in the library.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub state: Option<DeclarationState>,
 }
 
 // ── Search ────────────────────────────────────────────────────────────
@@ -378,6 +381,283 @@ pub struct SearchHit {
     pub snippet: String,
     #[serde(with = "time::serde::rfc3339")]
     pub created_at: OffsetDateTime,
+}
+
+// ── Working papers ────────────────────────────────────────────────────
+
+/// A working paper: the readable account of a line of work.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct Paper {
+    /// The `compactification` of `p/compactification`.
+    pub slug: String,
+    pub title: String,
+    /// Its current revision, from 1.
+    pub revision: u32,
+    pub created_by: User,
+    #[serde(with = "time::serde::rfc3339")]
+    pub created_at: OffsetDateTime,
+    /// Who wrote the current revision, and the agent that wrote it for them.
+    pub updated_by: User,
+    pub updated_agent: Option<String>,
+    #[serde(with = "time::serde::rfc3339")]
+    pub updated_at: OffsetDateTime,
+    /// The revision the person asking read last; none if never.
+    pub last_read: Option<u32>,
+}
+
+/// A revision of a paper: who wrote it, and why.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct Revision {
+    pub number: u32,
+    pub title: String,
+    pub author: User,
+    /// The agent that wrote it for its author, if one did.
+    pub agent: Option<String>,
+    pub reason: String,
+    #[serde(with = "time::serde::rfc3339")]
+    pub created_at: OffsetDateTime,
+}
+
+/// A revision with its text.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct RevisionText {
+    #[serde(flatten)]
+    pub revision: Revision,
+    pub body: String,
+}
+
+/// A section of a paper: a heading, addressable as `p/slug#section`.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct SectionInfo {
+    pub slug: String,
+    pub title: String,
+    pub level: u8,
+}
+
+/// A paper as someone opens it.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct PaperPage {
+    pub paper: Paper,
+    /// Markdown, with `$…$` math, `[[…]]` references and callouts.
+    pub body: String,
+    pub sections: Vec<SectionInfo>,
+    /// The revisions after the one the person read last, newest first:
+    /// empty if they are up to date, or never read it.
+    pub since_read: Vec<Revision>,
+    /// The text as they read it last, if it changed since.
+    pub read_body: Option<String>,
+    /// The threads anchored to the paper or one of its sections.
+    pub threads: Vec<Thread>,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct CreatePaper {
+    pub slug: String,
+    pub title: String,
+    #[serde(default)]
+    pub body: String,
+    /// Why; "Started the paper" if absent.
+    pub reason: Option<String>,
+    /// The agent writing it for the person whose token asks, as for
+    /// messages.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub agent: Option<String>,
+}
+
+/// A new revision of a paper, written over `base_revision`: if the paper
+/// has moved past it, the edit is refused, and should be made again over
+/// the newer text.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct EditPaper {
+    /// A new title, if it changes.
+    pub title: Option<String>,
+    pub body: String,
+    pub reason: String,
+    pub base_revision: u32,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub agent: Option<String>,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct MarkRead {
+    pub revision: u32,
+}
+
+// ── The library ───────────────────────────────────────────────────────
+
+/// Where a declaration is in its module's file, from line 1 and column 0.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SourceRange {
+    pub start_line: u32,
+    pub start_column: u32,
+    pub end_line: u32,
+    pub end_column: u32,
+}
+
+/// A declaration of the library, as the inspection reports it.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Declaration {
+    pub name: String,
+    pub module: String,
+    /// `theorem`, `definition`, `instance`, `axiom`, `opaque`,
+    /// `inductive`, `structure`, `class`, `constructor`…
+    pub kind: String,
+    /// Its type, pretty-printed.
+    #[serde(rename = "type")]
+    pub type_: String,
+    pub doc: Option<String>,
+    pub range: Option<SourceRange>,
+    /// Whether it depends on `sorry`, itself or through what it uses.
+    pub sorry: bool,
+    /// For a definition, whether its data (not only its proofs) does.
+    #[serde(default)]
+    pub data_sorry: bool,
+    /// The axioms it depends on, `sorryAx` included.
+    pub axioms: Vec<String>,
+    /// The declarations of the library it uses.
+    pub uses: Vec<String>,
+}
+
+/// What the inspection of a commit of the library reports.
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
+pub struct LibraryReport {
+    /// Lean's version, as it ran.
+    pub lean: String,
+    /// The library's modules.
+    pub modules: Vec<String>,
+    pub declarations: Vec<Declaration>,
+}
+
+/// The state of a declaration, as shown where it is referenced.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum DeclarationState {
+    /// Checked, without `sorry`: proved, for a theorem; defined, otherwise.
+    Proved,
+    /// It depends on `sorry`.
+    Sorry,
+    /// The library has no such declaration.
+    Missing,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum BuildState {
+    Queued,
+    Running,
+    Succeeded,
+    Failed,
+    /// A newer commit came before it ran.
+    Cancelled,
+}
+
+impl BuildState {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            BuildState::Queued => "queued",
+            BuildState::Running => "running",
+            BuildState::Succeeded => "succeeded",
+            BuildState::Failed => "failed",
+            BuildState::Cancelled => "cancelled",
+        }
+    }
+
+    pub fn parse(s: &str) -> Option<BuildState> {
+        match s {
+            "queued" => Some(BuildState::Queued),
+            "running" => Some(BuildState::Running),
+            "succeeded" => Some(BuildState::Succeeded),
+            "failed" => Some(BuildState::Failed),
+            "cancelled" => Some(BuildState::Cancelled),
+            _ => None,
+        }
+    }
+}
+
+/// A build of a commit of the library, with its inspection.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct Build {
+    pub id: i64,
+    /// The commit, in full.
+    pub commit: String,
+    pub state: BuildState,
+    /// What it is doing, while it runs; why it waits, while it waits.
+    pub progress: Option<String>,
+    /// Why it failed, in a line.
+    pub error: Option<String>,
+    /// Lean's version, as it ran.
+    pub lean: Option<String>,
+    #[serde(with = "time::serde::rfc3339")]
+    pub created_at: OffsetDateTime,
+    #[serde(with = "time::serde::rfc3339::option")]
+    pub finished_at: Option<OffsetDateTime>,
+}
+
+/// A build with what it wrote.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct BuildLog {
+    #[serde(flatten)]
+    pub build: Build,
+    pub log: String,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct ModuleSummary {
+    pub name: String,
+    pub declarations: u32,
+    pub sorry: u32,
+}
+
+/// The library as it stands: its last successful build.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct LibraryState {
+    /// Whether the hub keeps a library for the group: it needs `git`.
+    pub available: bool,
+    /// Where to clone it from, relative to the hub: `/git/geometry.git`.
+    pub clone_path: String,
+    /// The commit `main` is at.
+    pub head: Option<String>,
+    /// The newest build, whatever its state.
+    pub latest: Option<Build>,
+    /// The build whose report is the library's state.
+    pub current: Option<Build>,
+    pub modules: Vec<ModuleSummary>,
+    pub declarations: u32,
+    /// How many depend on `sorry`.
+    pub sorry: u32,
+}
+
+/// A declaration in a list.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct DeclarationSummary {
+    pub name: String,
+    pub module: String,
+    pub kind: String,
+    #[serde(rename = "type")]
+    pub type_: String,
+    pub state: DeclarationState,
+    pub doc: Option<String>,
+}
+
+/// Where something is referenced: a message or a paper.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct ReferenceSite {
+    pub address: Address,
+    pub title: String,
+}
+
+/// A declaration, with what uses it and where it is referenced.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct DeclarationPage {
+    #[serde(flatten)]
+    pub declaration: Declaration,
+    pub state: DeclarationState,
+    /// The commit of the report it comes from.
+    pub commit: String,
+    /// The declarations of the library that use it.
+    pub used_by: Vec<String>,
+    /// The messages and papers that reference it.
+    pub references: Vec<ReferenceSite>,
 }
 
 // ── Agents ────────────────────────────────────────────────────────────
@@ -440,6 +720,37 @@ pub struct AgentProfile {
     #[serde(default)]
     pub instructions: Option<String>,
     pub scope: AgentScope,
+    /// What it does when summoned.
+    #[serde(default)]
+    pub role: AgentRole,
+}
+
+/// What an agent does when summoned.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum AgentRole {
+    /// It answers, with a message.
+    #[default]
+    Answer,
+    /// It updates the working paper the message names, from the threads.
+    Editor,
+}
+
+impl AgentRole {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            AgentRole::Answer => "answer",
+            AgentRole::Editor => "editor",
+        }
+    }
+
+    pub fn parse(s: &str) -> Option<AgentRole> {
+        match s {
+            "answer" => Some(AgentRole::Answer),
+            "editor" => Some(AgentRole::Editor),
+            _ => None,
+        }
+    }
 }
 
 // ── Workers ───────────────────────────────────────────────────────────
@@ -535,14 +846,49 @@ impl JobState {
     }
 }
 
-/// An agent's answer on its way: what the hub asked a worker for.
+/// What a job is for.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum JobKind {
+    /// Answer a message that summoned the agent, or a message in its chat.
+    Reply,
+    /// Update a working paper, as a message asked an editor.
+    PaperUpdate,
+    /// Build a commit of the library, and inspect it.
+    LibraryBuild,
+}
+
+impl JobKind {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            JobKind::Reply => "reply",
+            JobKind::PaperUpdate => "paper_update",
+            JobKind::LibraryBuild => "library_build",
+        }
+    }
+
+    pub fn parse(s: &str) -> Option<JobKind> {
+        match s {
+            "reply" => Some(JobKind::Reply),
+            "paper_update" => Some(JobKind::PaperUpdate),
+            "library_build" => Some(JobKind::LibraryBuild),
+            _ => None,
+        }
+    }
+}
+
+/// Work on its way: what the hub asked a worker for.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Job {
     pub id: i64,
-    pub thread: u32,
-    /// The message it answers.
-    pub trigger: u32,
-    /// The agent's handle and name.
+    pub kind: JobKind,
+    /// The thread of the message that asked for it, if one did.
+    pub thread: Option<u32>,
+    /// The message that asked for it.
+    pub trigger: Option<u32>,
+    /// For a paper's update, the paper's slug.
+    pub paper: Option<String>,
+    /// The agent's handle and name; for a build, `lean` and `Lean`.
     pub agent: String,
     pub agent_name: String,
     pub requester: User,
@@ -567,9 +913,29 @@ pub struct Job {
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum Event {
-    ThreadCreated { thread: Thread },
-    ThreadUpdated { thread: Thread },
-    MessageCreated { thread: u32, message: Message },
-    MessageUpdated { thread: u32, message: Message },
-    JobUpdated { job: Job },
+    ThreadCreated {
+        thread: Thread,
+    },
+    ThreadUpdated {
+        thread: Thread,
+    },
+    MessageCreated {
+        thread: u32,
+        message: Message,
+    },
+    MessageUpdated {
+        thread: u32,
+        message: Message,
+    },
+    JobUpdated {
+        job: Job,
+    },
+    /// A paper has a new revision, or is new.
+    PaperUpdated {
+        paper: Paper,
+    },
+    /// A build of the library started, ended or waits.
+    BuildUpdated {
+        build: Build,
+    },
 }
