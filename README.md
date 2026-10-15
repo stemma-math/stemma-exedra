@@ -116,14 +116,14 @@ toolchain. The worker keeps a checkout of the library, so that Mathlib is
 fetched once and Lake builds again only the modules that changed; it compiles
 the inspection once per Lean version, and inspects again only the modules that
 changed and those that import them. The inspection reports, for each
-declaration of the library, its
-kind, type, docstring and place, whether it depends on `sorry` (and, for a
-definition, whether its data does), its axioms and the declarations of the
-library it uses. The last build that passed is the library's state: the web
-app browses it by module and declaration, with what uses each and the
-messages and papers that reference it, and `[[lean:Foo.bar]]` shows, wherever
-it is written, whether `Foo.bar` is proved, depends on `sorry`, or is missing.
-A build that fails is shown with its log.
+declaration of the library, its kind, type, docstring and place, whether it
+depends on `sorry` (and, for a definition, whether its data does), its axioms
+and the declarations of the library it uses. The last build that passed is the
+library's state: the web app browses it by module and declaration, with what
+uses each, the threads about it and the messages and papers that reference it,
+and `[[lean:Foo.bar]]` shows, wherever it is written, whether `Foo.bar` is
+proved, depends on `sorry`, or is missing. A build that fails is shown with its
+log.
 
 ## The workshop
 
@@ -219,10 +219,10 @@ stemma task 'Formalize the gluing lemma' --origin 't12#48' --night < what.md
 - the workshop's: `create_task` (a title, instructions, the message that asks
   and whether it is for the night), `task_status` (`w7`) and `list_tasks`.
 
- It acts with the token `stemma login`
-kept, and what an agent posts through it is shown as written by that agent,
-for you ("Claude Code, for Ada"), and so is a revision it writes. Then "explain messages #45–#50 of t12" works
-from your harness.
+It acts with the token `stemma login` kept, and what an agent posts through
+it is shown as written by that agent, for you ("Claude Code, for Ada"), and so
+is a revision it writes. Then "explain messages #45–#50 of t12" works from your
+harness.
 
 In Claude Code:
 
