@@ -237,6 +237,18 @@ async fn the_paper_tools_read_write_and_compare() {
     assert!(never.contains("You have not read p/notes yet"), "{never}");
     let all = tools.call("paper_changes", json!({}), None).await.unwrap();
     assert!(all.contains("Revision 2; you have not read it."), "{all}");
+    // The library has not been built in this hub.
+    let state = tools.call("library_state", json!({}), None).await.unwrap();
+    assert!(
+        state.contains("No build has passed yet") || state.contains("keeps no library"),
+        "{state}"
+    );
+    let missing = tools
+        .call("read_thread", json!({"address": "lean:Foo.bar"}), None)
+        .await
+        .unwrap();
+    assert!(missing.starts_with("lean:Foo.bar is missing"), "{missing}");
+
     let old = tools
         .call(
             "read_paper",
