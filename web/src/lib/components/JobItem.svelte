@@ -19,7 +19,7 @@
     <div class="message-item__head">
       <strong>{jobStatus(job)}</strong>
       <span class="quiet">
-        for {job.requester.display_name}, to <a href="#{job.trigger}">#{job.trigger}</a>
+        for {job.requester.display_name}{#if job.trigger}, to <a href="#{job.trigger}">#{job.trigger}</a>{/if}
       </span>
       {#if canCancel}
         <span class="message-item__actions">

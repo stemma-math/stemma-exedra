@@ -33,6 +33,7 @@
       endpoint: "",
       instructions: "",
       scope: "group",
+      role: "answer",
     };
     adding = true;
   }
@@ -77,7 +78,7 @@
         <span class="stack stack--tight">
           <strong>{agent.display_name} <span class="identifier quiet">@{agent.handle}</span></strong>
           <span class="quiet">
-            {agent.scope === "personal"
+            {agent.role === "editor" ? "Updates papers. " : ""}{agent.scope === "personal"
               ? `Each person's own ${RUNNER_NAMES[agent.runner] ?? agent.runner}, on their worker`
               : `${RUNNER_NAMES[agent.runner] ?? agent.runner}, on the group's workers`}
           </span>
@@ -130,6 +131,13 @@
           <option value="group">The group's, on its workers</option>
         </select>
       </div>
+    </div>
+    <div class="field">
+      <label class="field__label" for="agent-role">When summoned</label>
+      <select id="agent-role" class="input" bind:value={draft.role}>
+        <option value="answer">It answers, with a message</option>
+        <option value="editor">It updates the working paper the message names</option>
+      </select>
     </div>
     <div class="row">
       <div class="field grow">

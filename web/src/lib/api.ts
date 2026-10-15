@@ -104,6 +104,7 @@ export interface Resolved {
   path: string | null;
   title: string | null;
   note: string | null;
+  state?: DeclarationState;
 }
 
 export interface SearchHit {
@@ -120,6 +121,7 @@ export const RUNNERS = ["claude-code", "codex", "api"] as const;
 export type Runner = (typeof RUNNERS)[number];
 
 export type AgentScope = "personal" | "group";
+export type AgentRole = "answer" | "editor";
 
 export interface AgentProfile {
   handle: string;
@@ -129,6 +131,7 @@ export interface AgentProfile {
   endpoint: string | null;
   instructions: string | null;
   scope: AgentScope;
+  role: AgentRole;
 }
 
 export type WorkerScope = "group" | "member";
@@ -154,10 +157,14 @@ export interface CreatedWorker extends Worker {
 
 export type JobState = "queued" | "running" | "done" | "failed" | "cancelled";
 
+export type JobKind = "reply" | "paper_update" | "library_build";
+
 export interface Job {
   id: number;
-  thread: number;
-  trigger: number;
+  kind: JobKind;
+  thread: number | null;
+  trigger: number | null;
+  paper: string | null;
   agent: string;
   agent_name: string;
   requester: User;
@@ -175,7 +182,111 @@ export type GroupEvent =
   | { type: "thread_updated"; thread: Thread }
   | { type: "message_created"; thread: number; message: Message }
   | { type: "message_updated"; thread: number; message: Message }
-  | { type: "job_updated"; job: Job };
+  | { type: "job_updated"; job: Job }
+  | { type: "paper_updated"; paper: Paper }
+  | { type: "build_updated"; build: Build };
+
+export interface Paper {
+  slug: string;
+  title: string;
+  revision: number;
+  created_by: User;
+  created_at: string;
+  updated_by: User;
+  updated_agent: string | null;
+  updated_at: string;
+  last_read: number | null;
+}
+
+export interface Revision {
+  number: number;
+  title: string;
+  author: User;
+  agent: string | null;
+  reason: string;
+  created_at: string;
+}
+
+export interface RevisionText extends Revision {
+  body: string;
+}
+
+export interface SectionInfo {
+  slug: string;
+  title: string;
+  level: number;
+}
+
+export interface PaperPage {
+  paper: Paper;
+  body: string;
+  sections: SectionInfo[];
+  since_read: Revision[];
+  read_body: string | null;
+  threads: Thread[];
+}
+
+export type DeclarationState = "proved" | "sorry" | "missing";
+export type BuildState = "queued" | "running" | "succeeded" | "failed" | "cancelled";
+
+export interface Build {
+  id: number;
+  commit: string;
+  state: BuildState;
+  progress: string | null;
+  error: string | null;
+  lean: string | null;
+  created_at: string;
+  finished_at: string | null;
+}
+
+export interface BuildLog extends Build {
+  log: string;
+}
+
+export interface ModuleSummary {
+  name: string;
+  declarations: number;
+  sorry: number;
+}
+
+export interface LibraryState {
+  available: boolean;
+  clone_path: string;
+  head: string | null;
+  latest: Build | null;
+  current: Build | null;
+  modules: ModuleSummary[];
+  declarations: number;
+  sorry: number;
+}
+
+export interface SourceRange {
+  start_line: number;
+  start_column: number;
+  end_line: number;
+  end_column: number;
+}
+
+export interface DeclarationSummary {
+  name: string;
+  module: string;
+  kind: string;
+  type: string;
+  state: DeclarationState;
+  doc: string | null;
+}
+
+export interface DeclarationPage extends DeclarationSummary {
+  range: SourceRange | null;
+  sorry: boolean;
+  data_sorry: boolean;
+  axioms: string[];
+  uses: string[];
+  used_by: string[];
+  commit: string;
+  references: { address: string; title: string }[];
+}
 
 /** An error the hub returned, with its code and words. */
 export class ApiError extends Error {
@@ -276,6 +387,7 @@ export const api = {
       title: string;
       kind: ThreadKind;
       resident_agent?: string;
+      anchor?: string;
       body?: string;
       attachments?: number[];
     },
@@ -312,6 +424,42 @@ export const api = {
   myWorkers: () => get<Worker[]>("/me/workers"),
   createMyWorker: (name: string) => post<CreatedWorker>("/me/workers", { name }),
   revokeMyWorker: (id: number) => del<void>(`/me/workers/${id}`),
+
+  papers: (group: string) => get<Paper[]>(`${g(group)}/papers`),
+  paper: (group: string, slug: string) =>
+    get<PaperPage>(`${g(group)}/papers/${encodeURIComponent(slug)}`),
+  createPaper: (
+    group: string,
+    body: { slug: string; title: string; body: string; reason?: string },
+  ) => post<Paper>(`${g(group)}/papers`, body),
+  editPaper: (
+    group: string,
+    slug: string,
+    body: { title?: string; body: string; reason: string; base_revision: number },
+  ) => put<Paper>(`${g(group)}/papers/${encodeURIComponent(slug)}`, body),
+  revisions: (group: string, slug: string) =>
+    get<Revision[]>(`${g(group)}/papers/${encodeURIComponent(slug)}/revisions`),
+  revision: (group: string, slug: string, n: number) =>
+    get<RevisionText>(`${g(group)}/papers/${encodeURIComponent(slug)}/revisions/${n}`),
+  markRead: (group: string, slug: string, revision: number) =>
+    post<void>(`${g(group)}/papers/${encodeURIComponent(slug)}/read`, { revision }),
+
+  library: (group: string) => get<LibraryState>(`${g(group)}/library`),
+  declarations: (
+    group: string,
+    options: { q?: string; module?: string; state?: DeclarationState; limit?: number } = {},
+  ) => {
+    const query = new URLSearchParams();
+    for (const [key, value] of Object.entries(options)) {
+      if (value !== undefined && value !== "") query.set(key, String(value));
+    }
+    return get<DeclarationSummary[]>(`${g(group)}/library/declarations?${query}`);
+  },
+  declaration: (group: string, name: string) =>
+    get<DeclarationPage>(`${g(group)}/library/declarations/${encodeURIComponent(name)}`),
+  builds: (group: string) => get<Build[]>(`${g(group)}/library/builds`),
+  build: (group: string, id: number) => get<BuildLog>(`${g(group)}/library/builds/${id}`),
+  rebuild: (group: string) => post<Build>(`${g(group)}/library/builds`, {}),
 
   threadJobs: (group: string, n: number) => get<Job[]>(`${g(group)}/threads/${n}/jobs`),
   cancelJob: (group: string, id: number) => del<void>(`${g(group)}/jobs/${id}`),

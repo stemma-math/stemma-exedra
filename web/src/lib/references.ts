@@ -49,14 +49,33 @@ export function forgetReferences(group: string) {
   }
 }
 
-/** Describes the references inside an element: a title on each, and a
- * quiet look for those that point to nothing. */
+const STATES = {
+  proved: { tone: "success", text: "proved" },
+  sorry: { tone: "warning", text: "sorry" },
+  missing: { tone: "danger", text: "missing" },
+} as const;
+
+/** Shows a declaration's state beside its reference. */
+function showState(el: HTMLElement, state: keyof typeof STATES) {
+  const next = el.nextElementSibling;
+  if (next?.classList.contains("ref-state")) next.remove();
+  const chip = document.createElement("span");
+  chip.className = `chip chip--${STATES[state].tone} ref-state`;
+  chip.textContent = STATES[state].text;
+  chip.title = state === "sorry" ? "It depends on sorry" : `In the library: ${STATES[state].text}`;
+  el.after(chip);
+}
+
+/** Describes the references inside an element: a title on each, a quiet
+ * look for those that point to nothing, and for declarations, their state
+ * in the library. */
 export function describeReferences(root: HTMLElement, group: string) {
   for (const el of root.querySelectorAll<HTMLElement>("[data-ref]")) {
     const address = el.dataset.ref;
     if (!address) continue;
     lookup(group, address).then((resolved) => {
       if (!resolved) return;
+      if (resolved.state) showState(el, resolved.state);
       if (resolved.exists) {
         el.title = resolved.title ?? address;
         el.classList.remove("quiet");

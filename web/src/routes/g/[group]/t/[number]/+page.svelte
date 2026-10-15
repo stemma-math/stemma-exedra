@@ -1,6 +1,7 @@
 <script lang="ts">
   import { page } from "$app/state";
   import { tick } from "svelte";
+  import { addressPath, parseAddress } from "#lib/address.ts";
   import { ApiError, api, type Job, type Message, type Thread } from "#lib/api.ts";
   import Composer from "#lib/components/Composer.svelte";
   import JobItem from "#lib/components/JobItem.svelte";
@@ -176,7 +177,8 @@
           <span class="chip chip--info">Chat{thread.resident_agent ? ` with @${thread.resident_agent}` : ""}</span>
         {/if}
         Started by {thread.created_by.display_name},
-        <time datetime={thread.created_at}>{exactly(thread.created_at)}</time>.
+        <time datetime={thread.created_at}>{exactly(thread.created_at)}</time>{#if thread.anchor}{@const anchor = parseAddress(thread.anchor)},
+          about <a class="identifier" href={anchor ? addressPath(anchor, group.slug) : "#"}>{thread.anchor}</a>{/if}.
       </p>
     </header>
 

@@ -30,11 +30,47 @@ describe("markdown", () => {
     expect(html).toContain('href="/g/geometry/t/3"');
   });
 
-  it("marks references to what is not here yet, and keeps invalid ones as text", () => {
-    const html = render("[[lean:Foo.bar]] [[p/notes#gluing]] [[t0]]");
-    expect(html).toContain('<span class="ref" data-ref="lean:Foo.bar">lean:Foo.bar</span>');
-    expect(html).toContain('data-ref="p/notes#gluing"');
+  it("links papers and declarations, marks tasks, and keeps invalid references as text", () => {
+    const html = render("[[lean:Foo.bar]] [[p/notes#gluing]] [[w3]] [[t0]]");
+    expect(html).toContain(
+      '<a class="ref" href="/g/geometry/lib/Foo.bar" data-ref="lean:Foo.bar">lean:Foo.bar</a>',
+    );
+    expect(html).toContain('href="/g/geometry/p/notes#gluing"');
+    expect(html).toContain('<span class="ref" data-ref="w3">w3</span>');
     expect(html).toContain("[[t0]]");
+  });
+
+  it("turns status markers into callouts", () => {
+    const html = render(
+      "> [!conjecture] Properness\n> Every map is proper.\n\n> [!OPEN]\n> Why?\n\n> [!note]\n> Plain.",
+    );
+    expect(html).toContain('<div class="highlight highlight--warning" data-callout="conjecture">');
+    expect(html).toContain('<p class="highlight__title">Conjecture: Properness</p>');
+    expect(html).toContain("<p>Every map is proper.</p>");
+    expect(html).toContain('<p class="highlight__title">Open question</p>');
+    expect(html).toContain("<blockquote>");
+    expect(html).not.toContain("[!conjecture]");
+  });
+
+  it("gives a paper's headings their sections' slugs", () => {
+    const html = renderMarkdown("# Gluing\n\n## Gluing\n\n> # quoted", {
+      group: "geometry",
+      sections: true,
+    });
+    expect(html).toContain('<h1 id="gluing">');
+    expect(html).toContain('<h2 id="gluing-2">');
+    expect(html).toContain("<h1>quoted</h1>");
+    expect(render("# Gluing")).toContain("<h1>Gluing</h1>");
+  });
+
+  it("marks the blocks that changed", () => {
+    const html = renderMarkdown("Same.\n\nNew $x$.\n\n$$\ny\n$$\n", {
+      group: "geometry",
+      changed: new Set([2, 5]),
+    });
+    expect(html).toContain("<p>Same.</p>");
+    expect(html).toContain('<p class="highlight highlight--accent is-changed">New');
+    expect(html.match(/is-changed/g)?.length).toBe(2);
   });
 
   it("does not see references or math in code", () => {

@@ -36,6 +36,16 @@
       current: page.url.pathname.startsWith(`/g/${slug}/t`),
     },
     {
+      href: `/g/${slug}/p`,
+      label: "Papers",
+      current: page.url.pathname.startsWith(`/g/${slug}/p`),
+    },
+    {
+      href: `/g/${slug}/lib`,
+      label: "Library",
+      current: page.url.pathname.startsWith(`/g/${slug}/lib`),
+    },
+    {
       href: `/g/${slug}/settings`,
       label: "Settings",
       current: page.url.pathname.startsWith(`/g/${slug}/settings`),

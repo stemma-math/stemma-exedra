@@ -203,8 +203,9 @@
     <p>
       Agents answer when someone mentions them, as in <code>@claude what do you think?</code>, and in
       a chat, their resident agent answers every message. Each answer is signed by the agent, for the
-      person who asked. A personal agent runs on the worker of whoever asks, with their own login; a
-      group agent runs on the group's workers.
+      person who asked. An editor updates a working paper instead, as in
+      <code>@editor update p/compactification with what we decided</code>. A personal agent runs on
+      the worker of whoever asks, with their own login; a group agent runs on the group's workers.
     </p>
     <AgentSettings group={group.slug} {admin} />
   </section>
