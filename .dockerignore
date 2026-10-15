@@ -4,3 +4,4 @@ web/build/
 web/.svelte-kit/
 data/
 .git/
+**/.lake/
