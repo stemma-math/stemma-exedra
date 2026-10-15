@@ -375,3 +375,44 @@ stemma-toast-region {
     max-height: none;
   }
 }
+
+/* ── The library ────────────────────────────────────────────────────── */
+
+.library-layout {
+  display: grid;
+  grid-template-columns: minmax(14rem, 20rem) minmax(0, 1fr);
+  gap: var(--space-8);
+  align-items: start;
+}
+
+.declarations {
+  --columns: minmax(0, 1fr) auto auto;
+}
+
+.declaration-type {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.declaration-links {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(12rem, 1fr));
+  gap: var(--space-6);
+}
+
+.declaration-links > section {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.build-log {
+  max-height: 70vh;
+  white-space: pre-wrap;
+}
+
+@media (max-width: 60rem) {
+  .library-layout {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}
