@@ -23,11 +23,13 @@ pub async fn serve(uri: Uri) -> Response {
     if let Some(response) = asset(path) {
         return response;
     }
-    // A missing file with an extension is a missing file, not a page.
-    if path
-        .rsplit('/')
-        .next()
-        .is_some_and(|last| last.contains('.'))
+    // A missing file with an extension is a missing file, not a page; but a
+    // group's pages have dots in them, as declarations do: `lib/Foo.bar`.
+    if !path.starts_with("g/")
+        && path
+            .rsplit('/')
+            .next()
+            .is_some_and(|last| last.contains('.'))
     {
         return StatusCode::NOT_FOUND.into_response();
     }

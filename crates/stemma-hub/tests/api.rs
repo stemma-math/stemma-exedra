@@ -894,7 +894,7 @@ async fn events_are_live() {
 #[tokio::test]
 async fn the_web_app_is_served_for_any_page() {
     let hub = TestHub::new().await;
-    for path in ["/", "/g/geometry/t/1"] {
+    for path in ["/", "/g/geometry/t/1", "/g/geometry/lib/Foo.bar"] {
         let request = Request::get(path).body(Body::empty()).unwrap();
         let reply = hub.send(&Client::default(), request).await;
         assert_eq!(reply.status, StatusCode::OK);
