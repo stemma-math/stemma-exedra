@@ -30,12 +30,21 @@ enum Command {
     Logout,
     /// List a group's threads.
     Threads(client::ThreadsArgs),
-    /// Read a thread or some of its messages: t12, t12#45, t12#45-50.
+    /// Read a thread, some of its messages, a paper or a declaration: t12,
+    /// t12#45-50, p/notes#gluing, lean:Foo.bar.
     Read(client::ReadArgs),
     /// Post a message in a thread, or in reply to a message.
     Post(client::PostArgs),
     /// Search a group's threads and messages.
     Search(client::SearchArgs),
+    /// List a group's working papers.
+    Papers(client::PapersArgs),
+    /// What changed in a paper since you read it, or in every paper.
+    Changes(client::ChangesArgs),
+    /// Write a new revision of a paper, from standard input.
+    Edit(client::EditArgs),
+    /// How the group's library stands, or search it.
+    Library(client::LibraryArgs),
     /// Serve Stemma's tools to an agent over MCP, on standard input and output.
     Mcp(client::McpArgs),
 }
@@ -99,6 +108,10 @@ async fn main() -> anyhow::Result<()> {
         Command::Read(args) => client::read(args).await,
         Command::Post(args) => client::post(args).await,
         Command::Search(args) => client::search(args).await,
+        Command::Papers(args) => client::papers(args).await,
+        Command::Changes(args) => client::changes(args).await,
+        Command::Edit(args) => client::edit(args).await,
+        Command::Library(args) => client::library(args).await,
         Command::Mcp(args) => client::mcp(args).await,
     }
 }
