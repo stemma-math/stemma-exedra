@@ -12,3 +12,6 @@ node_modules/
 
 # The hub's data, when run from the repository.
 /data/
+
+# What Lake builds.
+.lake/
