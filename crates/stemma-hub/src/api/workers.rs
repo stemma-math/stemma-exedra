@@ -372,6 +372,7 @@ async fn serve(
             group_id: worker.group_id,
             owner_id: worker.owner_id,
             runners: hello.runners,
+            lean: hello.lean,
             concurrency: hello.concurrency.clamp(1, 64),
             running: HashSet::new(),
             sender,

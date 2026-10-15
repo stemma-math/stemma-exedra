@@ -7,11 +7,11 @@ use axum::extract::{Path, Query, State};
 use axum::http::StatusCode;
 use serde::Deserialize;
 use sqlx::{AssertSqlSafe, Sqlite, Transaction};
+use stemma_core::Address;
 use stemma_core::api::{
     CreateThread, EditMessage, Event, Message, PostMessage, Resolve, Resolved, SearchHit, Thread,
     ThreadKind, ThreadPage, UpdateThread,
 };
-use stemma_core::{Address, AddressKind};
 
 use super::attachments::{self, attachments_of};
 use super::{Json, Membership, UserColumns, required_text};
@@ -150,12 +150,23 @@ pub async fn create_thread(
             return Err(ApiError::invalid("Only chats have a resident agent"));
         }
     };
-    if let Some(anchor) = &body.anchor
-        && !matches!(anchor.kind(), AddressKind::Paper | AddressKind::Declaration)
-    {
-        return Err(ApiError::invalid(
-            "A thread is anchored to a paper's section or a declaration",
-        ));
+    match &body.anchor {
+        None | Some(Address::Declaration(_)) => {}
+        Some(Address::Paper { slug, section }) => {
+            let (exists, _, note) =
+                super::papers::resolve(&state, group.group_id, slug, section.as_deref()).await?;
+            if !exists {
+                return Err(ApiError::invalid(format!(
+                    "Cannot anchor the thread to p/{slug}: {}",
+                    note.unwrap_or_default().to_lowercase()
+                )));
+            }
+        }
+        Some(_) => {
+            return Err(ApiError::invalid(
+                "A thread is anchored to a paper's section or a declaration",
+            ));
+        }
     }
     let first = match &body.body {
         Some(text) if !text.trim().is_empty() || !body.attachments.is_empty() => {
@@ -640,6 +651,7 @@ pub async fn resolve(
                     path: None,
                     title: None,
                     note: Some(error.to_string()),
+                    state: None,
                 });
                 continue;
             }
@@ -652,6 +664,7 @@ pub async fn resolve(
             path: Some(address.web_path(&group.slug)),
             title: None,
             note: None,
+            state: None,
         };
         match address.thread() {
             Some(number) => {
@@ -680,16 +693,24 @@ pub async fn resolve(
                     None => entry.note = Some("There is no such thread".into()),
                 }
             }
-            None => {
-                entry.note = Some(
-                    match address.kind() {
-                        AddressKind::Paper => "Working papers are not here yet",
-                        AddressKind::Declaration => "The library is not here yet",
-                        _ => "The workshop is not here yet",
-                    }
-                    .into(),
-                );
-            }
+            None => match &address {
+                Address::Paper { slug, section } => {
+                    let (exists, title, note) =
+                        super::papers::resolve(&state, group.group_id, slug, section.as_deref())
+                            .await?;
+                    entry.exists = exists;
+                    entry.title = title;
+                    entry.note = note;
+                }
+                Address::Declaration(name) => {
+                    let found = crate::library::resolve(&state, group.group_id, name).await?;
+                    entry.exists = found.exists;
+                    entry.title = found.title;
+                    entry.note = found.note;
+                    entry.state = found.state;
+                }
+                _ => entry.note = Some("The workshop is not here yet".into()),
+            },
         }
         resolved.push(entry);
     }

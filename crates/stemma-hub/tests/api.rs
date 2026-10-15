@@ -1095,7 +1095,9 @@ async fn admins_keep_the_agents_of_a_group() {
         .iter()
         .map(|a| a["handle"].as_str().unwrap())
         .collect();
-    assert_eq!(handles, ["claude", "codex"]);
+    assert_eq!(handles, ["claude", "codex", "editor"]);
+    assert_eq!(agents[0]["role"], "answer");
+    assert_eq!(agents[2]["role"], "editor");
 
     let qwen = json!({"handle": "@Qwen", "display_name": "Qwen", "runner": "api",
                       "model": "qwen/qwen3", "endpoint": "openrouter", "scope": "group"});
@@ -1272,5 +1274,286 @@ async fn workers_are_registered_by_whom_they_serve() {
             .as_array()
             .unwrap()
             .is_empty()
+    );
+}
+
+async fn job_token(hub: &TestHub, user_id: i64) -> Client {
+    let group_id: i64 = sqlx::query_scalar("SELECT id FROM groups WHERE slug = 'geometry'")
+        .fetch_one(&hub.state.db)
+        .await
+        .unwrap();
+    let (_, secret) = stemma_hub::auth::create_job_token(
+        &hub.state.db,
+        user_id,
+        group_id,
+        None,
+        "Claude",
+        stemma_hub::db::now() + 60_000,
+    )
+    .await
+    .unwrap();
+    Client {
+        cookie: None,
+        token: Some(secret),
+    }
+}
+
+#[tokio::test]
+async fn papers_keep_their_revisions_and_who_read_them() {
+    let hub = TestHub::new().await;
+    let ada = hub.admin_with_group().await;
+    let bob = hub.member(&ada, "bob").await;
+    let first = "Where we are.\n\n# Setting\n\nA scheme $X$.\n\n## Charts\n\nOpen.\n";
+
+    for (slug, status) in [("Bad Slug", StatusCode::UNPROCESSABLE_ENTITY)] {
+        let reply = hub
+            .post(
+                &ada,
+                "/groups/geometry/papers",
+                json!({"slug": slug, "title": "T", "body": ""}),
+            )
+            .await;
+        assert_eq!(reply.status, status);
+    }
+    let reply = hub
+        .post(
+            &ada,
+            "/groups/geometry/papers",
+            json!({"slug": "compactification", "title": "Compactification", "body": first}),
+        )
+        .await;
+    assert_eq!(reply.status, StatusCode::CREATED, "{:?}", reply.json());
+    assert_eq!(reply.json()["revision"], 1);
+    assert_eq!(reply.json()["last_read"], 1);
+    let reply = hub
+        .post(
+            &ada,
+            "/groups/geometry/papers",
+            json!({"slug": "compactification", "title": "Again"}),
+        )
+        .await;
+    assert_eq!(reply.status, StatusCode::CONFLICT);
+
+    // Bob has not read it: nothing to show as changed.
+    let page = hub
+        .get(&bob, "/groups/geometry/papers/compactification")
+        .await
+        .json();
+    assert!(page["paper"]["last_read"].is_null());
+    assert_eq!(page["since_read"], json!([]));
+    assert_eq!(page["body"], first);
+    let slugs: Vec<&str> = page["sections"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|s| s["slug"].as_str().unwrap())
+        .collect();
+    assert_eq!(slugs, ["setting", "charts"]);
+    let reply = hub
+        .post(
+            &bob,
+            "/groups/geometry/papers/compactification/read",
+            json!({"revision": 1}),
+        )
+        .await;
+    assert_eq!(reply.status, StatusCode::NO_CONTENT);
+
+    // Ada writes a second revision; an edit over the first is refused.
+    let second = first.replace("Open.", "Glued along $U \\cap V$.");
+    let edit = |base: u32, body: &str| json!({"body": body, "reason": "The charts glue", "base_revision": base});
+    let reply = hub
+        .call(
+            &ada,
+            Method::PUT,
+            "/groups/geometry/papers/compactification",
+            Some(edit(1, &second)),
+        )
+        .await;
+    assert_eq!(reply.status, StatusCode::OK, "{:?}", reply.json());
+    assert_eq!(reply.json()["revision"], 2);
+    let reply = hub
+        .call(
+            &bob,
+            Method::PUT,
+            "/groups/geometry/papers/compactification",
+            Some(edit(1, "Mine")),
+        )
+        .await;
+    assert_eq!(reply.status, StatusCode::CONFLICT);
+    assert!(
+        reply.json()["error"]["message"]
+            .as_str()
+            .unwrap()
+            .contains("revision 2")
+    );
+
+    // Bob now sees what changed since he read it.
+    let page = hub
+        .get(&bob, "/groups/geometry/papers/compactification")
+        .await
+        .json();
+    assert_eq!(page["paper"]["last_read"], 1);
+    assert_eq!(page["since_read"].as_array().unwrap().len(), 1);
+    assert_eq!(page["since_read"][0]["reason"], "The charts glue");
+    assert_eq!(page["since_read"][0]["author"]["username"], "ada");
+    assert_eq!(page["read_body"], first);
+    let papers = hub.get(&bob, "/groups/geometry/papers").await.json();
+    assert_eq!(papers[0]["revision"], 2);
+    assert_eq!(papers[0]["last_read"], 1);
+
+    // An agent writes for Ada through her token; she has not read it yet.
+    let token = with_token(&hub, &ada).await;
+    let reply = hub
+        .call(
+            &token,
+            Method::PUT,
+            "/groups/geometry/papers/compactification",
+            Some(
+                json!({"body": "Short.", "reason": "Shorter", "base_revision": 2,
+                        "agent": "Claude Code", "title": "Compactifications"}),
+            ),
+        )
+        .await;
+    assert_eq!(reply.status, StatusCode::OK, "{:?}", reply.json());
+    assert_eq!(reply.json()["updated_agent"], "Claude Code");
+    assert_eq!(reply.json()["title"], "Compactifications");
+    let page = hub
+        .get(&ada, "/groups/geometry/papers/compactification")
+        .await
+        .json();
+    assert_eq!(page["paper"]["last_read"], 2);
+    let reply = hub
+        .call(
+            &ada,
+            Method::PUT,
+            "/groups/geometry/papers/compactification",
+            Some(json!({"body": "x", "reason": "y", "base_revision": 3, "agent": "Me"})),
+        )
+        .await;
+    assert_eq!(reply.status, StatusCode::UNPROCESSABLE_ENTITY);
+
+    // A job's token reads, and does not write.
+    let job = job_token(&hub, 1).await;
+    assert_eq!(
+        hub.get(&job, "/groups/geometry/papers/compactification")
+            .await
+            .status,
+        StatusCode::OK
+    );
+    let reply = hub
+        .call(
+            &job,
+            Method::PUT,
+            "/groups/geometry/papers/compactification",
+            Some(edit(3, "Sneaky")),
+        )
+        .await;
+    assert_eq!(reply.status, StatusCode::FORBIDDEN);
+
+    // The history.
+    let history = hub
+        .get(&bob, "/groups/geometry/papers/compactification/revisions")
+        .await
+        .json();
+    let numbers: Vec<i64> = history
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|r| r["number"].as_i64().unwrap())
+        .collect();
+    assert_eq!(numbers, [3, 2, 1]);
+    assert_eq!(history[0]["agent"], "Claude Code");
+    let old = hub
+        .get(&bob, "/groups/geometry/papers/compactification/revisions/1")
+        .await
+        .json();
+    assert_eq!(old["body"], first);
+    assert_eq!(old["reason"], "Started the paper");
+}
+
+#[tokio::test]
+async fn threads_anchor_to_papers_and_references_resolve() {
+    let hub = TestHub::new().await;
+    let ada = hub.admin_with_group().await;
+    hub.post(
+        &ada,
+        "/groups/geometry/papers",
+        json!({"slug": "notes", "title": "Notes", "body": "# Gluing\n\nText.\n"}),
+    )
+    .await;
+    let reply = hub
+        .post(
+            &ada,
+            "/groups/geometry/threads",
+            json!({"title": "About gluing", "anchor": "p/notes#gluing", "body": "Is it right?"}),
+        )
+        .await;
+    assert_eq!(reply.status, StatusCode::CREATED, "{:?}", reply.json());
+    assert_eq!(reply.json()["thread"]["anchor"], "p/notes#gluing");
+    let reply = hub
+        .post(
+            &ada,
+            "/groups/geometry/threads",
+            json!({"title": "Nowhere", "anchor": "p/none"}),
+        )
+        .await;
+    assert_eq!(reply.status, StatusCode::UNPROCESSABLE_ENTITY);
+
+    let page = hub.get(&ada, "/groups/geometry/papers/notes").await.json();
+    assert_eq!(page["threads"].as_array().unwrap().len(), 1);
+    assert_eq!(page["threads"][0]["number"], 1);
+
+    let resolved = hub
+        .post(
+            &ada,
+            "/groups/geometry/resolve",
+            json!({"addresses": ["p/notes", "p/notes#gluing", "p/notes#nowhere", "p/none"]}),
+        )
+        .await
+        .json();
+    let exists: Vec<bool> = resolved
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|r| r["exists"].as_bool().unwrap())
+        .collect();
+    assert_eq!(exists, [true, true, false, false]);
+    assert_eq!(resolved[1]["title"], "Notes § Gluing");
+    assert_eq!(resolved[1]["path"], "/g/geometry/p/notes#gluing");
+}
+
+#[tokio::test]
+async fn editors_are_asked_to_update_papers() {
+    let hub = TestHub::new().await;
+    let ada = hub.admin_with_group().await;
+    hub.post(
+        &ada,
+        "/groups/geometry/threads",
+        json!({"title": "Decisions", "body": "@editor update p/compactification with this."}),
+    )
+    .await;
+    let jobs = hub
+        .get(&ada, "/groups/geometry/threads/1/jobs")
+        .await
+        .json();
+    assert_eq!(jobs[0]["kind"], "paper_update", "{jobs}");
+    assert_eq!(jobs[0]["paper"], "compactification");
+    assert_eq!(jobs[0]["agent_name"], "Editor");
+    assert_eq!(jobs[0]["state"], "queued");
+
+    hub.post(
+        &ada,
+        "/groups/geometry/threads/1/messages",
+        json!({"body": "@editor and now?"}),
+    )
+    .await;
+    let jobs = hub
+        .get(&ada, "/groups/geometry/threads/1/jobs")
+        .await
+        .json();
+    assert_eq!(jobs[1]["state"], "failed");
+    assert_eq!(
+        jobs[1]["error"],
+        "Say which paper @editor should update, as p/its-name"
     );
 }

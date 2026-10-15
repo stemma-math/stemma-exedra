@@ -7,6 +7,7 @@ pub mod config;
 pub mod db;
 pub mod error;
 pub mod jobs;
+pub mod library;
 pub mod secret;
 pub mod state;
 pub mod web;

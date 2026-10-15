@@ -8,6 +8,7 @@ mod events;
 pub(crate) mod forum;
 mod groups;
 mod jobs;
+pub(crate) mod papers;
 pub mod workers;
 
 use axum::Router;
@@ -76,6 +77,26 @@ pub fn router(state: AppState) -> Router {
             get(forum::get_message)
                 .patch(forum::edit_message)
                 .delete(forum::delete_message),
+        )
+        .route(
+            "/groups/{group}/papers",
+            get(papers::list).post(papers::create),
+        )
+        .route(
+            "/groups/{group}/papers/{paper}",
+            get(papers::get).put(papers::edit),
+        )
+        .route(
+            "/groups/{group}/papers/{paper}/revisions",
+            get(papers::revisions),
+        )
+        .route(
+            "/groups/{group}/papers/{paper}/revisions/{number}",
+            get(papers::revision),
+        )
+        .route(
+            "/groups/{group}/papers/{paper}/read",
+            post(papers::mark_read),
         )
         .route("/groups/{group}/resolve", post(forum::resolve))
         .route("/groups/{group}/search", get(forum::search))
