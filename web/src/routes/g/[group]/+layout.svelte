@@ -1,7 +1,9 @@
 <script lang="ts">
   import { page } from "$app/state";
   import { ApiError, api, type Group } from "#lib/api.ts";
+  import { listen } from "#lib/events.ts";
   import { setGroupContext } from "#lib/group.svelte.ts";
+  import { forgetReferences } from "#lib/references.ts";
 
   let { children } = $props();
 
@@ -26,6 +28,16 @@
       .catch((error) => {
         if (error instanceof ApiError && error.status === 404) missing = true;
       });
+  });
+
+  // What references point to changes with the group: its threads, papers,
+  // library and tasks. They are asked again where they are shown next.
+  $effect(() => {
+    if (!group || group.slug !== slug) return;
+    const current = group.slug;
+    return listen(current, (event) => {
+      if (event.type !== "job_updated") forgetReferences(current);
+    });
   });
 
   const tabs = $derived([
