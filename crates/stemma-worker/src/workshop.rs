@@ -498,8 +498,16 @@ impl Run<'_> {
             if main != parent {
                 self.log
                     .line(&format!("main moved to {main} meanwhile: rebasing on it."));
+                // The rebased commit keeps the committer its task gave it, so
+                // the worker's machine needs no git identity of its own.
+                let identity = ["log", "-1", "--format=%cn%n%ce"];
+                let committer = git_output(worktree, self.token(), &identity).await?;
+                let (name, email) = committer.split_once('\n').unwrap_or((committer.as_str(), ""));
                 let mut rebase = git(worktree, self.token());
-                rebase.args(["-c", "commit.gpgsign=false", "rebase", "-q", "origin/main"]);
+                rebase
+                    .args(["-c", "commit.gpgsign=false", "rebase", "-q", "origin/main"])
+                    .env("GIT_COMMITTER_NAME", name)
+                    .env("GIT_COMMITTER_EMAIL", email);
                 if !quietly(rebase, self.log).await? {
                     let conflicts = git_output(
                         worktree,
