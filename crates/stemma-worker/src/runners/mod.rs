@@ -1,39 +1,69 @@
-//! The runners: how a worker gets an answer from an agent.
+//! The runners: how a worker gets an answer from an agent, or has one work
+//! on the library for the workshop.
 //!
-//! - `claude-code` and `codex` run those harnesses headless, with the
-//!   person's own login, and give them Stemma's tools through `stemma mcp`
-//!   with the job's token, read-only.
+//! - `claude-code`, `codex` and `opencode` run those harnesses headless,
+//!   with the person's own login (or, for OpenCode, the keys of the
+//!   providers it is configured with), and give them Stemma's tools
+//!   through `stemma mcp` with the job's token, read-only: an agent
+//!   answering in a thread may also hand a task to the workshop. For a
+//!   task they work in a worktree of the library, where they edit files
+//!   and run commands, Lean's among them.
 //! - `api` is Stemma's own harness: a loop of tool calls over an
-//!   OpenAI-compatible chat API, with the same tools.
+//!   OpenAI-compatible chat API, with the same tools. It only answers.
 
 pub mod api;
 pub mod claude_code;
 pub mod codex;
+pub mod opencode;
 
+use std::path::Path;
 use std::process::{ExitStatus, Stdio};
 
 use anyhow::Context as _;
-use stemma_core::api::AgentProfile;
+use stemma_core::api::{AgentProfile, JobKind};
 use stemma_core::protocol::JobSpec;
 use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader};
 use tokio::process::Command;
 
 use crate::job::{Context, JobDir};
 
-/// The Stemma tools an agent may use, by name: those that read.
-pub fn allowed_tools() -> Vec<&'static str> {
-    stemma_client::tools::read_only_names()
+/// Where and how a runner works.
+pub struct Work<'a> {
+    /// The folder it works in: the job's own, or for a task, the worktree
+    /// of the library.
+    pub dir: &'a Path,
+    /// Whether it edits files and runs commands there, as for a task.
+    pub edits: bool,
+    /// The most steps it may take, for runners that count them.
+    pub max_turns: Option<u32>,
+}
+
+/// Whether a job's agent may hand tasks to the workshop: one answering in
+/// a thread.
+pub fn hands_over(job: &JobSpec) -> bool {
+    job.kind() == JobKind::Reply
+}
+
+/// The Stemma tools a job's agent may use, by name: those that read, and
+/// for an agent answering in a thread, what hands a task over.
+pub fn allowed_tools(job: &JobSpec) -> Vec<&'static str> {
+    let mut names = stemma_client::tools::read_only_names();
+    if hands_over(job) {
+        names.extend(stemma_client::tools::HANDS_OVER);
+    }
+    names
 }
 
 /// The arguments of `stemma mcp` for a job: its hub, its group, its token
-/// and its agent, offering only the tools that read.
+/// and its agent, offering only the tools that read, and what hands a
+/// task over if the job's agent may.
 pub fn mcp_args(
     context: &Context,
     job: &JobSpec,
     agent: &AgentProfile,
     dir: &JobDir,
 ) -> Vec<String> {
-    vec![
+    let mut args: Vec<String> = vec![
         "mcp".into(),
         "--hub".into(),
         context.hub.clone(),
@@ -44,7 +74,11 @@ pub fn mcp_args(
         "--agent".into(),
         agent.display_name.clone(),
         "--read-only".into(),
-    ]
+    ];
+    if hands_over(job) {
+        args.push("--hand-over".into());
+    }
+    args
 }
 
 /// How a command ended.

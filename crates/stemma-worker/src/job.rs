@@ -1,5 +1,6 @@
 //! Running one job: its folder, its prompt, and the runner that does it;
-//! or, for a library's build, Lean.
+//! for a library's build, Lean; for a task of the workshop, both (see
+//! [`crate::workshop`]).
 
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -13,7 +14,8 @@ use stemma_core::protocol::{
 use tokio::sync::mpsc;
 
 use crate::config::WorkerConfig;
-use crate::{library, runners};
+use crate::runners::Work as RunnerWork;
+use crate::{library, runners, workshop};
 
 /// Stemma's instructions to an agent answering in a thread.
 pub const REPLY_INSTRUCTIONS: &str = include_str!("../prompts/reply.md");
@@ -29,6 +31,21 @@ pub struct Context {
     /// The `stemma` binary, for the agents' MCP server.
     pub stemma: PathBuf,
     pub work_dir: PathBuf,
+    /// A lock per group on its warm checkout of the library, which builds
+    /// and tasks share.
+    pub checkouts: std::sync::Mutex<std::collections::HashMap<String, Arc<tokio::sync::Mutex<()>>>>,
+}
+
+impl Context {
+    /// The lock on a group's warm checkout of the library.
+    pub fn checkout_lock(&self, group: &str) -> Arc<tokio::sync::Mutex<()>> {
+        self.checkouts
+            .lock()
+            .expect("not poisoned")
+            .entry(group.to_owned())
+            .or_default()
+            .clone()
+    }
 }
 
 /// Where a job says what it is doing.
@@ -74,6 +91,29 @@ pub fn describe_call(name: &str, args: &serde_json::Value) -> String {
             None => "Looking in the library".into(),
         },
         "library_state" => "Looking at the library".into(),
+        "list_tasks" | "task_status" => "Looking at the workshop's tasks".into(),
+        "create_task" => match arg("title") {
+            Some(title) => format!("Handing “{title}” to the workshop"),
+            None => "Handing a task to the workshop".into(),
+        },
+        // What harnesses do on their own, for the workshop.
+        "Bash" | "bash" | "shell" => match arg("command") {
+            Some(command) => {
+                let command: String = command.chars().take(80).collect();
+                format!("Running {command}")
+            }
+            None => "Running a command".into(),
+        },
+        "Edit" | "MultiEdit" | "Write" | "edit" | "write" | "patch" => {
+            match arg("file_path").or_else(|| arg("filePath")) {
+                Some(path) => format!("Editing {path}"),
+                None => "Editing".into(),
+            }
+        }
+        "Read" | "read" => match arg("file_path").or_else(|| arg("filePath")) {
+            Some(path) => format!("Reading {path}"),
+            None => "Reading".into(),
+        },
         other => format!("Using {other}"),
     }
 }
@@ -124,7 +164,7 @@ fn trimmed(context: &[ContextItem]) -> bool {
 }
 
 /// The thread a request comes from, introduced.
-fn conversation_text(group: &GroupRef, conversation: &Conversation) -> String {
+pub fn conversation_text(group: &GroupRef, conversation: &Conversation) -> String {
     let thread = &conversation.thread;
     let kind = match thread.kind {
         ThreadKind::Discussion => "a discussion",
@@ -319,6 +359,7 @@ pub async fn run(context: Arc<Context>, job: JobSpec, progress: Progress) -> Out
                 .and_then(|answer| read_paper(&answer, update))
         }
         Work::LibraryBuild(build) => library::build(&context, &job, build, &progress).await,
+        Work::TaskRun(run) => workshop::run(&context, &job, run, &progress).await,
     };
     outcome.unwrap_or_else(|error| {
         tracing::warn!(job = job.id, error = format!("{error:#}"), "a job failed");
@@ -338,24 +379,62 @@ async fn ask(
 ) -> anyhow::Result<String> {
     let dir = JobDir::create(&context.work_dir, job)?;
     progress.say("Thinking");
+    let work = RunnerWork {
+        dir: &dir.path,
+        edits: false,
+        max_turns: None,
+    };
     let configured = &context.config.runners;
     let name = &agent.display_name;
+    if agent.runner == names::API {
+        let config = configured.api.clone().unwrap_or_default();
+        let run = runners::api::run(context, &config, job, agent, prompt, progress);
+        return within(config.timeout_minutes.unwrap_or(10), name, run).await;
+    }
+    let minutes = cli_runner(context, &agent.runner)?
+        .timeout_minutes
+        .unwrap_or(15);
+    within(
+        minutes,
+        name,
+        run_cli(context, job, agent, &dir, &work, prompt, progress),
+    )
+    .await
+}
+
+/// The configuration of one of the worker's command-line runners.
+pub fn cli_runner(context: &Context, runner: &str) -> anyhow::Result<crate::config::CliRunner> {
+    let configured = &context.config.runners;
+    let config = match runner {
+        names::CLAUDE_CODE => configured.claude_code.clone(),
+        names::CODEX => configured.codex.clone(),
+        names::OPENCODE => configured.opencode.clone(),
+        _ => None,
+    };
+    config.ok_or_else(|| anyhow::anyhow!("this worker has no runner {runner}"))
+}
+
+/// Runs one of the command-line runners: Claude Code, Codex or OpenCode.
+pub async fn run_cli(
+    context: &Context,
+    job: &JobSpec,
+    agent: &AgentProfile,
+    dir: &JobDir,
+    work: &RunnerWork<'_>,
+    prompt: &Prompt,
+    progress: &Progress,
+) -> anyhow::Result<String> {
+    let config = cli_runner(context, &agent.runner)?;
     match agent.runner.as_str() {
         names::CLAUDE_CODE => {
-            let config = configured.claude_code.clone().unwrap_or_default();
-            let work =
-                runners::claude_code::run(context, &config, job, agent, &dir, prompt, progress);
-            within(config.timeout_minutes.unwrap_or(15), name, work).await
+            runners::claude_code::run(context, &config, job, agent, dir, work, prompt, progress)
+                .await
         }
         names::CODEX => {
-            let config = configured.codex.clone().unwrap_or_default();
-            let work = runners::codex::run(context, &config, job, agent, &dir, prompt, progress);
-            within(config.timeout_minutes.unwrap_or(15), name, work).await
+            runners::codex::run(context, &config, job, agent, dir, work, prompt, progress).await
         }
-        names::API => {
-            let config = configured.api.clone().unwrap_or_default();
-            let work = runners::api::run(context, &config, job, agent, prompt, progress);
-            within(config.timeout_minutes.unwrap_or(10), name, work).await
+        names::OPENCODE => {
+            runners::opencode::run(context, &config, job, agent, dir, work, prompt, progress).await
         }
         other => anyhow::bail!("this worker has no runner {other}"),
     }
@@ -395,6 +474,14 @@ mod tests {
             "Looking up lean:Foo.bar"
         );
         assert_eq!(describe_call("other", &json!({})), "Using other");
+        assert_eq!(
+            describe_call("Bash", &json!({"command": "lake build"})),
+            "Running lake build"
+        );
+        assert_eq!(
+            describe_call("edit", &json!({"filePath": "Geometry/Basic.lean"})),
+            "Editing Geometry/Basic.lean"
+        );
     }
 
     fn update(title: Option<&str>) -> PaperUpdate {

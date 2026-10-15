@@ -568,7 +568,10 @@ async fn the_api_harness_uses_the_tools() {
             "paper_changes",
             "library_state",
             "library_lookup",
-            "library_search"
+            "library_search",
+            "create_task",
+            "task_status",
+            "list_tasks"
         ]
     );
     running.abort();
@@ -702,19 +705,11 @@ async fn build_of(hub: &TestHub, person: &Person, commit: &str) -> Value {
     panic!("the build of {commit} did not end: {builds}");
 }
 
-#[tokio::test(flavor = "multi_thread")]
-async fn a_group_worker_with_lean_builds_and_inspects_the_library() {
-    if !lean_here() {
-        eprintln!("Lean is not installed: skipping");
-        return;
-    }
-    let hub = TestHub::start().await;
-    let (ada, _) = group(&hub).await;
-
-    // The library becomes the fixture, without Mathlib.
+/// Makes the group's library the fixture, without Mathlib, as Ada pushes
+/// it. Returns the folder of her clone, the clone, and the commit.
+async fn fixture_library(hub: &TestHub, ada: &Person) -> (tempfile::TempDir, PathBuf, String) {
     let work = tempfile::tempdir().unwrap();
-    let host = hub.url.trim_start_matches("http://");
-    let url = format!("http://ada:{}@{host}/git/geometry.git", ada.token);
+    let url = clone_url(hub, ada);
     assert!(
         git(work.path(), &["clone", "-q", &url, "library"])
             .status
@@ -733,6 +728,7 @@ async fn a_group_worker_with_lean_builds_and_inspects_the_library() {
     }
     let fixture = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../lean/fixture");
     copy_dir(&fixture, &dir);
+    std::fs::write(dir.join(".gitignore"), "/.lake\n").unwrap();
     git(&dir, &["add", "-A"]);
     git(&dir, &["commit", "-qm", "The fixture"]);
     assert!(
@@ -741,7 +737,24 @@ async fn a_group_worker_with_lean_builds_and_inspects_the_library() {
             .success()
     );
     let commit = String::from_utf8(git(&dir, &["rev-parse", "HEAD"]).stdout).unwrap();
-    let commit = commit.trim().to_owned();
+    (work, dir, commit.trim().to_owned())
+}
+
+/// Where Ada clones the library from, with her token.
+fn clone_url(hub: &TestHub, ada: &Person) -> String {
+    let host = hub.url.trim_start_matches("http://");
+    format!("http://ada:{}@{host}/git/geometry.git", ada.token)
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_group_worker_with_lean_builds_and_inspects_the_library() {
+    if !lean_here() {
+        eprintln!("Lean is not installed: skipping");
+        return;
+    }
+    let hub = TestHub::start().await;
+    let (ada, _) = group(&hub).await;
+    let (_clone, dir, commit) = fixture_library(&hub, &ada).await;
 
     let worker_dir = tempfile::tempdir().unwrap();
     let running = worker(
@@ -847,4 +860,388 @@ async fn a_revoked_worker_stops() {
         error.contains("does not accept this worker's token"),
         "{error}"
     );
+}
+
+/// A mock model that hands a task to the workshop, and then says so.
+async fn mock_handing_over(State(seen): State<Seen>, Json(body): Json<Value>) -> Json<Value> {
+    seen.lock().unwrap().push(body.clone());
+    let messages = body["messages"].as_array().unwrap();
+    match messages.iter().find(|m| m["role"] == "tool") {
+        None => Json(json!({
+            "choices": [{"message": {"role": "assistant", "content": null, "tool_calls": [{
+                "id": "call_1", "type": "function",
+                "function": {"name": "create_task", "arguments": json!({
+                    "title": "Formalize the gluing lemma",
+                    "instructions": "State the lemma of [[t1#1]], with its proof as sorry.",
+                    "schedule": "night"
+                }).to_string()}
+            }]}}],
+        })),
+        Some(tool) => Json(json!({
+            "choices": [{"message": {"role": "assistant",
+                "content": format!("Done: {}", tool["content"].as_str().unwrap())}}],
+        })),
+    }
+}
+
+#[tokio::test]
+async fn an_agent_hands_a_task_to_the_workshop() {
+    let hub = TestHub::start().await;
+    let (ada, _) = group(&hub).await;
+    let seen: Seen = Arc::default();
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let model_url = format!("http://{}/v1", listener.local_addr().unwrap());
+    let app = axum::Router::new()
+        .route(
+            "/v1/chat/completions",
+            axum::routing::post(mock_handing_over),
+        )
+        .with_state(seen.clone());
+    tokio::spawn(async move { axum::serve(listener, app).await });
+    ada.post(
+        &hub,
+        "/groups/geometry/agents",
+        json!({"handle": "qwen", "display_name": "Qwen", "runner": "api",
+               "endpoint": "mock", "scope": "group"}),
+    )
+    .await;
+    let work = tempfile::tempdir().unwrap();
+    let running = worker(
+        &hub,
+        &worker_token(&hub, &ada, "/groups/geometry/workers").await,
+        work.path(),
+        &format!("[runners.api]\n[endpoints.mock]\nurl = {model_url:?}\nmodel = \"m\"\n"),
+    );
+    ada.post(
+        &hub,
+        "/groups/geometry/threads",
+        json!({"title": "Gluing", "body": "@qwen have the workshop formalize the gluing lemma tonight"}),
+    )
+    .await;
+    let message = answer(&hub, &ada, 1, 2).await;
+    assert_eq!(message["agent"], "Qwen");
+    assert!(
+        message["body"]
+            .as_str()
+            .unwrap()
+            .contains("Handed w1 to the workshop"),
+        "{message}"
+    );
+    let task = ada.get(&hub, "/groups/geometry/tasks/1").await;
+    assert_eq!(task["title"], "Formalize the gluing lemma");
+    assert_eq!(task["origin"], "t1#1");
+    assert_eq!(task["agent"], "Qwen");
+    assert_eq!(task["schedule"], "night");
+    assert_eq!(task["requester"]["username"], "ada");
+    assert_eq!(task["state"], "open");
+    running.abort();
+}
+
+/// A fake `opencode run`, working on the fixture in its worktree: in its
+/// first round it adds a theorem and a definition whose data is `sorry`,
+/// and Ada meanwhile pushes another change to `main`; told that the
+/// definition does not pass, it completes it.
+fn fake_opencode(dir: &Path, clone_url: &str) -> PathBuf {
+    script(
+        dir,
+        "opencode",
+        &format!(
+            r#"printf '%s\n' "$@" > "$HERE/opencode.args"
+echo call >> "$HERE/opencode.calls"
+cp "$OPENCODE_CONFIG" "$HERE/opencode.json"
+case "$*" in
+  *"does not pass yet"*)
+    sed -i.bak 's/def three : Nat := sorry/def three : Nat := 3/' Fixture/More.lean
+    rm -f Fixture/More.lean.bak
+    ;;
+  *)
+    cat >> Fixture/More.lean <<'LEAN'
+
+namespace Fixture
+
+/-- Twice two is four, as t1#1 says. -/
+theorem double_two : double 2 = 4 := rfl
+
+/-- Three. -/
+def three : Nat := sorry
+
+end Fixture
+LEAN
+    # Meanwhile, Ada changes main elsewhere.
+    rm -rf "$HERE/ada" && git clone -q {clone_url} "$HERE/ada"
+    cd "$HERE/ada" && echo "Notes." > NOTES.md && git add NOTES.md \
+      && git -c user.name=Ada -c user.email=ada@example.org commit -qm Notes \
+      && git push -q origin main && cd - > /dev/null
+    ;;
+esac
+mkdir -p .stemma
+printf 'Added [[lean:Fixture.double_two]] and [[lean:Fixture.three]].\n\nNothing is pending.\n' > .stemma/report.md
+echo '{{"type":"tool_use","part":{{"tool":"bash","state":{{"input":{{"command":"lake build"}}}}}}}}'
+echo '{{"type":"text","part":{{"text":"Done: see the report."}}}}'
+"#
+        ),
+    )
+}
+
+/// The task, once it is over.
+async fn task_over(hub: &TestHub, person: &Person, number: u32) -> Value {
+    let mut task = Value::Null;
+    for _ in 0..600 {
+        task = person
+            .get(hub, &format!("/groups/geometry/tasks/{number}"))
+            .await;
+        let state = task["state"].as_str().unwrap_or_default();
+        if !matches!(state, "open" | "running") {
+            return task;
+        }
+        tokio::time::sleep(Duration::from_millis(500)).await;
+    }
+    panic!("task w{number} did not end: {task}");
+}
+
+/// A group worker that works on the workshop's tasks with a fake OpenCode.
+fn workshop_worker(
+    hub: &TestHub,
+    token: &str,
+    work: &Path,
+    opencode: &Path,
+) -> JoinHandle<anyhow::Result<()>> {
+    worker(
+        hub,
+        token,
+        work,
+        &format!(
+            "[runners.opencode]\ncommand = {:?}\nmodel = \"fake/model\"\n[lean]\ncache = false\n[workshop]\n",
+            opencode.display().to_string()
+        ),
+    )
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn with_lean_the_workshop_formalizes_a_task_from_a_thread() {
+    if !lean_here() {
+        eprintln!("Lean is not installed: skipping");
+        return;
+    }
+    let hub = TestHub::start().await;
+    let (ada, _) = group(&hub).await;
+    let (_clone, _dir, commit) = fixture_library(&hub, &ada).await;
+    let tools = tempfile::tempdir().unwrap();
+    let opencode = fake_opencode(tools.path(), &clone_url(&hub, &ada));
+    let worker_dir = tempfile::tempdir().unwrap();
+    let running = workshop_worker(
+        &hub,
+        &worker_token(&hub, &ada, "/groups/geometry/workers").await,
+        worker_dir.path(),
+        &opencode,
+    );
+    assert_eq!(build_of(&hub, &ada, &commit).await["state"], "succeeded");
+
+    ada.post(
+        &hub,
+        "/groups/geometry/papers",
+        json!({"slug": "notes", "title": "Notes", "body": "# Setting\n\nOpen.\n"}),
+    )
+    .await;
+    ada.post(
+        &hub,
+        "/groups/geometry/threads",
+        json!({"title": "Doubling", "anchor": "p/notes#setting", "body": "Twice two is four."}),
+    )
+    .await;
+    ada.post(
+        &hub,
+        "/groups/geometry/threads/1/messages",
+        json!({"body": "@workshop formalize t1#1."}),
+    )
+    .await;
+    let task = task_over(&hub, &ada, 1).await;
+    assert_eq!(task["state"], "done", "{task}");
+    assert_eq!(task["runner"], "opencode");
+    assert_eq!(task["model"], "fake/model");
+    assert_eq!(task["report_message"], "t1#3");
+    let pushed = task["commits"][0].as_str().unwrap().to_owned();
+    assert_eq!(task["commits"].as_array().unwrap().len(), 1);
+    let log = task["log"].as_str().unwrap();
+    assert!(
+        log.contains("Not accepted: The data of Fixture.three depends on sorry"),
+        "{log}"
+    );
+    assert!(log.contains("Round 2"), "{log}");
+    assert!(log.contains("rebasing on it"), "{log}");
+    assert!(!log.contains("stj_"), "the token is not in the log");
+    assert_eq!(
+        std::fs::read_to_string(tools.path().join("opencode.calls"))
+            .unwrap()
+            .lines()
+            .count(),
+        2
+    );
+
+    // One message in the thread reports on it, for Ada.
+    let report = answer(&hub, &ada, 1, 3).await;
+    assert_eq!(report["agent"], "Workshop");
+    assert_eq!(report["author"]["username"], "ada");
+    assert_eq!(report["reply_to"], 2);
+    let body = report["body"].as_str().unwrap();
+    assert!(
+        body.starts_with("**Done:** [[w1]], “Formalize t1#1”."),
+        "{body}"
+    );
+    assert!(body.contains("Added [[lean:Fixture.double_two]]"), "{body}");
+    assert!(body.contains(&format!("`{}`", &pushed[..10])), "{body}");
+    assert!(
+        body.contains("which changed [[lean:Fixture.double_two]], [[lean:Fixture.three]]"),
+        "{body}"
+    );
+    assert!(body.contains("Editor will update [[p/notes]]."), "{body}");
+
+    // What it pushed is the library's state, from its own build.
+    let library = ada.get(&hub, "/groups/geometry/library").await;
+    assert_eq!(library["head"], pushed.as_str());
+    assert_eq!(library["current"]["commit"], pushed.as_str());
+    let double_two = ada
+        .get(
+            &hub,
+            "/groups/geometry/library/declarations/Fixture.double_two",
+        )
+        .await;
+    assert_eq!(double_two["state"], "proved");
+    assert_eq!(double_two["doc"], "Twice two is four, as t1#1 says.");
+    let three = ada
+        .get(&hub, "/groups/geometry/library/declarations/Fixture.three")
+        .await;
+    assert_eq!(three["data_sorry"], false);
+
+    // On top of Ada's change, with its provenance, signed by the workshop.
+    let repository = hub.data.path().join("libraries");
+    let repository = std::fs::read_dir(&repository)
+        .unwrap()
+        .flatten()
+        .next()
+        .unwrap()
+        .path();
+    let shown = String::from_utf8(
+        git(
+            &repository,
+            &["log", "-2", "--format=%an <%ae>%n%B%n--", &pushed],
+        )
+        .stdout,
+    )
+    .unwrap();
+    assert!(
+        shown.starts_with(
+            "Workshop, for Ada <ada@stemma>\nFormalize t1#1\n\nTask: w1\nOrigin: t1#2\nRunner: \
+             opencode\nModel: fake/model\n"
+        ),
+        "{shown}"
+    );
+    assert!(shown.contains("Notes"), "{shown}");
+
+    // The editor is asked to update the paper the thread is about.
+    let jobs = jobs(&hub, &ada, 1).await;
+    let editor = jobs
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|j| j["kind"] == "paper_update")
+        .expect("the editor's job");
+    assert_eq!(editor["paper"], "notes");
+    assert_eq!(editor["trigger"], 3);
+    assert_eq!(editor["requester"]["username"], "ada");
+
+    // How OpenCode was run: headless, with its own configuration.
+    let args = std::fs::read_to_string(tools.path().join("opencode.args")).unwrap();
+    assert!(
+        args.starts_with("run\n--format\njson\n--model\nfake/model\n"),
+        "{args}"
+    );
+    assert!(
+        args.contains("You are Workshop, the workshop of Stemma"),
+        "{args}"
+    );
+    assert!(args.contains("The working paper p/notes"), "{args}");
+    let config: Value =
+        serde_json::from_str(&std::fs::read_to_string(tools.path().join("opencode.json")).unwrap())
+            .unwrap();
+    assert_eq!(config["permission"]["edit"], "allow");
+    let command = config["mcp"]["stemma"]["command"].as_array().unwrap();
+    assert!(command.contains(&json!("--read-only")));
+    assert!(!command.contains(&json!("--hand-over")));
+    // Its worktree is gone.
+    assert_eq!(
+        std::fs::read_dir(worker_dir.path().join("tasks"))
+            .unwrap()
+            .count(),
+        0
+    );
+    running.abort();
+}
+
+/// A fake `opencode run` that changes a line of the fixture which Ada
+/// changes too, meanwhile, on `main`.
+fn fake_conflicting_opencode(dir: &Path, clone_url: &str) -> PathBuf {
+    script(
+        dir,
+        "opencode",
+        &format!(
+            r#"sed -i.bak 's/theorem classical/theorem classical_em/' Fixture/More.lean
+rm -f Fixture/More.lean.bak
+rm -rf "$HERE/ada" && git clone -q {clone_url} "$HERE/ada"
+cd "$HERE/ada" && sed -i.bak 's/theorem classical/theorem excluded_middle/' Fixture/More.lean \
+  && rm -f Fixture/More.lean.bak && git add -A \
+  && git -c user.name=Ada -c user.email=ada@example.org commit -qm Rename \
+  && git push -q origin main && cd - > /dev/null
+echo 'Renamed it.'
+"#
+        ),
+    )
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn with_lean_a_task_is_blocked_when_main_changes_where_it_worked() {
+    if !lean_here() {
+        eprintln!("Lean is not installed: skipping");
+        return;
+    }
+    let hub = TestHub::start().await;
+    let (ada, _) = group(&hub).await;
+    let (_clone, _dir, _commit) = fixture_library(&hub, &ada).await;
+    let tools = tempfile::tempdir().unwrap();
+    let opencode = fake_conflicting_opencode(tools.path(), &clone_url(&hub, &ada));
+    let worker_dir = tempfile::tempdir().unwrap();
+    let running = workshop_worker(
+        &hub,
+        &worker_token(&hub, &ada, "/groups/geometry/workers").await,
+        worker_dir.path(),
+        &opencode,
+    );
+    ada.post(
+        &hub,
+        "/groups/geometry/threads",
+        json!({"title": "Names", "body": "Call it classical_em."}),
+    )
+    .await;
+    ada.post(
+        &hub,
+        "/groups/geometry/tasks",
+        json!({"title": "Rename classical", "instructions": "As t1#1 says.", "origin": "t1#1"}),
+    )
+    .await;
+    let task = task_over(&hub, &ada, 1).await;
+    assert_eq!(task["state"], "blocked", "{task}");
+    assert_eq!(
+        task["reason"],
+        "Main changed where the workshop worked: Fixture/More.lean"
+    );
+    assert_eq!(task["commits"], json!([]));
+    let report = answer(&hub, &ada, 1, 2).await;
+    let body = report["body"].as_str().unwrap();
+    assert!(
+        body.starts_with("**Blocked:** [[w1]], “Rename classical”. Main changed"),
+        "{body}"
+    );
+    assert!(body.contains("Renamed it."), "{body}");
+    assert!(body.ends_with("Nothing was put in the library."), "{body}");
+    running.abort();
 }

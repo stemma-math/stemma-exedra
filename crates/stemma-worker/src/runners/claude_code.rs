@@ -3,34 +3,45 @@
 //! It gets Stemma's instructions appended to its system prompt, the thread
 //! and the request on standard input, and Stemma's tools through an MCP
 //! configuration of its own: only `stemma mcp`, read-only, with the job's
-//! token. Claude Code's built-in tools are off, and only Stemma's tools are
-//! allowed. Its output is a stream of JSON events: tool calls become
-//! progress, and the final result is the answer.
+//! token. To answer, Claude Code's built-in tools are off, and only
+//! Stemma's tools are allowed; to work on a task, it may also read, edit
+//! and write files and run commands, in the task's worktree, for a limited
+//! number of turns. Its output is a stream of JSON events: tool calls
+//! become progress, and the final result is the answer.
 
 use serde_json::{Value, json};
 use stemma_core::api::AgentProfile;
 use stemma_core::protocol::JobSpec;
 use tokio::process::Command;
 
-use super::{allowed_tools, failed, mcp_args, run_command};
+use super::{Work, allowed_tools, failed, mcp_args, run_command};
 use crate::config::CliRunner;
 use crate::job::{Context, JobDir, Progress, Prompt};
 
-/// The Stemma tools an agent may use, as Claude Code names them.
-fn allowed() -> String {
-    allowed_tools()
+/// Claude Code's own tools a task's run may use.
+const WORK_TOOLS: &[&str] = &["Bash", "Read", "Edit", "MultiEdit", "Write", "Glob", "Grep"];
+
+/// The tools an agent may use, as Claude Code names them: Stemma's, and to
+/// work on a task, its own that edit files and run commands.
+fn allowed(job: &JobSpec, edits: bool) -> String {
+    let mut names: Vec<String> = allowed_tools(job)
         .iter()
         .map(|name| format!("mcp__stemma__{name}"))
-        .collect::<Vec<_>>()
-        .join(",")
+        .collect();
+    if edits {
+        names.extend(WORK_TOOLS.iter().map(|name| (*name).to_owned()));
+    }
+    names.join(",")
 }
 
+#[allow(clippy::too_many_arguments)]
 pub async fn run(
     context: &Context,
     config: &CliRunner,
     job: &JobSpec,
     agent: &AgentProfile,
     dir: &JobDir,
+    work: &Work<'_>,
     prompt: &Prompt,
     progress: &Progress,
 ) -> anyhow::Result<String> {
@@ -49,16 +60,22 @@ pub async fn run(
     let program = config.command.as_deref().unwrap_or("claude");
     let mut command = Command::new(program);
     command
-        .current_dir(&dir.path)
+        .current_dir(work.dir)
         .args(["-p", "--output-format", "stream-json", "--verbose"])
         .args(["--no-session-persistence", "--strict-mcp-config"])
         .arg("--mcp-config")
-        .arg(&mcp_file)
-        .args(["--tools", ""])
-        .args(["--allowedTools", &allowed()])
+        .arg(&mcp_file);
+    if !work.edits {
+        command.args(["--tools", ""]);
+    }
+    command
+        .args(["--allowedTools", &allowed(job, work.edits)])
         .args(["--permission-mode", "dontAsk"])
         .arg("--append-system-prompt")
         .arg(&prompt.system);
+    if let Some(turns) = work.max_turns {
+        command.args(["--max-turns", &turns.to_string()]);
+    }
     if let Some(model) = agent.model.as_ref().or(config.model.as_ref()) {
         command.args(["--model", model]);
     }

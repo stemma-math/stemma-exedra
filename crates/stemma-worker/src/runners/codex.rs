@@ -1,8 +1,10 @@
 //! Codex, headless (`codex exec`), with the member's own login.
 //!
-//! It runs in a read-only sandbox in the job's folder, with Stemma's tools
-//! through `stemma mcp`, read-only, with the job's token, configured on the
-//! command line so that the member's own configuration stays as it is.
+//! To answer, it runs in a read-only sandbox in the job's folder; to work
+//! on a task, in a sandbox where it writes in the task's worktree. It has
+//! Stemma's tools through `stemma mcp`, read-only, with the job's token,
+//! configured on the command line so that the member's own configuration
+//! stays as it is.
 //! Codex has no separate system prompt here: Stemma's instructions come
 //! first in its input. Its last message is the answer.
 
@@ -11,7 +13,7 @@ use stemma_core::api::AgentProfile;
 use stemma_core::protocol::JobSpec;
 use tokio::process::Command;
 
-use super::{failed, mcp_args, run_command};
+use super::{Work, failed, mcp_args, run_command};
 use crate::config::CliRunner;
 use crate::job::{Context, JobDir, Progress, Prompt};
 
@@ -20,12 +22,14 @@ fn toml_value(value: toml::Value) -> String {
     value.to_string()
 }
 
+#[allow(clippy::too_many_arguments)]
 pub async fn run(
     context: &Context,
     config: &CliRunner,
     job: &JobSpec,
     agent: &AgentProfile,
     dir: &JobDir,
+    work: &Work<'_>,
     prompt: &Prompt,
     progress: &Progress,
 ) -> anyhow::Result<String> {
@@ -40,13 +44,18 @@ pub async fn run(
 
     let program = config.command.as_deref().unwrap_or("codex");
     let mut command = Command::new(program);
+    let sandbox = if work.edits {
+        "workspace-write"
+    } else {
+        "read-only"
+    };
     command
-        .current_dir(&dir.path)
+        .current_dir(work.dir)
         .arg("exec")
         .args(["--skip-git-repo-check", "--ephemeral", "--json"])
-        .args(["--sandbox", "read-only", "--color", "never"])
+        .args(["--sandbox", sandbox, "--color", "never"])
         .arg("--cd")
-        .arg(&dir.path)
+        .arg(work.dir)
         .arg("--output-last-message")
         .arg(&answer_file)
         .args(["-c", "approval_policy=\"never\""])
@@ -71,6 +80,9 @@ pub async fn run(
                 other => other.clone(),
             };
             progress.tool(item["tool"].as_str().unwrap_or(""), &args);
+        }
+        if event["type"] == "item.started" && item["type"] == "command_execution" {
+            progress.tool("shell", &serde_json::json!({"command": item["command"]}));
         }
     })
     .await?;

@@ -1,6 +1,7 @@
 //! Stemma's own harness: a loop of tool calls over an OpenAI-compatible
 //! Chat Completions API (OpenRouter, OpenAI, a local server…), with
-//! Stemma's tools, read-only, as the job's requester.
+//! Stemma's tools, read-only, as the job's requester; answering in a
+//! thread, it may also hand a task to the workshop.
 //!
 //! Each step asks the model; if it calls tools, they run and the loop goes
 //! on, and if it answers, that is the answer. The last step, or the first
@@ -80,7 +81,8 @@ pub async fn run(
         Hub::new(&context.hub, Some(job.token.clone()))?,
         Some(job.group.slug.clone()),
     )
-    .read_only(true);
+    .read_only(true)
+    .hands_over(super::hands_over(job));
     let tools: Vec<Value> = toolbox
         .definitions()
         .into_iter()
@@ -162,7 +164,7 @@ pub async fn run(
                 other => other.clone(),
             };
             progress.tool(name, &args);
-            let content = match toolbox.call(name, args, None).await {
+            let content = match toolbox.call(name, args, Some(&agent.display_name)).await {
                 Ok(text) => text,
                 Err(error) => format!("Error: {error}"),
             };

@@ -19,6 +19,11 @@
 //!
 //! [lean]                              # library builds, with Lean installed
 //! timeout_minutes = 90
+//!
+//! [runners.opencode]                  # OpenCode, with a model of any provider
+//! model = "openrouter/qwen/qwen3-coder"
+//! [workshop]                          # tasks of the workshop, with [lean]
+//! timeout_minutes = 120
 //! ```
 //!
 //! Keys are never written in the file: an endpoint names the environment
@@ -54,6 +59,25 @@ pub struct WorkerConfig {
     pub endpoints: BTreeMap<String, Endpoint>,
     /// How a group's worker with Lean builds its library.
     pub lean: Option<LeanConfig>,
+    /// How it works on the workshop's tasks, if it does: it needs [`lean`]
+    /// and a runner that edits files (`opencode`, `claude-code`, `codex`).
+    ///
+    /// [`lean`]: WorkerConfig::lean
+    pub workshop: Option<WorkshopConfig>,
+}
+
+/// How a worker works on the workshop's tasks.
+#[derive(Clone, Debug, Default, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct WorkshopConfig {
+    /// How long a task may take, all in all; 120 minutes if absent.
+    pub timeout_minutes: Option<u64>,
+    /// How many times the runner may work on a task: the first, and then
+    /// to fix what the build or the inspection found; 2 if absent.
+    pub rounds: Option<u32>,
+    /// How many steps (turns) a runner that counts them may take in a
+    /// round; 80 if absent.
+    pub max_turns: Option<u32>,
 }
 
 /// How libraries are built. A worker builds them if this is configured, it
@@ -79,6 +103,7 @@ pub struct Runners {
     pub claude_code: Option<CliRunner>,
     pub codex: Option<CliRunner>,
     pub api: Option<ApiRunner>,
+    pub opencode: Option<CliRunner>,
 }
 
 /// A runner that is a command-line harness.
@@ -139,6 +164,17 @@ impl WorkerConfig {
             "the worker offers nothing: add a runner, such as [runners.claude-code], or [lean]"
         );
         anyhow::ensure!(self.concurrency >= 1, "concurrency is at least 1");
+        if self.workshop.is_some() {
+            anyhow::ensure!(
+                self.lean.is_some(),
+                "the workshop needs Lean: add [lean] beside [workshop]"
+            );
+            anyhow::ensure!(
+                !self.workshop_runners().is_empty(),
+                "the workshop needs a runner that edits files: add [runners.opencode], \
+                 [runners.claude-code] or [runners.codex]"
+            );
+        }
         if let Some(api) = &self.runners.api {
             anyhow::ensure!(
                 !self.endpoints.is_empty(),
@@ -174,11 +210,20 @@ impl WorkerConfig {
             (r.claude_code.is_some(), runners::CLAUDE_CODE),
             (r.codex.is_some(), runners::CODEX),
             (r.api.is_some(), runners::API),
+            (r.opencode.is_some(), runners::OPENCODE),
         ]
         .into_iter()
         .filter(|(offered, _)| *offered)
         .map(|(_, name)| name.to_owned())
         .collect()
+    }
+
+    /// The runners offered that can work on the workshop's tasks.
+    pub fn workshop_runners(&self) -> Vec<String> {
+        self.runner_names()
+            .into_iter()
+            .filter(|name| runners::WORKSHOP.contains(&name.as_str()))
+            .collect()
     }
 
     pub fn work_dir(&self) -> PathBuf {
@@ -226,5 +271,17 @@ mod tests {
             toml::from_str("hub = \"x\"\ntoken = \"t\"\n[runners.api]").unwrap();
         assert!(no_endpoint.check().is_err());
         assert!(toml::from_str::<WorkerConfig>("hub = \"x\"\ntokn = \"t\"").is_err());
+        let workshop_without_lean: WorkerConfig =
+            toml::from_str("hub = \"x\"\ntoken = \"t\"\n[runners.opencode]\n[workshop]").unwrap();
+        assert!(workshop_without_lean.check().is_err());
+        let workshop_without_runner: WorkerConfig =
+            toml::from_str("hub = \"x\"\ntoken = \"t\"\n[lean]\n[workshop]").unwrap();
+        assert!(workshop_without_runner.check().is_err());
+        let workshop: WorkerConfig = toml::from_str(
+            "hub = \"x\"\ntoken = \"t\"\n[runners.opencode]\n[runners.api]\n[endpoints.a]\nurl = \"u\"\n[lean]\n[workshop]",
+        )
+        .unwrap();
+        workshop.check().unwrap();
+        assert_eq!(workshop.workshop_runners(), ["opencode"]);
     }
 }
