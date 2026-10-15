@@ -164,7 +164,9 @@ A task asked for the night ("tonight", "overnight") waits for the group's night
 window, 01:00 to 07:00 unless its admins change it, in the group's time zone.
 At night, members who choose to, in the group's settings, lend their own worker
 to the workshop: with Lean and `[workshop]` in its configuration, it works on
-the group's tasks with their own runners and subscription.
+the group's tasks with their own runners and subscription. Once a night, the
+editor also brings up to date the papers whose threads said something new
+since their last revision, and leaves alone those with nothing to change.
 
 ## From the command line
 

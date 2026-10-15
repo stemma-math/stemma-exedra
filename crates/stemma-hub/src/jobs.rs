@@ -18,8 +18,9 @@
 //!
 //! An answer is posted in the thread as a message by the agent, for the
 //! person who asked; an editor's revision is stored as the paper's next,
-//! and a message in the thread says so; a build's report becomes the
-//! library's state; a task's run is reported in its thread.
+//! and a message in the thread says so (the editor also updates papers at
+//! night, see [`crate::workshop::update_papers`]); a build's report becomes
+//! the library's state; a task's run is reported in its thread.
 //!
 //! Jobs live in the database, so they survive the hub's restarts; a job
 //! whose worker goes away is queued again, up to [`MAX_ATTEMPTS`] times.
@@ -329,6 +330,8 @@ struct JobRow {
     /// For a task's run, the task's number and schedule.
     task_number: Option<i64>,
     task_schedule: Option<String>,
+    /// For an editor's job, whether it is a paper's nightly update.
+    nightly: bool,
 }
 
 macro_rules! job_query {
@@ -337,7 +340,7 @@ macro_rules! job_query {
         j.trigger_message, j.requester_id, u.username, u.display_name, j.agent_handle, j.agent,
         j.runner, j.scope, j.state, j.worker_id, j.token_id, j.attempts, j.progress, j.error,
         j.answer, j.paper_slug, j.base_revision, j.created_at, j.updated_at,
-        k.number AS task_number, k.schedule AS task_schedule
+        k.number AS task_number, k.schedule AS task_schedule, j.nightly
          FROM jobs j LEFT JOIN threads t ON t.id = j.thread_id
               JOIN users u ON u.id = j.requester_id
               LEFT JOIN tasks k ON k.job_id = j.id"
@@ -879,6 +882,7 @@ async fn paper_update(
         conversation,
         paper,
         related,
+        nightly: job.nightly,
     })
 }
 
@@ -1041,6 +1045,15 @@ async fn revised(
         return Ok(Some("This job had no paper".into()));
     };
     let profile = job.profile()?;
+    // At night, a paper with nothing to change stays as it is, quietly.
+    if job.nightly
+        && let Some(current) = papers::current(state, job.group_id, slug).await?
+        && current.body.trim_end() == body.trim_end()
+        && current.title == title.trim()
+    {
+        done(state, job, None).await?;
+        return Ok(None);
+    }
     let group = Membership::of_group(state, job.group_id).await?;
     let written = Written {
         author_id: job.requester_id,

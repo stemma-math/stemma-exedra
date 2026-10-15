@@ -241,14 +241,23 @@ pub fn paper_prompt(group: &GroupRef, update: &PaperUpdate) -> Prompt {
         }
         user.push_str("---\n\n");
     }
-    user.push_str(&format!(
-        "Update p/{} as message t{}#{}, by {} (@{}), asks.\n",
-        paper.slug,
-        conversation.thread.number,
-        conversation.trigger,
-        conversation.requester.display_name,
-        conversation.requester.username
-    ));
+    if update.nightly {
+        let (slug, revision) = (&paper.slug, paper.revision);
+        user.push_str(&format!(
+            "Nobody asked in a message: this is the nightly update of p/{slug}. Bring it up to \
+             date with what the threads about it said since its revision {revision}, and with \
+             the library. If nothing changes what it should say, end with its text as it is.\n"
+        ));
+    } else {
+        user.push_str(&format!(
+            "Update p/{} as message t{}#{}, by {} (@{}), asks.\n",
+            paper.slug,
+            conversation.thread.number,
+            conversation.trigger,
+            conversation.requester.display_name,
+            conversation.requester.username
+        ));
+    }
     Prompt { system, user }
 }
 
@@ -521,6 +530,7 @@ mod tests {
                 },
             },
             related: Vec::new(),
+            nightly: false,
         }
     }
 
@@ -581,5 +591,19 @@ mod tests {
                 .user
                 .contains("Update p/gluing-maps as message t4#7, by Ada (@ada), asks.")
         );
+
+        let nightly = PaperUpdate {
+            nightly: true,
+            ..update(Some("Gluing maps"))
+        };
+        let prompt = paper_prompt(
+            &GroupRef {
+                slug: "geometry".into(),
+                name: "Geometry".into(),
+            },
+            &nightly,
+        );
+        assert!(prompt.user.contains("the nightly update of p/gluing-maps"));
+        assert!(!prompt.user.contains("as message t4#7"));
     }
 }

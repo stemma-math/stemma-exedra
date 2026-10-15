@@ -14,14 +14,17 @@
 //! library's state, one message in the thread the task came from reports
 //! on it, and the editor is asked to update the papers that reference what
 //! changed, or that the thread is about.
+//!
+//! At night the editor also brings up to date the papers whose threads said
+//! something new since their last revision (see [`update_papers`]).
 
 use std::collections::{HashMap, HashSet};
 
 use sqlx::FromRow;
 use stemma_core::Address;
 use stemma_core::api::{
-    AgentProfile, AgentRole, Event, JobKind, Task, TaskPage, TaskSchedule, TaskState, User,
-    WorkshopSettings,
+    AgentProfile, AgentRole, AgentScope, Event, JobKind, Task, TaskPage, TaskSchedule, TaskState,
+    User, WorkshopSettings,
 };
 use stemma_core::protocol::{Conversation, PaperSpec, TaskEnd, TaskOutcome, TaskRun};
 
@@ -53,6 +56,8 @@ pub struct Night {
     pub now: bool,
     /// The window, for what people read: `01:00–07:00 (Europe/Madrid)`.
     pub window: String,
+    /// How long the window is, in minutes.
+    pub length: i64,
     /// The members who lend their workers to the workshop at night.
     pub lenders: HashSet<i64>,
 }
@@ -107,6 +112,7 @@ pub async fn nights(state: &AppState) -> ApiResult<HashMap<i64, Night>> {
             let night = Night {
                 now: is_night(now, &time_zone, from, to),
                 window: format!("{}–{} ({time_zone})", clock(from), clock(to)),
+                length: (to - from).rem_euclid(24 * 60),
                 lenders: HashSet::new(),
             };
             (id, night)
@@ -120,10 +126,11 @@ pub async fn nights(state: &AppState) -> ApiResult<HashMap<i64, Night>> {
     Ok(nights)
 }
 
-/// Hands waiting tasks to workers when a night begins or ends somewhere:
-/// run every minute or so.
+/// Hands waiting tasks to workers when a night begins or ends somewhere,
+/// and updates the papers once a night: run every minute or so.
 pub async fn tick(state: &AppState) -> ApiResult<()> {
     let now = nights(state).await?;
+    let asked = update_papers(state, &now).await?;
     let changed = {
         let workers = state.workers.lock().await;
         workers.nights.iter().any(|(id, night)| {
@@ -131,10 +138,117 @@ pub async fn tick(state: &AppState) -> ApiResult<()> {
                 .is_some_and(|n| n.now != night.now || n.lenders != night.lenders)
         }) || now.keys().any(|id| !workers.nights.contains_key(id))
     };
-    if changed {
+    if asked || changed {
         jobs::dispatch(state).await?;
     }
     Ok(())
+}
+
+/// Once a night, in each group's night window, asks the editor to update
+/// the papers whose threads said something new since their last revision.
+/// An editor of the group's runs on the group's workers, for whoever said
+/// it; a personal one, only for a member who lends their worker at night.
+/// Returns whether it asked for any update.
+pub async fn update_papers(state: &AppState, nights: &HashMap<i64, Night>) -> ApiResult<bool> {
+    let now = db::now();
+    let mut asked = false;
+    for (&group_id, night) in nights {
+        if !night.now {
+            continue;
+        }
+        let Some(editor) = editor(state, group_id).await? else {
+            continue;
+        };
+        let mut lenders: Vec<i64> = night.lenders.iter().copied().collect();
+        lenders.sort_unstable();
+        // Wait for someone to lend their worker, if the editor needs one.
+        if editor.scope == AgentScope::Personal && lenders.is_empty() {
+            continue;
+        }
+        // Not again within a window's length of the last time: once a night.
+        let tonight: Option<i64> = sqlx::query_scalar(
+            "UPDATE groups SET papers_updated_at = ?1
+             WHERE id = ?2 AND (papers_updated_at IS NULL OR papers_updated_at < ?1 - ?3)
+             RETURNING id",
+        )
+        .bind(now)
+        .bind(group_id)
+        .bind(night.length * 60 * 1000)
+        .fetch_optional(&state.db)
+        .await?;
+        if tonight.is_some() {
+            asked |= update_group_papers(state, group_id, &editor, &lenders).await?;
+        }
+    }
+    Ok(asked)
+}
+
+async fn update_group_papers(
+    state: &AppState,
+    group_id: i64,
+    editor: &AgentProfile,
+    lenders: &[i64],
+) -> ApiResult<bool> {
+    // The papers, but not those an editor is updating already.
+    let papers: Vec<(String, i64)> = sqlx::query_as(
+        "SELECT p.slug, p.updated_at FROM papers p
+         WHERE p.group_id = ?1
+           AND NOT EXISTS (SELECT 1 FROM jobs j
+                           WHERE j.group_id = ?1 AND j.kind = 'paper_update'
+                             AND j.paper_slug = p.slug AND j.state IN ('queued', 'running'))
+         ORDER BY p.updated_at",
+    )
+    .bind(group_id)
+    .fetch_all(&state.db)
+    .await?;
+    let mut asked = false;
+    for (slug, updated_at) in papers {
+        // The thread about it where someone said something new last.
+        let mut said = None;
+        for (thread_id, _) in papers::threads_about(state, group_id, &slug).await? {
+            let author: Option<i64> = sqlx::query_scalar(
+                "SELECT author_id FROM messages
+                 WHERE thread_id = ? AND agent IS NULL AND deleted_at IS NULL AND created_at > ?
+                 ORDER BY number DESC LIMIT 1",
+            )
+            .bind(thread_id)
+            .bind(updated_at)
+            .fetch_optional(&state.db)
+            .await?;
+            if let Some(author) = author {
+                said = Some((thread_id, author));
+                break;
+            }
+        }
+        let Some((thread_id, author)) = said else {
+            continue;
+        };
+        let requester = match editor.scope {
+            AgentScope::Personal if !lenders.contains(&author) => lenders[0],
+            _ => author,
+        };
+        let last: i64 = sqlx::query_scalar("SELECT last_message FROM threads WHERE id = ?")
+            .bind(thread_id)
+            .fetch_one(&state.db)
+            .await?;
+        let job = jobs::queue_agent_job(
+            state,
+            group_id,
+            thread_id,
+            last as u32,
+            requester,
+            editor,
+            JobKind::PaperUpdate,
+            Some(&slug),
+        )
+        .await?;
+        sqlx::query("UPDATE jobs SET nightly = 1 WHERE id = ?")
+            .bind(job)
+            .execute(&state.db)
+            .await?;
+        asked = true;
+    }
+    Ok(asked)
 }
 
 // ── Tasks ─────────────────────────────────────────────────────────────

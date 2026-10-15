@@ -1573,6 +1573,80 @@ async fn editors_are_asked_to_update_papers() {
 }
 
 #[tokio::test]
+async fn the_editor_updates_papers_at_night() {
+    let hub = TestHub::new().await;
+    let ada = hub.admin_with_group().await;
+    let bob = hub.member(&ada, "bob").await;
+    let reply = hub
+        .post(
+            &ada,
+            "/groups/geometry/papers",
+            json!({"slug": "notes", "title": "Notes", "body": "Nothing yet."}),
+        )
+        .await;
+    assert_eq!(reply.status, StatusCode::CREATED);
+    let pause = std::time::Duration::from_millis(5);
+    tokio::time::sleep(pause).await;
+    hub.post(
+        &bob,
+        "/groups/geometry/threads",
+        json!({"title": "About the notes", "anchor": "p/notes", "body": "The charts glue."}),
+    )
+    .await;
+    hub.post(&ada, "/groups/geometry/threads", json!({"title": "Other"}))
+        .await;
+
+    // A night from now on, for two hours.
+    let now = time::OffsetDateTime::now_utc();
+    let from = i32::from(now.hour()) * 60 + i32::from(now.minute());
+    let to = (from + 120) % (24 * 60);
+    let clock = |m: i32| format!("{:02}:{:02}", m / 60, m % 60);
+    let reply = hub
+        .call(
+            &ada,
+            Method::PUT,
+            "/groups/geometry/workshop",
+            Some(json!({"night_from": clock(from), "night_to": clock(to)})),
+        )
+        .await;
+    assert_eq!(reply.json()["night_now"], true);
+
+    // The editor runs on each person's worker: only someone who lends it.
+    let nights = stemma_hub::workshop::nights(&hub.state).await.unwrap();
+    let asked = stemma_hub::workshop::update_papers(&hub.state, &nights)
+        .await
+        .unwrap();
+    assert!(!asked);
+    hub.call(
+        &bob,
+        Method::PUT,
+        "/groups/geometry/workshop",
+        Some(json!({"lend": true})),
+    )
+    .await;
+    let nights = stemma_hub::workshop::nights(&hub.state).await.unwrap();
+    let asked = stemma_hub::workshop::update_papers(&hub.state, &nights)
+        .await
+        .unwrap();
+    assert!(asked);
+    let jobs = hub
+        .get(&ada, "/groups/geometry/threads/1/jobs")
+        .await
+        .json();
+    assert_eq!(jobs.as_array().unwrap().len(), 1, "{jobs}");
+    assert_eq!(jobs[0]["kind"], "paper_update");
+    assert_eq!(jobs[0]["paper"], "notes");
+    assert_eq!(jobs[0]["requester"]["username"], "bob");
+    assert_eq!(jobs[0]["trigger"], 1);
+
+    // Once a night.
+    let asked = stemma_hub::workshop::update_papers(&hub.state, &nights)
+        .await
+        .unwrap();
+    assert!(!asked);
+}
+
+#[tokio::test]
 async fn the_workshop_takes_tasks_from_conversation() {
     let hub = TestHub::new().await;
     let ada = hub.admin_with_group().await;

@@ -211,13 +211,19 @@ pub struct Conversation {
 }
 
 /// An editor's job: a paper to update from the conversation that asked,
-/// and the threads about the paper.
+/// or at night from what was said since its last revision, and the threads
+/// about the paper.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct PaperUpdate {
     pub conversation: Conversation,
     pub paper: PaperSpec,
     /// Threads anchored to the paper, or that reference it, trimmed.
     pub related: Vec<RelatedThread>,
+    /// Whether it is the paper's nightly update, which nobody asked for in
+    /// a message: the conversation is the thread about the paper that said
+    /// something new last.
+    #[serde(default)]
+    pub nightly: bool,
 }
 
 /// A paper as an editor gets it.
