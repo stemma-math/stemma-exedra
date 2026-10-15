@@ -3,10 +3,10 @@
 
 use serde::Deserialize;
 use serde_json::{Value, json};
+use stemma_core::Address;
 use stemma_core::api::{PostMessage, ThreadKind};
-use stemma_core::{Address, locate};
 
-use super::{ToolDef, ToolError, ToolResult, Toolbox, parse};
+use super::{GROUP, ToolDef, ToolError, ToolResult, Toolbox, address_in, parse};
 use crate::format;
 
 /// A thread longer than this is read as its first message and its last
@@ -15,8 +15,6 @@ const LONG_THREAD: usize = 80;
 const RECENT: usize = 60;
 /// The most messages read at once.
 const MAX_RANGE: u32 = 200;
-
-const GROUP: &str = "The group's short name; the default group if absent.";
 
 pub fn definitions() -> Vec<ToolDef> {
     vec![
@@ -41,7 +39,8 @@ pub fn definitions() -> Vec<ToolDef> {
             description: "Read a thread, a message or a range of messages, by address: t12 \
                           (the thread), t12#45 (a message) or t12#45-50 (messages 45 to 50). \
                           Links to the web app work too. Each message comes headed by its \
-                          address, its author and its time.",
+                          address, its author and its time. Papers (p/slug) and declarations \
+                          (lean:Name) are read too.",
             input_schema: json!({
                 "type": "object",
                 "properties": {
@@ -121,18 +120,6 @@ async fn list_threads(toolbox: &Toolbox, args: Value) -> ToolResult {
     Ok(format::thread_list(&threads))
 }
 
-/// An address in a group, as a call gives it.
-async fn address_in(
-    toolbox: &Toolbox,
-    written: &str,
-    group: Option<&str>,
-) -> Result<(String, Address), ToolError> {
-    let located = locate(written)
-        .map_err(|e| ToolError::invalid(format!("{written:?} is not an address: {e}")))?;
-    let group = toolbox.group(group.or(located.group.as_deref())).await?;
-    Ok((group, located.address))
-}
-
 #[derive(Deserialize)]
 struct ReadThread {
     address: String,
@@ -169,14 +156,12 @@ async fn read_thread(toolbox: &Toolbox, args: Value) -> ToolResult {
         } => (thread, message, message),
         Address::Messages { thread, from, to } => (thread, from, to.min(from + MAX_RANGE - 1)),
         Address::Paper { .. } => {
-            return Err(ToolError::invalid(
-                "Working papers are not in this version of Stemma yet",
-            ));
+            let args = json!({"address": address.to_string(), "group": group});
+            return super::papers::read_paper(toolbox, args).await;
         }
-        Address::Declaration(_) => {
-            return Err(ToolError::invalid(
-                "The library is not in this version of Stemma yet",
-            ));
+        Address::Declaration(name) => {
+            let args = json!({"name": name, "group": group});
+            return super::library::lookup(toolbox, args).await;
         }
         Address::Task(_) => {
             return Err(ToolError::invalid(

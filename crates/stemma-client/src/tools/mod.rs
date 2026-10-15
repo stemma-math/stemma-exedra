@@ -2,16 +2,37 @@
 //! own harness and at the command line.
 //!
 //! Each space of Stemma has a module with its tools: what each is called,
-//! what it takes (a JSON Schema) and how it runs against the hub. Today
-//! that is the forum; working papers, the library and the workshop add
-//! their modules beside it, and [`Toolbox`] offers them all.
+//! what it takes (a JSON Schema) and how it runs against the hub: the
+//! forum, the working papers and the library. [`Toolbox`] offers them all.
 
 mod forum;
+mod library;
+mod papers;
 
 use serde::de::DeserializeOwned;
 use serde_json::Value;
+use stemma_core::{Address, locate};
 
 use crate::hub::{ApiError, Hub};
+
+const GROUP: &str = "The group's short name; the default group if absent.";
+
+/// Every tool, whatever it does.
+fn all_definitions() -> Vec<ToolDef> {
+    let mut tools = forum::definitions();
+    tools.extend(papers::definitions());
+    tools.extend(library::definitions());
+    tools
+}
+
+/// The names of the tools that only read: what agents' jobs may use.
+pub fn read_only_names() -> Vec<&'static str> {
+    all_definitions()
+        .into_iter()
+        .filter(|tool| !tool.writes)
+        .map(|tool| tool.name)
+        .collect()
+}
 
 /// A tool, as agents see it.
 #[derive(Clone, Debug)]
@@ -73,7 +94,7 @@ impl Toolbox {
 
     /// The tools on offer.
     pub fn definitions(&self) -> Vec<ToolDef> {
-        forum::definitions()
+        all_definitions()
             .into_iter()
             .filter(|tool| !(self.read_only && tool.writes))
             .collect()
@@ -92,7 +113,13 @@ impl Toolbox {
         } else {
             args
         };
-        match forum::call(self, tool.name, args, agent).await {
+        if let Some(result) = forum::call(self, tool.name, args.clone(), agent).await {
+            return result;
+        }
+        if let Some(result) = papers::call(self, tool.name, args.clone(), agent).await {
+            return result;
+        }
+        match library::call(self, tool.name, args).await {
             Some(result) => result,
             None => Err(ToolError::Unknown(name.to_owned())),
         }
@@ -126,4 +153,17 @@ impl Toolbox {
 /// Reads a tool's arguments.
 fn parse<T: DeserializeOwned>(args: Value) -> Result<T, ToolError> {
     serde_json::from_value(args).map_err(|e| ToolError::invalid(format!("Invalid arguments: {e}")))
+}
+
+/// An address in a group, as a call gives it: in any form people write
+/// one, a link to the web app included.
+async fn address_in(
+    toolbox: &Toolbox,
+    written: &str,
+    group: Option<&str>,
+) -> Result<(String, Address), ToolError> {
+    let located = locate(written)
+        .map_err(|e| ToolError::invalid(format!("{written:?} is not an address: {e}")))?;
+    let group = toolbox.group(group.or(located.group.as_deref())).await?;
+    Ok((group, located.address))
 }

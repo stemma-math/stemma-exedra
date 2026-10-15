@@ -18,9 +18,11 @@ use serde_json::Value;
 use crate::tools::Toolbox;
 
 const INSTRUCTIONS: &str = "Stemma is where a research group does mathematics by talking. \
-These tools reach the group's forum: threads of numbered messages in Markdown with $…$ math. \
-Everything has an address: t12 is thread 12, t12#45 its message 45, t12#45-50 messages 45 to 50. \
-Cite what you use by address, written as a reference: [[t12#45]].";
+These tools reach the group's forum, threads of numbered messages in Markdown with $…$ math; its \
+working papers, readable accounts of its lines of work; and its Lean library. Everything has an \
+address: t12 is thread 12, t12#45 its message 45, t12#45-50 messages 45 to 50; p/notes is a paper \
+and p/notes#gluing a section of it; lean:Foo.bar is a declaration of the library. Cite what you \
+use by address, written as a reference: [[t12#45]], [[p/notes#gluing]], [[lean:Foo.bar]].";
 
 /// The MCP server.
 #[derive(Clone)]

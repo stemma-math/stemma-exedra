@@ -6,8 +6,9 @@ use reqwest::{Method, StatusCode};
 use serde::Serialize;
 use serde::de::DeserializeOwned;
 use stemma_core::api::{
-    ApiToken, CreateToken, CreatedToken, ErrorBody, Me, Message, PREFIX, PostMessage, SearchHit,
-    SignIn, Thread, ThreadKind, ThreadPage,
+    ApiToken, CreatePaper, CreateToken, CreatedToken, DeclarationPage, DeclarationSummary,
+    EditPaper, ErrorBody, LibraryState, Me, Message, PREFIX, Paper, PaperPage, PostMessage,
+    Revision, RevisionText, SearchHit, SignIn, Thread, ThreadKind, ThreadPage,
 };
 
 /// An error the hub answered with, or not reaching it.
@@ -135,6 +136,14 @@ impl Hub {
         Ok(self.send(Method::POST, path, &[], Some(body)).await?.0)
     }
 
+    async fn put<T: DeserializeOwned>(
+        &self,
+        path: &str,
+        body: &(impl Serialize + ?Sized),
+    ) -> Result<T> {
+        Ok(self.send(Method::PUT, path, &[], Some(body)).await?.0)
+    }
+
     async fn delete(&self, path: &str) -> Result<()> {
         self.send::<serde_json::Value>(Method::DELETE, path, &[], None::<&()>)
             .await?;
@@ -231,6 +240,63 @@ impl Hub {
     pub async fn search(&self, group: &str, query: &str, limit: u32) -> Result<Vec<SearchHit>> {
         let query = [("q", query.to_owned()), ("limit", limit.to_string())];
         self.get(&format!("{}/search", g(group)), &query).await
+    }
+}
+
+impl Hub {
+    // ── Working papers ────────────────────────────────────────────────
+
+    pub async fn papers(&self, group: &str) -> Result<Vec<Paper>> {
+        self.get(&format!("{}/papers", g(group)), &[]).await
+    }
+
+    pub async fn paper(&self, group: &str, slug: &str) -> Result<PaperPage> {
+        self.get(&format!("{}/papers/{}", g(group), encode(slug)), &[])
+            .await
+    }
+
+    pub async fn revisions(&self, group: &str, slug: &str) -> Result<Vec<Revision>> {
+        self.get(
+            &format!("{}/papers/{}/revisions", g(group), encode(slug)),
+            &[],
+        )
+        .await
+    }
+
+    pub async fn revision(&self, group: &str, slug: &str, number: u32) -> Result<RevisionText> {
+        let path = format!("{}/papers/{}/revisions/{number}", g(group), encode(slug));
+        self.get(&path, &[]).await
+    }
+
+    pub async fn create_paper(&self, group: &str, paper: &CreatePaper) -> Result<Paper> {
+        self.post(&format!("{}/papers", g(group)), paper).await
+    }
+
+    pub async fn edit_paper(&self, group: &str, slug: &str, edit: &EditPaper) -> Result<Paper> {
+        self.put(&format!("{}/papers/{}", g(group), encode(slug)), edit)
+            .await
+    }
+
+    // ── The library ───────────────────────────────────────────────────
+
+    pub async fn library(&self, group: &str) -> Result<LibraryState> {
+        self.get(&format!("{}/library", g(group)), &[]).await
+    }
+
+    pub async fn declaration(&self, group: &str, name: &str) -> Result<DeclarationPage> {
+        let path = format!("{}/library/declarations/{}", g(group), encode(name));
+        self.get(&path, &[]).await
+    }
+
+    /// Declarations of the library, as `query` says: `q` (words of their
+    /// names, types or docstrings), `module`, `state` and `limit`.
+    pub async fn declarations(
+        &self,
+        group: &str,
+        query: &[(&str, String)],
+    ) -> Result<Vec<DeclarationSummary>> {
+        self.get(&format!("{}/library/declarations", g(group)), query)
+            .await
     }
 }
 
