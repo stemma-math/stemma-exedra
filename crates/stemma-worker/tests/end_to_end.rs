@@ -424,7 +424,7 @@ async fn jobs_outlive_their_workers_and_the_hub() {
     let third = worker(&hub, &token, work.path(), &fast);
     let message = answer(&hub, &ada, 1, 2).await;
     assert_eq!(message["agent"], "Claude");
-    let attempts: i64 = sqlx::query_scalar("SELECT attempts FROM jobs")
+    let attempts: i64 = sqlx::query_scalar("SELECT attempts FROM jobs WHERE kind = 'reply'")
         .fetch_one(&hub.state.db)
         .await
         .unwrap();
