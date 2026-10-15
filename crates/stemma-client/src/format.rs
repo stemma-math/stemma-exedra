@@ -4,9 +4,11 @@
 
 use std::fmt::Write;
 
+use stemma_core::Address;
 use stemma_core::api::{
     Build, BuildState, DeclarationPage, DeclarationState, DeclarationSummary, LibraryState,
-    Message, Paper, Revision, SearchHit, Thread, ThreadKind,
+    Message, Paper, Revision, SearchHit, Task, TaskPage, TaskSchedule, TaskState, Thread,
+    ThreadKind,
 };
 use time::OffsetDateTime;
 use time::format_description::well_known::Rfc3339;
@@ -353,6 +355,82 @@ pub fn declaration_list(declarations: &[DeclarationSummary]) -> String {
             d.module,
             d.type_.split_whitespace().collect::<Vec<_>>().join(" ")
         );
+    }
+    out
+}
+
+fn task_state_word(task: &Task) -> String {
+    match (task.state, task.schedule) {
+        (TaskState::Open, TaskSchedule::Night) => "open, for the night".into(),
+        (state, _) => state.as_str().into(),
+    }
+}
+
+/// One line per task.
+pub fn task_list(tasks: &[Task]) -> String {
+    if tasks.is_empty() {
+        return "No tasks.\n".into();
+    }
+    let mut out = String::new();
+    for task in tasks {
+        let _ = writeln!(
+            out,
+            "- w{} · {} · {} · from {}, for {} · {}",
+            task.number,
+            task.title,
+            task_state_word(task),
+            task.origin,
+            task.requester.display_name,
+            when(task.created_at)
+        );
+    }
+    out
+}
+
+/// A task, with its report and the end of its log.
+pub fn task(hub: &str, group: &str, page: &TaskPage) -> String {
+    let task = &page.task;
+    let mut out = format!(
+        "# w{} · {} · {}\n\nAsked in {} by {}",
+        task.number,
+        task.title,
+        task_state_word(task),
+        task.origin,
+        task.requester.display_name
+    );
+    if let Some(agent) = &task.agent {
+        let _ = write!(out, ", through {agent}");
+    }
+    let _ = writeln!(
+        out,
+        ", {}. {}{}",
+        when(task.created_at),
+        hub,
+        Address::Task(task.number).web_path(group)
+    );
+    if let Some(runner) = &task.runner {
+        let _ = write!(out, "\nWorked on with {runner}");
+        if let Some(model) = &task.model {
+            let _ = write!(out, " ({model})");
+        }
+        out.push_str(".\n");
+    }
+    if let Some(progress) = &task.progress {
+        let _ = writeln!(out, "\nNow: {progress}.");
+    }
+    if let Some(reason) = &task.reason {
+        let _ = writeln!(out, "\nWhy: {reason}");
+    }
+    if !task.commits.is_empty() {
+        let commits: Vec<&str> = task.commits.iter().map(|c| short(c)).collect();
+        let _ = writeln!(out, "\nCommits: {}.", commits.join(", "));
+    }
+    if let Some(message) = &task.report_message {
+        let _ = writeln!(out, "\nReported in {message}.");
+    }
+    let _ = writeln!(out, "\n## Instructions\n\n{}", task.instructions.trim());
+    if let Some(report) = page.report.as_deref().filter(|r| !r.trim().is_empty()) {
+        let _ = writeln!(out, "\n## Report\n\n{}", report.trim());
     }
     out
 }

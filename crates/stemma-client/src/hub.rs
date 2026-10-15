@@ -6,9 +6,10 @@ use reqwest::{Method, StatusCode};
 use serde::Serialize;
 use serde::de::DeserializeOwned;
 use stemma_core::api::{
-    ApiToken, CreatePaper, CreateToken, CreatedToken, DeclarationPage, DeclarationSummary,
-    EditPaper, ErrorBody, LibraryState, Me, Message, PREFIX, Paper, PaperPage, PostMessage,
-    Revision, RevisionText, SearchHit, SignIn, Thread, ThreadKind, ThreadPage,
+    ApiToken, CreatePaper, CreateTask, CreateToken, CreatedToken, DeclarationPage,
+    DeclarationSummary, EditPaper, ErrorBody, LibraryState, Me, Message, PREFIX, Paper, PaperPage,
+    PostMessage, Revision, RevisionText, SearchHit, SignIn, Task, TaskPage, TaskState, Thread,
+    ThreadKind, ThreadPage,
 };
 
 /// An error the hub answered with, or not reaching it.
@@ -297,6 +298,31 @@ impl Hub {
     ) -> Result<Vec<DeclarationSummary>> {
         self.get(&format!("{}/library/declarations", g(group)), query)
             .await
+    }
+}
+
+impl Hub {
+    // ── The workshop ──────────────────────────────────────────────────
+
+    pub async fn tasks(
+        &self,
+        group: &str,
+        state: Option<TaskState>,
+        limit: u32,
+    ) -> Result<Vec<Task>> {
+        let mut query = vec![("limit", limit.to_string())];
+        if let Some(state) = state {
+            query.push(("state", state.as_str().to_owned()));
+        }
+        self.get(&format!("{}/tasks", g(group)), &query).await
+    }
+
+    pub async fn task(&self, group: &str, number: u32) -> Result<TaskPage> {
+        self.get(&format!("{}/tasks/{number}", g(group)), &[]).await
+    }
+
+    pub async fn create_task(&self, group: &str, task: &CreateTask) -> Result<Task> {
+        self.post(&format!("{}/tasks", g(group)), task).await
     }
 }
 

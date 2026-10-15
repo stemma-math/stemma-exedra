@@ -39,8 +39,8 @@ pub fn definitions() -> Vec<ToolDef> {
             description: "Read a thread, a message or a range of messages, by address: t12 \
                           (the thread), t12#45 (a message) or t12#45-50 (messages 45 to 50). \
                           Links to the web app work too. Each message comes headed by its \
-                          address, its author and its time. Papers (p/slug) and declarations \
-                          (lean:Name) are read too.",
+                          address, its author and its time. Papers (p/slug), declarations \
+                          (lean:Name) and the workshop's tasks (w7) are read too.",
             input_schema: json!({
                 "type": "object",
                 "properties": {
@@ -163,10 +163,9 @@ async fn read_thread(toolbox: &Toolbox, args: Value) -> ToolResult {
             let args = json!({"name": name, "group": group});
             return super::library::lookup(toolbox, args).await;
         }
-        Address::Task(_) => {
-            return Err(ToolError::invalid(
-                "The workshop is not in this version of Stemma yet",
-            ));
+        Address::Task(number) => {
+            let args = json!({"address": format!("w{number}"), "group": group});
+            return super::tasks::status(toolbox, args).await;
         }
     };
     let messages = hub.messages(&group, thread, from, to).await?;
