@@ -1002,6 +1002,9 @@ async fn job_tokens_read_one_group_and_post_only_where_allowed() {
     let me = hub.get(&reader, "/me").await.json();
     assert_eq!(me["groups"].as_array().unwrap().len(), 1);
     assert_eq!(me["groups"][0]["slug"], "geometry");
+    let groups = hub.get(&reader, "/groups").await.json();
+    assert_eq!(groups.as_array().unwrap().len(), 1, "{groups}");
+    assert_eq!(groups[0]["slug"], "geometry");
     assert_eq!(
         hub.get(&reader, "/groups/geometry/threads/1").await.status,
         StatusCode::OK
@@ -1037,6 +1040,14 @@ async fn job_tokens_read_one_group_and_post_only_where_allowed() {
         .await;
     assert_eq!(reply.status, StatusCode::CREATED);
     assert_eq!(reply.json()["agent"], "Claude");
+    let reply = hub
+        .post(
+            &poster,
+            "/groups/geometry/threads/1/messages",
+            json!({"body": "Look", "attachments": [1]}),
+        )
+        .await;
+    assert_eq!(reply.status, StatusCode::FORBIDDEN);
     let reply = hub
         .post(
             &poster,

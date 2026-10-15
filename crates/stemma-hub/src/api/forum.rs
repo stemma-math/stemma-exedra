@@ -338,6 +338,10 @@ pub async fn post_message(
             None => None,
         },
     };
+    // A job's uploads would be its requester's, waiting for their message.
+    if viewer.job().is_some() && !body.attachments.is_empty() {
+        return Err(ApiError::forbidden("A job's token cannot attach files"));
+    }
     if body.body.trim().is_empty() && body.attachments.is_empty() {
         return Err(ApiError::invalid("A message needs words or a file"));
     }

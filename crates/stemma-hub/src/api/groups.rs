@@ -36,8 +36,17 @@ pub async fn groups_of(state: &AppState, user_id: i64) -> ApiResult<Vec<Group>> 
         .collect())
 }
 
+/// The viewer's groups. A job's token sees only its job's group.
 pub async fn list(State(state): State<AppState>, viewer: Viewer) -> ApiResult<Json<Vec<Group>>> {
-    Ok(Json(groups_of(&state, viewer.id).await?))
+    let mut groups = groups_of(&state, viewer.id).await?;
+    if let Some(job) = viewer.job() {
+        let slug: String = sqlx::query_scalar("SELECT slug FROM groups WHERE id = ?")
+            .bind(job.group_id)
+            .fetch_one(&state.db)
+            .await?;
+        groups.retain(|g| g.slug == slug);
+    }
+    Ok(Json(groups))
 }
 
 pub async fn get(
