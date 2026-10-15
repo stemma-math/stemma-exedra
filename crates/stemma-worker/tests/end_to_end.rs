@@ -647,6 +647,187 @@ async fn an_editor_updates_a_paper_from_its_threads() {
     running.abort();
 }
 
+/// Runs git in `dir`, with nobody's configuration.
+fn git(dir: &Path, args: &[&str]) -> std::process::Output {
+    std::process::Command::new("git")
+        .current_dir(dir)
+        .args(["-c", "user.name=Ada", "-c", "user.email=ada@example.org"])
+        .args(args)
+        .env("GIT_CONFIG_GLOBAL", "/dev/null")
+        .env("GIT_CONFIG_NOSYSTEM", "1")
+        .env("GIT_TERMINAL_PROMPT", "0")
+        .output()
+        .unwrap()
+}
+
+/// Copies a folder, leaving out what Lake built.
+fn copy_dir(from: &Path, to: &Path) {
+    std::fs::create_dir_all(to).unwrap();
+    for entry in std::fs::read_dir(from).unwrap().flatten() {
+        let name = entry.file_name();
+        if name == ".lake" {
+            continue;
+        }
+        let path = entry.path();
+        if path.is_dir() {
+            copy_dir(&path, &to.join(&name));
+        } else {
+            std::fs::copy(&path, to.join(&name)).unwrap();
+        }
+    }
+}
+
+/// Whether Lean can be used here: if the tests must use it, it must be.
+fn lean_here() -> bool {
+    let here = stemma_worker::connection::has_lean();
+    if !here && std::env::var_os("STEMMA_TEST_LEAN").is_some() {
+        panic!("STEMMA_TEST_LEAN is set, and Lean is not installed");
+    }
+    here
+}
+
+/// The build of `commit`, once it ends: builds take a while.
+async fn build_of(hub: &TestHub, person: &Person, commit: &str) -> Value {
+    let mut builds = Value::Null;
+    for _ in 0..600 {
+        builds = person.get(hub, "/groups/geometry/library/builds").await;
+        let ended = builds.as_array().unwrap().iter().find(|b| {
+            b["commit"] == commit && (b["state"] == "succeeded" || b["state"] == "failed")
+        });
+        if let Some(build) = ended {
+            return build.clone();
+        }
+        tokio::time::sleep(Duration::from_millis(500)).await;
+    }
+    panic!("the build of {commit} did not end: {builds}");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_group_worker_with_lean_builds_and_inspects_the_library() {
+    if !lean_here() {
+        eprintln!("Lean is not installed: skipping");
+        return;
+    }
+    let hub = TestHub::start().await;
+    let (ada, _) = group(&hub).await;
+
+    // The library becomes the fixture, without Mathlib.
+    let work = tempfile::tempdir().unwrap();
+    let host = hub.url.trim_start_matches("http://");
+    let url = format!("http://ada:{}@{host}/git/geometry.git", ada.token);
+    assert!(
+        git(work.path(), &["clone", "-q", &url, "library"])
+            .status
+            .success()
+    );
+    let dir = work.path().join("library");
+    for entry in std::fs::read_dir(&dir).unwrap().flatten() {
+        if entry.file_name() != ".git" {
+            let path = entry.path();
+            if path.is_dir() {
+                std::fs::remove_dir_all(path).unwrap();
+            } else {
+                std::fs::remove_file(path).unwrap();
+            }
+        }
+    }
+    let fixture = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../lean/fixture");
+    copy_dir(&fixture, &dir);
+    git(&dir, &["add", "-A"]);
+    git(&dir, &["commit", "-qm", "The fixture"]);
+    assert!(
+        git(&dir, &["push", "-q", "origin", "main"])
+            .status
+            .success()
+    );
+    let commit = String::from_utf8(git(&dir, &["rev-parse", "HEAD"]).stdout).unwrap();
+    let commit = commit.trim().to_owned();
+
+    let worker_dir = tempfile::tempdir().unwrap();
+    let running = worker(
+        &hub,
+        &worker_token(&hub, &ada, "/groups/geometry/workers").await,
+        worker_dir.path(),
+        "[lean]\ncache = false\n",
+    );
+    let built = build_of(&hub, &ada, &commit).await;
+    assert_eq!(built["state"], "succeeded", "{built}");
+    assert_eq!(built["lean"], "4.35.0");
+
+    let library = ada.get(&hub, "/groups/geometry/library").await;
+    assert_eq!(library["current"]["commit"], commit.as_str());
+    let hard = ada
+        .get(&hub, "/groups/geometry/library/declarations/Fixture.hard")
+        .await;
+    assert_eq!(hard["state"], "sorry");
+    assert_eq!(hard["kind"], "theorem");
+    assert_eq!(hard["doc"], "Not proved yet.");
+    assert_eq!(hard["used_by"], json!(["Fixture.uses_hard"]));
+    let unknown = ada
+        .get(
+            &hub,
+            "/groups/geometry/library/declarations/Fixture.unknown",
+        )
+        .await;
+    assert_eq!(unknown["data_sorry"], true);
+    let half = ada
+        .get(&hub, "/groups/geometry/library/declarations/Fixture.half")
+        .await;
+    assert_eq!(half["sorry"], true);
+    assert_eq!(half["data_sorry"], false);
+    let sum = ada
+        .get(
+            &hub,
+            "/groups/geometry/library/declarations/Fixture.Pair.sum",
+        )
+        .await;
+    assert_eq!(sum["state"], "proved");
+    assert_eq!(sum["uses"], json!(["Fixture.Pair", "Fixture.Pair.mk"]));
+    assert_eq!(sum["range"]["start_line"], 31);
+    let axiom = ada
+        .get(
+            &hub,
+            "/groups/geometry/library/declarations/Fixture.uses_axiom",
+        )
+        .await;
+    assert_eq!(axiom["axioms"], json!(["Fixture.choice_like"]));
+
+    // A commit that does not build is shown with its log; the state stays.
+    std::fs::write(
+        dir.join("Fixture/More.lean"),
+        "import Fixture.Basic\n\ntheorem broken : 1 = 2 := rfl\n",
+    )
+    .unwrap();
+    git(&dir, &["commit", "-qam", "Broken"]);
+    assert!(
+        git(&dir, &["push", "-q", "origin", "main"])
+            .status
+            .success()
+    );
+    let broken = String::from_utf8(git(&dir, &["rev-parse", "HEAD"]).stdout).unwrap();
+    let failed = build_of(&hub, &ada, broken.trim()).await;
+    assert_eq!(failed["state"], "failed", "{failed}");
+    assert_eq!(failed["error"], "lake build failed: see the log");
+    let log = ada
+        .get(
+            &hub,
+            &format!("/groups/geometry/library/builds/{}", failed["id"]),
+        )
+        .await;
+    assert!(
+        log["log"].as_str().unwrap().contains("$ lake build"),
+        "{log}"
+    );
+    assert!(log["log"].as_str().unwrap().contains("More.lean"));
+    assert!(
+        !log["log"].as_str().unwrap().contains("stj_"),
+        "the token is not in the log"
+    );
+    let library = ada.get(&hub, "/groups/geometry/library").await;
+    assert_eq!(library["current"]["commit"], commit.as_str());
+    running.abort();
+}
+
 #[tokio::test]
 async fn a_revoked_worker_stops() {
     let hub = TestHub::start().await;

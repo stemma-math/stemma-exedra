@@ -16,6 +16,9 @@
 //! url = "https://openrouter.ai/api/v1"
 //! key_env = "OPENROUTER_API_KEY"
 //! model = "qwen/qwen3-235b-a22b"
+//!
+//! [lean]                              # library builds, with Lean installed
+//! timeout_minutes = 90
 //! ```
 //!
 //! Keys are never written in the file: an endpoint names the environment
@@ -49,6 +52,19 @@ pub struct WorkerConfig {
     /// OpenAI-compatible endpoints, by name.
     #[serde(default)]
     pub endpoints: BTreeMap<String, Endpoint>,
+    /// How a group's worker with Lean builds its library.
+    pub lean: Option<LeanConfig>,
+}
+
+/// How libraries are built. A worker builds them if this is configured, it
+/// has Lean (`elan` or `lake` on its path) and it is a group's.
+#[derive(Clone, Debug, Default, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct LeanConfig {
+    /// How long a build may take; 90 minutes if absent.
+    pub timeout_minutes: Option<u64>,
+    /// Whether to get Mathlib's cache before building; yes if absent.
+    pub cache: Option<bool>,
 }
 
 fn one() -> u32 {
@@ -119,8 +135,8 @@ impl WorkerConfig {
 
     fn check(&self) -> anyhow::Result<()> {
         anyhow::ensure!(
-            !self.runner_names().is_empty(),
-            "the worker offers no runner: add one, such as [runners.claude-code]"
+            !self.runner_names().is_empty() || self.lean.is_some(),
+            "the worker offers nothing: add a runner, such as [runners.claude-code], or [lean]"
         );
         anyhow::ensure!(self.concurrency >= 1, "concurrency is at least 1");
         if let Some(api) = &self.runners.api {

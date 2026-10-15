@@ -120,7 +120,7 @@ async fn session(context: &Arc<Context>, token: &str) -> Ended {
         protocol: PROTOCOL_VERSION,
         version: env!("CARGO_PKG_VERSION").into(),
         runners: context.config.runner_names(),
-        lean: has_lean(),
+        lean: context.config.lean.is_some() && has_lean(),
         concurrency: context.config.concurrency,
     });
     if let Err(error) = send(&mut socket, &hello).await {
