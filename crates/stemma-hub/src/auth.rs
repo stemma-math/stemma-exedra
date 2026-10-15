@@ -1,5 +1,6 @@
 //! Who is asking: a session cookie from the web app, or an API token in an
-//! `Authorization: Bearer` header: a personal token, which can do whatever
+//! `Authorization: Bearer` header (or as the password of basic credentials,
+//! as git sends it): a personal token, which can do whatever
 //! its owner can, or a job's token, which reads one group for a job's
 //! requester while the job lasts.
 
@@ -131,8 +132,8 @@ impl OptionalFromRequestParts<AppState> for Viewer {
 async fn authenticate(headers: &HeaderMap, state: &AppState) -> Result<Option<Viewer>, ApiError> {
     let now = db::now();
 
-    if let Some(token) = bearer_token(headers) {
-        let hash = secret::token_hash(token);
+    if let Some(token) = request_token(headers) {
+        let hash = secret::token_hash(&token);
         let row = sqlx::query_as::<_, TokenRow>(
             "SELECT u.id, u.username, u.display_name, u.hub_admin,
                     t.kind, t.group_id, t.thread_id, t.agent, t.can_post
@@ -187,6 +188,25 @@ async fn authenticate(headers: &HeaderMap, state: &AppState) -> Result<Option<Vi
     .fetch_optional(&state.db)
     .await?;
     Ok(row.map(|row| row.viewer(false, Scope::Full)))
+}
+
+/// The token a request comes with: a bearer token, or the password of
+/// basic credentials, as git sends them.
+fn request_token(headers: &HeaderMap) -> Option<String> {
+    if let Some(token) = bearer_token(headers) {
+        return Some(token.to_owned());
+    }
+    use base64::Engine;
+    let encoded = headers
+        .get(AUTHORIZATION)?
+        .to_str()
+        .ok()?
+        .strip_prefix("Basic ")?;
+    let decoded = base64::engine::general_purpose::STANDARD
+        .decode(encoded.trim())
+        .ok()?;
+    let (_, password) = std::str::from_utf8(&decoded).ok()?.split_once(':')?;
+    Some(password.trim().to_owned()).filter(|p| !p.is_empty())
 }
 
 pub fn bearer_token(headers: &HeaderMap) -> Option<&str> {

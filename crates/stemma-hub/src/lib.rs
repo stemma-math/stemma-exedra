@@ -1,11 +1,13 @@
-//! The Stemma hub: accounts, groups, the forum and the agents in it, behind
-//! a JSON API, with the web app and the workers' WebSocket.
+//! The Stemma hub: accounts, groups, the forum and the agents in it, working
+//! papers and libraries, behind a JSON API, with the web app, the workers'
+//! WebSocket and git over HTTP for the libraries.
 
 pub mod api;
 pub mod auth;
 pub mod config;
 pub mod db;
 pub mod error;
+pub mod git;
 pub mod jobs;
 pub mod library;
 pub mod secret;
@@ -25,7 +27,8 @@ pub use state::{AppState, Hub};
 
 /// The hub's HTTP application.
 pub fn app(state: AppState) -> Router {
-    api::router(state)
+    api::router(state.clone())
+        .merge(git::router(state))
         .fallback(web::serve)
         .layer(TraceLayer::new_for_http())
 }
@@ -44,6 +47,7 @@ pub async fn run(config: Config) -> anyhow::Result<()> {
     let state = open(config).await?;
     remove_unclaimed_uploads(&state).await?;
     jobs::recover(&state).await?;
+    library::ensure_all(&state).await?;
 
     if user_count(&state.db).await? == 0 {
         let token = secret::token("");

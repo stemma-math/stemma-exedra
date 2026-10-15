@@ -8,6 +8,7 @@ mod events;
 pub(crate) mod forum;
 mod groups;
 mod jobs;
+mod library;
 pub(crate) mod papers;
 pub mod workers;
 
@@ -97,6 +98,20 @@ pub fn router(state: AppState) -> Router {
         .route(
             "/groups/{group}/papers/{paper}/read",
             post(papers::mark_read),
+        )
+        .route("/groups/{group}/library", get(library::state))
+        .route(
+            "/groups/{group}/library/builds",
+            get(library::builds).post(library::rebuild),
+        )
+        .route("/groups/{group}/library/builds/{id}", get(library::build))
+        .route(
+            "/groups/{group}/library/declarations",
+            get(library::declarations),
+        )
+        .route(
+            "/groups/{group}/library/declarations/{name}",
+            get(library::declaration),
         )
         .route("/groups/{group}/resolve", post(forum::resolve))
         .route("/groups/{group}/search", get(forum::search))

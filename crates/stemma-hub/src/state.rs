@@ -24,6 +24,8 @@ pub struct Hub {
     pub workers: tokio::sync::Mutex<Workers>,
     /// The number of the last worker connection.
     pub connections: AtomicU64,
+    /// Whether `git` runs here, which the libraries need.
+    pub git: bool,
 }
 
 #[derive(Clone, Debug)]
@@ -42,6 +44,7 @@ impl Hub {
             setup_token: Mutex::new(None),
             workers: tokio::sync::Mutex::new(Workers::default()),
             connections: AtomicU64::new(0),
+            git: crate::library::git_available(),
         }
     }
 

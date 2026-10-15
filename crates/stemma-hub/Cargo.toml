@@ -3,7 +3,7 @@ name = "stemma-hub"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
-description = "The Stemma hub: accounts, groups, the forum and the API"
+description = "The Stemma hub: accounts, groups, the forum, papers, libraries and the API"
 repository.workspace = true
 license.workspace = true
 
@@ -21,9 +21,10 @@ serde_json.workspace = true
 sha2.workspace = true
 sqlx.workspace = true
 stemma-core.workspace = true
+tempfile.workspace = true
 thiserror.workspace = true
 time.workspace = true
-tokio.workspace = true
+tokio = { workspace = true, features = ["process"] }
 tokio-stream.workspace = true
 tokio-util.workspace = true
 toml.workspace = true
@@ -32,7 +33,8 @@ tracing.workspace = true
 
 [dev-dependencies]
 http-body-util.workspace = true
-tempfile.workspace = true
+reqwest.workspace = true
+rustls.workspace = true
 tower.workspace = true
 
 [lints]

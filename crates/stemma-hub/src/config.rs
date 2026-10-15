@@ -16,7 +16,7 @@ use serde::Deserialize;
 pub struct Config {
     /// Where to listen for HTTP.
     pub listen: SocketAddr,
-    /// Where the database and the attachments live.
+    /// Where the database, the attachments and the libraries live.
     pub data_dir: PathBuf,
     /// The address people reach the hub at, such as
     /// `https://stemma.example.org`, for the links the hub prints. Cookies
@@ -88,6 +88,11 @@ impl Config {
 
     pub fn attachments_dir(&self) -> PathBuf {
         self.data_dir.join("attachments")
+    }
+
+    /// Where the groups' libraries are, as bare git repositories.
+    pub fn libraries_dir(&self) -> PathBuf {
+        self.data_dir.join("libraries")
     }
 }
 

@@ -96,6 +96,13 @@ pub async fn create(
         super::agents::insert(&mut *tx, group_id, &profile).await?;
     }
     tx.commit().await?;
+    if let Err(error) = crate::library::ensure(&state, group_id, viewer.id).await {
+        tracing::error!(
+            group = slug,
+            error = error.message,
+            "could not make the library"
+        );
+    }
     let group = Group {
         slug,
         name,
