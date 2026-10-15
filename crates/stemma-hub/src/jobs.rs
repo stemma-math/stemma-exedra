@@ -552,6 +552,7 @@ pub async fn summon(
             &profile,
             kind,
             paper.as_deref(),
+            false,
             error.as_deref(),
         )
         .await?;
@@ -579,14 +580,15 @@ async fn insert_agent_job(
     profile: &AgentProfile,
     kind: JobKind,
     paper: Option<&str>,
+    nightly: bool,
     error: Option<&str>,
 ) -> ApiResult<i64> {
     let now = db::now();
     Ok(sqlx::query(
         "INSERT INTO jobs (group_id, thread_id, kind, trigger_message, requester_id,
                            agent_handle, agent, runner, scope, state, error, paper_slug,
-                           created_at, updated_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                           nightly, created_at, updated_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
     )
     .bind(group_id)
     .bind(thread_id)
@@ -600,6 +602,7 @@ async fn insert_agent_job(
     .bind(if error.is_some() { "failed" } else { "queued" })
     .bind(error)
     .bind(paper)
+    .bind(nightly)
     .bind(now)
     .bind(now)
     .execute(&state.db)
@@ -608,7 +611,8 @@ async fn insert_agent_job(
 }
 
 /// Queues an agent's job for a message, as when the workshop asks the
-/// editor to update a paper; the caller then dispatches.
+/// editor to update a paper, `nightly` if it is a paper's nightly update;
+/// the caller then dispatches.
 #[allow(clippy::too_many_arguments)]
 pub async fn queue_agent_job(
     state: &AppState,
@@ -619,6 +623,7 @@ pub async fn queue_agent_job(
     profile: &AgentProfile,
     kind: JobKind,
     paper: Option<&str>,
+    nightly: bool,
 ) -> ApiResult<i64> {
     insert_agent_job(
         state,
@@ -629,6 +634,7 @@ pub async fn queue_agent_job(
         profile,
         kind,
         paper,
+        nightly,
         None,
     )
     .await

@@ -1638,6 +1638,13 @@ async fn the_editor_updates_papers_at_night() {
     assert_eq!(jobs[0]["paper"], "notes");
     assert_eq!(jobs[0]["requester"]["username"], "bob");
     assert_eq!(jobs[0]["trigger"], 1);
+    // Queued as the nightly update, so that no dispatch sees it otherwise.
+    let nightly: Vec<bool> =
+        sqlx::query_scalar("SELECT nightly FROM jobs WHERE kind = 'paper_update'")
+            .fetch_all(&hub.state.db)
+            .await
+            .unwrap();
+    assert_eq!(nightly, [true]);
 
     // Once a night.
     let asked = stemma_hub::workshop::update_papers(&hub.state, &nights)

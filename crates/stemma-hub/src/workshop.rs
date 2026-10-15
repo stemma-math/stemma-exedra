@@ -231,7 +231,7 @@ async fn update_group_papers(
             .bind(thread_id)
             .fetch_one(&state.db)
             .await?;
-        let job = jobs::queue_agent_job(
+        jobs::queue_agent_job(
             state,
             group_id,
             thread_id,
@@ -240,12 +240,9 @@ async fn update_group_papers(
             editor,
             JobKind::PaperUpdate,
             Some(&slug),
+            true,
         )
         .await?;
-        sqlx::query("UPDATE jobs SET nightly = 1 WHERE id = ?")
-            .bind(job)
-            .execute(&state.db)
-            .await?;
         asked = true;
     }
     Ok(asked)
@@ -962,6 +959,7 @@ pub async fn finished(state: &AppState, job_id: i64, outcome: TaskOutcome) -> Ap
                 &editor,
                 JobKind::PaperUpdate,
                 Some(slug),
+                false,
             )
             .await?;
         }
