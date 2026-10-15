@@ -55,6 +55,11 @@ test:
     cargo test
     pnpm --dir web test
 
+# Build and inspect the test library with Lean, which must be installed.
+[group('checks')]
+test-lean:
+    STEMMA_TEST_LEAN=1 cargo test -p stemma-worker --test end_to_end lean
+
 # Build the web app into web/build.
 [group('build')]
 build-web:
