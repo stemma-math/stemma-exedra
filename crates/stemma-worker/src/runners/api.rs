@@ -11,6 +11,7 @@ use std::time::Duration;
 use anyhow::Context as _;
 use serde_json::{Value, json};
 use stemma_client::{Hub, Toolbox};
+use stemma_core::api::AgentProfile;
 use stemma_core::protocol::JobSpec;
 
 use crate::config::{ApiRunner, Endpoint};
@@ -29,10 +30,10 @@ struct Target<'a> {
 fn target<'a>(
     context: &'a Context,
     config: &ApiRunner,
-    job: &JobSpec,
+    agent: &AgentProfile,
 ) -> anyhow::Result<Target<'a>> {
     let endpoints = &context.config.endpoints;
-    let (name, endpoint) = match job.agent.endpoint.as_ref().or(config.endpoint.as_ref()) {
+    let (name, endpoint) = match agent.endpoint.as_ref().or(config.endpoint.as_ref()) {
         Some(name) => (
             name.as_str(),
             endpoints
@@ -43,19 +44,13 @@ fn target<'a>(
             let (name, endpoint) = endpoints.iter().next().expect("one");
             (name.as_str(), endpoint)
         }
-        None => anyhow::bail!("say which endpoint {} uses", job.agent.display_name),
+        None => anyhow::bail!("say which endpoint {} uses", agent.display_name),
     };
-    let model = job
-        .agent
+    let model = agent
         .model
         .clone()
         .or_else(|| endpoint.model.clone())
-        .with_context(|| {
-            format!(
-                "no model for {} on the endpoint {name}",
-                job.agent.display_name
-            )
-        })?;
+        .with_context(|| format!("no model for {} on the endpoint {name}", agent.display_name))?;
     let key = match &endpoint.key_env {
         Some(var) => Some(
             std::env::var(var)
@@ -76,10 +71,11 @@ pub async fn run(
     context: &Context,
     config: &ApiRunner,
     job: &JobSpec,
+    agent: &AgentProfile,
     prompt: &Prompt,
     progress: &Progress,
 ) -> anyhow::Result<String> {
-    let target = target(context, config, job)?;
+    let target = target(context, config, agent)?;
     let toolbox = Toolbox::new(
         Hub::new(&context.hub, Some(job.token.clone()))?,
         Some(job.group.slug.clone()),

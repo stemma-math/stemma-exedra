@@ -1,6 +1,8 @@
 //! The Stemma worker: it connects outbound to a hub with a worker token,
 //! says what it can run, and runs the jobs the hub hands it: agents'
-//! answers, with the runners it offers (`claude-code`, `codex`, `api`).
+//! answers and editors' revisions of papers, with the runners it offers
+//! (`claude-code`, `codex`, `api`), and, if it has Lean, builds of a
+//! group's library.
 //!
 //! A group's worker runs the group's agents, with keys in its
 //! configuration; a member's worker runs only that member's jobs, with
@@ -9,6 +11,7 @@
 pub mod config;
 pub mod connection;
 pub mod job;
+pub mod library;
 pub mod runners;
 
 use std::path::Path;

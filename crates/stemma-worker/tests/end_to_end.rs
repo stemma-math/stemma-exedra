@@ -557,7 +557,93 @@ async fn the_api_harness_uses_the_tools() {
         .iter()
         .map(|t| t["function"]["name"].as_str().unwrap())
         .collect();
-    assert_eq!(tools, ["list_threads", "read_thread", "search"]);
+    assert_eq!(
+        tools,
+        [
+            "list_threads",
+            "read_thread",
+            "search",
+            "list_papers",
+            "read_paper",
+            "paper_changes",
+            "library_state",
+            "library_lookup",
+            "library_search"
+        ]
+    );
+    running.abort();
+}
+
+/// A fake Claude Code as an editor: it returns a new text of the paper.
+fn fake_editor(dir: &Path) -> PathBuf {
+    script(
+        dir,
+        "claude",
+        r#"cat > "$HERE/claude.stdin"
+printf '%s\n' '{"type":"result","subtype":"success","is_error":false,"result":"Done.\n\n<reason>Recorded the decision of t2#1.</reason>\n<title>Notes</title>\n<paper>\n# Setting\n\nWe glue along $U$ ([[t2#1]]).\n</paper>"}'
+"#,
+    )
+}
+
+#[tokio::test]
+async fn an_editor_updates_a_paper_from_its_threads() {
+    let hub = TestHub::start().await;
+    let (ada, bob) = group(&hub).await;
+    let tools = tempfile::tempdir().unwrap();
+    let work = tempfile::tempdir().unwrap();
+    let running = worker(
+        &hub,
+        &worker_token(&hub, &ada, "/me/workers").await,
+        work.path(),
+        &format!(
+            "[runners.claude-code]\ncommand = {:?}\n",
+            fake_editor(tools.path()).display().to_string()
+        ),
+    );
+    wait_online(&hub, &ada, "/me/workers").await;
+    ada.post(
+        &hub,
+        "/groups/geometry/papers",
+        json!({"slug": "notes", "title": "Notes", "body": "# Setting\n\nOpen.\n"}),
+    )
+    .await;
+    bob.post(
+        &hub,
+        "/groups/geometry/threads",
+        json!({"title": "On the setting", "anchor": "p/notes#setting", "body": "Charts overlap."}),
+    )
+    .await;
+    ada.post(
+        &hub,
+        "/groups/geometry/threads",
+        json!({"title": "Decisions", "body": "We glue along U. @editor update p/notes with this."}),
+    )
+    .await;
+
+    let news = answer(&hub, &ada, 2, 2).await;
+    assert_eq!(news["agent"], "Editor");
+    assert_eq!(
+        news["body"],
+        "Updated [[p/notes]] to revision 2: Recorded the decision of t2#1."
+    );
+    let page = ada.get(&hub, "/groups/geometry/papers/notes").await;
+    assert_eq!(page["paper"]["revision"], 2);
+    assert_eq!(page["paper"]["updated_agent"], "Editor");
+    assert_eq!(page["body"], "# Setting\n\nWe glue along $U$ ([[t2#1]]).\n");
+    // Ada read revision 1, which she wrote: the editor's is news to her.
+    assert_eq!(page["since_read"][0]["number"], 2);
+
+    let input = std::fs::read_to_string(tools.path().join("claude.stdin")).unwrap();
+    assert!(
+        input.contains("at revision 1:\n\n<current>\n# Setting\n\nOpen.\n</current>"),
+        "{input}"
+    );
+    assert!(
+        input.contains("Thread t1, “On the setting”, anchored to p/notes#setting"),
+        "{input}"
+    );
+    assert!(input.contains("Charts overlap."));
+    assert!(input.contains("Update p/notes as message t2#1, by Ada (@ada), asks."));
     running.abort();
 }
 

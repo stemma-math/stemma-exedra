@@ -7,6 +7,7 @@
 //! first in its input. Its last message is the answer.
 
 use serde_json::Value;
+use stemma_core::api::AgentProfile;
 use stemma_core::protocol::JobSpec;
 use tokio::process::Command;
 
@@ -23,6 +24,7 @@ pub async fn run(
     context: &Context,
     config: &CliRunner,
     job: &JobSpec,
+    agent: &AgentProfile,
     dir: &JobDir,
     prompt: &Prompt,
     progress: &Progress,
@@ -30,7 +32,7 @@ pub async fn run(
     let answer_file = dir.path.join("answer.md");
     let command_value = toml_value(toml::Value::String(context.stemma.display().to_string()));
     let args_value = toml_value(toml::Value::Array(
-        mcp_args(context, job, dir)
+        mcp_args(context, job, agent, dir)
             .into_iter()
             .map(toml::Value::String)
             .collect(),
@@ -52,7 +54,7 @@ pub async fn run(
         .arg(format!("mcp_servers.stemma.command={command_value}"))
         .arg("-c")
         .arg(format!("mcp_servers.stemma.args={args_value}"));
-    if let Some(model) = job.agent.model.as_ref().or(config.model.as_ref()) {
+    if let Some(model) = agent.model.as_ref().or(config.model.as_ref()) {
         command.args(["--model", model]);
     }
     command.args(&config.args).arg("-");

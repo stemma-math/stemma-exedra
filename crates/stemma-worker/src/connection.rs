@@ -188,7 +188,7 @@ async fn work(context: &Arc<Context>, socket: &mut Socket) -> anyhow::Error {
                 match serde_json::from_str::<HubMessage>(&text) {
                     Ok(HubMessage::Job(spec)) => {
                         let id = spec.id;
-                        tracing::info!(job = id, agent = spec.agent.handle, thread = spec.thread.number, "job received");
+                        tracing::info!(job = id, kind = spec.kind().as_str(), "job received");
                         let context = context.clone();
                         let progress = Progress::new(id, progress.clone());
                         let finished = finished.clone();
@@ -222,7 +222,7 @@ async fn work(context: &Arc<Context>, socket: &mut Socket) -> anyhow::Error {
                 if jobs.remove(&job).is_none() {
                     continue;
                 }
-                tracing::info!(job, answered = matches!(outcome, Outcome::Answer { .. }), "job finished");
+                tracing::info!(job, failed = matches!(outcome, Outcome::Failed { .. }), "job finished");
                 if let Err(error) = send(socket, &WorkerMessage::Finished { job, outcome }).await {
                     break error;
                 }
@@ -241,7 +241,7 @@ async fn work(context: &Arc<Context>, socket: &mut Socket) -> anyhow::Error {
 }
 
 /// Whether Lean is installed: `elan` or `lake` on the path.
-fn has_lean() -> bool {
+pub fn has_lean() -> bool {
     let Some(path) = std::env::var_os("PATH") else {
         return false;
     };

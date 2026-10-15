@@ -8,20 +8,28 @@
 //! progress, and the final result is the answer.
 
 use serde_json::{Value, json};
+use stemma_core::api::AgentProfile;
 use stemma_core::protocol::JobSpec;
 use tokio::process::Command;
 
-use super::{failed, mcp_args, run_command};
+use super::{allowed_tools, failed, mcp_args, run_command};
 use crate::config::CliRunner;
 use crate::job::{Context, JobDir, Progress, Prompt};
 
-/// The Stemma tools an answer may use, as Claude Code names them.
-const ALLOWED: &str = "mcp__stemma__list_threads,mcp__stemma__read_thread,mcp__stemma__search";
+/// The Stemma tools an agent may use, as Claude Code names them.
+fn allowed() -> String {
+    allowed_tools()
+        .iter()
+        .map(|name| format!("mcp__stemma__{name}"))
+        .collect::<Vec<_>>()
+        .join(",")
+}
 
 pub async fn run(
     context: &Context,
     config: &CliRunner,
     job: &JobSpec,
+    agent: &AgentProfile,
     dir: &JobDir,
     prompt: &Prompt,
     progress: &Progress,
@@ -31,7 +39,7 @@ pub async fn run(
             "stemma": {
                 "type": "stdio",
                 "command": context.stemma,
-                "args": mcp_args(context, job, dir),
+                "args": mcp_args(context, job, agent, dir),
             }
         }
     });
@@ -47,11 +55,11 @@ pub async fn run(
         .arg("--mcp-config")
         .arg(&mcp_file)
         .args(["--tools", ""])
-        .args(["--allowedTools", ALLOWED])
+        .args(["--allowedTools", &allowed()])
         .args(["--permission-mode", "dontAsk"])
         .arg("--append-system-prompt")
         .arg(&prompt.system);
-    if let Some(model) = job.agent.model.as_ref().or(config.model.as_ref()) {
+    if let Some(model) = agent.model.as_ref().or(config.model.as_ref()) {
         command.args(["--model", model]);
     }
     command.args(&config.args);

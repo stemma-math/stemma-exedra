@@ -13,15 +13,26 @@ pub mod codex;
 use std::process::{ExitStatus, Stdio};
 
 use anyhow::Context as _;
+use stemma_core::api::AgentProfile;
 use stemma_core::protocol::JobSpec;
 use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader};
 use tokio::process::Command;
 
 use crate::job::{Context, JobDir};
 
+/// The Stemma tools an agent may use, by name: those that read.
+pub fn allowed_tools() -> Vec<&'static str> {
+    stemma_client::tools::read_only_names()
+}
+
 /// The arguments of `stemma mcp` for a job: its hub, its group, its token
 /// and its agent, offering only the tools that read.
-pub fn mcp_args(context: &Context, job: &JobSpec, dir: &JobDir) -> Vec<String> {
+pub fn mcp_args(
+    context: &Context,
+    job: &JobSpec,
+    agent: &AgentProfile,
+    dir: &JobDir,
+) -> Vec<String> {
     vec![
         "mcp".into(),
         "--hub".into(),
@@ -31,7 +42,7 @@ pub fn mcp_args(context: &Context, job: &JobSpec, dir: &JobDir) -> Vec<String> {
         "--token-file".into(),
         dir.token_file.display().to_string(),
         "--agent".into(),
-        job.agent.display_name.clone(),
+        agent.display_name.clone(),
         "--read-only".into(),
     ]
 }
