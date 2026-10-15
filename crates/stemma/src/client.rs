@@ -129,6 +129,36 @@ pub struct LibraryArgs {
 }
 
 #[derive(Args)]
+pub struct TasksArgs {
+    #[command(flatten)]
+    group: GroupArg,
+    /// Only the tasks in this state: open, running, done, failed, blocked or
+    /// cancelled.
+    #[arg(long)]
+    state: Option<String>,
+    #[arg(long, short = 'n', default_value_t = 30)]
+    limit: u32,
+}
+
+#[derive(Args)]
+pub struct TaskArgs {
+    /// What to do, in a line.
+    title: String,
+    /// The message that asks for it: t12#48, or a link to it.
+    #[arg(long, short)]
+    origin: String,
+    /// Run it in the group's night window, not as soon as the workshop is
+    /// free.
+    #[arg(long)]
+    night: bool,
+    /// The agent handing it over for you, such as "Claude Code".
+    #[arg(long)]
+    agent: Option<String>,
+    #[command(flatten)]
+    group: GroupArg,
+}
+
+#[derive(Args)]
 pub struct McpArgs {
     #[command(flatten)]
     group: GroupArg,
@@ -138,6 +168,10 @@ pub struct McpArgs {
     /// Offer only the tools that read.
     #[arg(long)]
     read_only: bool,
+    /// With --read-only, still offer create_task, to hand tasks to the
+    /// workshop.
+    #[arg(long, requires = "read_only")]
+    hand_over: bool,
     /// The hub, instead of the one signed in to.
     #[arg(long, env = "STEMMA_HUB")]
     hub: Option<String>,
@@ -345,6 +379,35 @@ pub async fn library(args: LibraryArgs) -> anyhow::Result<()> {
     }
 }
 
+pub async fn tasks(args: TasksArgs) -> anyhow::Result<()> {
+    let toolbox = toolbox(args.group)?;
+    let mut call = json!({"limit": args.limit});
+    if let Some(state) = args.state {
+        call["state"] = json!(state);
+    }
+    run(&toolbox, "list_tasks", call, None).await
+}
+
+pub async fn task(args: TaskArgs) -> anyhow::Result<()> {
+    let toolbox = toolbox(args.group)?;
+    if std::io::stdin().is_terminal() {
+        eprintln!("Write what the workshop is to do, and end it with Ctrl-D.");
+    }
+    let mut instructions = String::new();
+    std::io::stdin().read_to_string(&mut instructions)?;
+    anyhow::ensure!(
+        !instructions.trim().is_empty(),
+        "the instructions are empty"
+    );
+    let call = json!({
+        "title": args.title,
+        "instructions": instructions,
+        "origin": args.origin,
+        "schedule": if args.night { "night" } else { "now" },
+    });
+    run(&toolbox, "create_task", call, args.agent.as_deref()).await
+}
+
 pub async fn mcp(args: McpArgs) -> anyhow::Result<()> {
     let mut config = ClientConfig::load()?.with_env();
     if let Some(hub) = args.hub {
@@ -353,8 +416,9 @@ pub async fn mcp(args: McpArgs) -> anyhow::Result<()> {
     if let Some(path) = &args.token_file {
         config.token = Some(config::read_token_file(path)?);
     }
-    let toolbox =
-        Toolbox::new(config.hub()?, args.group.group.or(config.group)).read_only(args.read_only);
+    let toolbox = Toolbox::new(config.hub()?, args.group.group.or(config.group))
+        .read_only(args.read_only)
+        .hands_over(args.hand_over);
     StemmaServer::new(toolbox, args.agent).serve_stdio().await
 }
 
