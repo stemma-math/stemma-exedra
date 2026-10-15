@@ -19,6 +19,9 @@ This is an early stage of Stemma. What works today:
   built and inspected by a worker with Lean, and browsable, with the state of
   each declaration (proved, `sorry`, missing) shown wherever it is
   referenced;
+- the workshop: tasks handed over in conversation ("formalize this
+  tonight"), worked on in the background by an agent in the library, checked,
+  put in the library, and reported in the thread they came from;
 - Stemma's tools for any agent, over MCP and the command line.
 
 ## Running the hub
@@ -109,7 +112,11 @@ git clone https://stemma.example.org/git/geometry.git   # a personal token as th
 Each new commit of `main` (pushes that rewrite its history are refused) is
 built by a group worker with Lean: it gets Mathlib's cache, runs `lake build`,
 and then the inspection, `lean/Inspect.lean`, with the library's own
-toolchain. The inspection reports, for each declaration of the library, its
+toolchain. The worker keeps a checkout of the library, so that Mathlib is
+fetched once and Lake builds again only the modules that changed; it compiles
+the inspection once per Lean version, and inspects again only the modules that
+changed and those that import them. The inspection reports, for each
+declaration of the library, its
 kind, type, docstring and place, whether it depends on `sorry` (and, for a
 definition, whether its data does), its axioms and the declarations of the
 library it uses. The last build that passed is the library's state: the web
@@ -117,6 +124,47 @@ app browses it by module and declaration, with what uses each and the
 messages and papers that reference it, and `[[lean:Foo.bar]]` shows, wherever
 it is written, whether `Foo.bar` is proved, depends on `sorry`, or is missing.
 A build that fails is shown with its log.
+
+## The workshop
+
+The workshop works on the library in the background. A task is handed to it in
+conversation: mention it, as in `@workshop formalize the lemma in t12#48
+tonight`, or ask an agent in a thread, which hands it over with `create_task`.
+Each task has an address, `w7`, a page in the web app with its state, log,
+commits and report, and is shown on its way in the thread it came from, where it
+can be cancelled.
+
+A group worker that offers the workshop runs the group's tasks, one at a time:
+
+1. It makes a fresh worktree of the library at `main`, with its dependencies
+   and its last build.
+2. The workshop's agent works there with its runner (OpenCode, Claude Code or
+   Codex), given the task, the thread it came from, the papers the thread is
+   about, the library, Lean and Stemma's tools. Its instructions are in
+   `crates/stemma-worker/prompts/task.md`: formalize following the library's
+   structure and Mathlib's conventions, state faithfully what the thread
+   decided, leave `sorry` in proofs rather than weaken a statement, never in a
+   definition's data, and report honestly.
+3. The worker checks the work: `lake build` must pass, and no definition's data
+   may newly depend on `sorry`, as the inspection says. If not, the agent is
+   told why and works again, a limited number of rounds.
+4. It commits the work, with its provenance in trailers (`Task`, `Origin`,
+   `Runner`, `Model`), rebases it on `main` if `main` moved, checks it again and
+   pushes it with the job's token. If `main` moves again meanwhile, it tries
+   once more; if the work does not apply on `main`, the task is blocked, with
+   the reason.
+
+When the task ends, done, failed or blocked, one message in its thread reports
+on it, for the person who asked: what was done, what is pending, the commits
+and the declarations that changed. The build the worker made of what it pushed
+is the library's new state, and the editor is asked to update the papers that
+reference what changed, or that the thread is about.
+
+A task asked for the night ("tonight", "overnight") waits for the group's night
+window, 01:00 to 07:00 unless its admins change it, in the group's time zone.
+At night, members who choose to, in the group's settings, lend their own worker
+to the workshop: with Lean and `[workshop]` in its configuration, it works on
+the group's tasks with their own runners and subscription.
 
 ## From the command line
 
@@ -147,6 +195,9 @@ stemma changes p/compactification --since 3
 stemma edit p/compactification --reason 'The charts glue' < paper.md
 stemma library                  # how the library stands
 stemma library gluing           # search its declarations
+stemma tasks                    # the workshop's tasks
+stemma read w7                  # one of them, with its report
+stemma task 'Formalize the gluing lemma' --origin 't12#48' --night < what.md
 ```
 
 `STEMMA_HUB`, `STEMMA_TOKEN` and `STEMMA_GROUP` override what `login` kept.
@@ -164,7 +215,9 @@ stemma library gluing           # search its declarations
   changed lines since a revision, by default the one you read last) and
   `propose_paper_edit` (a new revision, over the one the agent read);
 - the library's: `library_state`, `library_lookup` (a declaration, with what
-  it uses and what uses it) and `library_search`.
+  it uses and what uses it) and `library_search`;
+- the workshop's: `create_task` (a title, instructions, the message that asks
+  and whether it is for the night), `task_status` (`w7`) and `list_tasks`.
 
  It acts with the token `stemma login`
 kept, and what an agent posts through it is shown as written by that agent,
@@ -185,9 +238,9 @@ command = "stemma"
 args = ["mcp"]
 ```
 
-`--group` picks the group, `--read-only` leaves out the tools that write, and
-`--agent` names the agent its posts are signed with, instead of the name the
-harness gives.
+`--group` picks the group, `--read-only` leaves out the tools that write (and
+`--hand-over` keeps `create_task` among them), and `--agent` names the agent its
+posts are signed with, instead of the name the harness gives.
 
 ### Agents in the forum
 
@@ -205,13 +258,16 @@ whose they are:
 - A **group** agent runs on the group's workers, usually with the `api` runner
   and the group's API keys.
 
-The runners are `claude-code` (`claude -p`), `codex` (`codex exec`) and `api`,
-Stemma's own harness: a loop of tool calls over any OpenAI-compatible chat API
-(OpenRouter, OpenAI, a local server), with limits of steps and tokens. Each
-gets the thread (trimmed when long, always keeping the message it answers and
-what that refers to) and Stemma's tools, read-only, with a token that lasts as
-long as the job and reaches only its group. Their instructions are in
-`crates/stemma-worker/prompts/`.
+The runners are `claude-code` (`claude -p`), `codex` (`codex exec`), `opencode`
+(`opencode run`, with a model of any provider OpenCode supports, OpenRouter's
+among them) and `api`, Stemma's own harness: a loop of tool calls over any
+OpenAI-compatible chat API (OpenRouter, OpenAI, a local server), with limits of
+steps and tokens. Each gets the thread (trimmed when long, always keeping the
+message it answers and what that refers to) and Stemma's tools, read-only, with
+a token that lasts as long as the job and reaches only its group; an agent
+answering in a thread may also hand a task to the workshop. Their instructions
+are in `crates/stemma-worker/prompts/`. Every group starts with `@workshop`,
+the workshop's agent, which runs OpenCode on the group's workers.
 
 ### Running a worker
 
@@ -229,6 +285,7 @@ concurrency = 2                     # jobs at once
 # The runners it offers: each listed one.
 [runners.claude-code]               # uses `claude`, signed in as you
 [runners.codex]                     # uses `codex`, signed in as you
+[runners.opencode]                  # uses `opencode`, with its providers' keys
 # model = "…"; command = "…"; args = […]; timeout_minutes = 15
 
 [runners.api]
@@ -243,10 +300,19 @@ model = "…"                         # unless an agent names one
 # A group's worker with Lean (elan) builds the group's library.
 [lean]
 # timeout_minutes = 90; cache = true  # whether to get Mathlib's cache
+
+# With Lean and a runner that edits files (opencode, claude-code or codex),
+# it works on the workshop's tasks: a group's worker always, a member's at
+# night if they lend it.
+[workshop]
+# timeout_minutes = 120; rounds = 2; max_turns = 80
 ```
 
 A library build keeps the group's checkout, with its `.lake`, in the work
-folder, so that Mathlib is fetched once; it takes several gigabytes.
+folder, so that Mathlib is fetched once; it takes several gigabytes. A task
+works in a worktree of that checkout, which shares its dependencies. On a task,
+the runner edits files and runs commands in the worktree, as the worker's
+user: run a worker that offers the workshop as a user of its own.
 
 ```sh
 stemma worker --config worker.toml
@@ -284,8 +350,8 @@ The repository holds:
 - `crates/stemma-hub`: the server, with its migrations in `migrations/`.
 - `crates/stemma-client`: the hub's API over HTTP, Stemma's tools and their
   MCP server.
-- `crates/stemma-worker`: the worker, its runners, library builds and the
-  agents' instructions, in `prompts/`.
+- `crates/stemma-worker`: the worker, its runners, library builds, the
+  workshop's runs and the agents' instructions, in `prompts/`.
 - `lean/`: the inspection (`Inspect.lean`), the template of a group's library
   (`template/`) and a small library without Mathlib to test them
   (`fixture/`; `just test-lean` builds and inspects it).
