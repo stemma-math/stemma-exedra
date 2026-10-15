@@ -502,7 +502,9 @@ impl Run<'_> {
                 // the worker's machine needs no git identity of its own.
                 let identity = ["log", "-1", "--format=%cn%n%ce"];
                 let committer = git_output(worktree, self.token(), &identity).await?;
-                let (name, email) = committer.split_once('\n').unwrap_or((committer.as_str(), ""));
+                let (name, email) = committer
+                    .split_once('\n')
+                    .unwrap_or((committer.as_str(), ""));
                 let mut rebase = git(worktree, self.token());
                 rebase
                     .args(["-c", "commit.gpgsign=false", "rebase", "-q", "origin/main"])
