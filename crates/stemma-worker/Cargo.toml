@@ -17,6 +17,7 @@ rustls.workspace = true
 rustls-platform-verifier.workspace = true
 serde.workspace = true
 serde_json.workspace = true
+sha2.workspace = true
 stemma-client.workspace = true
 stemma-core.workspace = true
 tokio = { workspace = true, features = ["net", "process", "time"] }
