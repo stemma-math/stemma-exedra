@@ -275,6 +275,26 @@ async fn libraries_are_made_cloned_pushed_and_built() {
     .await;
     assert_eq!(page["state"], "sorry");
     assert_eq!(page["references"][0]["address"], "t1#1");
+    // A thread about it, as "Discuss it" starts one, is listed too.
+    call(
+        &hub,
+        &ada,
+        "POST",
+        "/groups/geometry/threads",
+        Some(json!({"title": "Proving it", "anchor": "lean:Geometry.hard"})),
+    )
+    .await;
+    let page = call(
+        &hub,
+        &ada,
+        "GET",
+        "/groups/geometry/library/declarations/Geometry.hard",
+        None,
+    )
+    .await;
+    assert_eq!(page["references"][0]["address"], "t2");
+    assert_eq!(page["references"][0]["title"], "Proving it");
+    assert_eq!(page["references"][1]["address"], "t1#1");
 
     let found = call(
         &hub,

@@ -639,7 +639,8 @@ pub struct DeclarationSummary {
     pub doc: Option<String>,
 }
 
-/// Where something is referenced: a message or a paper.
+/// Where something is referenced: a message or a paper; or a thread about
+/// it.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct ReferenceSite {
     pub address: Address,
@@ -656,7 +657,8 @@ pub struct DeclarationPage {
     pub commit: String,
     /// The declarations of the library that use it.
     pub used_by: Vec<String>,
-    /// The messages and papers that reference it.
+    /// The papers that reference it, the threads about it, and the
+    /// messages that reference it.
     pub references: Vec<ReferenceSite>,
 }
 

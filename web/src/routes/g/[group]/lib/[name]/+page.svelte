@@ -141,7 +141,7 @@
       {#each d.references as site (site.address)}
         <a href={link(site.address)}><span class="identifier quiet">{site.address}</span> {site.title}</a>
       {:else}
-        <p class="empty">No message or paper references it yet.</p>
+        <p class="empty">No paper, thread or message is about it yet.</p>
       {/each}
     </section>
   {:else}

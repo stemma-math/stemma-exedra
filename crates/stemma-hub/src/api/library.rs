@@ -169,7 +169,8 @@ pub async fn declarations(
     ))
 }
 
-/// A declaration, with what uses it and where it is referenced.
+/// A declaration, with what uses it, where it is referenced and the threads
+/// about it.
 pub async fn declaration(
     State(state): State<AppState>,
     viewer: Viewer,
@@ -212,6 +213,15 @@ pub async fn declaration(
     .bind(&reference)
     .fetch_all(&state.db)
     .await?;
+    // The threads about it, as "Discuss it" starts them.
+    let threads: Vec<(i64, String)> = sqlx::query_as(
+        "SELECT number, title FROM threads WHERE group_id = ? AND anchor = ?
+         ORDER BY last_activity_at DESC LIMIT 50",
+    )
+    .bind(group.group_id)
+    .bind(format!("lean:{name}"))
+    .fetch_all(&state.db)
+    .await?;
     let mut references: Vec<ReferenceSite> = papers
         .into_iter()
         .map(|(slug, title)| ReferenceSite {
@@ -222,6 +232,12 @@ pub async fn declaration(
             title,
         })
         .collect();
+    for (number, title) in threads {
+        references.push(ReferenceSite {
+            address: Address::Thread(number as u32),
+            title,
+        });
+    }
     references.extend(
         messages
             .into_iter()
