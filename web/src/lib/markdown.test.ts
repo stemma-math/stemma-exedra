@@ -44,7 +44,7 @@ describe("markdown", () => {
     const html = render(
       "> [!conjecture] Properness\n> Every map is proper.\n\n> [!OPEN]\n> Why?\n\n> [!note]\n> Plain.",
     );
-    expect(html).toContain('<div class="highlight highlight--warning" data-callout="conjecture">');
+    expect(html).toContain('<div class="highlight highlight--violet" data-callout="conjecture">');
     expect(html).toContain('<p class="highlight__title">Conjecture: Properness</p>');
     expect(html).toContain("<p>Every map is proper.</p>");
     expect(html).toContain('<p class="highlight__title">Open question</p>');

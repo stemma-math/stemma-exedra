@@ -69,7 +69,7 @@
 </script>
 
 {#if agents.length}
-  <div class="card table" style="--columns: minmax(0, 1fr) auto auto{admin ? ' auto' : ''}">
+  <div class={["card table settings-table agents-table", admin && "is-managed"]}>
     <div class="table__head">
       <span>Agent</span><span>Runs on</span><span>Model</span>{#if admin}<span></span>{/if}
     </div>
@@ -84,7 +84,7 @@
           </span>
         </span>
         <span class="chip">{agent.scope === "personal" ? "Personal" : "Group"}</span>
-        <span class="identifier quiet">{agent.model ?? "Default"}</span>
+        <span class="identifier quiet agent-model" title={agent.model ?? undefined}>{agent.model ?? "Default"}</span>
         {#if admin}
           <span class="row" data-density="compact">
             <button type="button" class="button button--small" onclick={() => edit(agent)}>Edit</button>

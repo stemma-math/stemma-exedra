@@ -57,7 +57,7 @@
 
   {#if missing}
     <div class="thread-head">
-      <h1 class="identifier">{name}</h1>
+      <h1>{name}</h1>
       <StateChip state="missing" />
     </div>
     <p>The library's last successful build has no declaration <span class="identifier">{name}</span>.</p>
@@ -66,7 +66,7 @@
     {@const d = declaration}
     <header class="stack stack--tight">
       <div class="thread-head">
-        <h1 class="identifier">{d.name}</h1>
+        <h1>{d.name}</h1>
         <StateChip state={d.state} kind={d.kind} />
         <span data-density="compact">
           <stemma-copy-button value="lean:{d.name}" label="Copy the address lean:{d.name}"></stemma-copy-button>

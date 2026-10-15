@@ -150,7 +150,7 @@
       </form>
 
       {#if tokens.length}
-        <div class="card table" style="--columns: minmax(0, 1fr) auto auto">
+        <div class="card table settings-table tokens-table">
           <div class="table__head"><span>Name</span><span>Last used</span><span></span></div>
           {#each tokens as token (token.id)}
             <div class="table__row">

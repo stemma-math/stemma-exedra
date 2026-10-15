@@ -12,6 +12,18 @@ body {
   min-height: 100%;
 }
 
+/* Links outside documents and components, in the design's link colour.
+ * Stopgap: the design system styles links only inside `.document`. */
+.app :is(a:not([class]), a.identifier) {
+  color: var(--link);
+  text-decoration-color: color-mix(in srgb, currentColor 40%, transparent);
+  text-underline-offset: 0.18em;
+}
+
+.app :is(a:not([class]), a.identifier):hover {
+  text-decoration-color: currentColor;
+}
+
 .app {
   display: flex;
   flex-direction: column;
@@ -300,6 +312,22 @@ stemma-toast-region {
   .threads .when {
     display: none;
   }
+
+  .topbar__name {
+    display: none;
+  }
+
+  /* The group's tabs scroll rather than widen the page. */
+  .tabs {
+    overflow-x: auto;
+    scrollbar-width: none;
+  }
+
+  .topbar__groups {
+    flex-wrap: nowrap;
+    overflow-x: auto;
+    min-width: 0;
+  }
 }
 
 .plain-list {
@@ -356,6 +384,12 @@ stemma-toast-region {
 
 .paper-editor__preview {
   min-height: 28rem;
+}
+
+/* A callout that changed keeps its tone, and is outlined in the accent. */
+.document .highlight.is-changed[data-callout] {
+  outline: 2px solid color-mix(in srgb, var(--accent) 45%, transparent);
+  outline-offset: 2px;
 }
 
 /* A declaration's state, beside its reference. */
@@ -415,4 +449,63 @@ stemma-toast-region {
   .library-layout {
     grid-template-columns: minmax(0, 1fr);
   }
+}
+
+/* Tables of settings: each row is its own grid, so columns are fixed for
+ * the rows to line up with their head. */
+.agents-table {
+  --columns: minmax(0, 1fr) 5.5rem 12rem;
+}
+
+.agents-table.is-managed {
+  --columns: minmax(0, 1fr) 5.5rem 12rem 9.5rem;
+}
+
+.workers-table {
+  --columns: minmax(0, 1fr) 11rem 11rem;
+}
+
+.workers-table.is-managed {
+  --columns: minmax(0, 1fr) 11rem 11rem 5.5rem;
+}
+
+.members-table {
+  --columns: auto minmax(0, 1fr) 8rem 5.5rem;
+}
+
+.invitations-table {
+  --columns: minmax(0, 1fr) 4rem 5.5rem;
+}
+
+.tokens-table {
+  --columns: minmax(0, 1fr) 7rem 5.5rem;
+}
+
+.settings-table .table__row > .chip {
+  justify-self: start;
+}
+
+@media (max-width: 40rem) {
+  .settings-table {
+    --columns: minmax(0, 1fr);
+  }
+
+  .settings-table.is-managed,
+  .members-table {
+    --columns: minmax(0, 1fr);
+  }
+
+  .settings-table .table__head {
+    display: none;
+  }
+
+  .settings-table .table__row {
+    justify-items: start;
+  }
+}
+
+.agent-model {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }

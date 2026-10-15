@@ -4,7 +4,9 @@
   let { state, kind = "theorem" }: { state: DeclarationState; kind?: string } = $props();
 
   const shown = $derived(
-    state === "proved"
+    kind === "axiom" && state === "proved"
+      ? { tone: "neutral", text: "Axiom" }
+      : state === "proved"
       ? { tone: "success", text: kind === "theorem" ? "Proved" : "Complete" }
       : state === "sorry"
         ? { tone: "warning", text: "Sorry" }

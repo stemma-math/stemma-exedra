@@ -46,6 +46,13 @@
       : "",
   );
 
+  /** What a worker runs, as it said when it last connected. */
+  function runs(worker: Worker): string {
+    const offered = [...worker.runners, ...(worker.lean ? ["Lean builds"] : [])];
+    if (offered.length) return offered.join(", ");
+    return worker.last_seen_at ? "Nothing" : "Not connected yet";
+  }
+
   async function create(event: Event) {
     event.preventDefault();
     try {
@@ -102,7 +109,7 @@
 {/if}
 
 {#if workers.length}
-  <div class="card table" style="--columns: minmax(0, 1fr) auto auto{manage ? ' auto' : ''}">
+  <div class={["card table settings-table workers-table", manage && "is-managed"]}>
     <div class="table__head">
       <span>Worker</span><span>Runs</span><span>State</span>{#if manage}<span></span>{/if}
     </div>
@@ -113,7 +120,7 @@
           <span class="identifier quiet">{worker.prefix}…</span>
         </span>
         <span class="quiet">
-          {worker.runners.length ? worker.runners.join(", ") : "Not connected yet"}{worker.lean ? ", Lean" : ""}
+          {runs(worker)}
         </span>
         {#if worker.online}
           <span class="chip chip--success">Online</span>

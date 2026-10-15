@@ -19,11 +19,12 @@ export interface RenderEnv {
   changed?: Set<number>;
 }
 
-/** The callouts, with their names and the tone each is shown in. */
+/** The callouts, with their names and the tone each is shown in: tones
+ * with no meaning of their own, since the accent marks what changed. */
 export const CALLOUTS: Record<string, { name: string; tone: string }> = {
-  conjecture: { name: "Conjecture", tone: "warning" },
-  open: { name: "Open question", tone: "info" },
-  idea: { name: "Idea", tone: "accent" },
+  conjecture: { name: "Conjecture", tone: "violet" },
+  open: { name: "Open question", tone: "cerulean" },
+  idea: { name: "Idea", tone: "teal" },
 };
 
 const md = new MarkdownIt({ html: false, linkify: true, breaks: true });

@@ -58,7 +58,7 @@
         >
           <button type="button" class="button button--quiet">
             <Avatar user={session.me} />
-            {session.me.display_name}
+            <span class="topbar__name">{session.me.display_name}</span>
           </button>
           <div class="menu">
             <a class="menu__item" href="/settings">Settings</a>

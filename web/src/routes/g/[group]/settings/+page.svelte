@@ -90,7 +90,7 @@
 <main class="page page--narrow stack stack--loose">
   <section class="stack">
     <h1>Members</h1>
-    <div class="card table" style="--columns: auto minmax(0, 1fr) auto auto">
+    <div class="card table settings-table members-table">
       {#each members as member (member.id)}
         <div class="table__row">
           <Avatar user={member} />
@@ -174,7 +174,7 @@
       </form>
 
       {#if invitations.length}
-        <div class="card table" style="--columns: minmax(0, 1fr) auto auto">
+        <div class="card table settings-table invitations-table">
           <div class="table__head"><span>Link</span><span>Used</span><span></span></div>
           {#each invitations as invitation (invitation.id)}
             <div class="table__row">
