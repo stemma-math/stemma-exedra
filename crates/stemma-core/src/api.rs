@@ -670,8 +670,13 @@ pub mod runners {
     pub const CODEX: &str = "codex";
     /// Stemma's own harness, over an OpenAI-compatible chat API.
     pub const API: &str = "api";
+    /// OpenCode, headless, with a model of any provider it supports.
+    pub const OPENCODE: &str = "opencode";
     /// Every runner this version knows.
-    pub const ALL: &[&str] = &[CLAUDE_CODE, CODEX, API];
+    pub const ALL: &[&str] = &[CLAUDE_CODE, CODEX, API, OPENCODE];
+    /// The runners that can work on the library for the workshop: those
+    /// that edit files and run commands.
+    pub const WORKSHOP: &[&str] = &[OPENCODE, CLAUDE_CODE, CODEX];
 }
 
 /// Whose worker runs an agent.
@@ -734,6 +739,8 @@ pub enum AgentRole {
     Answer,
     /// It updates the working paper the message names, from the threads.
     Editor,
+    /// It hands what the message asks to the workshop, as a task.
+    Workshop,
 }
 
 impl AgentRole {
@@ -741,6 +748,7 @@ impl AgentRole {
         match self {
             AgentRole::Answer => "answer",
             AgentRole::Editor => "editor",
+            AgentRole::Workshop => "workshop",
         }
     }
 
@@ -748,9 +756,182 @@ impl AgentRole {
         match s {
             "answer" => Some(AgentRole::Answer),
             "editor" => Some(AgentRole::Editor),
+            "workshop" => Some(AgentRole::Workshop),
             _ => None,
         }
     }
+}
+
+// ── The workshop ──────────────────────────────────────────────────────
+
+/// Where a task of the workshop is.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum TaskState {
+    /// Waiting for its turn, a worker, or the night.
+    Open,
+    /// A worker is on it.
+    Running,
+    /// Done: what it did is in the library, if it did anything.
+    Done,
+    /// It could not be done: the build did not pass, or the runner failed.
+    Failed,
+    /// It was done, but could not be put in the library: `main` moved
+    /// where it worked, or kept moving.
+    Blocked,
+    /// Someone cancelled it.
+    Cancelled,
+}
+
+impl TaskState {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            TaskState::Open => "open",
+            TaskState::Running => "running",
+            TaskState::Done => "done",
+            TaskState::Failed => "failed",
+            TaskState::Blocked => "blocked",
+            TaskState::Cancelled => "cancelled",
+        }
+    }
+
+    pub fn parse(s: &str) -> Option<TaskState> {
+        match s {
+            "open" => Some(TaskState::Open),
+            "running" => Some(TaskState::Running),
+            "done" => Some(TaskState::Done),
+            "failed" => Some(TaskState::Failed),
+            "blocked" => Some(TaskState::Blocked),
+            "cancelled" => Some(TaskState::Cancelled),
+            _ => None,
+        }
+    }
+
+    /// Whether the task is over.
+    pub fn is_final(self) -> bool {
+        !matches!(self, TaskState::Open | TaskState::Running)
+    }
+}
+
+/// When a task runs.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum TaskSchedule {
+    /// As soon as a worker is free.
+    #[default]
+    Now,
+    /// In the group's night window.
+    Night,
+}
+
+impl TaskSchedule {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            TaskSchedule::Now => "now",
+            TaskSchedule::Night => "night",
+        }
+    }
+
+    pub fn parse(s: &str) -> Option<TaskSchedule> {
+        match s {
+            "now" => Some(TaskSchedule::Now),
+            "night" => Some(TaskSchedule::Night),
+            _ => None,
+        }
+    }
+}
+
+/// A task of the workshop: work on the library, asked for in a
+/// conversation, done in the background.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct Task {
+    /// Its number in the group: the `7` of `w7`.
+    pub number: u32,
+    pub title: String,
+    /// What to do, as asked.
+    pub instructions: String,
+    /// The message that asked for it: `t12#48`. The report goes to its
+    /// thread.
+    pub origin: Address,
+    /// Who asked: the work is theirs, done by the workshop.
+    pub requester: User,
+    /// The agent that handed it to the workshop for them, if one did.
+    pub agent: Option<String>,
+    pub state: TaskState,
+    pub schedule: TaskSchedule,
+    /// The runner and model that work on it, once one does.
+    pub runner: Option<String>,
+    pub model: Option<String>,
+    /// What it is doing, while it runs; why it waits, while it is open.
+    pub progress: Option<String>,
+    /// Why it failed or is blocked.
+    pub reason: Option<String>,
+    /// The commits it put in the library, in order.
+    pub commits: Vec<String>,
+    /// The message in the origin's thread that reports on it.
+    pub report_message: Option<Address>,
+    #[serde(with = "time::serde::rfc3339")]
+    pub created_at: OffsetDateTime,
+    #[serde(with = "time::serde::rfc3339")]
+    pub updated_at: OffsetDateTime,
+    #[serde(with = "time::serde::rfc3339::option")]
+    pub started_at: Option<OffsetDateTime>,
+    #[serde(with = "time::serde::rfc3339::option")]
+    pub finished_at: Option<OffsetDateTime>,
+}
+
+/// A task with what its run wrote and reported.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct TaskPage {
+    #[serde(flatten)]
+    pub task: Task,
+    /// The run's report, in Markdown: what was done, what is pending.
+    pub report: Option<String>,
+    /// What the run did, step by step, trimmed to its end when long.
+    pub log: String,
+}
+
+/// Hands a task to the workshop.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct CreateTask {
+    pub title: String,
+    pub instructions: String,
+    /// The message that asks for it: `t12#48`. With a job's token, the
+    /// message the job answers if absent.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub origin: Option<String>,
+    #[serde(default)]
+    pub schedule: TaskSchedule,
+    /// The agent handing it over for the person whose token asks.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub agent: Option<String>,
+}
+
+/// How a group's workshop works.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct WorkshopSettings {
+    /// The night window, in the group's time zone: `01:00` to `07:00`.
+    pub night_from: String,
+    pub night_to: String,
+    /// An IANA time zone, such as `Europe/Madrid`.
+    pub time_zone: String,
+    /// Whether it is night now.
+    pub night_now: bool,
+    /// Whether the person asking lends their own worker to the workshop
+    /// during the night window.
+    pub lend: bool,
+    /// The members who lend theirs.
+    pub lenders: Vec<User>,
+}
+
+/// Changes to the workshop's settings: the window and time zone, by an
+/// admin; whether one lends their worker, by anyone, for themselves.
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
+pub struct UpdateWorkshop {
+    pub night_from: Option<String>,
+    pub night_to: Option<String>,
+    pub time_zone: Option<String>,
+    pub lend: Option<bool>,
 }
 
 // ── Workers ───────────────────────────────────────────────────────────
@@ -781,6 +962,9 @@ pub struct Worker {
     /// What it announced when it last connected.
     pub runners: Vec<String>,
     pub lean: bool,
+    /// Whether it works on the workshop's tasks.
+    #[serde(default)]
+    pub workshop: bool,
     pub version: Option<String>,
     #[serde(with = "time::serde::rfc3339")]
     pub created_at: OffsetDateTime,
@@ -856,6 +1040,8 @@ pub enum JobKind {
     PaperUpdate,
     /// Build a commit of the library, and inspect it.
     LibraryBuild,
+    /// Work on a task of the workshop.
+    TaskRun,
 }
 
 impl JobKind {
@@ -864,6 +1050,7 @@ impl JobKind {
             JobKind::Reply => "reply",
             JobKind::PaperUpdate => "paper_update",
             JobKind::LibraryBuild => "library_build",
+            JobKind::TaskRun => "task_run",
         }
     }
 
@@ -872,6 +1059,7 @@ impl JobKind {
             "reply" => Some(JobKind::Reply),
             "paper_update" => Some(JobKind::PaperUpdate),
             "library_build" => Some(JobKind::LibraryBuild),
+            "task_run" => Some(JobKind::TaskRun),
             _ => None,
         }
     }
@@ -888,6 +1076,9 @@ pub struct Job {
     pub trigger: Option<u32>,
     /// For a paper's update, the paper's slug.
     pub paper: Option<String>,
+    /// For a task's run, the task's number: the `7` of `w7`.
+    #[serde(default)]
+    pub task: Option<u32>,
     /// The agent's handle and name; for a build, `lean` and `Lean`.
     pub agent: String,
     pub agent_name: String,
@@ -937,5 +1128,9 @@ pub enum Event {
     /// A build of the library started, ended or waits.
     BuildUpdated {
         build: Build,
+    },
+    /// A task of the workshop is new, or changed.
+    TaskUpdated {
+        task: Task,
     },
 }

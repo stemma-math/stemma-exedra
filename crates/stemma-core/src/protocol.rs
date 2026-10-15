@@ -18,7 +18,7 @@ pub use crate::api::JobKind;
 use crate::api::{AgentProfile, LibraryReport, Message, ThreadKind, User};
 
 /// The version of this protocol. A hub refuses workers that speak another.
-pub const PROTOCOL_VERSION: u32 = 2;
+pub const PROTOCOL_VERSION: u32 = 3;
 
 /// The path of the workers' WebSocket, under the API's prefix.
 pub const WORKER_PATH: &str = "/worker";
@@ -44,6 +44,9 @@ pub struct Hello {
     pub runners: Vec<String>,
     /// Whether it has Lean (elan or lake), for library builds.
     pub lean: bool,
+    /// Whether it works on the workshop's tasks, with Lean and the runners
+    /// among its own that edit files.
+    pub workshop: bool,
     /// How many jobs it runs at once.
     pub concurrency: u32,
 }
@@ -63,6 +66,8 @@ pub enum Outcome {
     },
     /// A build of the library, whether it passed or not.
     Built(Box<Built>),
+    /// How a task's run ended, whatever the end.
+    Task(Box<TaskOutcome>),
     Failed {
         error: String,
     },
@@ -79,6 +84,35 @@ pub struct Built {
     pub log: String,
     /// What the inspection found, if it ran.
     pub report: Option<LibraryReport>,
+}
+
+/// How a task's run ended.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct TaskOutcome {
+    pub end: TaskEnd,
+    /// Why it failed or is blocked, in a line.
+    pub reason: Option<String>,
+    /// The runner's report, in Markdown: what was done, what is pending.
+    pub report: String,
+    /// The commits pushed to `main`, in order; none if nothing changed.
+    pub commits: Vec<String>,
+    /// What the run did, trimmed to its end when long.
+    pub log: String,
+    /// The build and inspection of the last commit pushed, which is the
+    /// library's new state.
+    pub built: Option<Built>,
+    /// The runner that worked on it, and its model, if known.
+    pub runner: String,
+    pub model: Option<String>,
+}
+
+/// How a task's run can end.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum TaskEnd {
+    Done,
+    Failed,
+    Blocked,
 }
 
 /// From the hub to a worker.
@@ -137,6 +171,9 @@ pub enum Work {
     /// Build a commit of the library and inspect it, with
     /// [`Outcome::Built`].
     LibraryBuild(LibraryBuild),
+    /// Work on a task of the workshop in the library, with
+    /// [`Outcome::Task`].
+    TaskRun(Box<TaskRun>),
 }
 
 impl JobSpec {
@@ -145,6 +182,7 @@ impl JobSpec {
             Work::Reply(_) => JobKind::Reply,
             Work::PaperUpdate(_) => JobKind::PaperUpdate,
             Work::LibraryBuild(_) => JobKind::LibraryBuild,
+            Work::TaskRun(_) => JobKind::TaskRun,
         }
     }
 
@@ -153,6 +191,7 @@ impl JobSpec {
         match &self.work {
             Work::Reply(conversation) => Some(conversation),
             Work::PaperUpdate(update) => Some(&update.conversation),
+            Work::TaskRun(run) => Some(&run.conversation),
             Work::LibraryBuild(_) => None,
         }
     }
@@ -212,6 +251,32 @@ pub struct LibraryBuild {
     pub repository: String,
     /// The commit, in full.
     pub commit: String,
+}
+
+/// A task of the workshop, as its worker gets it.
+///
+/// The worker works on a fresh worktree of the library at `main`, with the
+/// task's runner; checks that the build passes and that no definition's
+/// data newly depends on `sorry`; commits, with the task's provenance in
+/// trailers; and pushes to `main` with the job's token, which may push,
+/// rebasing once if `main` moved meanwhile.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct TaskRun {
+    /// Its number: the `7` of `w7`.
+    pub task: u32,
+    pub title: String,
+    pub instructions: String,
+    /// The workshop's agent, with the runner this worker is to use; the
+    /// thread of the message that asked, up to it; and who asked.
+    pub conversation: Conversation,
+    /// The papers the thread is about or references, as they are now.
+    pub papers: Vec<PaperSpec>,
+    /// Where to fetch and push the library, relative to the hub:
+    /// `/git/geometry.git`, with the job's token.
+    pub repository: String,
+    /// The definitions whose data already depends on `sorry`, in the
+    /// library's state: only new ones fail the task.
+    pub data_sorry: Vec<String>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
