@@ -117,11 +117,11 @@ export interface SearchHit {
 }
 
 /** The runners a worker can run an agent with. */
-export const RUNNERS = ["claude-code", "codex", "api"] as const;
+export const RUNNERS = ["claude-code", "codex", "opencode", "api"] as const;
 export type Runner = (typeof RUNNERS)[number];
 
 export type AgentScope = "personal" | "group";
-export type AgentRole = "answer" | "editor";
+export type AgentRole = "answer" | "editor" | "workshop";
 
 export interface AgentProfile {
   handle: string;
@@ -146,6 +146,7 @@ export interface Worker {
   online: boolean;
   runners: string[];
   lean: boolean;
+  workshop: boolean;
   version: string | null;
   created_at: string;
   last_seen_at: string | null;
@@ -157,7 +158,7 @@ export interface CreatedWorker extends Worker {
 
 export type JobState = "queued" | "running" | "done" | "failed" | "cancelled";
 
-export type JobKind = "reply" | "paper_update" | "library_build";
+export type JobKind = "reply" | "paper_update" | "library_build" | "task_run";
 
 export interface Job {
   id: number;
@@ -165,6 +166,7 @@ export interface Job {
   thread: number | null;
   trigger: number | null;
   paper: string | null;
+  task?: number | null;
   agent: string;
   agent_name: string;
   requester: User;
@@ -184,7 +186,8 @@ export type GroupEvent =
   | { type: "message_updated"; thread: number; message: Message }
   | { type: "job_updated"; job: Job }
   | { type: "paper_updated"; paper: Paper }
-  | { type: "build_updated"; build: Build };
+  | { type: "build_updated"; build: Build }
+  | { type: "task_updated"; task: Task };
 
 export interface Paper {
   slug: string;
@@ -286,6 +289,44 @@ export interface DeclarationPage extends DeclarationSummary {
   used_by: string[];
   commit: string;
   references: { address: string; title: string }[];
+}
+
+export type TaskState = "open" | "running" | "done" | "failed" | "blocked" | "cancelled";
+export type TaskSchedule = "now" | "night";
+
+export interface Task {
+  number: number;
+  title: string;
+  instructions: string;
+  origin: string;
+  requester: User;
+  agent: string | null;
+  state: TaskState;
+  schedule: TaskSchedule;
+  runner: string | null;
+  model: string | null;
+  progress: string | null;
+  reason: string | null;
+  commits: string[];
+  report_message: string | null;
+  created_at: string;
+  updated_at: string;
+  started_at: string | null;
+  finished_at: string | null;
+}
+
+export interface TaskPage extends Task {
+  report: string | null;
+  log: string;
+}
+
+export interface WorkshopSettings {
+  night_from: string;
+  night_to: string;
+  time_zone: string;
+  night_now: boolean;
+  lend: boolean;
+  lenders: User[];
 }
 
 /** An error the hub returned, with its code and words. */
@@ -460,6 +501,16 @@ export const api = {
   builds: (group: string) => get<Build[]>(`${g(group)}/library/builds`),
   build: (group: string, id: number) => get<BuildLog>(`${g(group)}/library/builds/${id}`),
   rebuild: (group: string) => post<Build>(`${g(group)}/library/builds`, {}),
+
+  tasks: (group: string, state?: TaskState) =>
+    get<Task[]>(`${g(group)}/tasks${state ? `?state=${state}` : ""}`),
+  task: (group: string, n: number) => get<TaskPage>(`${g(group)}/tasks/${n}`),
+  cancelTask: (group: string, n: number) => del<void>(`${g(group)}/tasks/${n}`),
+  workshop: (group: string) => get<WorkshopSettings>(`${g(group)}/workshop`),
+  updateWorkshop: (
+    group: string,
+    body: { night_from?: string; night_to?: string; time_zone?: string; lend?: boolean },
+  ) => put<WorkshopSettings>(`${g(group)}/workshop`, body),
 
   threadJobs: (group: string, n: number) => get<Job[]>(`${g(group)}/threads/${n}/jobs`),
   cancelJob: (group: string, id: number) => del<void>(`${g(group)}/jobs/${id}`),

@@ -37,8 +37,8 @@
 
   const runners = $derived(
     group
-      ? `[runners.api]\n\n[endpoints.openrouter]\nurl = "https://openrouter.ai/api/v1"\nkey_env = "OPENROUTER_API_KEY"\nmodel = "…"`
-      : "[runners.claude-code]\n[runners.codex]",
+      ? `[runners.api]\n\n[endpoints.openrouter]\nurl = "https://openrouter.ai/api/v1"\nkey_env = "OPENROUTER_API_KEY"\nmodel = "…"\n\n# With Lean, it builds the library; with a runner that edits files, it works\n# on the workshop's tasks too.\n# [lean]\n# [runners.opencode]\n# model = "openrouter/…"\n# [workshop]`
+      : "[runners.claude-code]\n[runners.codex]\n\n# To lend it to the workshop at night, with Lean:\n# [lean]\n# [workshop]",
   );
   const config = $derived(
     created
@@ -48,7 +48,11 @@
 
   /** What a worker runs, as it said when it last connected. */
   function runs(worker: Worker): string {
-    const offered = [...worker.runners, ...(worker.lean ? ["Lean builds"] : [])];
+    const offered = [
+      ...worker.runners,
+      ...(worker.lean ? ["Lean builds"] : []),
+      ...(worker.workshop ? ["the workshop"] : []),
+    ];
     if (offered.length) return offered.join(", ");
     return worker.last_seen_at ? "Nothing" : "Not connected yet";
   }

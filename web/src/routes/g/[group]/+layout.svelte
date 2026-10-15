@@ -46,6 +46,11 @@
       current: page.url.pathname.startsWith(`/g/${slug}/lib`),
     },
     {
+      href: `/g/${slug}/w`,
+      label: "Workshop",
+      current: page.url.pathname.startsWith(`/g/${slug}/w`),
+    },
+    {
       href: `/g/${slug}/settings`,
       label: "Settings",
       current: page.url.pathname.startsWith(`/g/${slug}/settings`),

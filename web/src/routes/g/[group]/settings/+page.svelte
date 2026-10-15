@@ -8,6 +8,7 @@
   import AgentSettings from "#lib/components/AgentSettings.svelte";
   import Avatar from "#lib/components/Avatar.svelte";
   import WorkerSettings from "#lib/components/WorkerSettings.svelte";
+  import WorkshopSettings from "#lib/components/WorkshopSettings.svelte";
 
   const context = groupContext();
   const group = $derived(context.group);
@@ -204,10 +205,21 @@
       Agents answer when someone mentions them, as in <code>@claude what do you think?</code>, and in
       a chat, their resident agent answers every message. Each answer is signed by the agent, for the
       person who asked. An editor updates a working paper instead, as in
-      <code>@editor update p/compactification with what we decided</code>. A personal agent runs on
-      the worker of whoever asks, with their own login; a group agent runs on the group's workers.
+      <code>@editor update p/compactification with what we decided</code>. The workshop's agent hands
+      what it is asked to the workshop, as a task. A personal agent runs on the worker of whoever
+      asks, with their own login; a group agent runs on the group's workers.
     </p>
     <AgentSettings group={group.slug} {admin} />
+  </section>
+
+  <section class="stack" id="workshop">
+    <h2>Workshop</h2>
+    <p>
+      The workshop works on the library in the background, on the group's workers that offer it.
+      Tasks asked for the night, as in <code>@workshop formalize this tonight</code>, wait for the
+      night window; members who lend their own worker add it to the workshop then.
+    </p>
+    <WorkshopSettings group={group.slug} {admin} />
   </section>
 
   <section class="stack">

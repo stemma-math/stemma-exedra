@@ -7,7 +7,14 @@
   const RUNNER_NAMES: Record<string, string> = {
     "claude-code": "Claude Code",
     codex: "Codex",
+    opencode: "OpenCode",
     api: "An API model",
+  };
+
+  const ROLES: Record<string, string> = {
+    answer: "",
+    editor: "Updates papers. ",
+    workshop: "Works on the library. ",
   };
 
   let agents = $state<AgentProfile[]>([]);
@@ -78,7 +85,7 @@
         <span class="stack stack--tight">
           <strong>{agent.display_name} <span class="identifier quiet">@{agent.handle}</span></strong>
           <span class="quiet">
-            {agent.role === "editor" ? "Updates papers. " : ""}{agent.scope === "personal"
+            {ROLES[agent.role] ?? ""}{agent.scope === "personal"
               ? `Each person's own ${RUNNER_NAMES[agent.runner] ?? agent.runner}, on their worker`
               : `${RUNNER_NAMES[agent.runner] ?? agent.runner}, on the group's workers`}
           </span>
@@ -137,6 +144,7 @@
       <select id="agent-role" class="input" bind:value={draft.role}>
         <option value="answer">It answers, with a message</option>
         <option value="editor">It updates the working paper the message names</option>
+        <option value="workshop">It hands what the message asks to the workshop, as a task</option>
       </select>
     </div>
     <div class="row">

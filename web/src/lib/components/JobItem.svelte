@@ -5,12 +5,14 @@
 
   interface Props {
     job: Job;
+    /** The group, for the link to a task's page. */
+    group?: string;
     /** Whether the person reading may cancel it, or dismiss it once failed. */
     canCancel: boolean;
     oncancel: (job: Job) => void;
   }
 
-  let { job, canCancel, oncancel }: Props = $props();
+  let { job, group, canCancel, oncancel }: Props = $props();
 </script>
 
 <div class="message-item" role="status" aria-label={jobStatus(job)}>
@@ -19,7 +21,7 @@
     <div class="message-item__head">
       <strong>{jobStatus(job)}</strong>
       <span class="quiet">
-        for {job.requester.display_name}{#if job.trigger}, to <a href="#{job.trigger}">#{job.trigger}</a>{/if}
+        for {job.requester.display_name}{#if job.trigger}, to <a href="#{job.trigger}">#{job.trigger}</a>{/if}{#if job.task && group}{" · "}<a class="identifier" href="/g/{group}/w/{job.task}">w{job.task}</a>{/if}
       </span>
       {#if canCancel}
         <span class="message-item__actions">

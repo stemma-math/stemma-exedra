@@ -451,6 +451,27 @@ stemma-toast-region {
   }
 }
 
+/* ── The workshop ───────────────────────────────────────────────────── */
+
+.tasks {
+  --columns: auto minmax(0, 1fr) auto;
+}
+
+/* The night window's fields wrap rather than squeeze. */
+.night-window > .field {
+  min-width: 8rem;
+}
+
+@media (max-width: 40rem) {
+  .tasks {
+    --columns: auto minmax(0, 1fr);
+  }
+
+  .tasks .when {
+    display: none;
+  }
+}
+
 /* Tables of settings: each row is its own grid, so columns are fixed for
  * the rows to line up with their head. */
 .agents-table {

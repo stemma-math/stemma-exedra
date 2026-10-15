@@ -197,7 +197,7 @@
         <p class="empty">No messages yet. Say the first thing.</p>
       {/each}
       {#each jobs as job (job.id)}
-        <JobItem {job} canCancel={admin || job.requester.id === viewer} oncancel={cancel} />
+        <JobItem {job} group={group.slug} canCancel={admin || job.requester.id === viewer} oncancel={cancel} />
       {/each}
     </section>
 
