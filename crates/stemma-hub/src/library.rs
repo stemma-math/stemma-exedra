@@ -31,6 +31,10 @@ const TEMPLATE: &[(&str, &str)] = &[
         include_str!("../../../lean/template/lakefile.toml"),
     ),
     (
+        "lake-manifest.json",
+        include_str!("../../../lean/template/lake-manifest.json"),
+    ),
+    (
         ".gitignore",
         include_str!("../../../lean/template/gitignore"),
     ),
