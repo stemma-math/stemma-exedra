@@ -32,6 +32,21 @@ the API under `/api/v1`, git over HTTP for the groups' libraries under
 in a data directory. The hub needs `git` installed; without it, groups have
 no library.
 
+Each [release](https://github.com/stemma-math/stemma-exedra/releases) has the
+binary, with the web app embedded, for Linux (x86_64) and macOS (ARM), and
+the archives' `SHA256SUMS`:
+
+```sh
+version=0.1.0 target=x86_64-unknown-linux-gnu
+url=https://github.com/stemma-math/stemma-exedra/releases/download/v$version
+curl -fsSLO "$url/stemma-$version-$target.tar.gz" -fsSLO "$url/SHA256SUMS"
+sha256sum --check --ignore-missing SHA256SUMS
+tar -xzf "stemma-$version-$target.tar.gz"
+"stemma-$version-$target/stemma" hub
+```
+
+Or build it from the repository:
+
 ```sh
 just setup     # install the web app's dependencies
 just release   # build the web app, then the binary with it embedded
