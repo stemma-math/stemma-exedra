@@ -85,13 +85,7 @@ function renderReference(raw: string, group: string): string {
   const address = parseAddress(raw.trim());
   if (address === null) return esc(`[[${raw}]]`);
   const text = esc(formatAddress(address));
-  switch (address.kind) {
-    case "task":
-      // The workshop is not here yet.
-      return `<span class="ref" data-ref="${text}">${text}</span>`;
-    default:
-      return `<a class="ref" href="${esc(addressPath(address, group))}" data-ref="${text}">${text}</a>`;
-  }
+  return `<a class="ref" href="${esc(addressPath(address, group))}" data-ref="${text}">${text}</a>`;
 }
 
 /** `> [!conjecture]`, `> [!open]` and `> [!idea]`: a quotation whose first
