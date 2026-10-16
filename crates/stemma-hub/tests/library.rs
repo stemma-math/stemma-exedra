@@ -172,10 +172,8 @@ async fn libraries_are_made_cloned_pushed_and_built() {
     assert!(lakefile.contains("rev = \"v4.35.0\""));
     let basic = std::fs::read_to_string(dir.join("Geometry/Basic.lean")).unwrap();
     assert!(basic.contains("namespace Geometry"));
-    assert_eq!(
-        std::fs::read_to_string(dir.join("Geometry.lean")).unwrap(),
-        "import Geometry.Basic\n"
-    );
+    assert!(lakefile.contains("globs = [\"Geometry.+\"]"), "{lakefile}");
+    assert!(!dir.join("Geometry.lean").exists());
 
     // A push builds the new commit, in place of the one still waiting.
     std::fs::write(

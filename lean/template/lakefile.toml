@@ -6,5 +6,8 @@ name = "mathlib"
 scope = "leanprover-community"
 rev = "v4.35.0"
 
+# Every module under `{{Library}}/`, with no root module importing them all:
+# a change builds again only the modules that import what changed.
 [[lean_lib]]
 name = "{{Library}}"
+globs = ["{{Library}}.+"]

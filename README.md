@@ -102,8 +102,10 @@ person's own Claude Code; any agent can be an editor (see below).
 
 Each group has a library: a plain Lean project depending on Mathlib, made when
 the group is, from the template in `lean/template` (Lean and Mathlib
-v4.35.0). The hub keeps it as a git repository, served over HTTP to the
-group's members:
+v4.35.0). Its modules are built each on its own, with no root module
+importing them all, and import only the parts of Mathlib they use, so that a
+change builds again only what it touches. The hub keeps it as a git
+repository, served over HTTP to the group's members:
 
 ```sh
 git clone https://stemma.example.org/git/geometry.git   # a personal token as the password

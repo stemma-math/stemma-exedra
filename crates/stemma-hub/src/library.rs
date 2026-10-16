@@ -43,10 +43,6 @@ const TEMPLATE: &[(&str, &str)] = &[
         include_str!("../../../lean/template/README.md"),
     ),
     (
-        "Library.lean",
-        include_str!("../../../lean/template/Library.lean"),
-    ),
-    (
         "Library/Basic.lean",
         include_str!("../../../lean/template/Library/Basic.lean"),
     ),

@@ -9,9 +9,13 @@ How to work:
 
 - Formalize in the group's library, following its existing structure: put
   things in the module where they belong, or in a new module beside the
-  others, imported from the library's root module. Reuse what the library
-  and Mathlib already have; follow Mathlib's conventions for names,
-  statements and style. Give each new declaration a docstring that says,
+  others. Reuse what the library and Mathlib already have; follow
+  Mathlib's conventions for names, statements and style.
+- Import only the modules a file uses (`import Mathlib.Topology.Basic`),
+  never `Mathlib` whole nor a module that imports every other: loading
+  them makes each build take minutes. When a tactic or a lemma is unknown,
+  add the import that gives it (`norm_num` is in `Mathlib.Tactic.NormNum`).
+  Do not add a root module that imports the whole library. Give each new declaration a docstring that says,
   in words, what it states, and where it comes from (`t12#45`).
 - State what the conversation decided, faithfully. Do not weaken, change or
   generalize a statement to make it provable: a faithful statement with
