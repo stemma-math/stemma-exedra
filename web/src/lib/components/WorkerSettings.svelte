@@ -89,8 +89,9 @@
         Copy the worker's configuration now: its token will not be shown again. Save it as
         <code>worker.toml</code> and run <code>stemma worker --config worker.toml</code>.
       </span>
-      <span class="row">
-        <pre class="identifier grow" id="worker-config">{config}</pre>
+      <span class="copy-block">
+        <span class="copy-block__label">worker.toml</span>
+        <pre id="worker-config">{config}</pre>
         <stemma-copy-button for="worker-config" label="Copy the configuration"></stemma-copy-button>
       </span>
     </span>

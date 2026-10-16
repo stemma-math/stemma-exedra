@@ -110,7 +110,7 @@
       <section class="stack stack--tight">
         <h2 class="label">Uses</h2>
         {#each d.uses as used (used)}
-          <a class="identifier" href="/g/{group.slug}/lib/{encodeURIComponent(used)}">{used}</a>
+          <a class="identifier link" href="/g/{group.slug}/lib/{encodeURIComponent(used)}">{used}</a>
         {:else}
           <p class="empty">Nothing else of the library.</p>
         {/each}
@@ -118,7 +118,7 @@
       <section class="stack stack--tight">
         <h2 class="label">Used by</h2>
         {#each d.used_by as user (user)}
-          <a class="identifier" href="/g/{group.slug}/lib/{encodeURIComponent(user)}">{user}</a>
+          <a class="identifier link" href="/g/{group.slug}/lib/{encodeURIComponent(user)}">{user}</a>
         {:else}
           <p class="empty">Nothing in the library.</p>
         {/each}

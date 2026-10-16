@@ -199,8 +199,7 @@
 
   <div class="row">
     <label class="button button--quiet">
-      <!-- Stopgap: https://github.com/stemma-math/design/issues/7 -->
-      <Glyph name="add" />
+      <Glyph name="attach" />
       Attach files
       <input
         class="visually-hidden"
@@ -219,7 +218,7 @@
       {#if summon}Ask {summon} by mentioning them.{/if}
     </span>
     <button class="button button--primary" type="submit" disabled={!canSend}>
-      {#if sending}<span class="spinner" aria-hidden="true"></span>{/if}
+      {#if sending}<span class="spinner" aria-hidden="true"></span>{:else}<Glyph name="send" />{/if}
       {submitLabel}
     </button>
   </div>

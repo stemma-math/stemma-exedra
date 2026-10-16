@@ -12,19 +12,6 @@ body {
   min-height: 100%;
 }
 
-/* Links outside documents and components, in the design's link colour.
- * Stopgap: the design system styles links only inside `.document`
- * (https://github.com/stemma-math/design/issues/8). */
-.app :is(a:not([class]), a.identifier) {
-  color: var(--link);
-  text-decoration-color: color-mix(in srgb, currentColor 40%, transparent);
-  text-underline-offset: 0.18em;
-}
-
-.app :is(a:not([class]), a.identifier):hover {
-  text-decoration-color: currentColor;
-}
-
 .app {
   display: flex;
   flex-direction: column;
@@ -191,77 +178,25 @@ body {
 
 /* ── Messages ───────────────────────────────────────────────────────── */
 
-/* Stopgap, until the design system has a message: https://github.com/stemma-math/design/issues/12 */
-
-.messages {
-  display: flex;
-  flex-direction: column;
-  margin: var(--space-6) 0;
+.thread-posts {
+  margin-block: var(--space-6);
 }
 
-.message-item {
-  display: grid;
-  grid-template-columns: auto minmax(0, 1fr);
-  gap: var(--space-3);
-  padding: var(--space-4) 0;
-  border-bottom: 1px solid var(--divider);
+/* Below the sticky bar on top. */
+.thread-posts .post {
   scroll-margin-top: 5rem;
 }
 
-.message-item:target,
-.message-item.is-targeted {
-  background: var(--surface-subtle);
-  box-shadow:
-    -0.75rem 0 0 var(--surface-subtle),
-    0.75rem 0 0 var(--surface-subtle);
-}
-
-.message-item__head {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: baseline;
-  gap: var(--space-2);
-  margin-bottom: var(--space-2);
-}
-
-.message-item__number {
-  color: inherit;
-  text-decoration: none;
-}
-
-.message-item__actions {
-  margin-left: auto;
-  display: flex;
-  gap: var(--space-1);
-}
-
-.message-item__body {
-  max-width: var(--measure);
-}
-
-.job-item__progress {
+.post__body > p {
   margin: 0;
 }
 
-/* A configuration to copy, as it is. Stopgap: https://github.com/stemma-math/design/issues/13 */
-pre.identifier {
-  margin: 0;
-  white-space: pre-wrap;
-  overflow-wrap: anywhere;
-}
-
-.attachments {
-  display: flex;
-  flex-wrap: wrap;
-  gap: var(--space-3);
-  margin-top: var(--space-3);
-}
-
-.attachments figure {
+/* Images show as they are, in their own row of attachments. */
+.post__image {
   margin: 0;
 }
 
-.attachments img {
+.post__image img {
   display: block;
   max-width: min(100%, 28rem);
   max-height: 24rem;
@@ -395,11 +330,9 @@ stemma-toast-region {
   outline-offset: 2px;
 }
 
-/* A declaration's state, beside its reference. Stopgap: https://github.com/stemma-math/design/issues/10 */
+/* A declaration's state, beside its reference. */
 .ref-state {
   margin-left: 0.3em;
-  vertical-align: 0.1em;
-  font-size: 0.7em;
 }
 
 @media (max-width: 60rem) {
@@ -475,34 +408,30 @@ stemma-toast-region {
   }
 }
 
-/* Tables of settings: each row is its own grid, so columns are fixed for
- * the rows to line up with their head. Stopgap: https://github.com/stemma-math/design/issues/11 */
+/* Tables of settings: their columns fit what they hold, across rows. */
 .agents-table {
-  --columns: minmax(0, 1fr) 5.5rem 12rem;
+  --columns: minmax(0, 1fr) auto fit-content(14rem);
 }
 
 .agents-table.is-managed {
-  --columns: minmax(0, 1fr) 5.5rem 12rem 9.5rem;
+  --columns: minmax(0, 1fr) auto fit-content(14rem) auto;
 }
 
 .workers-table {
-  --columns: minmax(0, 1fr) 11rem 11rem;
+  --columns: minmax(0, 1fr) auto auto;
 }
 
 .workers-table.is-managed {
-  --columns: minmax(0, 1fr) 11rem 11rem 5.5rem;
+  --columns: minmax(0, 1fr) auto auto auto;
 }
 
 .members-table {
-  --columns: auto minmax(0, 1fr) 8rem 5.5rem;
+  --columns: auto minmax(0, 1fr) auto auto;
 }
 
-.invitations-table {
-  --columns: minmax(0, 1fr) 4rem 5.5rem;
-}
-
+.invitations-table,
 .tokens-table {
-  --columns: minmax(0, 1fr) 7rem 5.5rem;
+  --columns: minmax(0, 1fr) auto auto;
 }
 
 .settings-table .table__row > .chip {
@@ -523,8 +452,13 @@ stemma-toast-region {
     display: none;
   }
 
+  /* One column: each cell on a line of its own. */
   .settings-table .table__row {
     justify-items: start;
+  }
+
+  .settings-table .table__row > * {
+    grid-column: 2 / -2;
   }
 }
 

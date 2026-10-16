@@ -2,6 +2,9 @@
   import "@stemma-math/design/index.css";
   import "@stemma-math/design-elements";
   import "../app.css";
+  import touchIcon from "@stemma-math/design/icons/apple-touch-icon.png?url";
+  import favicon32 from "@stemma-math/design/icons/favicon-32.png?url";
+  import favicon from "@stemma-math/design/icons/favicon.svg?url";
 
   import { goto } from "$app/navigation";
   import { page } from "$app/state";
@@ -31,6 +34,12 @@
     goto("/signin");
   }
 </script>
+
+<svelte:head>
+  <link rel="icon" href={favicon32} sizes="32x32" type="image/png" />
+  <link rel="icon" href={favicon} type="image/svg+xml" />
+  <link rel="apple-touch-icon" href={touchIcon} />
+</svelte:head>
 
 <div class="app">
   {#if session.me}

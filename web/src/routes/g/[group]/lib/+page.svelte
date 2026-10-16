@@ -104,7 +104,7 @@
               </li>
               {#each library.modules as m (m.name)}
                 <li class="row">
-                  <a class="identifier grow" href="/g/{group.slug}/lib?module={encodeURIComponent(m.name)}" aria-current={module === m.name ? "page" : undefined}>{m.name}</a>
+                  <a class="identifier link grow" href="/g/{group.slug}/lib?module={encodeURIComponent(m.name)}" aria-current={module === m.name ? "page" : undefined}>{m.name}</a>
                   <span class="quiet numeric">{m.declarations}</span>
                   {#if m.sorry}<span class="chip chip--warning" title="Depending on sorry">{m.sorry}</span>{/if}
                 </li>
