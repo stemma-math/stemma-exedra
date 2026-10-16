@@ -377,3 +377,12 @@ The hub embeds `web/build`, the output of `pnpm --dir web build`:
   web app shows without rebuilding the hub.
 - Without a built web app, `cargo build` still works, and the hub serves a
   page that says how to build it.
+
+### Releases
+
+Releasing is changing the version in `Cargo.toml` in a pull request. When it
+reaches `main` with no tag for it yet, the release workflow builds the binary,
+with the web app embedded, for Linux (x86_64) and macOS (ARM), tags the commit
+`v<version>` and publishes the archives with their `SHA256SUMS`. Notes written
+in `docs/releases/v<version>.md` go first, followed by the list GitHub
+generates. While Stemma is 0.x, every release is a pre-release.
