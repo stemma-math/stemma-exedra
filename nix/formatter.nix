@@ -29,6 +29,22 @@
 
     # The Justfile.
     programs.just.enable = true;
+
+    # The web app: TypeScript, Svelte, CSS and JSON, as `biome.json` says.
+    # The same version as the web app's own, so both agree.
+    settings.formatter.biome = {
+      command = pkgs.lib.getExe pkgs.biome;
+      options = ["format" "--write" "--no-errors-on-unmatched"];
+      includes = [
+        "web/*.json"
+        "web/*.ts"
+        "web/src/**/*.ts"
+        "web/src/**/*.svelte"
+        "web/src/**/*.css"
+        "web/src/**/*.html"
+        "biome.json"
+      ];
+    };
   };
 in
   treefmt.config.build.wrapper.overrideAttrs (old: {

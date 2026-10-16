@@ -1,0 +1,6 @@
+# A small library without Mathlib, to test the inspection on.
+name = "fixture"
+defaultTargets = ["Fixture"]
+
+[[lean_lib]]
+name = "Fixture"

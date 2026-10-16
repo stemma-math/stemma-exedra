@@ -58,6 +58,18 @@ in
         help = "Rust language server";
       }
       {
+        package = pkgs.nodejs;
+        help = "JavaScript runtime, for the web app";
+      }
+      {
+        package = pkgs.pnpm;
+        help = "Package manager for the web app";
+      }
+      {
+        package = pkgs.biome;
+        help = "Formatter and linter for the web app";
+      }
+      {
         package = pkgs.elan;
         help = "Lean toolchain manager";
       }

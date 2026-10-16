@@ -1,0 +1,35 @@
+[package]
+name = "stemma-worker"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+description = "The Stemma worker: connects to a hub and runs its agents' jobs"
+repository.workspace = true
+license.workspace = true
+
+[dependencies]
+anyhow.workspace = true
+dirs.workspace = true
+futures-util.workspace = true
+rand.workspace = true
+reqwest.workspace = true
+rustls.workspace = true
+rustls-platform-verifier.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+sha2.workspace = true
+stemma-client.workspace = true
+stemma-core.workspace = true
+tokio = { workspace = true, features = ["net", "process", "time"] }
+tokio-tungstenite.workspace = true
+toml.workspace = true
+tracing.workspace = true
+
+[dev-dependencies]
+axum.workspace = true
+sqlx.workspace = true
+stemma-hub.workspace = true
+tempfile.workspace = true
+
+[lints]
+workspace = true

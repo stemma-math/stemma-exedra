@@ -1,0 +1,532 @@
+/* Layout and composition of the web app. How things look comes from
+ * @stemma-math/design: these rules only place its components and use its
+ * tokens for space, rules and surfaces. */
+
+:root {
+  --measure: 46rem;
+  --page-wide: 72rem;
+}
+
+html,
+body {
+  min-height: 100%;
+}
+
+/* Links outside documents and components, in the design's link colour.
+ * Stopgap: the design system styles links only inside `.document`. */
+.app :is(a:not([class]), a.identifier) {
+  color: var(--link);
+  text-decoration-color: color-mix(in srgb, currentColor 40%, transparent);
+  text-underline-offset: 0.18em;
+}
+
+.app :is(a:not([class]), a.identifier):hover {
+  text-decoration-color: currentColor;
+}
+
+.app {
+  display: flex;
+  flex-direction: column;
+  min-height: 100vh;
+}
+
+/* ── The bar on top ─────────────────────────────────────────────────── */
+
+.topbar {
+  position: sticky;
+  top: 0;
+  z-index: 10;
+  display: flex;
+  align-items: center;
+  gap: var(--space-4);
+  padding: var(--space-3) var(--space-6);
+  background: var(--surface-page);
+  border-bottom: 1px solid var(--divider);
+}
+
+.topbar__home {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-2);
+  color: inherit;
+  text-decoration: none;
+}
+
+.topbar__home stemma-mark {
+  width: 1.75em;
+}
+
+.topbar__groups {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-1);
+}
+
+.topbar__end {
+  margin-left: auto;
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+}
+
+/* ── Pages ──────────────────────────────────────────────────────────── */
+
+.page {
+  box-sizing: border-box;
+  width: 100%;
+  max-width: var(--page-wide);
+  margin: 0 auto;
+  padding: var(--space-6);
+}
+
+.page--narrow {
+  max-width: calc(var(--measure) + 2 * var(--space-6));
+}
+
+.page--centered {
+  display: grid;
+  place-items: center;
+  flex: 1;
+}
+
+.page__head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-3);
+  margin-bottom: var(--space-6);
+}
+
+.page__head > :first-child {
+  margin: 0;
+}
+
+.page__head > .push {
+  margin-left: auto;
+}
+
+.stack {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-4);
+}
+
+.stack--tight {
+  gap: var(--space-2);
+}
+
+.stack--loose {
+  gap: var(--space-8);
+}
+
+.row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-2);
+}
+
+.row--end {
+  justify-content: flex-end;
+}
+
+.grow {
+  flex: 1;
+  min-width: 0;
+}
+
+.card__body {
+  padding: var(--space-6);
+}
+
+.card__body > h2:first-child,
+.card__body > h3:first-child {
+  margin-top: 0;
+}
+
+.form {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-4);
+}
+
+.sign-in {
+  width: 100%;
+  max-width: 24rem;
+}
+
+.sign-in__brand {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: var(--space-3);
+  margin-bottom: var(--space-6);
+}
+
+/* ── Threads ────────────────────────────────────────────────────────── */
+
+.threads {
+  --columns: 4.5rem minmax(0, 1fr) auto;
+}
+
+.thread-row__title {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: var(--space-2);
+}
+
+.thread-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: var(--space-3);
+  margin-bottom: var(--space-2);
+}
+
+.thread-head h1 {
+  margin: 0;
+}
+
+/* ── Messages ───────────────────────────────────────────────────────── */
+
+.messages {
+  display: flex;
+  flex-direction: column;
+  margin: var(--space-6) 0;
+}
+
+.message-item {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  gap: var(--space-3);
+  padding: var(--space-4) 0;
+  border-bottom: 1px solid var(--divider);
+  scroll-margin-top: 5rem;
+}
+
+.message-item:target,
+.message-item.is-targeted {
+  background: var(--surface-subtle);
+  box-shadow:
+    -0.75rem 0 0 var(--surface-subtle),
+    0.75rem 0 0 var(--surface-subtle);
+}
+
+.message-item__head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: var(--space-2);
+  margin-bottom: var(--space-2);
+}
+
+.message-item__number {
+  color: inherit;
+  text-decoration: none;
+}
+
+.message-item__actions {
+  margin-left: auto;
+  display: flex;
+  gap: var(--space-1);
+}
+
+.message-item__body {
+  max-width: var(--measure);
+}
+
+.job-item__progress {
+  margin: 0;
+}
+
+/* A configuration to copy, as it is. */
+pre.identifier {
+  margin: 0;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+.attachments {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-3);
+  margin-top: var(--space-3);
+}
+
+.attachments figure {
+  margin: 0;
+}
+
+.attachments img {
+  display: block;
+  max-width: min(100%, 28rem);
+  max-height: 24rem;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+}
+
+/* ── The composer ───────────────────────────────────────────────────── */
+
+.composer {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+  padding: var(--space-4);
+}
+
+.composer textarea {
+  min-height: 7rem;
+  resize: vertical;
+}
+
+.composer__preview {
+  min-height: 7rem;
+  padding: var(--space-2) 0;
+}
+
+.composer.is-dropping {
+  outline: 2px dashed var(--focus-ring);
+  outline-offset: -4px;
+}
+
+stemma-toast-region {
+  position: fixed;
+  right: var(--space-4);
+  bottom: var(--space-4);
+  z-index: 20;
+  max-width: 24rem;
+}
+
+@media (max-width: 40rem) {
+  .topbar,
+  .page {
+    padding-inline: var(--space-4);
+  }
+
+  .threads {
+    --columns: 3rem minmax(0, 1fr);
+  }
+
+  .threads .when {
+    display: none;
+  }
+
+  .topbar__name {
+    display: none;
+  }
+
+  /* The group's tabs scroll rather than widen the page. */
+  .tabs {
+    overflow-x: auto;
+    scrollbar-width: none;
+  }
+
+  .topbar__groups {
+    flex-wrap: nowrap;
+    overflow-x: auto;
+    min-width: 0;
+  }
+}
+
+.plain-list {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+/* In a stack or a form, the gap is the only space between blocks. */
+:is(.stack, .form, .sign-in__brand) > :is(h1, h2, h3, p) {
+  margin: 0;
+}
+
+/* ── Working papers ─────────────────────────────────────────────────── */
+
+.papers {
+  --columns: minmax(0, 1fr) auto;
+}
+
+.paper-layout {
+  display: grid;
+  grid-template-columns: minmax(0, var(--measure)) minmax(12rem, 18rem);
+  gap: var(--space-8);
+  justify-content: center;
+}
+
+.paper-layout .document :is(h1, h2, h3, h4, h5, h6) {
+  scroll-margin-top: 5rem;
+}
+
+.paper-aside {
+  position: sticky;
+  top: 5rem;
+  align-self: start;
+  max-height: calc(100vh - 6rem);
+  overflow-y: auto;
+}
+
+.paper-aside__section {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+  padding-left: calc(var(--depth, 0) * var(--space-3));
+}
+
+.paper-aside__thread {
+  padding-left: var(--space-3);
+}
+
+.paper-editor__text {
+  min-height: 28rem;
+  resize: vertical;
+}
+
+.paper-editor__preview {
+  min-height: 28rem;
+}
+
+/* A callout that changed keeps its tone, and is outlined in the accent. */
+.document .highlight.is-changed[data-callout] {
+  outline: 2px solid color-mix(in srgb, var(--accent) 45%, transparent);
+  outline-offset: 2px;
+}
+
+/* A declaration's state, beside its reference. */
+.ref-state {
+  margin-left: 0.3em;
+  vertical-align: 0.1em;
+  font-size: 0.7em;
+}
+
+@media (max-width: 60rem) {
+  .paper-layout {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .paper-aside {
+    position: static;
+    max-height: none;
+  }
+}
+
+/* ── The library ────────────────────────────────────────────────────── */
+
+.library-layout {
+  display: grid;
+  grid-template-columns: minmax(14rem, 20rem) minmax(0, 1fr);
+  gap: var(--space-8);
+  align-items: start;
+}
+
+.declarations {
+  --columns: minmax(0, 1fr) auto auto;
+}
+
+.declaration-type {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.declaration-links {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(12rem, 1fr));
+  gap: var(--space-6);
+}
+
+.declaration-links > section {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.build-log {
+  max-height: 70vh;
+  white-space: pre-wrap;
+}
+
+@media (max-width: 60rem) {
+  .library-layout {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}
+
+/* ── The workshop ───────────────────────────────────────────────────── */
+
+.tasks {
+  --columns: auto minmax(0, 1fr) auto;
+}
+
+/* The night window's fields wrap rather than squeeze. */
+.night-window > .field {
+  min-width: 8rem;
+}
+
+@media (max-width: 40rem) {
+  .tasks {
+    --columns: auto minmax(0, 1fr);
+  }
+
+  .tasks .when {
+    display: none;
+  }
+}
+
+/* Tables of settings: each row is its own grid, so columns are fixed for
+ * the rows to line up with their head. */
+.agents-table {
+  --columns: minmax(0, 1fr) 5.5rem 12rem;
+}
+
+.agents-table.is-managed {
+  --columns: minmax(0, 1fr) 5.5rem 12rem 9.5rem;
+}
+
+.workers-table {
+  --columns: minmax(0, 1fr) 11rem 11rem;
+}
+
+.workers-table.is-managed {
+  --columns: minmax(0, 1fr) 11rem 11rem 5.5rem;
+}
+
+.members-table {
+  --columns: auto minmax(0, 1fr) 8rem 5.5rem;
+}
+
+.invitations-table {
+  --columns: minmax(0, 1fr) 4rem 5.5rem;
+}
+
+.tokens-table {
+  --columns: minmax(0, 1fr) 7rem 5.5rem;
+}
+
+.settings-table .table__row > .chip {
+  justify-self: start;
+}
+
+@media (max-width: 40rem) {
+  .settings-table {
+    --columns: minmax(0, 1fr);
+  }
+
+  .settings-table.is-managed,
+  .members-table {
+    --columns: minmax(0, 1fr);
+  }
+
+  .settings-table .table__head {
+    display: none;
+  }
+
+  .settings-table .table__row {
+    justify-items: start;
+  }
+}
+
+.agent-model {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}

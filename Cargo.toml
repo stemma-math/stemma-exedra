@@ -1,0 +1,67 @@
+[workspace]
+resolver = "3"
+members = ["crates/*"]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.94"
+repository = "https://github.com/stemma-math/stemma-exedra"
+license = "MIT"
+
+[workspace.dependencies]
+anyhow = "1.0.104"
+argon2 = "0.6.0"
+axum = { version = "0.8.9", features = ["macros", "multipart", "ws"] }
+base64 = "0.23.1"
+clap = { version = "4.6.7", features = ["derive", "env"] }
+dirs = "7.0.0"
+futures-util = "0.3.34"
+http-body-util = "0.1.5"
+jiff = { version = "0.2.37", default-features = false, features = ["std", "tz-system", "tzdb-bundle-always", "tzdb-zoneinfo"] }
+mime_guess = "2.0.5"
+rand = "0.10.3"
+reqwest = { version = "0.13.5", default-features = false, features = ["charset", "http2", "json", "query", "rustls-no-provider"] }
+rmcp = { version = "3.5.1", default-features = false, features = ["base64", "server", "transport-io"] }
+rpassword = "7.5.4"
+rust-embed = { version = "8.13.0", features = ["interpolate-folder-path", "mime-guess"] }
+rustls = { version = "0.23", default-features = false, features = ["logging", "ring", "std", "tls12"] }
+rustls-platform-verifier = "0.7"
+serde = { version = "1.0.229", features = ["derive"] }
+serde_json = "1.0.154"
+sha2 = "0.11.1"
+sqlx = { version = "0.9.0", default-features = false, features = ["macros", "migrate", "runtime-tokio", "sqlite"] }
+stemma-client = { path = "crates/stemma-client" }
+stemma-core = { path = "crates/stemma-core" }
+stemma-hub = { path = "crates/stemma-hub" }
+stemma-worker = { path = "crates/stemma-worker" }
+tempfile = "3"
+thiserror = "2.0.21"
+time = { version = "0.3.55", features = ["formatting", "parsing", "serde"] }
+tokio = { version = "1.53.3", features = ["fs", "io-util", "macros", "rt-multi-thread", "signal", "sync"] }
+tokio-stream = { version = "0.1.19", features = ["sync"] }
+tokio-tungstenite = { version = "0.30.0", features = ["rustls-tls-native-roots"] }
+tokio-util = { version = "0.7", features = ["io"] }
+toml = "1.1.8"
+tower = { version = "0.5.3", features = ["util"] }
+tower-http = { version = "0.7.1", features = ["limit", "trace"] }
+tracing = "0.1.44"
+tracing-subscriber = { version = "0.3.23", features = ["env-filter"] }
+unicode-normalization = "0.1.25"
+
+[workspace.lints.clippy]
+all = { level = "warn", priority = -1 }
+
+[workspace.lints.rust]
+unsafe_code = "forbid"
+
+# Password hashing is slow on purpose; unoptimised, it is far slower still.
+[profile.dev.package.argon2]
+opt-level = 3
+
+[profile.dev.package.blake2]
+opt-level = 3
+
+[profile.release]
+strip = true
+lto = "thin"
