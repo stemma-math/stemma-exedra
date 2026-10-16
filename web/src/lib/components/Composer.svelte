@@ -199,6 +199,7 @@
 
   <div class="row">
     <label class="button button--quiet">
+      <!-- Stopgap: https://github.com/stemma-math/design/issues/7 -->
       <Glyph name="add" />
       Attach files
       <input

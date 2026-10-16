@@ -99,6 +99,7 @@
             title="Reply"
             onclick={() => onreply(message.number)}
           >
+            <!-- Stopgap: https://github.com/stemma-math/design/issues/7 -->
             <Glyph name="redo" small />
           </button>
           {#if mine}

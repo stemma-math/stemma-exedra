@@ -13,7 +13,8 @@ body {
 }
 
 /* Links outside documents and components, in the design's link colour.
- * Stopgap: the design system styles links only inside `.document`. */
+ * Stopgap: the design system styles links only inside `.document`
+ * (https://github.com/stemma-math/design/issues/8). */
 .app :is(a:not([class]), a.identifier) {
   color: var(--link);
   text-decoration-color: color-mix(in srgb, currentColor 40%, transparent);
@@ -190,6 +191,8 @@ body {
 
 /* ── Messages ───────────────────────────────────────────────────────── */
 
+/* Stopgap, until the design system has a message: https://github.com/stemma-math/design/issues/12 */
+
 .messages {
   display: flex;
   flex-direction: column;
@@ -240,7 +243,7 @@ body {
   margin: 0;
 }
 
-/* A configuration to copy, as it is. */
+/* A configuration to copy, as it is. Stopgap: https://github.com/stemma-math/design/issues/13 */
 pre.identifier {
   margin: 0;
   white-space: pre-wrap;
@@ -392,7 +395,7 @@ stemma-toast-region {
   outline-offset: 2px;
 }
 
-/* A declaration's state, beside its reference. */
+/* A declaration's state, beside its reference. Stopgap: https://github.com/stemma-math/design/issues/10 */
 .ref-state {
   margin-left: 0.3em;
   vertical-align: 0.1em;
@@ -473,7 +476,7 @@ stemma-toast-region {
 }
 
 /* Tables of settings: each row is its own grid, so columns are fixed for
- * the rows to line up with their head. */
+ * the rows to line up with their head. Stopgap: https://github.com/stemma-math/design/issues/11 */
 .agents-table {
   --columns: minmax(0, 1fr) 5.5rem 12rem;
 }
