@@ -35,19 +35,21 @@
   {#if revisions === null}
     <span class="spinner" role="status" aria-label="Loading"></span>
   {:else}
-    <div class="card table" style="--columns: 4rem minmax(0, 1fr) auto">
-      {#each revisions as revision (revision.number)}
-        <a class="table__row" href="/g/{group.slug}/p/{slug}/r/{revision.number}">
-          <span class="numeric quiet">{revision.number}</span>
-          <span class="stack stack--tight">
-            <strong>{revision.reason}</strong>
-            <span class="quiet"><Attribution user={revision.author} agent={revision.agent} /></span>
-          </span>
-          <time class="quiet" datetime={revision.created_at} title={exactly(revision.created_at)}>
-            {when(revision.created_at)}
-          </time>
-        </a>
-      {/each}
+    <div class="card">
+      <div class="table" style="--columns: 4rem minmax(0, 1fr) auto">
+        {#each revisions as revision (revision.number)}
+          <a class="table__row" href="/g/{group.slug}/p/{slug}/r/{revision.number}">
+            <span class="numeric quiet">{revision.number}</span>
+            <span class="stack stack--tight">
+              <strong>{revision.reason}</strong>
+              <span class="quiet"><Attribution user={revision.author} agent={revision.agent} /></span>
+            </span>
+            <time class="quiet" datetime={revision.created_at} title={exactly(revision.created_at)}>
+              {when(revision.created_at)}
+            </time>
+          </a>
+        {/each}
+      </div>
     </div>
   {/if}
 </main>

@@ -113,33 +113,35 @@
 {/if}
 
 {#if workers.length}
-  <div class={["card table settings-table workers-table", manage && "is-managed"]}>
-    <div class="table__head">
-      <span>Worker</span><span>Runs</span><span>State</span>{#if manage}<span></span>{/if}
-    </div>
-    {#each workers as worker (worker.id)}
-      <div class="table__row">
-        <span class="stack stack--tight">
-          <strong>{worker.name}</strong>
-          <span class="identifier quiet">{worker.prefix}…</span>
-        </span>
-        <span class="quiet">
-          {runs(worker)}
-        </span>
-        {#if worker.online}
-          <span class="chip chip--success">Online</span>
-        {:else}
-          <span class="chip" title={worker.last_seen_at ? exactly(worker.last_seen_at) : undefined}>
-            {worker.last_seen_at ? `Offline, seen ${when(worker.last_seen_at)}` : "Offline"}
-          </span>
-        {/if}
-        {#if manage}
-          <button type="button" class="button button--small button--danger" onclick={() => revoke(worker)}>
-            Revoke
-          </button>
-        {/if}
+  <div class="card">
+    <div class={["table settings-table workers-table", manage && "is-managed"]}>
+      <div class="table__head">
+        <span>Worker</span><span>Runs</span><span>State</span>{#if manage}<span></span>{/if}
       </div>
-    {/each}
+      {#each workers as worker (worker.id)}
+        <div class="table__row">
+          <span class="stack stack--tight">
+            <strong>{worker.name}</strong>
+            <span class="identifier quiet">{worker.prefix}…</span>
+          </span>
+          <span class="quiet">
+            {runs(worker)}
+          </span>
+          {#if worker.online}
+            <span class="chip chip--success">Online</span>
+          {:else}
+            <span class="chip" title={worker.last_seen_at ? exactly(worker.last_seen_at) : undefined}>
+              {worker.last_seen_at ? `Offline, seen ${when(worker.last_seen_at)}` : "Offline"}
+            </span>
+          {/if}
+          {#if manage}
+            <button type="button" class="button button--small button--danger" onclick={() => revoke(worker)}>
+              Revoke
+            </button>
+          {/if}
+        </div>
+      {/each}
+    </div>
   </div>
 {:else}
   <p class="empty">No workers yet.</p>

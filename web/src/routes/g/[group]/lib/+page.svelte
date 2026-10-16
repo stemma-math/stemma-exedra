@@ -150,17 +150,19 @@
             </p>
           </div>
         {:else}
-          <div class="card table declarations">
-            {#each declarations as d (d.name)}
-              <a class="table__row" href="/g/{group.slug}/lib/{encodeURIComponent(d.name)}">
-                <span class="stack stack--tight">
-                  <span class="identifier">{d.name}</span>
-                  <code class="quiet declaration-type">{d.type}</code>
-                </span>
-                <span class="quiet">{d.kind}</span>
-                <StateChip state={d.state} kind={d.kind} />
-              </a>
-            {/each}
+          <div class="card">
+            <div class="table declarations">
+              {#each declarations as d (d.name)}
+                <a class="table__row" href="/g/{group.slug}/lib/{encodeURIComponent(d.name)}">
+                  <span class="stack stack--tight">
+                    <span class="identifier">{d.name}</span>
+                    <code class="quiet declaration-type">{d.type}</code>
+                  </span>
+                  <span class="quiet">{d.kind}</span>
+                  <StateChip state={d.state} kind={d.kind} />
+                </a>
+              {/each}
+            </div>
           </div>
         {/if}
       </section>

@@ -91,36 +91,38 @@
 <main class="page page--narrow stack stack--loose">
   <section class="stack">
     <h1>Members</h1>
-    <div class="card table settings-table members-table">
-      {#each members as member (member.id)}
-        <div class="table__row">
-          <Avatar user={member} />
-          <span class="stack stack--tight">
-            <strong>{member.display_name}</strong>
-            <span class="identifier quiet">{member.username}</span>
-          </span>
-          {#if admin && member.id !== session.me?.id}
-            <select
-              class="input"
-              aria-label="Role of {member.display_name}"
-              value={member.role}
-              onchange={(e) => setRole(member, e.currentTarget.value as Role)}
-            >
-              <option value="member">Member</option>
-              <option value="admin">Admin</option>
-            </select>
-          {:else}
-            <span class="chip">{member.role === "admin" ? "Admin" : "Member"}</span>
-          {/if}
-          {#if member.id === session.me?.id}
-            <button type="button" class="button button--small" onclick={() => remove(member)}>Leave</button>
-          {:else if admin}
-            <button type="button" class="button button--small button--danger" onclick={() => remove(member)}>Remove</button>
-          {:else}
-            <span></span>
-          {/if}
-        </div>
-      {/each}
+    <div class="card">
+      <div class="table settings-table members-table">
+        {#each members as member (member.id)}
+          <div class="table__row">
+            <Avatar user={member} />
+            <span class="stack stack--tight">
+              <strong>{member.display_name}</strong>
+              <span class="identifier quiet">{member.username}</span>
+            </span>
+            {#if admin && member.id !== session.me?.id}
+              <select
+                class="input"
+                aria-label="Role of {member.display_name}"
+                value={member.role}
+                onchange={(e) => setRole(member, e.currentTarget.value as Role)}
+              >
+                <option value="member">Member</option>
+                <option value="admin">Admin</option>
+              </select>
+            {:else}
+              <span class="chip">{member.role === "admin" ? "Admin" : "Member"}</span>
+            {/if}
+            {#if member.id === session.me?.id}
+              <button type="button" class="button button--small" onclick={() => remove(member)}>Leave</button>
+            {:else if admin}
+              <button type="button" class="button button--small button--danger" onclick={() => remove(member)}>Remove</button>
+            {:else}
+              <span></span>
+            {/if}
+          </div>
+        {/each}
+      </div>
     </div>
   </section>
 
@@ -175,25 +177,27 @@
       </form>
 
       {#if invitations.length}
-        <div class="card table settings-table invitations-table">
-          <div class="table__head"><span>Link</span><span>Used</span><span></span></div>
-          {#each invitations as invitation (invitation.id)}
-            <div class="table__row">
-              <span class="stack stack--tight">
-                <span>
-                  {invitation.role === "admin" ? "Admin" : "Member"}, by {invitation.created_by.display_name},
-                  <span title={exactly(invitation.created_at)}>{when(invitation.created_at)}</span>
+        <div class="card">
+          <div class="table settings-table invitations-table">
+            <div class="table__head"><span>Link</span><span>Used</span><span></span></div>
+            {#each invitations as invitation (invitation.id)}
+              <div class="table__row">
+                <span class="stack stack--tight">
+                  <span>
+                    {invitation.role === "admin" ? "Admin" : "Member"}, by {invitation.created_by.display_name},
+                    <span title={exactly(invitation.created_at)}>{when(invitation.created_at)}</span>
+                  </span>
+                  <span class="quiet">
+                    {invitation.expires_at ? `Expires ${exactly(invitation.expires_at)}` : "Does not expire"}
+                  </span>
                 </span>
-                <span class="quiet">
-                  {invitation.expires_at ? `Expires ${exactly(invitation.expires_at)}` : "Does not expire"}
+                <span class="numeric quiet">
+                  {invitation.uses}{invitation.max_uses ? ` of ${invitation.max_uses}` : ""}
                 </span>
-              </span>
-              <span class="numeric quiet">
-                {invitation.uses}{invitation.max_uses ? ` of ${invitation.max_uses}` : ""}
-              </span>
-              <button type="button" class="button button--small button--danger" onclick={() => revoke(invitation)}>Revoke</button>
-            </div>
-          {/each}
+                <button type="button" class="button button--small button--danger" onclick={() => revoke(invitation)}>Revoke</button>
+              </div>
+            {/each}
+          </div>
         </div>
       {/if}
     </section>
