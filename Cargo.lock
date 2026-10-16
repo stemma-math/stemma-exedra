@@ -2433,7 +2433,7 @@ checksum = "6ce2be8dc25455e1f91df71bfa12ad37d7af1092ae736f3a6cd0e37bc7810596"
 
 [[package]]
 name = "stemma"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "anyhow",
  "clap",
@@ -2450,7 +2450,7 @@ dependencies = [
 
 [[package]]
 name = "stemma-client"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "anyhow",
  "axum",
@@ -2472,7 +2472,7 @@ dependencies = [
 
 [[package]]
 name = "stemma-core"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "serde",
  "serde_json",
@@ -2483,7 +2483,7 @@ dependencies = [
 
 [[package]]
 name = "stemma-hub"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "anyhow",
  "argon2",
@@ -2516,7 +2516,7 @@ dependencies = [
 
 [[package]]
 name = "stemma-worker"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "anyhow",
  "axum",
