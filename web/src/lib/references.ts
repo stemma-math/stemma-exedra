@@ -81,6 +81,7 @@ export function describeReferences(root: HTMLElement, group: string) {
         el.classList.remove("quiet");
       } else {
         el.title = resolved.note ?? "Not found";
+        // Stopgap: https://github.com/stemma-math/design/issues/9
         el.classList.add("quiet");
       }
     });

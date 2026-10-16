@@ -1,11 +1,11 @@
-# The checks every pull request, and every change to main and develop, must
-# pass: the same as `just check`.
+# The checks every pull request, and every change to main, must pass: the
+# same as `just check`.
 name: Checks
 
 on:
   pull_request:
   push:
-    branches: [main, develop]
+    branches: [main]
 
 concurrency:
   group: checks-${{ github.ref }}

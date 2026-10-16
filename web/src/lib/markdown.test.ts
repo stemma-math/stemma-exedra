@@ -30,13 +30,13 @@ describe("markdown", () => {
     expect(html).toContain('href="/g/geometry/t/3"');
   });
 
-  it("links papers and declarations, marks tasks, and keeps invalid references as text", () => {
+  it("links papers, declarations and tasks, and keeps invalid references as text", () => {
     const html = render("[[lean:Foo.bar]] [[p/notes#gluing]] [[w3]] [[t0]]");
     expect(html).toContain(
       '<a class="ref" href="/g/geometry/lib/Foo.bar" data-ref="lean:Foo.bar">lean:Foo.bar</a>',
     );
     expect(html).toContain('href="/g/geometry/p/notes#gluing"');
-    expect(html).toContain('<span class="ref" data-ref="w3">w3</span>');
+    expect(html).toContain('<a class="ref" href="/g/geometry/w/3" data-ref="w3">w3</a>');
     expect(html).toContain("[[t0]]");
   });
 
