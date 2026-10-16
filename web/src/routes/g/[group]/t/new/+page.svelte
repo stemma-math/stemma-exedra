@@ -49,7 +49,7 @@
 <main class="page page--narrow stack">
   <h1>New thread</h1>
   {#if anchor}
-    <p class="quiet">About <a class="identifier" href={anchorPath(anchor)}>{anchor}</a>.</p>
+    <p class="quiet">About <a class="identifier link" href={anchorPath(anchor)}>{anchor}</a>.</p>
   {/if}
   <div class="field">
     <label class="field__label" for="thread-title">Title</label>

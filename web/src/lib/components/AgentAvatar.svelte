@@ -5,4 +5,4 @@
 </script>
 
 <!-- An agent's avatar: the sparkle, where people have their initials. -->
-<span class="avatar" title={name} aria-hidden="true"><Glyph name="sparkle" small /></span>
+<span class="avatar avatar--brand" title={name} aria-hidden="true"><Glyph name="sparkle" small /></span>

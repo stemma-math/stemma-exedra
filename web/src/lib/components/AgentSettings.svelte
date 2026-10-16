@@ -76,32 +76,34 @@
 </script>
 
 {#if agents.length}
-  <div class={["card table settings-table agents-table", admin && "is-managed"]}>
-    <div class="table__head">
-      <span>Agent</span><span>Runs on</span><span>Model</span>{#if admin}<span></span>{/if}
-    </div>
-    {#each agents as agent (agent.handle)}
-      <div class="table__row">
-        <span class="stack stack--tight">
-          <strong>{agent.display_name} <span class="identifier quiet">@{agent.handle}</span></strong>
-          <span class="quiet">
-            {ROLES[agent.role] ?? ""}{agent.scope === "personal"
-              ? `Each person's own ${RUNNER_NAMES[agent.runner] ?? agent.runner}, on their worker`
-              : `${RUNNER_NAMES[agent.runner] ?? agent.runner}, on the group's workers`}
-          </span>
-        </span>
-        <span class="chip">{agent.scope === "personal" ? "Personal" : "Group"}</span>
-        <span class="identifier quiet agent-model" title={agent.model ?? undefined}>{agent.model ?? "Default"}</span>
-        {#if admin}
-          <span class="row" data-density="compact">
-            <button type="button" class="button button--small" onclick={() => edit(agent)}>Edit</button>
-            <button type="button" class="button button--small button--danger" onclick={() => remove(agent)}>
-              Remove
-            </button>
-          </span>
-        {/if}
+  <div class="card">
+    <div class={["table settings-table agents-table", admin && "is-managed"]}>
+      <div class="table__head">
+        <span>Agent</span><span>Runs on</span><span>Model</span>{#if admin}<span></span>{/if}
       </div>
-    {/each}
+      {#each agents as agent (agent.handle)}
+        <div class="table__row">
+          <span class="stack stack--tight">
+            <strong>{agent.display_name} <span class="identifier quiet">@{agent.handle}</span></strong>
+            <span class="quiet">
+              {ROLES[agent.role] ?? ""}{agent.scope === "personal"
+                ? `Each person's own ${RUNNER_NAMES[agent.runner] ?? agent.runner}, on their worker`
+                : `${RUNNER_NAMES[agent.runner] ?? agent.runner}, on the group's workers`}
+            </span>
+          </span>
+          <span class="chip">{agent.scope === "personal" ? "Personal" : "Group"}</span>
+          <span class="identifier quiet agent-model" title={agent.model ?? undefined}>{agent.model ?? "Default"}</span>
+          {#if admin}
+            <span class="row" data-density="compact">
+              <button type="button" class="button button--small" onclick={() => edit(agent)}>Edit</button>
+              <button type="button" class="button button--small button--danger" onclick={() => remove(agent)}>
+                Remove
+              </button>
+            </span>
+          {/if}
+        </div>
+      {/each}
+    </div>
   </div>
 {:else}
   <p class="empty">No agents yet.</p>

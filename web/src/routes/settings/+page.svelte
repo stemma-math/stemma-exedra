@@ -150,22 +150,24 @@
       </form>
 
       {#if tokens.length}
-        <div class="card table settings-table tokens-table">
-          <div class="table__head"><span>Name</span><span>Last used</span><span></span></div>
-          {#each tokens as token (token.id)}
-            <div class="table__row">
-              <span>
-                {token.name}
-                <span class="identifier quiet">{token.prefix}…</span>
-              </span>
-              <span class="quiet" title={token.last_used_at ? exactly(token.last_used_at) : undefined}>
-                {token.last_used_at ? when(token.last_used_at) : "Never"}
-              </span>
-              <button type="button" class="button button--small button--danger" onclick={() => revoke(token)}>
-                Revoke
-              </button>
-            </div>
-          {/each}
+        <div class="card">
+          <div class="table settings-table tokens-table">
+            <div class="table__head"><span>Name</span><span>Last used</span><span></span></div>
+            {#each tokens as token (token.id)}
+              <div class="table__row">
+                <span>
+                  {token.name}
+                  <span class="identifier quiet">{token.prefix}…</span>
+                </span>
+                <span class="quiet" title={token.last_used_at ? exactly(token.last_used_at) : undefined}>
+                  {token.last_used_at ? when(token.last_used_at) : "Never"}
+                </span>
+                <button type="button" class="button button--small button--danger" onclick={() => revoke(token)}>
+                  Revoke
+                </button>
+              </div>
+            {/each}
+          </div>
         </div>
       {/if}
     </div>

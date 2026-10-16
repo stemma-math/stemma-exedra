@@ -13,7 +13,7 @@
   <div class="row">
     {#if latest}
       <BuildChip build={latest} />
-      <a class="identifier" href="/g/{group}/lib/builds/{latest.id}">{latest.commit.slice(0, 10)}</a>
+      <a class="identifier link" href="/g/{group}/lib/builds/{latest.id}">{latest.commit.slice(0, 10)}</a>
       <span class="quiet">
         {#if latest.state === "queued" || latest.state === "running"}
           {latest.progress ?? ""}

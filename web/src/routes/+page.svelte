@@ -49,13 +49,15 @@
   {#if groups.length > 1}
     <section class="stack">
       <h1>Your groups</h1>
-      <div class="card table" style="--columns: minmax(0, 1fr) auto">
-        {#each groups as group (group.slug)}
-          <a class="table__row" href="/g/{group.slug}">
-            <span>{group.name} <span class="quiet identifier">{group.slug}</span></span>
-            <span class="chevron">›</span>
-          </a>
-        {/each}
+      <div class="card">
+        <div class="table" style="--columns: minmax(0, 1fr) auto">
+          {#each groups as group (group.slug)}
+            <a class="table__row" href="/g/{group.slug}">
+              <span>{group.name} <span class="quiet identifier">{group.slug}</span></span>
+              <span class="chevron">›</span>
+            </a>
+          {/each}
+        </div>
       </div>
     </section>
   {:else if groups.length === 0}

@@ -15,33 +15,31 @@
   let { job, group, canCancel, oncancel }: Props = $props();
 </script>
 
-<div class="message-item" role="status" aria-label={jobStatus(job)}>
+<li class="post" role="status" aria-label={jobStatus(job)}>
   <AgentAvatar name={job.agent_name} />
-  <div>
-    <div class="message-item__head">
-      <strong>{jobStatus(job)}</strong>
-      <span class="quiet">
-        for {job.requester.display_name}{#if job.trigger}, to <a href="#{job.trigger}">#{job.trigger}</a>{/if}{#if job.task && group}{" · "}<a class="identifier" href="/g/{group}/w/{job.task}">w{job.task}</a>{/if}
+  <div class="post__head">
+    <span class="post__author">{jobStatus(job)}</span>
+    <span class="post__attribution">
+      for {job.requester.display_name}{#if job.trigger}, to <a class="post__number" href="#{job.trigger}">#{job.trigger}</a>{/if}{#if job.task && group}{" · "}<a class="identifier link" href="/g/{group}/w/{job.task}">w{job.task}</a>{/if}
+    </span>
+    {#if canCancel}
+      <span class="post__actions">
+        <button type="button" class="button button--quiet button--small" onclick={() => oncancel(job)}>
+          {job.state === "failed" ? "Dismiss" : "Cancel"}
+        </button>
       </span>
-      {#if canCancel}
-        <span class="message-item__actions">
-          <button type="button" class="button button--quiet button--small" onclick={() => oncancel(job)}>
-            {job.state === "failed" ? "Dismiss" : "Cancel"}
-          </button>
-        </span>
-      {/if}
-    </div>
-    {#if job.state === "running"}
-      <p class="row quiet job-item__progress">
-        <span class="spinner" aria-hidden="true"></span>
-        {job.progress ?? "Starting"}
-      </p>
-    {:else if job.state === "queued" && job.note}
-      <p class="quiet job-item__progress">{job.note}.</p>
-    {:else if job.state === "failed"}
-      <div class="message message--danger">
-        <span class="message__text">{job.error ?? "Something went wrong."}</span>
-      </div>
     {/if}
   </div>
-</div>
+  {#if job.state === "running"}
+    <p class="post__body row quiet">
+      <span class="spinner" aria-hidden="true"></span>
+      {job.progress ?? "Starting"}
+    </p>
+  {:else if job.state === "queued" && job.note}
+    <p class="post__body quiet">{job.note}.</p>
+  {:else if job.state === "failed"}
+    <div class="post__body message message--danger">
+      <span class="message__text">{job.error ?? "Something went wrong."}</span>
+    </div>
+  {/if}
+</li>

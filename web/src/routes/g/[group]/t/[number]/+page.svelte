@@ -106,8 +106,8 @@
       const element = document.getElementById(target);
       if (!element) return;
       shown = `${number}#${target}`;
-      for (const other of document.querySelectorAll(".is-targeted")) other.classList.remove("is-targeted");
-      element.classList.add("is-targeted");
+      for (const other of document.querySelectorAll(".post--highlighted")) other.classList.remove("post--highlighted");
+      element.classList.add("post--highlighted");
       element.scrollIntoView({ block: "center" });
     });
   });
@@ -178,11 +178,14 @@
         {/if}
         Started by {thread.created_by.display_name},
         <time datetime={thread.created_at}>{exactly(thread.created_at)}</time>{#if thread.anchor}{@const anchor = parseAddress(thread.anchor)},
-          about <a class="identifier" href={anchor ? addressPath(anchor, group.slug) : "#"}>{thread.anchor}</a>{/if}.
+          about <a class="identifier link" href={anchor ? addressPath(anchor, group.slug) : "#"}>{thread.anchor}</a>{/if}.
       </p>
     </header>
 
-    <section class="messages" aria-label="Messages">
+    {#if !messages.length}
+      <p class="empty">No messages yet. Say the first thing.</p>
+    {/if}
+    <ol class="posts thread-posts" aria-label="Messages">
       {#each messages as message (message.number)}
         <MessageItem
           {message}
@@ -193,13 +196,11 @@
           onreply={reply}
           onchange={upsert}
         />
-      {:else}
-        <p class="empty">No messages yet. Say the first thing.</p>
       {/each}
       {#each jobs as job (job.id)}
         <JobItem {job} group={group.slug} canCancel={admin || job.requester.id === viewer} oncancel={cancel} />
       {/each}
-    </section>
+    </ol>
 
     <Composer
       bind:this={composer}

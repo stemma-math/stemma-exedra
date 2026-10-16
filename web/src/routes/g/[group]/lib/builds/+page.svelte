@@ -56,17 +56,19 @@
   {:else if builds.length === 0}
     <div class="card card--empty card__body"><p class="empty">No builds yet.</p></div>
   {:else}
-    <div class="card table" style="--columns: auto minmax(0, 1fr) auto">
-      {#each builds as build (build.id)}
-        <a class="table__row" href="/g/{group.slug}/lib/builds/{build.id}">
-          <BuildChip {build} />
-          <span class="stack stack--tight">
-            <span class="identifier">{build.commit.slice(0, 10)}</span>
-            <span class="quiet">{build.error ?? build.progress ?? (build.lean ? `Lean ${build.lean}` : "")}</span>
-          </span>
-          <time class="quiet" datetime={build.created_at} title={exactly(build.created_at)}>{when(build.created_at)}</time>
-        </a>
-      {/each}
+    <div class="card">
+      <div class="table" style="--columns: auto minmax(0, 1fr) auto">
+        {#each builds as build (build.id)}
+          <a class="table__row" href="/g/{group.slug}/lib/builds/{build.id}">
+            <BuildChip {build} />
+            <span class="stack stack--tight">
+              <span class="identifier">{build.commit.slice(0, 10)}</span>
+              <span class="quiet">{build.error ?? build.progress ?? (build.lean ? `Lean ${build.lean}` : "")}</span>
+            </span>
+            <time class="quiet" datetime={build.created_at} title={exactly(build.created_at)}>{when(build.created_at)}</time>
+          </a>
+        {/each}
+      </div>
     </div>
   {/if}
 </main>

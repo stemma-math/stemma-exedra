@@ -61,24 +61,26 @@
   {:else if tasks.length === 0}
     <div class="card card--empty card__body"><p class="empty">No tasks yet.</p></div>
   {:else}
-    <div class="card table tasks">
-      {#each tasks as task (task.number)}
-        <a class="table__row" href="/g/{group.slug}/w/{task.number}">
-          <TaskChip {task} />
-          <span class="stack stack--tight">
-            <span class="thread-row__title">
-              <span class="identifier quiet">w{task.number}</span>
-              <strong>{task.title}</strong>
+    <div class="card">
+      <div class="table tasks">
+        {#each tasks as task (task.number)}
+          <a class="table__row" href="/g/{group.slug}/w/{task.number}">
+            <TaskChip {task} />
+            <span class="stack stack--tight">
+              <span class="thread-row__title">
+                <span class="identifier quiet">w{task.number}</span>
+                <strong>{task.title}</strong>
+              </span>
+              <span class="quiet">
+                From {task.origin}, for {task.requester.display_name}{#if line(task)}{" · "}{line(task)}{/if}
+              </span>
             </span>
-            <span class="quiet">
-              From {task.origin}, for {task.requester.display_name}{#if line(task)}{" · "}{line(task)}{/if}
-            </span>
-          </span>
-          <time class="quiet when" datetime={task.created_at} title={exactly(task.created_at)}>
-            {when(task.created_at)}
-          </time>
-        </a>
-      {/each}
+            <time class="quiet when" datetime={task.created_at} title={exactly(task.created_at)}>
+              {when(task.created_at)}
+            </time>
+          </a>
+        {/each}
+      </div>
     </div>
   {/if}
 </main>

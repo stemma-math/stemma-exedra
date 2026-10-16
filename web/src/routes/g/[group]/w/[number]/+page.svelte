@@ -91,7 +91,7 @@
         </span>
       </div>
       <p class="quiet">
-        Asked in <a class="identifier" href={origin ? addressPath(origin, group.slug) : "#"}>{task.origin}</a>
+        Asked in <a class="identifier link" href={origin ? addressPath(origin, group.slug) : "#"}>{task.origin}</a>
         by {task.requester.display_name}{#if task.agent}, through {task.agent}{/if},
         <time datetime={task.created_at}>{exactly(task.created_at)}</time>{#if task.schedule === "night"},
           for the night{/if}.
@@ -121,7 +121,7 @@
         <Markdown text={task.report} group={group.slug} />
         {#if report}
           <p class="quiet">
-            Posted in <a class="identifier" href={addressPath(report, group.slug)}>{task.report_message}</a>.
+            Posted in <a class="identifier link" href={addressPath(report, group.slug)}>{task.report_message}</a>.
           </p>
         {/if}
       </section>
