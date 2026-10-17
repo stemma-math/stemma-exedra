@@ -120,3 +120,10 @@ jobs:
           { [[ -f "$notes" ]] && cat "$notes" && echo; echo "$generated"; } > notes.md
           gh release edit "v$VERSION" --repo "$GITHUB_REPOSITORY" \
             --notes-file notes.md --prerelease="$prerelease" --draft=false
+
+  notify-tap:
+    needs: release
+    uses: stemma-math/homebrew-tap/.github/workflows/notify.yml@main
+    with:
+      package: stemma
+    secrets: inherit

@@ -32,6 +32,12 @@ the API under `/api/v1`, git over HTTP for the groups' libraries under
 in a data directory. The hub needs `git` installed; without it, groups have
 no library.
 
+With [Homebrew](https://brew.sh), on macOS (ARM) or Linux (x86_64):
+
+```sh
+brew install stemma-math/tap/stemma
+```
+
 Each [release](https://github.com/stemma-math/stemma-exedra/releases) has the
 binary, with the web app embedded, for Linux (x86_64) and macOS (ARM), and
 the archives' `SHA256SUMS`:
@@ -400,4 +406,7 @@ reaches `main` with no tag for it yet, the release workflow builds the binary,
 with the web app embedded, for Linux (x86_64) and macOS (ARM), tags the commit
 `v<version>` and publishes the archives with their `SHA256SUMS`. Notes written
 in `docs/releases/v<version>.md` go first, followed by the list GitHub
-generates. While Stemma is 0.x, every release is a pre-release.
+generates. While Stemma is 0.x, every release is a pre-release. Once
+published, the release is announced to the organization's
+[Homebrew tap](https://github.com/stemma-math/homebrew-tap), which updates
+its formula.
