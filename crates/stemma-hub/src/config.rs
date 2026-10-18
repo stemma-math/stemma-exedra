@@ -8,10 +8,12 @@ use serde::Deserialize;
 
 /// How the hub runs.
 ///
-/// Every setting can be given in a TOML file, and the first ones overridden
+/// Every setting can be given in a TOML file, and the main ones overridden
 /// by an environment variable (`STEMMA_LISTEN`, `STEMMA_DATA_DIR`,
-/// `STEMMA_PUBLIC_URL`, `STEMMA_MAX_UPLOAD_MB`). The forge's secrets are
-/// only read from the environment, from the variables its section names.
+/// `STEMMA_PUBLIC_URL`, `STEMMA_MAX_UPLOAD_MB`, and the forge's
+/// `STEMMA_FORGE_URL`, which sets a forge up, `STEMMA_FORGE_PUBLIC_URL`
+/// and `STEMMA_FORGE_HUB_URL`). The forge's secrets are only read from the
+/// environment, from the variables its section names.
 #[derive(Clone, Debug, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct Config {
@@ -46,8 +48,9 @@ pub struct ForgeConfig {
     /// for webhooks; the hub's public address if absent.
     pub hub_url: Option<String>,
     /// The id Forgejo gives the authentication source that signs people in
-    /// through the hub (`forgejo admin auth list` shows it). The accounts
-    /// the hub makes in Forgejo are linked to it.
+    /// through the hub (`forgejo admin auth list` shows it): 1, the first,
+    /// if absent. The accounts the hub makes in Forgejo are linked to it.
+    #[serde(default = "first_source")]
     pub auth_source_id: i64,
     /// The variable with the token of a Forgejo admin, with every scope.
     #[serde(default = "default_token_env")]
@@ -56,6 +59,7 @@ pub struct ForgeConfig {
     #[serde(default = "default_webhook_secret_env")]
     pub webhook_secret_env: String,
     /// Forgejo as a client of the hub's OpenID Connect provider.
+    #[serde(default)]
     pub oidc: OidcClientConfig,
     /// The secrets, read from the variables above.
     #[serde(skip)]
@@ -66,12 +70,16 @@ pub struct ForgeConfig {
 #[derive(Clone, Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct OidcClientConfig {
+    /// Its id: `forgejo` if absent.
+    #[serde(default = "default_client_id")]
     pub client_id: String,
     /// The variable with the client's secret.
     #[serde(default = "default_client_secret_env")]
     pub client_secret_env: String,
     /// Where it may send people back to, each matched exactly: for Forgejo,
-    /// `<its public address>/user/oauth2/<the source's name>/callback`.
+    /// `<its public address>/user/oauth2/<the source's name>/callback`; if
+    /// absent, that of a source named `stemma`.
+    #[serde(default)]
     pub redirect_uris: Vec<String>,
     /// Whether it must use PKCE, as Forgejo does: yes, unless set otherwise.
     /// Only `S256` is accepted, and a challenge given is always checked.
@@ -95,8 +103,27 @@ impl std::fmt::Debug for ForgeSecrets {
     }
 }
 
+impl Default for OidcClientConfig {
+    fn default() -> Self {
+        OidcClientConfig {
+            client_id: default_client_id(),
+            client_secret_env: default_client_secret_env(),
+            redirect_uris: Vec::new(),
+            require_pkce: true,
+        }
+    }
+}
+
 fn yes() -> bool {
     true
+}
+
+fn first_source() -> i64 {
+    1
+}
+
+fn default_client_id() -> String {
+    "forgejo".into()
 }
 
 fn default_token_env() -> String {
@@ -120,19 +147,26 @@ impl ForgeConfig {
     /// `secrets`, and the rest as a file would leave it.
     pub fn new(url: &str, redirect_uri: &str, secrets: ForgeSecrets) -> ForgeConfig {
         ForgeConfig {
+            oidc: OidcClientConfig {
+                redirect_uris: vec![redirect_uri.to_owned()],
+                ..Default::default()
+            },
+            secrets,
+            ..Self::at(url)
+        }
+    }
+
+    /// A forge at `url`, as a file that says only that would leave it.
+    fn at(url: &str) -> ForgeConfig {
+        ForgeConfig {
             url: url.to_owned(),
             public_url: None,
             hub_url: None,
-            auth_source_id: 1,
+            auth_source_id: first_source(),
             token_env: default_token_env(),
             webhook_secret_env: default_webhook_secret_env(),
-            oidc: OidcClientConfig {
-                client_id: "forgejo".into(),
-                client_secret_env: default_client_secret_env(),
-                redirect_uris: vec![redirect_uri.to_owned()],
-                require_pkce: true,
-            },
-            secrets,
+            oidc: OidcClientConfig::default(),
+            secrets: ForgeSecrets::default(),
         }
     }
 
@@ -162,6 +196,10 @@ impl ForgeConfig {
             webhook_secret: read(&self.webhook_secret_env)?,
             client_secret: read(&self.oidc.client_secret_env)?,
         };
+        if self.oidc.redirect_uris.is_empty() {
+            let callback = format!("{}/user/oauth2/stemma/callback", self.public_base());
+            self.oidc.redirect_uris.push(callback);
+        }
         self.check()
     }
 
@@ -227,7 +265,20 @@ impl Config {
         if let Some(mb) = var("STEMMA_MAX_UPLOAD_MB") {
             self.max_upload_mb = mb.parse().context("STEMMA_MAX_UPLOAD_MB")?;
         }
+        let nonempty = |name: &str| var(name).filter(|v| !v.trim().is_empty());
+        if let Some(url) = nonempty("STEMMA_FORGE_URL") {
+            match &mut self.forge {
+                Some(forge) => forge.url = url,
+                None => self.forge = Some(ForgeConfig::at(&url)),
+            }
+        }
         if let Some(forge) = &mut self.forge {
+            if let Some(url) = nonempty("STEMMA_FORGE_PUBLIC_URL") {
+                forge.public_url = Some(url);
+            }
+            if let Some(url) = nonempty("STEMMA_FORGE_HUB_URL") {
+                forge.hub_url = Some(url);
+            }
             forge.read_secrets(&var)?;
         }
         Ok(())
@@ -333,6 +384,32 @@ mod tests {
         assert_eq!(config.hub_url_for_forge(), "http://127.0.0.1:8080");
         // Secrets are not printed.
         assert!(!format!("{forge:?}").contains("admin-token"));
+    }
+
+    #[test]
+    fn the_environment_alone_sets_a_forge_up() {
+        let mut config = Config::default();
+        config
+            .apply_env(|name| match name {
+                "STEMMA_FORGE_URL" => Some("http://forgejo:3000".into()),
+                "STEMMA_FORGE_PUBLIC_URL" => Some("https://forge.example.org".into()),
+                "STEMMA_FORGE_HUB_URL" => Some("http://hub:8080/".into()),
+                "STEMMA_FORGE_TOKEN" => Some("admin-token".into()),
+                "STEMMA_FORGE_WEBHOOK_SECRET" => Some("a webhook's long secret".into()),
+                "STEMMA_FORGE_CLIENT_SECRET" => Some("a client's long secret".into()),
+                _ => None,
+            })
+            .unwrap();
+        let forge = config.forge.as_ref().unwrap();
+        assert_eq!(forge.base(), "http://forgejo:3000");
+        assert_eq!(forge.auth_source_id, 1);
+        assert_eq!(forge.oidc.client_id, "forgejo");
+        assert!(forge.oidc.require_pkce);
+        assert_eq!(
+            forge.oidc.redirect_uris,
+            ["https://forge.example.org/user/oauth2/stemma/callback"]
+        );
+        assert_eq!(config.hub_url_for_forge(), "http://hub:8080");
     }
 
     #[test]
