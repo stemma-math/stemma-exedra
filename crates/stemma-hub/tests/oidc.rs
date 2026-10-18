@@ -305,7 +305,7 @@ async fn someone_not_signed_in_signs_in_first() {
     let reply = hub.authorize(None, &[]).await;
     assert_eq!(reply.status, StatusCode::SEE_OTHER);
     let location = reply.location();
-    assert_eq!(location.path(), "/signin");
+    assert_eq!(location.path(), "/login");
     let next = &reply.sent_back()["next"];
     assert!(next.starts_with("/oauth/authorize?"), "{next}");
     assert!(next.contains("state=the-state"));
@@ -411,7 +411,7 @@ async fn a_token_is_not_a_session() {
             .unwrap(),
         )
         .await;
-    assert_eq!(reply.location().path(), "/signin");
+    assert_eq!(reply.location().path(), "/login");
 }
 
 #[tokio::test]

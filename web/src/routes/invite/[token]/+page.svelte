@@ -63,7 +63,7 @@
         {:else}
           <p>
             Create your account to join{joinsAs}. Already have one?
-            <a class="button button--link" href="/signin?next={encodeURIComponent(page.url.pathname)}">Sign in</a> first.
+            <a class="button button--link" href="/login?next={encodeURIComponent(page.url.pathname)}">Log in</a> first.
           </p>
           <AccountFields bind:username bind:displayName bind:password />
         {/if}

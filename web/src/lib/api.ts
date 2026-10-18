@@ -62,11 +62,17 @@ export interface CreatedToken extends ApiToken {
 
 export type ThreadKind = "discussion" | "chat";
 
+/** How hard a chat's resident agent thinks before it answers. */
+export type Effort = "low" | "medium" | "high";
+
 export interface Thread {
   number: number;
   title: string;
   kind: ThreadKind;
   resident_agent: string | null;
+  /** The model a chat's resident agent answers with, if the chat chose one. */
+  resident_model?: string | null;
+  resident_effort?: Effort | null;
   anchor: string | null;
   created_by: User;
   created_at: string;
@@ -113,6 +119,7 @@ export interface Resolved {
 export interface SearchHit {
   address: string;
   thread_title: string;
+  thread_kind: ThreadKind;
   author: User | null;
   agent: string | null;
   snippet: string;
@@ -530,6 +537,8 @@ export const api = {
       title: string;
       kind: ThreadKind;
       resident_agent?: string;
+      model?: string;
+      effort?: Effort;
       anchor?: string;
       body?: string;
       attachments?: number[];
@@ -549,8 +558,8 @@ export const api = {
     del<Message>(`${g(group)}/threads/${n}/messages/${m}`),
   resolve: (group: string, addresses: string[]) =>
     post<Resolved[]>(`${g(group)}/resolve`, { addresses }),
-  search: (group: string, q: string) =>
-    get<SearchHit[]>(`${g(group)}/search?${new URLSearchParams({ q })}`),
+  search: (group: string, q: string, limit = 50) =>
+    get<SearchHit[]>(`${g(group)}/search?${new URLSearchParams({ q, limit: String(limit) })}`),
 
   architectures: () => get<Architecture[]>("/workshop/architectures"),
   workshopMachines: (group: string) => get<WorkshopMachine[]>(`${g(group)}/workshop/machines`),

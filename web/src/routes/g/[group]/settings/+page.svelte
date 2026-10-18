@@ -7,7 +7,7 @@
   import { loadSession, session } from "#lib/session.svelte.ts";
   import { toastError } from "#lib/toast.ts";
   import Avatar from "#lib/components/Avatar.svelte";
-  import WorkshopMachines from "#lib/components/WorkshopMachines.svelte";
+  import Glyph from "#lib/components/Glyph.svelte";
 
   const context = groupContext();
   const group = $derived(context.group);
@@ -19,6 +19,8 @@
   let role = $state<Role>("member");
   let days = $state("7");
   let uses = $state("");
+  /** The group's organization in the forge, if the hub has one. */
+  let forge = $state<string | null>(null);
 
   const link = $derived(created ? `${location.origin}/invite/${created.token}` : "");
 
@@ -29,6 +31,12 @@
 
   $effect(() => {
     load().catch(toastError);
+    api
+      .library(group.slug)
+      .then((library) => {
+        forge = library.forge?.organization ?? null;
+      })
+      .catch(() => {});
   });
 
   async function invite(event: Event) {
@@ -88,8 +96,16 @@
 <svelte:head><title>Settings · {group.name} · Stemma</title></svelte:head>
 
 <main class="page page--narrow stack stack--loose">
+  <div class="stack stack--tight">
+    <h1>Settings of {group.name}</h1>
+    <p class="quiet">
+      Who is in the group, with what role, and how others join. Your own settings are in your
+      <a href="/g/{group.slug}/me">personal settings</a>.
+    </p>
+  </div>
+
   <section class="stack">
-    <h1>Members</h1>
+    <h2>Members</h2>
     <div class="card">
       <div class="table settings-table members-table">
         {#each members as member (member.id)}
@@ -206,14 +222,24 @@
   {/if}
 
   <section class="stack">
-    <h2>Workshop machines</h2>
+    <h2>The forge</h2>
+    {#if forge}
+      <p>
+        The group's repositories, its library and its papers, are kept in the forge, as the organization
+        <span class="identifier">{group.slug}</span>, where everyone signs in with their Stemma account and works as
+        their role allows.
+      </p>
+      <p><a class="button" href={forge} target="_blank" rel="noreferrer"><Glyph name="link" /> The group in the forge</a></p>
+    {:else}
+      <p class="quiet">This hub runs without a forge: the group has no repositories.</p>
+    {/if}
+  </section>
+
+  <section class="stack">
+    <h2>The workshop</h2>
     <p>
-      The workshop, <code>@workshop</code>, works on the group's library in the background, on machines
-      its admins add: their own, from their <a href="/settings">settings</a> or with
-      <code>stemma machine workshop add {group.slug}</code>. Each machine's owner chooses the agents it
-      offers the workshop, in order, with what each may do in a day, and their sign-ins stay on it. With
-      Lean, the machines also build the library. Everyone's own agents run on their own machines.
+      The machines lent to the workshop, their agents and their limits, are in the
+      <a href="/g/{group.slug}/workshop">workshop's panel</a>.
     </p>
-    <WorkshopMachines group={group.slug} {admin} />
   </section>
 </main>

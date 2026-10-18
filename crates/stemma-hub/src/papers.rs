@@ -303,6 +303,12 @@ pub async fn create(
              {MAX_SLUG} characters"
         )));
     }
+    // The web app's page for a new paper is `p/new`.
+    if slug == "new" {
+        return Err(ApiError::invalid(
+            "A paper is not called “new”: choose another short name",
+        ));
+    }
     let title = crate::api::required_text(title, "The title", 200)?;
     let taken: Option<i64> =
         sqlx::query_scalar("SELECT id FROM papers WHERE group_id = ? AND slug = ?")

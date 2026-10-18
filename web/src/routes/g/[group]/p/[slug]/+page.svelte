@@ -2,7 +2,9 @@
   import { goto } from "$app/navigation";
   import { page } from "$app/state";
   import { api, type Member, type PaperPage } from "#lib/api.ts";
+  import type { StemmaDialog } from "@stemma-math/design-elements";
   import BuildChip from "#lib/components/BuildChip.svelte";
+  import Glyph from "#lib/components/Glyph.svelte";
   import { listen } from "#lib/events.ts";
   import { exactly, fileSize } from "#lib/format.ts";
   import { groupContext } from "#lib/group.svelte.ts";
@@ -20,6 +22,7 @@
   let title = $state("");
   let instructions = $state("");
   let asking = $state(false);
+  let askDialog: StemmaDialog | undefined = $state();
 
   async function load() {
     const wanted = slug;
@@ -104,6 +107,7 @@
     asking = true;
     try {
       const task = await api.editPaper(group.slug, paper.slug, title.trim(), instructions.trim());
+      askDialog?.close();
       await goto(`/g/${group.slug}/w/${task.number}`);
     } catch (error) {
       toastError(error);
@@ -113,79 +117,114 @@
   }
 </script>
 
-<svelte:head><title>{paper?.title ?? slug} · Papers · {group.name} · Stemma</title></svelte:head>
+<svelte:head><title>{paper?.title ?? slug} · {group.name} · Stemma</title></svelte:head>
 
 <main class="page stack">
-  <nav class="breadcrumbs" aria-label="Where">
-    <ol>
-      <li><a href="/g/{group.slug}/p">Papers</a></li>
-      <li><span aria-current="page" class="identifier">p/{slug}</span></li>
-    </ol>
-  </nav>
-
   {#if paper}
-    <div class="thread-head">
-      <h1>{paper.title}</h1>
-      {#if paper.latest}<BuildChip build={paper.latest} />{/if}
+    <header class="stack stack--tight">
+      <div class="thread-head">
+        <h1>{paper.title}</h1>
+        <span class="row" data-density="compact">
+          <span class="identifier quiet">p/{paper.slug}</span>
+          <stemma-copy-button value="p/{paper.slug}" label="Copy the address p/{paper.slug}"></stemma-copy-button>
+        </span>
+      </div>
+      <p class="quiet">
+        By {paper.authors.map((a) => a.display_name).join(", ")}. Started by {paper.created_by.display_name},
+        <time datetime={paper.created_at}>{exactly(paper.created_at)}</time>.
+      </p>
+    </header>
+
+    <div class="row">
+      {#if paper.forge_url}
+        <a class="button" href={paper.forge_url} target="_blank" rel="noreferrer">
+          <Glyph name="link" /> Repository
+        </a>
+      {/if}
+      <a class="button" href="/g/{group.slug}/p/{paper.slug}/edit"><Glyph name="edit" /> Editor</a>
+      {#if asksForWork(group.role)}
+        <button type="button" class="button" data-opens="paper-ask"><Glyph name="sparkles" /> Ask the workshop</button>
+      {/if}
+      <button type="button" class="button" data-opens="paper-build">
+        Build
+        {#if paper.latest}<BuildChip build={paper.latest} />{/if}
+      </button>
+      <button type="button" class="button" data-opens="paper-authors">
+        <Glyph name="group" /> Authors <span class="count">{paper.authors.length}</span>
+      </button>
+      <button type="button" class="button button--quiet" data-opens="paper-clone-dialog">Clone</button>
     </div>
-    <p class="quiet">
-      By {paper.authors.map((a) => a.display_name).join(", ")}. Started by {paper.created_by.display_name},
-      <time datetime={paper.created_at}>{exactly(paper.created_at)}</time>.
-    </p>
 
-    <div class="paper-layout">
-      <section class="stack">
-        {#if paper.pdf}
-          <iframe class="paper-pdf card" src={pdfUrl} title="The PDF of p/{paper.slug}"></iframe>
-          <p class="quiet">
-            Compiled from <span class="identifier">{paper.pdf.commit.slice(0, 10)}</span>,
-            <time datetime={paper.pdf.built_at}>{exactly(paper.pdf.built_at)}</time>, {fileSize(paper.pdf.size)}.
-            <a class="button button--link" href={pdfUrl} target="_blank" rel="noreferrer">Open the PDF</a>
-          </p>
-        {:else}
-          <div class="card card--empty card__body">
-            <p class="empty">
-              No PDF yet: the workshop compiles the paper after each push, on a machine with LaTeX.
-            </p>
-          </div>
-        {/if}
-      </section>
+    {#if paper.latest?.error}
+      <p class="message message--danger">
+        <span class="message__text">
+          The newest build failed: {paper.latest.error}.{#if paper.pdf} The PDF shown is the last one made.{/if}
+          <button type="button" class="button button--link" data-opens="paper-build">Its log</button>
+        </span>
+      </p>
+    {:else if paper.latest && (paper.latest.state === "running" || paper.latest.state === "queued")}
+      <p class="row quiet">
+        {#if paper.latest.state === "running"}<span class="spinner" aria-hidden="true"></span>{/if}
+        {paper.latest.progress ?? "Waiting for a workshop machine with LaTeX"}
+      </p>
+    {/if}
 
-      <aside class="stack">
-        {#if paper.latest}
-          {@const build = paper.latest}
-          <section class="stack stack--tight">
-            <h2 class="label">The newest build</h2>
-            <p>
-              Of <span class="identifier">{build.commit.slice(0, 10)}</span>,
-              <time datetime={build.created_at}>{exactly(build.created_at)}</time>.
+    {#if paper.pdf}
+      <iframe class="paper-pdf card" src={pdfUrl} title="The PDF of p/{paper.slug}"></iframe>
+      <p class="quiet">
+        Compiled from <span class="identifier">{paper.pdf.commit.slice(0, 10)}</span>,
+        <time datetime={paper.pdf.built_at}>{exactly(paper.pdf.built_at)}</time>, {fileSize(paper.pdf.size)}.
+        <a class="button button--link" href={pdfUrl} target="_blank" rel="noreferrer">Open the PDF</a>
+      </p>
+    {:else}
+      <div class="card card--empty card__body">
+        <p class="empty">No PDF yet: the workshop compiles the paper after each push, on a machine with LaTeX.</p>
+      </div>
+    {/if}
+
+    <stemma-dialog id="paper-build">
+      <dialog class="dialog" aria-labelledby="paper-build-title">
+        <div class="dialog__body">
+          <h2 class="dialog__title" id="paper-build-title">The newest build</h2>
+          {#if paper.latest}
+            {@const build = paper.latest}
+            <p class="row">
+              <BuildChip {build} />
+              <span>
+                Of <span class="identifier">{build.commit.slice(0, 10)}</span>,
+                <time datetime={build.created_at}>{exactly(build.created_at)}</time>.
+              </span>
             </p>
             {#if build.error}
-              <div class="message message--danger">
-                <span class="message__text">
-                  {build.error}{#if paper.pdf}. The PDF shown is the last one made.{/if}
-                </span>
-              </div>
+              <p class="message message--danger"><span class="message__text">{build.error}</span></p>
             {:else if build.progress}
-              <p class="row quiet">
-                {#if build.state === "running"}<span class="spinner" aria-hidden="true"></span>{/if}
-                {build.progress}
-              </p>
+              <p class="quiet">{build.progress}</p>
             {/if}
             {#if paper.log}
-              <details class="disclosure" open={build.state === "failed"}>
-                <summary>Its log</summary>
-                <div class="document"><pre class="build-log"><code>{paper.log}</code></pre></div>
-              </details>
+              <div class="document"><pre class="build-log"><code>{paper.log}</code></pre></div>
             {/if}
+          {:else}
+            <p class="dialog__text">The paper has not been compiled yet.</p>
+          {/if}
+          <p class="dialog__text">
+            It compiles from <code>main.tex</code> with <code>latexmk -pdf</code>: pdfLaTeX and BibTeX. Each push to
+            <code>main</code> is compiled.
+          </p>
+          <div class="dialog__actions">
             {#if asksForWork(group.role)}
-              <p><button type="button" class="button button--quiet button--small" onclick={rebuild}>Compile again</button></p>
+              <button type="button" class="button" onclick={rebuild}>Compile again</button>
             {/if}
-          </section>
-        {/if}
+            <button type="button" class="button button--primary" data-closes>Close</button>
+          </div>
+        </div>
+      </dialog>
+    </stemma-dialog>
 
-        <section class="stack stack--tight">
-          <h2 class="label">Authors</h2>
+    <stemma-dialog id="paper-authors">
+      <dialog class="dialog" aria-labelledby="paper-authors-title">
+        <div class="dialog__body">
+          <h2 class="dialog__title" id="paper-authors-title">Authors</h2>
+          <p class="dialog__text">An author approves the workshop's changes to the paper that others ask for.</p>
           <ul class="plain-list stack stack--tight">
             {#each paper.authors as a (a.id)}
               <li class="row">
@@ -210,54 +249,57 @@
               <button type="submit" class="button" disabled={!adding}>Add</button>
             </form>
           {/if}
-          <p class="quiet">
-            An author approves the workshop's changes to the paper that others ask for.
-          </p>
-        </section>
+          <div class="dialog__actions">
+            <button type="button" class="button button--primary" data-closes>Close</button>
+          </div>
+        </div>
+      </dialog>
+    </stemma-dialog>
 
-        <section class="stack stack--tight">
-          <h2 class="label">The source</h2>
-          {#if paper.forge_url}
-            <p><a class="button button--link" href={paper.forge_url}>The paper in the forge</a></p>
-          {/if}
-          <details class="card disclosure">
-            <summary>Work on it with git</summary>
-            <p>Clone it with a personal token, from your settings, as the password:</p>
-            <span class="row">
-              <code class="identifier grow" id="paper-clone">git clone {cloneUrl}</code>
-              <stemma-copy-button for="paper-clone" label="Copy the command"></stemma-copy-button>
-            </span>
-            <p class="quiet">
-              It compiles from <code>main.tex</code> with <code>latexmk -pdf</code>: pdfLaTeX and BibTeX. Each push
-              to <code>main</code> is compiled.
+    <stemma-dialog id="paper-clone-dialog">
+      <dialog class="dialog" aria-labelledby="paper-clone-title">
+        <div class="dialog__body">
+          <h2 class="dialog__title" id="paper-clone-title">Work on it on your machine</h2>
+          <p class="dialog__text">Clone it with a personal token, from your personal settings, as the password:</p>
+          <span class="row">
+            <code class="identifier grow" id="paper-clone">git clone {cloneUrl}</code>
+            <stemma-copy-button for="paper-clone" label="Copy the command"></stemma-copy-button>
+          </span>
+          <div class="dialog__actions">
+            <button type="button" class="button button--primary" data-closes>Close</button>
+          </div>
+        </div>
+      </dialog>
+    </stemma-dialog>
+
+    {#if asksForWork(group.role)}
+      <stemma-dialog id="paper-ask" bind:this={askDialog}>
+        <dialog class="dialog" aria-labelledby="paper-ask-title">
+          <form class="dialog__body" onsubmit={ask}>
+            <h2 class="dialog__title" id="paper-ask-title">Ask the workshop</h2>
+            <p class="dialog__text">
+              A thread about the paper is opened with your request; the workshop's changes are proposed there for
+              approval.
             </p>
-          </details>
-        </section>
-
-        {#if asksForWork(group.role)}
-          <section class="stack stack--tight">
-            <h2 class="label">Ask the workshop</h2>
-            <form class="stack" onsubmit={ask}>
-              <div class="field">
-                <label class="field__label" for="edit-title">What to do, in a line</label>
-                <input id="edit-title" class="input" bind:value={title} required maxlength="200" />
-              </div>
-              <div class="field">
-                <label class="field__label" for="edit-instructions">Instructions</label>
-                <textarea id="edit-instructions" class="input" bind:value={instructions} required></textarea>
-                <span class="field__hint">
-                  In Markdown, citing what to write up by address (<span class="identifier">[[t12#45-48]]</span>). A
-                  thread about the paper is opened with them; the changes are proposed there for approval.
-                </span>
-              </div>
-              <div class="row row--end">
-                <button type="submit" class="button button--primary" disabled={asking}>Ask for it</button>
-              </div>
-            </form>
-          </section>
-        {/if}
-      </aside>
-    </div>
+            <div class="field">
+              <label class="field__label" for="edit-title">What to do, in a line</label>
+              <input id="edit-title" class="input" bind:value={title} required maxlength="200" />
+            </div>
+            <div class="field">
+              <label class="field__label" for="edit-instructions">Instructions</label>
+              <textarea id="edit-instructions" class="input" bind:value={instructions} required></textarea>
+              <span class="field__hint">
+                In Markdown, citing what to write up by address (<span class="identifier">[[t12#45-48]]</span>).
+              </span>
+            </div>
+            <div class="dialog__actions">
+              <button type="button" class="button" data-closes>Cancel</button>
+              <button type="submit" class="button button--primary" disabled={asking}>Ask for it</button>
+            </div>
+          </form>
+        </dialog>
+      </stemma-dialog>
+    {/if}
   {:else if missing}
     <h1>Paper not found</h1>
     <p>There is no paper <span class="identifier">p/{slug}</span> in the group.</p>

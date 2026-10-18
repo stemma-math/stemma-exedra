@@ -18,43 +18,200 @@ body {
   min-height: 100vh;
 }
 
-/* ── The bar on top ─────────────────────────────────────────────────── */
+/* ── A group: the sidebar beside its pages ────────────────────────── */
 
-.topbar {
+.shell {
+  --sidebar-width: 16rem;
+  display: grid;
+  grid-template-columns: var(--sidebar-width) minmax(0, 1fr);
+  min-height: 100vh;
+}
+
+.shell__bar,
+.shell__scrim {
+  display: none;
+}
+
+.shell__main {
+  min-width: 0;
+}
+
+.sidebar {
   position: sticky;
   top: 0;
-  z-index: 10;
+  height: 100vh;
+  background: var(--surface-subtle);
+  border-right: 1px solid var(--divider);
+}
+
+.sidebar__inner {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+}
+
+.sidebar__top,
+.sidebar__foot {
   display: flex;
   align-items: center;
-  gap: var(--space-4);
-  padding: var(--space-3) var(--space-6);
-  background: var(--surface-page);
+  gap: var(--space-1);
+  padding: var(--space-3);
+}
+
+.sidebar__top {
   border-bottom: 1px solid var(--divider);
 }
 
-.topbar__home {
-  display: inline-flex;
+.sidebar__foot {
+  border-top: 1px solid var(--divider);
+}
+
+.sidebar__top stemma-menu {
+  display: block;
+  width: 100%;
+}
+
+.sidebar__switcher {
+  width: 100%;
+  justify-content: flex-start;
+}
+
+.sidebar__mark {
+  width: 1.5em;
+  flex-shrink: 0;
+}
+
+.sidebar__name {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-align: left;
+  text-overflow: ellipsis;
+}
+
+.sidebar__scroll {
+  flex: 1;
+  overflow-y: auto;
+  padding: var(--space-3);
+}
+
+.sidebar__list {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+/* Each place a quiet button, the one shown marked as current. */
+.sidebar__item {
+  width: 100%;
+  justify-content: flex-start;
+  font-weight: 400;
+}
+
+.sidebar__text {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.sidebar__section {
+  margin-top: var(--space-5);
+}
+
+.sidebar__heading {
+  display: flex;
   align-items: center;
-  gap: var(--space-2);
-  color: inherit;
-  text-decoration: none;
+  justify-content: space-between;
+  margin-bottom: var(--space-1);
 }
 
-.topbar__home stemma-mark {
-  width: 1.75em;
+.sidebar__toggle {
+  padding-inline: var(--space-1);
 }
 
-.topbar__groups {
+.sidebar__empty {
+  padding: var(--space-1) var(--space-3);
+}
+
+.sidebar__foot > .sidebar__item {
+  flex: 1;
+  min-width: 0;
+}
+
+@media (max-width: 48rem) {
+  .shell {
+    display: block;
+  }
+
+  .shell__bar {
+    position: sticky;
+    top: 0;
+    z-index: 10;
+    display: flex;
+    align-items: center;
+    gap: var(--space-2);
+    padding: var(--space-2) var(--space-3);
+    background: var(--surface-page);
+    border-bottom: 1px solid var(--divider);
+  }
+
+  .shell__title {
+    font-weight: 500;
+    color: inherit;
+    text-decoration: none;
+  }
+
+  /* The sidebar is a drawer, over the page from the left. */
+  .sidebar {
+    position: fixed;
+    inset: 0 auto 0 0;
+    z-index: 30;
+    width: min(var(--sidebar-width), 85vw);
+    box-shadow: var(--shadow-float);
+    transform: translateX(-105%);
+    transition: transform var(--dur-ui) var(--ease-out);
+  }
+
+  .shell.is-open .sidebar {
+    transform: none;
+  }
+
+  .shell.is-open .shell__scrim {
+    position: fixed;
+    inset: 0;
+    z-index: 25;
+    display: block;
+    padding: 0;
+    border: 0;
+    /* TODO(design): a scrim colour; this is the dialog's backdrop. */
+    background: color-mix(in srgb, var(--navy-950) 45%, transparent);
+  }
+}
+
+/* ── The front page ─────────────────────────────────────────────────── */
+
+.front {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: var(--space-6);
+  text-align: center;
+}
+
+.front__mark {
+  width: 4rem;
+}
+
+.front__actions {
   display: flex;
   flex-wrap: wrap;
-  gap: var(--space-1);
+  justify-content: center;
+  gap: var(--space-3);
 }
 
-.topbar__end {
-  margin-left: auto;
-  display: flex;
-  align-items: center;
-  gap: var(--space-2);
+.front__note {
+  max-width: 22rem;
+  margin: 0;
 }
 
 /* ── Pages ──────────────────────────────────────────────────────────── */
@@ -87,10 +244,6 @@ body {
 
 .page__head > :first-child {
   margin: 0;
-}
-
-.page__head > .push {
-  margin-left: auto;
 }
 
 .stack {
@@ -149,6 +302,31 @@ body {
   align-items: center;
   gap: var(--space-3);
   margin-bottom: var(--space-6);
+  color: inherit;
+  text-decoration: none;
+}
+
+.sign-in__brand stemma-mark {
+  width: 3rem;
+}
+
+.sign-in__brand--inline {
+  flex-direction: row;
+  margin-bottom: 0;
+}
+
+.sign-in__brand--inline stemma-mark {
+  width: 1.75rem;
+}
+
+.sign-in__aside {
+  margin-top: var(--space-4);
+  text-align: center;
+}
+
+/* The rest of a row goes to its end. */
+.push {
+  margin-left: auto;
 }
 
 /* ── Threads ────────────────────────────────────────────────────────── */
@@ -182,9 +360,9 @@ body {
   margin-block: var(--space-6);
 }
 
-/* Below the sticky bar on top. */
+/* Below the sticky bar on top, on a narrow screen. */
 .thread-posts .post {
-  scroll-margin-top: 5rem;
+  scroll-margin-top: 4rem;
 }
 
 .post__body > p {
@@ -238,7 +416,6 @@ stemma-toast-region {
 }
 
 @media (max-width: 40rem) {
-  .topbar,
   .page {
     padding-inline: var(--space-4);
   }
@@ -249,22 +426,6 @@ stemma-toast-region {
 
   .threads .when {
     display: none;
-  }
-
-  .topbar__name {
-    display: none;
-  }
-
-  /* The group's tabs scroll rather than widen the page. */
-  .tabs {
-    overflow-x: auto;
-    scrollbar-width: none;
-  }
-
-  .topbar__groups {
-    flex-wrap: nowrap;
-    overflow-x: auto;
-    min-width: 0;
   }
 }
 
@@ -331,24 +492,12 @@ stemma-toast-region {
   --columns: minmax(0, 1fr) auto auto;
 }
 
-.paper-layout {
-  display: grid;
-  grid-template-columns: minmax(0, 1fr) minmax(16rem, 22rem);
-  gap: var(--space-8);
-  align-items: start;
-}
-
-/* The browser's own viewer, as tall as the window allows. */
+/* The browser's own viewer, the paper's page's main view, as tall as the
+ * window allows. */
 .paper-pdf {
   width: 100%;
-  height: 80vh;
+  height: 85vh;
   padding: 0;
-}
-
-@media (max-width: 60rem) {
-  .paper-layout {
-    grid-template-columns: minmax(0, 1fr);
-  }
 }
 
 /* ── The workshop ───────────────────────────────────────────────────── */
@@ -437,4 +586,71 @@ stemma-toast-region {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+/* ── The dashboard ──────────────────────────────────────────────────── */
+
+.dashboard-columns {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 24rem), 1fr));
+  gap: var(--space-8);
+  align-items: start;
+}
+
+/* ── The forum's search ─────────────────────────────────────────────── */
+
+.search-filters__select {
+  width: auto;
+}
+
+.search-hits > li + li {
+  border-top: 1px solid var(--divider);
+}
+
+.search-hit {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+  padding: var(--space-3) var(--space-4);
+  color: inherit;
+  text-decoration: none;
+}
+
+.search-hit:hover {
+  background: var(--fill-muted);
+}
+
+.search-hit__snippet {
+  overflow-wrap: anywhere;
+}
+
+/* ── Chats ──────────────────────────────────────────────────────────── */
+
+.chat-options {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 14rem), 1fr));
+  gap: var(--space-4);
+}
+
+/* ── The workshop's panel ───────────────────────────────────────────── */
+
+.tasks--reviewed {
+  --columns: auto minmax(0, 1fr) auto;
+}
+
+/* A link that is a block of a row, read as its text. */
+.link-plain {
+  color: inherit;
+  text-decoration: none;
+}
+
+.architecture-steps {
+  margin: 0;
+  padding-left: var(--space-5);
+}
+
+@media (max-width: 40rem) {
+  .tasks--reviewed {
+    --columns: minmax(0, 1fr);
+  }
 }

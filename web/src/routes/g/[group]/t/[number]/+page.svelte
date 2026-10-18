@@ -144,6 +144,16 @@
     <h1>Thread not found</h1>
     <p>There is no thread <span class="identifier">t{number}</span> in {group.name}.</p>
   {:else if thread}
+    <nav class="breadcrumbs" aria-label="Where">
+      <ol>
+        {#if thread.kind === "chat"}
+          <li><a href="/g/{group.slug}/chats">Chats</a></li>
+        {:else}
+          <li><a href="/g/{group.slug}/forum">Forum</a></li>
+        {/if}
+        <li><span aria-current="page" class="identifier">t{thread.number}</span></li>
+      </ol>
+    </nav>
     <header class="stack stack--tight">
       {#if renaming}
         <form class="row" onsubmit={rename}>
@@ -175,7 +185,11 @@
       {/if}
       <p class="quiet">
         {#if thread.kind === "chat"}
-          <span class="chip chip--info">Chat{thread.resident_agent ? ` with @${thread.resident_agent}` : ""}</span>
+          <span class="chip chip--info">
+            Chat{thread.resident_agent ? ` with @${thread.resident_agent}` : ""}{thread.resident_model
+              ? ` · ${thread.resident_model}`
+              : ""}{thread.resident_effort ? ` · ${thread.resident_effort} effort` : ""}
+          </span>
         {/if}
         Started by {thread.created_by.display_name},
         <time datetime={thread.created_at}>{exactly(thread.created_at)}</time>{#if thread.anchor}{@const anchor = parseAddress(thread.anchor)},

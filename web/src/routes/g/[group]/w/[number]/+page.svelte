@@ -2,6 +2,7 @@
   import { page } from "$app/state";
   import { addressPath, parseAddress } from "#lib/address.ts";
   import { ApiError, api, approverName, type TaskPage } from "#lib/api.ts";
+  import { canApprove as approvable, canReject as rejectable } from "#lib/approvals.ts";
   import Markdown from "#lib/components/Markdown.svelte";
   import TaskChip from "#lib/components/TaskChip.svelte";
   import { listen } from "#lib/events.ts";
@@ -69,23 +70,13 @@
       .catch(() => {});
   });
 
-  const canApprove = $derived(
-    task !== null &&
-      task.state === "review" &&
-      group.role !== "guest" &&
-      (task.changes?.needs ?? []).some(
-        (n) =>
-          (n === "asker" && task?.requester.id === me) ||
-          (n === "admin" && group.role === "admin") ||
-          (n === "author" && me !== undefined && authors.includes(me)),
-      ),
-  );
-  const canReject = $derived(
-    task !== null &&
-      task.state === "review" &&
-      group.role !== "guest" &&
-      (group.role === "admin" || task.requester.id === me),
-  );
+  const reviewer = $derived({
+    id: me,
+    role: group.role,
+    author: me !== undefined && authors.includes(me),
+  });
+  const canApprove = $derived(task !== null && approvable(task, reviewer));
+  const canReject = $derived(task !== null && rejectable(task, reviewer));
 
   async function review(approve: boolean) {
     if (!task) return;
@@ -118,7 +109,7 @@
 <main class="page page--narrow stack">
   <nav class="breadcrumbs" aria-label="Where">
     <ol>
-      <li><a href="/g/{group.slug}/w">Workshop</a></li>
+      <li><a href="/g/{group.slug}/workshop">Workshop</a></li>
       <li><span aria-current="page">w{number}</span></li>
     </ol>
   </nav>

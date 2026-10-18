@@ -317,7 +317,7 @@ async fn papers_are_made_from_the_template_by_admins_and_members() {
     // Guests create no papers; slugs are slugs, and each is one paper's.
     let (status, _) = call(&hub, &gus, "POST", "/groups/geometry/papers", new("x", "X")).await;
     assert_eq!(status, StatusCode::FORBIDDEN);
-    for slug in ["Notes", "a--b", "", "a_b"] {
+    for slug in ["Notes", "a--b", "", "a_b", "new"] {
         let (status, _) = call(
             &hub,
             &bob,

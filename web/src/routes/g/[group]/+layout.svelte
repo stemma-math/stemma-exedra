@@ -1,15 +1,21 @@
 <script lang="ts">
+  import { afterNavigate } from "$app/navigation";
   import { page } from "$app/state";
   import { ApiError, api, type Group } from "#lib/api.ts";
+  import Glyph from "#lib/components/Glyph.svelte";
+  import Sidebar from "#lib/components/Sidebar.svelte";
   import { listen } from "#lib/events.ts";
   import { setGroupContext } from "#lib/group.svelte.ts";
   import { forgetReferences } from "#lib/references.ts";
+  import { rememberGroup } from "#lib/session.svelte.ts";
 
   let { children } = $props();
 
   const slug = $derived(page.params.group ?? "");
   let group = $state<Group | null>(null);
   let missing = $state(false);
+  /** Whether the sidebar is open over the page, on a narrow screen. */
+  let drawer = $state(false);
 
   setGroupContext({
     get group() {
@@ -23,7 +29,9 @@
     api
       .group(wanted)
       .then((found) => {
-        if (wanted === slug) group = found;
+        if (wanted !== slug) return;
+        group = found;
+        rememberGroup(found.slug);
       })
       .catch((error) => {
         if (error instanceof ApiError && error.status === 404) missing = true;
@@ -40,52 +48,47 @@
     });
   });
 
-  const tabs = $derived([
-    { href: `/g/${slug}`, label: "Home", current: page.url.pathname === `/g/${slug}` },
-    {
-      href: `/g/${slug}/t`,
-      label: "Threads",
-      current: page.url.pathname.startsWith(`/g/${slug}/t`),
-    },
-    {
-      href: `/g/${slug}/lib`,
-      label: "Library",
-      current: page.url.pathname.startsWith(`/g/${slug}/lib`),
-    },
-    {
-      href: `/g/${slug}/p`,
-      label: "Papers",
-      current: page.url.pathname.startsWith(`/g/${slug}/p`),
-    },
-    {
-      href: `/g/${slug}/w`,
-      label: "Workshop",
-      current: page.url.pathname.startsWith(`/g/${slug}/w`),
-    },
-    {
-      href: `/g/${slug}/settings`,
-      label: "Settings",
-      current: page.url.pathname.startsWith(`/g/${slug}/settings`),
-    },
-  ]);
+  afterNavigate(() => {
+    drawer = false;
+  });
+
+  function onkeydown(event: KeyboardEvent) {
+    if (event.key === "Escape" && drawer) drawer = false;
+  }
 </script>
 
+<svelte:window {onkeydown} />
+
 {#if missing}
-  <main class="page page--narrow">
+  <main class="page page--narrow stack">
     <h1>Group not found</h1>
     <p>There is no group <span class="identifier">{slug}</span>, or you are not in it.</p>
+    <p><a href="/groups">Your groups</a></p>
   </main>
 {:else if group && group.slug === slug}
-  <nav class="page" aria-label={group.name} style="padding-bottom: 0">
-    <div class="tabs">
-      {#each tabs as tab (tab.href)}
-        <a class="tabs__tab" href={tab.href} aria-current={tab.current ? "page" : undefined}>
-          {tab.label}
-        </a>
-      {/each}
+  <div class={["shell", drawer && "is-open"]}>
+    <header class="shell__bar">
+      <button
+        type="button"
+        class="button button--quiet button--icon"
+        aria-label="Open the menu"
+        aria-expanded={drawer}
+        aria-controls="sidebar"
+        onclick={() => (drawer = true)}
+      >
+        <Glyph name="menu" />
+      </button>
+      <a class="shell__title" href="/g/{group.slug}">{group.name}</a>
+    </header>
+    <aside class="sidebar" id="sidebar" aria-label="{group.name}, its places">
+      <Sidebar {group} />
+    </aside>
+    <!-- TODO(design): a scrim for a drawer over the page (the dialog's backdrop, as a class). -->
+    <button type="button" class="shell__scrim" aria-label="Close the menu" tabindex="-1" onclick={() => (drawer = false)}></button>
+    <div class="shell__main">
+      {@render children()}
     </div>
-  </nav>
-  {@render children()}
+  </div>
 {:else}
   <div class="page page--centered"><span class="spinner" role="status" aria-label="Loading"></span></div>
 {/if}

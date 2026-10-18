@@ -1,33 +1,49 @@
 <script lang="ts">
-  import { api, type LibraryState, type Thread } from "#lib/api.ts";
-  import LibraryStatus from "#lib/components/LibraryStatus.svelte";
+  import { api, type Paper, type Task, type Thread } from "#lib/api.ts";
+  import Glyph from "#lib/components/Glyph.svelte";
+  import PaperList from "#lib/components/PaperList.svelte";
+  import TaskChip from "#lib/components/TaskChip.svelte";
   import ThreadList from "#lib/components/ThreadList.svelte";
   import { listen } from "#lib/events.ts";
   import { groupContext } from "#lib/group.svelte.ts";
+  import { asksForWork } from "#lib/roles.ts";
   import { applyThreadEvent } from "#lib/threads.ts";
 
+  const SHOWN = 8;
   const context = groupContext();
   const group = $derived(context.group);
+  let papers = $state<Paper[] | null>(null);
   let threads = $state<Thread[] | null>(null);
-  let library = $state<LibraryState | null>(null);
+  let chats = $state<Thread[] | null>(null);
+  let review = $state<Task[]>([]);
 
   async function load() {
-    threads = await api.threads(group.slug, { limit: 10 });
-  }
-
-  async function loadLibrary() {
-    library = await api.library(group.slug).catch(() => null);
+    const slug = group.slug;
+    [papers, threads, chats, review] = await Promise.all([
+      api.papers(slug).catch(() => []),
+      api.threads(slug, { kind: "discussion", limit: SHOWN }).catch(() => []),
+      api.threads(slug, { kind: "chat", limit: SHOWN }).catch(() => []),
+      api.tasks(slug, "review").catch(() => []),
+    ]);
   }
 
   $effect(() => {
     load();
-    loadLibrary();
     return listen(group.slug, (event) => {
-      if (event.type === "resync") {
-        load();
-        loadLibrary();
-      } else if (event.type === "build_updated") loadLibrary();
-      else if (threads) threads = applyThreadEvent(threads, event).slice(0, 10);
+      if (event.type === "resync") return load();
+      if (event.type === "paper_updated" && papers) {
+        const index = papers.findIndex((p) => p.slug === event.paper.slug);
+        if (index === -1) load();
+        else papers[index] = event.paper;
+      } else if (event.type === "thread_created" || event.type === "thread_updated") {
+        if (event.thread.kind === "chat" && chats) chats = applyThreadEvent(chats, event).slice(0, SHOWN);
+        if (event.thread.kind === "discussion" && threads)
+          threads = applyThreadEvent(threads, event).slice(0, SHOWN);
+      } else if (event.type === "task_updated") {
+        review = [event.task, ...review.filter((t) => t.number !== event.task.number)].filter(
+          (t) => t.state === "review",
+        );
+      }
     });
   });
 </script>
@@ -37,30 +53,90 @@
 <main class="page stack stack--loose">
   <div class="page__head">
     <h1>{group.name}</h1>
-    <a class="button button--primary push" href="/g/{group.slug}/t/new">New thread</a>
+    <span class="row push">
+      <a class="button" href="/g/{group.slug}/forum/new">New thread</a>
+      <a class="button button--primary" href="/g/{group.slug}/chats/new">Ask a question</a>
+    </span>
   </div>
 
+  {#if review.length}
+    <section class="stack">
+      <h2 class="label">Waiting for approval</h2>
+      <div class="card">
+        <div class="table tasks">
+          {#each review as task (task.number)}
+            <a class="table__row" href="/g/{group.slug}/w/{task.number}">
+              <TaskChip {task} />
+              <span class="thread-row__title">
+                <span class="identifier quiet">w{task.number}</span>
+                <strong>{task.title}</strong>
+              </span>
+              <span class="quiet when">for {task.requester.display_name}</span>
+            </a>
+          {/each}
+        </div>
+      </div>
+    </section>
+  {/if}
+
   <section class="stack">
-    <h2 class="label">Recent threads</h2>
-    {#if threads === null}
+    <div class="row">
+      <h2 class="label grow">Working papers</h2>
+      {#if asksForWork(group.role)}
+        <a class="button button--quiet button--small" href="/g/{group.slug}/p/new"><Glyph name="add" small /> New paper</a>
+      {/if}
+    </div>
+    {#if papers === null}
       <span class="spinner" role="status" aria-label="Loading"></span>
-    {:else if threads.length === 0}
+    {:else if papers.length === 0}
       <div class="card card--empty card__body">
         <p class="empty">
-          Nothing has been said yet. <a class="button button--link" href="/g/{group.slug}/t/new">Start the first thread</a>: a
-          question, an idea, a photo of the whiteboard.
+          No papers yet: a working paper is the readable account of what the group is doing, in LaTeX, compiled
+          by the workshop.
         </p>
       </div>
     {:else}
-      <ThreadList {threads} group={group.slug} />
-      <p><a class="button button--link" href="/g/{group.slug}/t">Every thread</a></p>
+      <PaperList {papers} group={group.slug} />
     {/if}
   </section>
 
-  {#if library?.available}
+  <div class="dashboard-columns">
     <section class="stack">
-      <h2 class="label">The library</h2>
-      <LibraryStatus {library} group={group.slug} />
+      <div class="row">
+        <h2 class="label grow">Latest threads</h2>
+        <a class="button button--quiet button--small" href="/g/{group.slug}/forum">The forum</a>
+      </div>
+      {#if threads === null}
+        <span class="spinner" role="status" aria-label="Loading"></span>
+      {:else if threads.length === 0}
+        <div class="card card--empty card__body">
+          <p class="empty">
+            Nothing has been said yet. <a class="button button--link" href="/g/{group.slug}/forum/new">Start the first thread</a>: a
+            question, an idea, a photo of the whiteboard.
+          </p>
+        </div>
+      {:else}
+        <ThreadList {threads} group={group.slug} />
+      {/if}
     </section>
-  {/if}
+
+    <section class="stack">
+      <div class="row">
+        <h2 class="label grow">Latest chats</h2>
+        <a class="button button--quiet button--small" href="/g/{group.slug}/chats">Every chat</a>
+      </div>
+      {#if chats === null}
+        <span class="spinner" role="status" aria-label="Loading"></span>
+      {:else if chats.length === 0}
+        <div class="card card--empty card__body">
+          <p class="empty">
+            No chats yet. <a class="button button--link" href="/g/{group.slug}/chats/new">Ask a question</a>, and an agent
+            answers it, with the group following along.
+          </p>
+        </div>
+      {:else}
+        <ThreadList threads={chats} group={group.slug} />
+      {/if}
+    </section>
+  </div>
 </main>

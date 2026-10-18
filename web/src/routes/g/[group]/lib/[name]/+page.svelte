@@ -39,7 +39,7 @@
     const a = parseAddress(address);
     return a ? addressPath(a, group.slug) : "#";
   };
-  const discuss = $derived(`/g/${group.slug}/t/new?anchor=${encodeURIComponent(`lean:${name}`)}`);
+  const discuss = $derived(`/g/${group.slug}/forum/new?anchor=${encodeURIComponent(`lean:${name}`)}`);
 </script>
 
 <svelte:head><title>{name} · Library · {group.name} · Stemma</title></svelte:head>

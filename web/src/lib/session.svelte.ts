@@ -19,3 +19,33 @@ export function setSession(me: Me | null) {
   session.me = me;
   session.loaded = true;
 }
+
+/** Signs out of the hub, here. */
+export async function signOut() {
+  await api.signOut().catch(() => {});
+  setSession(null);
+}
+
+const LAST_GROUP = "stemma-group";
+
+/** Remembers the group last opened, to open it again from the front page. */
+export function rememberGroup(slug: string) {
+  try {
+    localStorage.setItem(LAST_GROUP, slug);
+  } catch {
+    // Without storage, the first group opens instead.
+  }
+}
+
+/** Where someone signed in starts: the group they last opened, or their
+ * first, or their groups if they have none. */
+export function homeOf(me: Me): string {
+  let last: string | null = null;
+  try {
+    last = localStorage.getItem(LAST_GROUP);
+  } catch {
+    last = null;
+  }
+  const group = me.groups.find((g) => g.slug === last) ?? me.groups[0];
+  return group ? `/g/${group.slug}` : "/groups";
+}

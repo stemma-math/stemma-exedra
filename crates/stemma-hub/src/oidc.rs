@@ -339,7 +339,7 @@ async fn authorize(
         }
         let here = format!("{AUTHORIZE_PATH}?{query}");
         let next: String = url::form_urlencoded::byte_serialize(here.as_bytes()).collect();
-        return Redirect::to(&format!("/signin?next={next}")).into_response();
+        return Redirect::to(&format!("/login?next={next}")).into_response();
     };
 
     let code = secret::token("");
