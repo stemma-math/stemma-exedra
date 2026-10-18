@@ -71,6 +71,8 @@ CREATE TABLE tasks (
     instructions TEXT NOT NULL,
     -- The architecture it runs with: `formalize`, `write`.
     architecture TEXT NOT NULL,
+    -- The paper it changes, if it changes one.
+    paper_id INTEGER REFERENCES papers (id) ON DELETE SET NULL,
     -- The message that asked for it.
     thread_id INTEGER NOT NULL REFERENCES threads (id) ON DELETE CASCADE,
     origin_message INTEGER NOT NULL,

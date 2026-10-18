@@ -48,6 +48,3 @@ CREATE TABLE paper_builds (
 
 CREATE INDEX paper_builds_paper ON paper_builds (paper_id, id DESC);
 CREATE INDEX paper_builds_job ON paper_builds (job_id);
-
--- The paper a task of the workshop changes, if it changes one.
-ALTER TABLE tasks ADD COLUMN paper_id INTEGER REFERENCES papers (id) ON DELETE SET NULL;
