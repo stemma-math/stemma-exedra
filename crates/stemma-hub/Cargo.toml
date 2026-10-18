@@ -19,8 +19,8 @@ mime_guess.workspace = true
 p256.workspace = true
 rand.workspace = true
 reqwest = { workspace = true, features = ["stream"] }
-rustls.workspace = true
 rust-embed.workspace = true
+rustls.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 sha2.workspace = true
