@@ -1,16 +1,31 @@
--- Agents: token scopes, agent profiles, workers and the jobs they run.
+-- Agents: API tokens, agent profiles, workers and the jobs they run.
 
 -- A personal token acts as its owner, with everything they can do. A job
 -- token acts for a job's requester, in the job's group only, while the job
--- lasts; it posts, if at all, only in its thread and as its agent.
-ALTER TABLE api_tokens ADD COLUMN kind TEXT NOT NULL DEFAULT 'personal'
-    CHECK (kind IN ('personal', 'job'));
-ALTER TABLE api_tokens ADD COLUMN group_id INTEGER REFERENCES groups (id) ON DELETE CASCADE;
-ALTER TABLE api_tokens ADD COLUMN thread_id INTEGER REFERENCES threads (id) ON DELETE CASCADE;
-ALTER TABLE api_tokens ADD COLUMN agent TEXT;
-ALTER TABLE api_tokens ADD COLUMN can_post INTEGER NOT NULL DEFAULT 1;
-ALTER TABLE api_tokens ADD COLUMN expires_at INTEGER;
+-- lasts; it posts, if at all, only in its thread and as its agent, and
+-- pushes to the library only for a task.
+CREATE TABLE api_tokens (
+    id INTEGER PRIMARY KEY,
+    user_id INTEGER NOT NULL REFERENCES users (id) ON DELETE CASCADE,
+    name TEXT NOT NULL,
+    token_hash TEXT NOT NULL UNIQUE,
+    prefix TEXT NOT NULL,
+    created_at INTEGER NOT NULL,
+    last_used_at INTEGER,
+    revoked_at INTEGER,
+    kind TEXT NOT NULL DEFAULT 'personal' CHECK (kind IN ('personal', 'job')),
+    group_id INTEGER REFERENCES groups (id) ON DELETE CASCADE,
+    thread_id INTEGER REFERENCES threads (id) ON DELETE CASCADE,
+    agent TEXT,
+    can_post INTEGER NOT NULL DEFAULT 1,
+    can_push INTEGER NOT NULL DEFAULT 0,
+    expires_at INTEGER
+);
 
+CREATE INDEX api_tokens_user ON api_tokens (user_id);
+
+-- What an agent does when summoned: answer, or hand the message to the
+-- workshop as a task.
 CREATE TABLE agent_profiles (
     id INTEGER PRIMARY KEY,
     group_id INTEGER NOT NULL REFERENCES groups (id) ON DELETE CASCADE,
@@ -18,20 +33,13 @@ CREATE TABLE agent_profiles (
     display_name TEXT NOT NULL,
     runner TEXT NOT NULL,
     model TEXT,
-    endpoint TEXT,
     instructions TEXT,
     scope TEXT NOT NULL CHECK (scope IN ('personal', 'group')),
+    role TEXT NOT NULL DEFAULT 'answer' CHECK (role IN ('answer', 'workshop')),
     created_at INTEGER NOT NULL,
     updated_at INTEGER NOT NULL,
     UNIQUE (group_id, handle)
 );
-
--- Every group starts with each person's own Claude and Codex.
-INSERT INTO agent_profiles
-    (group_id, handle, display_name, runner, scope, created_at, updated_at)
-SELECT id, 'claude', 'Claude', 'claude-code', 'personal', created_at, created_at FROM groups
-UNION ALL
-SELECT id, 'codex', 'Codex', 'codex', 'personal', created_at, created_at FROM groups;
 
 -- A worker is a group's (group_id) or a member's (owner_id), never both.
 CREATE TABLE workers (
@@ -44,9 +52,11 @@ CREATE TABLE workers (
     created_by INTEGER NOT NULL REFERENCES users (id),
     created_at INTEGER NOT NULL,
     last_seen_at INTEGER,
-    -- What it announced when it last connected: a JSON array of runners.
+    -- What it announced when it last connected: a JSON array of runners,
+    -- whether it has Lean and whether it works on the workshop's tasks.
     runners TEXT NOT NULL DEFAULT '[]',
     lean INTEGER NOT NULL DEFAULT 0,
+    workshop INTEGER NOT NULL DEFAULT 0,
     version TEXT,
     revoked_at INTEGER,
     CHECK ((group_id IS NULL) != (owner_id IS NULL))
@@ -58,15 +68,16 @@ CREATE INDEX workers_owner ON workers (owner_id);
 CREATE TABLE jobs (
     id INTEGER PRIMARY KEY,
     group_id INTEGER NOT NULL REFERENCES groups (id) ON DELETE CASCADE,
-    thread_id INTEGER NOT NULL REFERENCES threads (id) ON DELETE CASCADE,
-    kind TEXT NOT NULL CHECK (kind IN ('reply')),
-    -- The message it answers, by number.
-    trigger_message INTEGER NOT NULL,
+    kind TEXT NOT NULL CHECK (kind IN ('reply', 'library_build', 'task_run')),
+    -- The thread and message that asked for it, if one did.
+    thread_id INTEGER REFERENCES threads (id) ON DELETE CASCADE,
+    trigger_message INTEGER,
     requester_id INTEGER NOT NULL REFERENCES users (id) ON DELETE CASCADE,
     -- The agent's profile as it was when the job was created, as JSON, so
-    -- that later edits do not change a job on its way.
-    agent_handle TEXT NOT NULL,
-    agent TEXT NOT NULL,
+    -- that later edits do not change a job on its way. None for builds.
+    agent_handle TEXT,
+    agent TEXT,
+    -- The runner, or `lean` for builds.
     runner TEXT NOT NULL,
     scope TEXT NOT NULL CHECK (scope IN ('personal', 'group')),
     state TEXT NOT NULL CHECK (state IN ('queued', 'running', 'done', 'failed', 'cancelled')),
@@ -76,7 +87,7 @@ CREATE TABLE jobs (
     attempts INTEGER NOT NULL DEFAULT 0,
     progress TEXT,
     error TEXT,
-    -- The number of the message with the answer.
+    -- The number of the message with the answer, or with the report.
     answer INTEGER,
     created_at INTEGER NOT NULL,
     updated_at INTEGER NOT NULL

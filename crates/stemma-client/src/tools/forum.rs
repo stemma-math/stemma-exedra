@@ -39,8 +39,8 @@ pub fn definitions() -> Vec<ToolDef> {
             description: "Read a thread, a message or a range of messages, by address: t12 \
                           (the thread), t12#45 (a message) or t12#45-50 (messages 45 to 50). \
                           Links to the web app work too. Each message comes headed by its \
-                          address, its author and its time. Papers (p/slug), declarations \
-                          (lean:Name) and the workshop's tasks (w7) are read too.",
+                          address, its author and its time. Declarations (lean:Name) and the \
+                          workshop's tasks (w7) are read too.",
             input_schema: json!({
                 "type": "object",
                 "properties": {
@@ -155,10 +155,6 @@ async fn read_thread(toolbox: &Toolbox, args: Value) -> ToolResult {
             thread, message, ..
         } => (thread, message, message),
         Address::Messages { thread, from, to } => (thread, from, to.min(from + MAX_RANGE - 1)),
-        Address::Paper { .. } => {
-            let args = json!({"address": address.to_string(), "group": group});
-            return super::papers::read_paper(toolbox, args).await;
-        }
         Address::Declaration(name) => {
             let args = json!({"name": name, "group": group});
             return super::library::lookup(toolbox, args).await;

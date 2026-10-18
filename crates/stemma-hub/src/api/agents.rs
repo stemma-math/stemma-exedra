@@ -47,7 +47,6 @@ fn checked(profile: AgentProfile) -> ApiResult<AgentProfile> {
         display_name: required_text(&profile.display_name, "The name", 60)?,
         runner,
         model: optional(profile.model, "The model", 200)?,
-        endpoint: optional(profile.endpoint, "The endpoint", 60)?,
         instructions: optional(profile.instructions, "The instructions", 8_000)?,
         scope: profile.scope,
         role: profile.role,
@@ -84,16 +83,15 @@ pub async fn insert<'e>(
 ) -> Result<(), sqlx::Error> {
     let now = db::now();
     sqlx::query(
-        "INSERT INTO agent_profiles (group_id, handle, display_name, runner, model, endpoint,
+        "INSERT INTO agent_profiles (group_id, handle, display_name, runner, model,
                                      instructions, scope, role, created_at, updated_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
     )
     .bind(group_id)
     .bind(&profile.handle)
     .bind(&profile.display_name)
     .bind(&profile.runner)
     .bind(&profile.model)
-    .bind(&profile.endpoint)
     .bind(&profile.instructions)
     .bind(profile.scope.as_str())
     .bind(profile.role.as_str())
@@ -120,14 +118,13 @@ pub async fn update(
         ..body
     })?;
     let done = sqlx::query(
-        "UPDATE agent_profiles SET display_name = ?, runner = ?, model = ?, endpoint = ?,
-                                   instructions = ?, scope = ?, role = ?, updated_at = ?
+        "UPDATE agent_profiles SET display_name = ?, runner = ?, model = ?, instructions = ?,
+                                   scope = ?, role = ?, updated_at = ?
          WHERE group_id = ? AND handle = ?",
     )
     .bind(&profile.display_name)
     .bind(&profile.runner)
     .bind(&profile.model)
-    .bind(&profile.endpoint)
     .bind(&profile.instructions)
     .bind(profile.scope.as_str())
     .bind(profile.role.as_str())

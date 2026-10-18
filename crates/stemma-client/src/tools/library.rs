@@ -24,7 +24,7 @@ pub fn definitions() -> Vec<ToolDef> {
             description: "A declaration of the group's Lean library, by name (Foo.bar, or \
                           lean:Foo.bar): its kind, type, docstring, module and place, whether \
                           it is proved or depends on sorry, its axioms, the declarations it uses \
-                          and those that use it, and the messages and papers that reference it.",
+                          and those that use it, and the messages and threads that reference it.",
             input_schema: json!({
                 "type": "object",
                 "properties": {

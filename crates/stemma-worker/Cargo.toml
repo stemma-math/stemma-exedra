@@ -12,7 +12,6 @@ anyhow.workspace = true
 dirs.workspace = true
 futures-util.workspace = true
 rand.workspace = true
-reqwest.workspace = true
 rustls.workspace = true
 rustls-platform-verifier.workspace = true
 serde.workspace = true
@@ -27,6 +26,7 @@ tracing.workspace = true
 
 [dev-dependencies]
 axum.workspace = true
+reqwest.workspace = true
 sqlx.workspace = true
 stemma-hub.workspace = true
 tempfile.workspace = true

@@ -204,15 +204,6 @@ pub async fn declaration(
     .bind(&reference)
     .fetch_all(&state.db)
     .await?;
-    let papers: Vec<(String, String)> = sqlx::query_as(
-        "SELECT p.slug, r.title FROM papers p
-         JOIN paper_revisions r ON r.paper_id = p.id AND r.number = p.revision
-         WHERE p.group_id = ? AND instr(r.body, ?) > 0 ORDER BY p.updated_at DESC",
-    )
-    .bind(group.group_id)
-    .bind(&reference)
-    .fetch_all(&state.db)
-    .await?;
     // The threads about it, as "Discuss it" starts them.
     let threads: Vec<(i64, String)> = sqlx::query_as(
         "SELECT number, title FROM threads WHERE group_id = ? AND anchor = ?
@@ -222,16 +213,7 @@ pub async fn declaration(
     .bind(format!("lean:{name}"))
     .fetch_all(&state.db)
     .await?;
-    let mut references: Vec<ReferenceSite> = papers
-        .into_iter()
-        .map(|(slug, title)| ReferenceSite {
-            address: Address::Paper {
-                slug,
-                section: None,
-            },
-            title,
-        })
-        .collect();
+    let mut references: Vec<ReferenceSite> = Vec::new();
     for (number, title) in threads {
         references.push(ReferenceSite {
             address: Address::Thread(number as u32),

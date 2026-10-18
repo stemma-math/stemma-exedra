@@ -52,8 +52,6 @@ fn web_link(s: &str) -> Option<Result<Located, AddressError>> {
     let canonical = match (kind, fragment) {
         ("t", Some(fragment)) => format!("t{path}#{fragment}"),
         ("t", None) => format!("t{path}"),
-        ("p", Some(section)) => format!("p/{path}#{section}"),
-        ("p", None) => format!("p/{path}"),
         ("lib", _) => format!("lean:{path}"),
         ("w", _) => format!("w{path}"),
         _ => return None,
@@ -97,10 +95,6 @@ mod tests {
         assert_eq!(
             located("/g/geometry/t/12#45-50"),
             (group.clone(), "t12#45-50".into())
-        );
-        assert_eq!(
-            located("/g/geometry/p/notes#gluing"),
-            (group.clone(), "p/notes#gluing".into())
         );
         assert_eq!(
             located("/g/geometry/lib/Foo.bar"),

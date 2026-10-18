@@ -13,12 +13,11 @@
 
 use serde::{Deserialize, Serialize};
 
-use crate::address::Address;
 pub use crate::api::JobKind;
 use crate::api::{AgentProfile, LibraryReport, Message, ThreadKind, User};
 
 /// The version of this protocol. A hub refuses workers that speak another.
-pub const PROTOCOL_VERSION: u32 = 3;
+pub const PROTOCOL_VERSION: u32 = 4;
 
 /// The path of the workers' WebSocket, under the API's prefix.
 pub const WORKER_PATH: &str = "/worker";
@@ -40,7 +39,7 @@ pub struct Hello {
     pub protocol: u32,
     /// The worker's version of Stemma.
     pub version: String,
-    /// The runners it can run, such as `claude-code` or `api`.
+    /// The runners it can run, such as `claude-code` or `codex`.
     pub runners: Vec<String>,
     /// Whether it has Lean (elan or lake), for library builds.
     pub lean: bool,
@@ -57,12 +56,6 @@ pub enum Outcome {
     /// An agent's answer, in Markdown, for the hub to post.
     Answer {
         body: String,
-    },
-    /// An editor's new revision of a paper, for the hub to store.
-    Paper {
-        title: String,
-        body: String,
-        reason: String,
     },
     /// A build of the library, whether it passed or not.
     Built(Box<Built>),
@@ -166,8 +159,6 @@ pub struct JobSpec {
 pub enum Work {
     /// Answer a message, with [`Outcome::Answer`].
     Reply(Conversation),
-    /// Update a paper, with [`Outcome::Paper`].
-    PaperUpdate(PaperUpdate),
     /// Build a commit of the library and inspect it, with
     /// [`Outcome::Built`].
     LibraryBuild(LibraryBuild),
@@ -180,7 +171,6 @@ impl JobSpec {
     pub fn kind(&self) -> JobKind {
         match self.work {
             Work::Reply(_) => JobKind::Reply,
-            Work::PaperUpdate(_) => JobKind::PaperUpdate,
             Work::LibraryBuild(_) => JobKind::LibraryBuild,
             Work::TaskRun(_) => JobKind::TaskRun,
         }
@@ -190,7 +180,6 @@ impl JobSpec {
     pub fn conversation(&self) -> Option<&Conversation> {
         match &self.work {
             Work::Reply(conversation) => Some(conversation),
-            Work::PaperUpdate(update) => Some(&update.conversation),
             Work::TaskRun(run) => Some(&run.conversation),
             Work::LibraryBuild(_) => None,
         }
@@ -207,43 +196,6 @@ pub struct Conversation {
     /// Who asked: what the agent does is theirs, written by the agent.
     pub requester: User,
     /// The thread up to the trigger, trimmed when long.
-    pub context: Vec<ContextItem>,
-}
-
-/// An editor's job: a paper to update from the conversation that asked,
-/// or at night from what was said since its last revision, and the threads
-/// about the paper.
-#[derive(Clone, Debug, Serialize, Deserialize)]
-pub struct PaperUpdate {
-    pub conversation: Conversation,
-    pub paper: PaperSpec,
-    /// Threads anchored to the paper, or that reference it, trimmed.
-    pub related: Vec<RelatedThread>,
-    /// Whether it is the paper's nightly update, which nobody asked for in
-    /// a message: the conversation is the thread about the paper that said
-    /// something new last.
-    #[serde(default)]
-    pub nightly: bool,
-}
-
-/// A paper as an editor gets it.
-#[derive(Clone, Debug, Serialize, Deserialize)]
-pub struct PaperSpec {
-    pub slug: String,
-    /// Its title; none if the paper is new.
-    pub title: Option<String>,
-    /// Its current revision; 0 if the paper is new.
-    pub revision: u32,
-    pub body: String,
-}
-
-/// A thread about a paper, as an editor gets it.
-#[derive(Clone, Debug, Serialize, Deserialize)]
-pub struct RelatedThread {
-    pub thread: ThreadRef,
-    /// The section it is anchored to, if it is.
-    pub anchor: Option<Address>,
-    /// Its messages, trimmed to its end when long.
     pub context: Vec<ContextItem>,
 }
 
@@ -275,8 +227,6 @@ pub struct TaskRun {
     /// The workshop's agent, with the runner this worker is to use; the
     /// thread of the message that asked, up to it; and who asked.
     pub conversation: Conversation,
-    /// The papers the thread is about or references, as they are now.
-    pub papers: Vec<PaperSpec>,
     /// Where to fetch and push the library, relative to the hub:
     /// `/git/geometry.git`, with the job's token.
     pub repository: String,

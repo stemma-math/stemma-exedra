@@ -30,19 +30,13 @@ enum Command {
     Logout,
     /// List a group's threads.
     Threads(client::ThreadsArgs),
-    /// Read a thread, some of its messages, a paper, a declaration or a
-    /// task: t12, t12#45-50, p/notes#gluing, lean:Foo.bar, w7.
+    /// Read a thread, some of its messages, a declaration or a task: t12,
+    /// t12#45-50, lean:Foo.bar, w7.
     Read(client::ReadArgs),
     /// Post a message in a thread, or in reply to a message.
     Post(client::PostArgs),
     /// Search a group's threads and messages.
     Search(client::SearchArgs),
-    /// List a group's working papers.
-    Papers(client::PapersArgs),
-    /// What changed in a paper since you read it, or in every paper.
-    Changes(client::ChangesArgs),
-    /// Write a new revision of a paper, from standard input.
-    Edit(client::EditArgs),
     /// How the group's library stands, or search it.
     Library(client::LibraryArgs),
     /// List the workshop's tasks; read one with `stemma read w7`.
@@ -112,9 +106,6 @@ async fn main() -> anyhow::Result<()> {
         Command::Read(args) => client::read(args).await,
         Command::Post(args) => client::post(args).await,
         Command::Search(args) => client::search(args).await,
-        Command::Papers(args) => client::papers(args).await,
-        Command::Changes(args) => client::changes(args).await,
-        Command::Edit(args) => client::edit(args).await,
         Command::Library(args) => client::library(args).await,
         Command::Tasks(args) => client::tasks(args).await,
         Command::Task(args) => client::task(args).await,

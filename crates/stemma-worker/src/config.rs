@@ -9,27 +9,18 @@
 //! [runners.claude-code]               # each runner listed is offered
 //! [runners.codex]
 //! model = "gpt-5-codex"
-//! [runners.api]
-//! endpoint = "openrouter"
-//!
-//! [endpoints.openrouter]              # for the `api` runner
-//! url = "https://openrouter.ai/api/v1"
-//! key_env = "OPENROUTER_API_KEY"
-//! model = "qwen/qwen3-235b-a22b"
+//! [runners.opencode]                  # OpenCode, with a model of any provider
+//! model = "openrouter/qwen/qwen3-coder"
 //!
 //! [lean]                              # library builds, with Lean installed
 //! timeout_minutes = 90
-//!
-//! [runners.opencode]                  # OpenCode, with a model of any provider
-//! model = "openrouter/qwen/qwen3-coder"
 //! [workshop]                          # tasks of the workshop, with [lean]
 //! timeout_minutes = 120
 //! ```
 //!
-//! Keys are never written in the file: an endpoint names the environment
-//! variable that holds its key.
+//! Keys are never written in the file: each runner uses its own login, or
+//! its providers' keys from the environment.
 
-use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
 use anyhow::Context;
@@ -54,9 +45,6 @@ pub struct WorkerConfig {
     pub stemma: Option<PathBuf>,
     #[serde(default)]
     pub runners: Runners,
-    /// OpenAI-compatible endpoints, by name.
-    #[serde(default)]
-    pub endpoints: BTreeMap<String, Endpoint>,
     /// How a group's worker with Lean builds its library.
     pub lean: Option<LeanConfig>,
     /// How it works on the workshop's tasks, if it does: it needs [`lean`]
@@ -102,7 +90,6 @@ pub struct Runners {
     #[serde(rename = "claude-code")]
     pub claude_code: Option<CliRunner>,
     pub codex: Option<CliRunner>,
-    pub api: Option<ApiRunner>,
     pub opencode: Option<CliRunner>,
 }
 
@@ -119,33 +106,6 @@ pub struct CliRunner {
     pub model: Option<String>,
     /// How long a job may take; 15 minutes if absent.
     pub timeout_minutes: Option<u64>,
-}
-
-/// Stemma's own harness, over an OpenAI-compatible chat API.
-#[derive(Clone, Debug, Default, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct ApiRunner {
-    /// The endpoint, unless an agent's profile names one; the only one
-    /// configured if absent.
-    pub endpoint: Option<String>,
-    /// How many requests to the model a job may make; 8 if absent.
-    pub max_steps: Option<u32>,
-    /// How many tokens a job may spend, in all; 200 000 if absent.
-    pub max_tokens: Option<u64>,
-    /// How long a job may take; 10 minutes if absent.
-    pub timeout_minutes: Option<u64>,
-}
-
-#[derive(Clone, Debug, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct Endpoint {
-    /// The API's base, such as `https://openrouter.ai/api/v1`; requests go
-    /// to its `/chat/completions`.
-    pub url: String,
-    /// The environment variable that holds the key, if it needs one.
-    pub key_env: Option<String>,
-    /// The model, unless an agent's profile names one.
-    pub model: Option<String>,
 }
 
 impl WorkerConfig {
@@ -175,18 +135,6 @@ impl WorkerConfig {
                  [runners.claude-code] or [runners.codex]"
             );
         }
-        if let Some(api) = &self.runners.api {
-            anyhow::ensure!(
-                !self.endpoints.is_empty(),
-                "the api runner needs an endpoint: add one under [endpoints.<name>]"
-            );
-            if let Some(name) = &api.endpoint {
-                anyhow::ensure!(
-                    self.endpoints.contains_key(name),
-                    "there is no endpoint {name}"
-                );
-            }
-        }
         Ok(())
     }
 
@@ -209,7 +157,6 @@ impl WorkerConfig {
         [
             (r.claude_code.is_some(), runners::CLAUDE_CODE),
             (r.codex.is_some(), runners::CODEX),
-            (r.api.is_some(), runners::API),
             (r.opencode.is_some(), runners::OPENCODE),
         ]
         .into_iter()
@@ -249,17 +196,13 @@ mod tests {
             concurrency = 2
 
             [runners.claude-code]
-            [runners.api]
-            endpoint = "local"
-
-            [endpoints.local]
-            url = "http://127.0.0.1:11434/v1"
-            model = "qwen3"
+            [runners.opencode]
+            model = "openrouter/qwen/qwen3-coder"
             "#,
         )
         .unwrap();
         config.check().unwrap();
-        assert_eq!(config.runner_names(), ["claude-code", "api"]);
+        assert_eq!(config.runner_names(), ["claude-code", "opencode"]);
         assert_eq!(config.token().unwrap(), "stw_x");
     }
 
@@ -267,9 +210,10 @@ mod tests {
     fn rejects_what_cannot_work() {
         let none: WorkerConfig = toml::from_str("hub = \"x\"\ntoken = \"t\"").unwrap();
         assert!(none.check().is_err());
-        let no_endpoint: WorkerConfig =
-            toml::from_str("hub = \"x\"\ntoken = \"t\"\n[runners.api]").unwrap();
-        assert!(no_endpoint.check().is_err());
+        // There is no `api` runner.
+        assert!(
+            toml::from_str::<WorkerConfig>("hub = \"x\"\ntoken = \"t\"\n[runners.api]").is_err()
+        );
         assert!(toml::from_str::<WorkerConfig>("hub = \"x\"\ntokn = \"t\"").is_err());
         let workshop_without_lean: WorkerConfig =
             toml::from_str("hub = \"x\"\ntoken = \"t\"\n[runners.opencode]\n[workshop]").unwrap();
@@ -277,10 +221,9 @@ mod tests {
         let workshop_without_runner: WorkerConfig =
             toml::from_str("hub = \"x\"\ntoken = \"t\"\n[lean]\n[workshop]").unwrap();
         assert!(workshop_without_runner.check().is_err());
-        let workshop: WorkerConfig = toml::from_str(
-            "hub = \"x\"\ntoken = \"t\"\n[runners.opencode]\n[runners.api]\n[endpoints.a]\nurl = \"u\"\n[lean]\n[workshop]",
-        )
-        .unwrap();
+        let workshop: WorkerConfig =
+            toml::from_str("hub = \"x\"\ntoken = \"t\"\n[runners.opencode]\n[lean]\n[workshop]")
+                .unwrap();
         workshop.check().unwrap();
         assert_eq!(workshop.workshop_runners(), ["opencode"]);
     }

@@ -125,11 +125,11 @@ async fn the_tools_read_post_and_search() {
         .call("read_thread", json!({"address": "p/notes"}), None)
         .await
         .unwrap_err();
-    assert_eq!(paper.to_string(), "Paper not found");
+    assert!(paper.to_string().contains("is not an address"), "{paper}");
 }
 
 #[tokio::test]
-async fn the_paper_tools_read_write_and_compare() {
+async fn the_library_tools_say_how_it_stands() {
     let (url, token, _data) = hub_with_ada().await;
     raw_post(
         &url,
@@ -139,104 +139,6 @@ async fn the_paper_tools_read_write_and_compare() {
     )
     .await;
     let tools = Toolbox::new(Hub::new(&url, Some(token)).unwrap(), None);
-    assert_eq!(
-        tools.call("list_papers", Value::Null, None).await.unwrap(),
-        "No papers.\n"
-    );
-
-    // Starting a paper needs a title.
-    let body =
-        "Where we are.\n\n# Setting\n\nA scheme $X$.\n\n# Open\n\n> [!open]\n> Is it proper?\n";
-    let refused = tools
-        .call(
-            "propose_paper_edit",
-            json!({"paper": "p/notes", "body": body, "reason": "Start"}),
-            Some("Claude Code"),
-        )
-        .await
-        .unwrap_err();
-    assert!(refused.to_string().contains("give a title"), "{refused}");
-    let stored = tools
-        .call(
-            "propose_paper_edit",
-            json!({"paper": "p/notes", "body": body, "reason": "Start", "title": "Notes"}),
-            Some("Claude Code"),
-        )
-        .await
-        .unwrap();
-    assert!(
-        stored.starts_with("Stored p/notes at revision 1: http://"),
-        "{stored}"
-    );
-
-    let listed = tools.call("list_papers", Value::Null, None).await.unwrap();
-    assert!(
-        listed.starts_with("p/notes · Notes · revision 1 by Claude Code, for Ada, "),
-        "{listed}"
-    );
-    assert!(listed.contains("not read yet"));
-
-    let read = tools
-        .call("read_paper", json!({"address": "p/notes"}), None)
-        .await
-        .unwrap();
-    assert!(read.starts_with("# p/notes · Notes\n\nRevision 1, by Claude Code, for Ada"));
-    assert!(read.contains("Sections: #setting, #open\n"), "{read}");
-    let section = tools
-        .call("read_thread", json!({"address": "[[p/notes#open]]"}), None)
-        .await
-        .unwrap();
-    assert!(
-        section.ends_with("Section p/notes#open:\n\n# Open\n\n> [!open]\n> Is it proper?\n"),
-        "{section}"
-    );
-    let nowhere = tools
-        .call("read_paper", json!({"address": "p/notes#nowhere"}), None)
-        .await
-        .unwrap_err();
-    assert!(nowhere.to_string().contains("#setting, #open"));
-
-    // A second revision; and an edit over the first is refused.
-    let second = body.replace("Is it proper?", "It is proper: [[t1#4]].");
-    tools
-        .call(
-            "propose_paper_edit",
-            json!({"paper": "p/notes", "body": second, "reason": "Answered", "base_revision": 1}),
-            Some("Claude Code"),
-        )
-        .await
-        .unwrap();
-    let stale = tools
-        .call(
-            "propose_paper_edit",
-            json!({"paper": "p/notes", "body": "x", "reason": "y", "base_revision": 1}),
-            Some("Claude Code"),
-        )
-        .await
-        .unwrap_err();
-    assert!(stale.to_string().contains("revision 2"), "{stale}");
-
-    let changes = tools
-        .call(
-            "paper_changes",
-            json!({"paper": "p/notes", "since": 1}),
-            None,
-        )
-        .await
-        .unwrap();
-    assert!(
-        changes.contains("- Revision 2, by Claude Code, for Ada, "),
-        "{changes}"
-    );
-    assert!(changes.contains(": Answered\n"));
-    assert!(changes.contains("- > Is it proper?\n+ > It is proper: [[t1#4]].\n"));
-    let never = tools
-        .call("paper_changes", json!({"paper": "p/notes"}), None)
-        .await
-        .unwrap();
-    assert!(never.contains("You have not read p/notes yet"), "{never}");
-    let all = tools.call("paper_changes", json!({}), None).await.unwrap();
-    assert!(all.contains("Revision 2; you have not read it."), "{all}");
     // The library has not been built in this hub.
     let state = tools.call("library_state", json!({}), None).await.unwrap();
     assert!(
@@ -248,16 +150,6 @@ async fn the_paper_tools_read_write_and_compare() {
         .await
         .unwrap();
     assert!(missing.starts_with("lean:Foo.bar is missing"), "{missing}");
-
-    let old = tools
-        .call(
-            "read_paper",
-            json!({"address": "p/notes", "revision": 1}),
-            None,
-        )
-        .await
-        .unwrap();
-    assert!(old.contains("Revision 1 of 2"), "{old}");
 }
 
 #[tokio::test]
@@ -301,10 +193,6 @@ async fn mcp_serves_the_tools_and_names_the_agent() {
             "read_thread",
             "post_message",
             "search",
-            "list_papers",
-            "read_paper",
-            "paper_changes",
-            "propose_paper_edit",
             "library_state",
             "library_lookup",
             "library_search",
@@ -344,7 +232,7 @@ async fn mcp_serves_the_tools_and_names_the_agent() {
     assert!(
         tools
             .iter()
-            .all(|t| t.name != "post_message" && t.name != "propose_paper_edit")
+            .all(|t| t.name != "post_message" && t.name != "create_task")
     );
     client.cancel().await.unwrap();
 }

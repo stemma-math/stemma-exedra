@@ -5,10 +5,8 @@
 pub mod address;
 pub mod api;
 pub mod context;
-pub mod diff;
 pub mod locator;
 pub mod mention;
-pub mod paper;
 pub mod protocol;
 pub mod reference;
 

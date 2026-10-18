@@ -152,20 +152,8 @@ pub async fn create_thread(
     };
     match &body.anchor {
         None | Some(Address::Declaration(_)) => {}
-        Some(Address::Paper { slug, section }) => {
-            let (exists, _, note) =
-                super::papers::resolve(&state, group.group_id, slug, section.as_deref()).await?;
-            if !exists {
-                return Err(ApiError::invalid(format!(
-                    "Cannot anchor the thread to p/{slug}: {}",
-                    note.unwrap_or_default().to_lowercase()
-                )));
-            }
-        }
         Some(_) => {
-            return Err(ApiError::invalid(
-                "A thread is anchored to a paper's section or a declaration",
-            ));
+            return Err(ApiError::invalid("A thread is anchored to a declaration"));
         }
     }
     let first = match &body.body {
@@ -698,14 +686,6 @@ pub async fn resolve(
                 }
             }
             None => match &address {
-                Address::Paper { slug, section } => {
-                    let (exists, title, note) =
-                        super::papers::resolve(&state, group.group_id, slug, section.as_deref())
-                            .await?;
-                    entry.exists = exists;
-                    entry.title = title;
-                    entry.note = note;
-                }
                 Address::Declaration(name) => {
                     let found = crate::library::resolve(&state, group.group_id, name).await?;
                     entry.exists = found.exists;

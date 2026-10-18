@@ -50,8 +50,8 @@ pub struct ThreadsArgs {
 
 #[derive(Args)]
 pub struct ReadArgs {
-    /// What to read: t12, t12#45, t12#45-50, p/notes, p/notes#gluing,
-    /// lean:Foo.bar, or a link to it.
+    /// What to read: t12, t12#45, t12#45-50, lean:Foo.bar, w7, or a link
+    /// to it.
     address: String,
     #[command(flatten)]
     group: GroupArg,
@@ -82,44 +82,6 @@ pub struct SearchArgs {
 }
 
 #[derive(Args)]
-pub struct PapersArgs {
-    #[command(flatten)]
-    group: GroupArg,
-}
-
-#[derive(Args)]
-pub struct ChangesArgs {
-    /// The paper (p/notes); every paper you have not read up to date if
-    /// absent.
-    paper: Option<String>,
-    /// The revision to compare with; the one you read last if absent.
-    #[arg(long)]
-    since: Option<u32>,
-    #[command(flatten)]
-    group: GroupArg,
-}
-
-#[derive(Args)]
-pub struct EditArgs {
-    /// The paper: p/notes. A paper that does not exist is started.
-    paper: String,
-    /// Why, for the paper's history.
-    #[arg(long, short)]
-    reason: String,
-    /// A new title; needed to start a paper.
-    #[arg(long)]
-    title: Option<String>,
-    /// The revision the new text is over; the current one if absent.
-    #[arg(long)]
-    base: Option<u32>,
-    /// The agent writing it for you, such as "Claude Code".
-    #[arg(long)]
-    agent: Option<String>,
-    #[command(flatten)]
-    group: GroupArg,
-}
-
-#[derive(Args)]
 pub struct LibraryArgs {
     /// Words to search the declarations for; how the library stands if
     /// absent.
@@ -147,10 +109,6 @@ pub struct TaskArgs {
     /// The message that asks for it: t12#48, or a link to it.
     #[arg(long, short)]
     origin: String,
-    /// Run it in the group's night window, not as soon as the workshop is
-    /// free.
-    #[arg(long)]
-    night: bool,
     /// The agent handing it over for you, such as "Claude Code".
     #[arg(long)]
     agent: Option<String>,
@@ -335,40 +293,6 @@ pub async fn search(args: SearchArgs) -> anyhow::Result<()> {
     .await
 }
 
-pub async fn papers(args: PapersArgs) -> anyhow::Result<()> {
-    let toolbox = toolbox(args.group)?;
-    run(&toolbox, "list_papers", json!({}), None).await
-}
-
-pub async fn changes(args: ChangesArgs) -> anyhow::Result<()> {
-    let toolbox = toolbox(args.group)?;
-    let mut call = json!({});
-    if let Some(paper) = args.paper {
-        call["paper"] = json!(paper);
-    }
-    if let Some(since) = args.since {
-        call["since"] = json!(since);
-    }
-    run(&toolbox, "paper_changes", call, None).await
-}
-
-pub async fn edit(args: EditArgs) -> anyhow::Result<()> {
-    let toolbox = toolbox(args.group)?;
-    if std::io::stdin().is_terminal() {
-        eprintln!("Write the paper's whole new text, and end it with Ctrl-D.");
-    }
-    let mut body = String::new();
-    std::io::stdin().read_to_string(&mut body)?;
-    let mut call = json!({"paper": args.paper, "body": body, "reason": args.reason});
-    if let Some(title) = args.title {
-        call["title"] = json!(title);
-    }
-    if let Some(base) = args.base {
-        call["base_revision"] = json!(base);
-    }
-    run(&toolbox, "propose_paper_edit", call, args.agent.as_deref()).await
-}
-
 pub async fn library(args: LibraryArgs) -> anyhow::Result<()> {
     let toolbox = toolbox(args.group)?;
     if args.query.is_empty() {
@@ -403,7 +327,6 @@ pub async fn task(args: TaskArgs) -> anyhow::Result<()> {
         "title": args.title,
         "instructions": instructions,
         "origin": args.origin,
-        "schedule": if args.night { "night" } else { "now" },
     });
     run(&toolbox, "create_task", call, args.agent.as_deref()).await
 }

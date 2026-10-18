@@ -1,11 +1,10 @@
-//! The workshop over the API: its tasks, handing one over, cancelling
-//! one, and how the workshop works (its night window, and who lends their
-//! worker to it).
+//! The workshop over the API: its tasks, handing one over and cancelling
+//! one.
 
 use axum::extract::{Path, Query, State};
 use axum::http::StatusCode;
 use serde::Deserialize;
-use stemma_core::api::{CreateTask, Task, TaskPage, TaskState, UpdateWorkshop, WorkshopSettings};
+use stemma_core::api::{CreateTask, Task, TaskPage, TaskState};
 use stemma_core::{Address, locate};
 
 use super::forum::find_thread;
@@ -141,7 +140,6 @@ pub async fn create(
             origin_message: origin.1,
             requester_id: viewer.id,
             agent,
-            schedule: body.schedule,
         },
     )
     .await?;
@@ -159,46 +157,4 @@ pub async fn cancel(
     let group = Membership::of(&state, &viewer, &slug).await?;
     workshop::cancel(&state, &group, viewer.id, number).await?;
     Ok(StatusCode::NO_CONTENT)
-}
-
-/// How the group's workshop works.
-pub async fn settings(
-    State(state): State<AppState>,
-    viewer: Viewer,
-    Path(slug): Path<String>,
-) -> ApiResult<Json<WorkshopSettings>> {
-    let group = Membership::of(&state, &viewer, &slug).await?;
-    Ok(Json(
-        workshop::settings(&state, group.group_id, viewer.id).await?,
-    ))
-}
-
-/// Changes how the workshop works: the night window, by an admin; whether
-/// one lends their own worker, by anyone.
-pub async fn update_settings(
-    State(state): State<AppState>,
-    viewer: Viewer,
-    Path(slug): Path<String>,
-    Json(body): Json<UpdateWorkshop>,
-) -> ApiResult<Json<WorkshopSettings>> {
-    viewer.require_full()?;
-    let group = Membership::of(&state, &viewer, &slug).await?;
-    if body.night_from.is_some() || body.night_to.is_some() || body.time_zone.is_some() {
-        group.require_admin()?;
-        workshop::set_night(
-            &state,
-            group.group_id,
-            body.night_from.as_deref(),
-            body.night_to.as_deref(),
-            body.time_zone.as_deref(),
-        )
-        .await?;
-    }
-    if let Some(lend) = body.lend {
-        workshop::set_lend(&state, group.group_id, viewer.id, lend).await?;
-    }
-    jobs::dispatch(&state).await?;
-    Ok(Json(
-        workshop::settings(&state, group.group_id, viewer.id).await?,
-    ))
 }

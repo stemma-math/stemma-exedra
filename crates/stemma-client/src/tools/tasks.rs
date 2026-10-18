@@ -3,7 +3,7 @@
 use serde::Deserialize;
 use serde_json::{Value, json};
 use stemma_core::Address;
-use stemma_core::api::{CreateTask, TaskSchedule, TaskState};
+use stemma_core::api::{CreateTask, TaskState};
 
 use super::{GROUP, ToolDef, ToolError, ToolResult, Toolbox, address_in, parse};
 use crate::format;
@@ -15,9 +15,9 @@ pub fn definitions() -> Vec<ToolDef> {
             description: "Hand a task to the group's workshop, which works on the group's Lean \
                           library in the background: formalize a statement or a proof, integrate \
                           a lemma, clean up a module. Use it only when someone asks for it, as in \
-                          \"formalize this tonight\". Give a short title, and instructions that \
-                          say exactly what to do, citing by address what the thread decided \
-                          ([[t12#45-48]], [[p/notes#gluing]], [[lean:Foo.bar]]). The workshop \
+                          \"formalize this\". Give a short title, and instructions that say \
+                          exactly what to do, citing by address what the thread decided \
+                          ([[t12#45-48]], [[lean:Foo.bar]]). The workshop \
                           reports in the thread of the message that asked, once, when it is \
                           done. Returns the task's address, w7, to cite as [[w7]].",
             input_schema: json!({
@@ -30,10 +30,6 @@ pub fn definitions() -> Vec<ToolDef> {
                                "description": "The message that asks for it, as t12#48; when \
                                                you answer in a thread, the message you answer \
                                                if absent."},
-                    "schedule": {"type": "string", "enum": ["now", "night"],
-                                 "description": "now (as soon as the workshop is free), or night \
-                                                 (in the group's night window, as for \
-                                                 \"tonight\"); now if absent."},
                     "group": {"type": "string", "description": GROUP}
                 },
                 "required": ["title", "instructions"]
@@ -95,7 +91,6 @@ struct Create {
     title: String,
     instructions: String,
     origin: Option<String>,
-    schedule: Option<TaskSchedule>,
     group: Option<String>,
 }
 
@@ -122,18 +117,13 @@ async fn create(toolbox: &Toolbox, args: Value, agent: Option<&str>) -> ToolResu
                 title: args.title,
                 instructions: args.instructions,
                 origin,
-                schedule: args.schedule.unwrap_or_default(),
                 agent: agent.map(str::to_owned),
             },
         )
         .await?;
-    let when = match task.schedule {
-        TaskSchedule::Now => "It runs as soon as the workshop is free".to_owned(),
-        TaskSchedule::Night => "It runs in the group's night window".to_owned(),
-    };
     Ok(format!(
-        "Handed w{} to the workshop: “{}”. {when}, and it reports in {} when it is done. Cite \
-         it as [[w{}]]: {}{}\n",
+        "Handed w{} to the workshop: “{}”. It runs as soon as the workshop is free, and it \
+         reports in {} when it is done. Cite it as [[w{}]]: {}{}\n",
         task.number,
         task.title,
         task.origin,

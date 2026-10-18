@@ -1,5 +1,5 @@
-//! The Stemma hub: accounts, groups, the forum and the agents in it, working
-//! papers and libraries, behind a JSON API, with the web app, the workers'
+//! The Stemma hub: accounts, groups, the forum and the agents in it, and
+//! the libraries and their workshop, behind a JSON API, with the web app, the workers'
 //! WebSocket and git over HTTP for the libraries.
 
 pub mod api;
@@ -49,17 +49,6 @@ pub async fn run(config: Config) -> anyhow::Result<()> {
     remove_unclaimed_uploads(&state).await?;
     jobs::recover(&state).await?;
     library::ensure_all(&state).await?;
-    // The workshop's nights begin and end on their own.
-    let ticking = state.clone();
-    tokio::spawn(async move {
-        let mut every = tokio::time::interval(std::time::Duration::from_secs(30));
-        loop {
-            every.tick().await;
-            if let Err(error) = workshop::tick(&ticking).await {
-                tracing::error!(error = error.message, "could not look at the night");
-            }
-        }
-    });
 
     if user_count(&state.db).await? == 0 {
         let token = secret::token("");

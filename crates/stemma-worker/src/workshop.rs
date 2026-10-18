@@ -4,7 +4,7 @@
 //! group's warm checkout, with the checkout's dependencies and build (so
 //! that Mathlib is not fetched again, and Lake builds only what changes).
 //! The task's runner works there, with the task, the conversation it came
-//! from, the papers it is about and Lean. Then the worker checks the work:
+//! from, and Lean. Then the worker checks the work:
 //! the build must pass, and no definition's data may newly depend on
 //! `sorry`, as the inspection says. If it does not pass, the runner is told
 //! why and works again, as many rounds as configured. Work that passes is
@@ -302,8 +302,8 @@ impl Run<'_> {
         Ok(base)
     }
 
-    /// The runner's prompt: the task, its conversation and papers, and in
-    /// later rounds, why the work did not pass.
+    /// The runner's prompt: the task and its conversation, and in later
+    /// rounds, why the work did not pass.
     fn prompt(&self, feedback: Option<&str>) -> Prompt {
         let task = self.task;
         let conversation = &task.conversation;
@@ -321,15 +321,6 @@ impl Run<'_> {
         }
         let mut user = job::conversation_text(&self.job.group, conversation);
         user.push_str("---\n\n");
-        for paper in &task.papers {
-            user.push_str(&format!(
-                "The working paper p/{}, “{}”, at revision {}:\n\n<paper>\n{}</paper>\n\n",
-                paper.slug,
-                paper.title.as_deref().unwrap_or(&paper.slug),
-                paper.revision,
-                paper.body
-            ));
-        }
         if !task.data_sorry.is_empty() {
             user.push_str(&format!(
                 "These definitions' data already depends on `sorry`: {}. Leave them, unless \

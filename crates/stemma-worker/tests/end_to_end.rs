@@ -1,15 +1,12 @@
 //! The hub and its workers, end to end, in the test's process: a hub on a
 //! local port, workers connected to it, and runners that are fakes of
-//! `claude` and `codex` and a mock of an OpenAI-compatible API, so that no
-//! model is ever called.
+//! `claude`, `codex` and `opencode`, so that no model is ever called.
 
 use std::future::Future;
 use std::path::{Path, PathBuf};
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 use std::time::Duration;
 
-use axum::Json;
-use axum::extract::State;
 use serde_json::{Value, json};
 use stemma_core::api::NewAccount;
 use stemma_worker::{Context, WorkerConfig, connection};
@@ -475,181 +472,6 @@ async fn a_chat_with_codex_answers_every_message() {
     running.abort();
 }
 
-/// What the mock model saw.
-type Seen = Arc<Mutex<Vec<Value>>>;
-
-/// A mock of an OpenAI-compatible chat API: it first reads the thread with
-/// a tool, then answers with what it read.
-async fn mock_model(State(seen): State<Seen>, Json(body): Json<Value>) -> Json<Value> {
-    seen.lock().unwrap().push(body.clone());
-    let messages = body["messages"].as_array().unwrap();
-    let read = messages.iter().find(|m| m["role"] == "tool");
-    match read {
-        None => Json(json!({
-            "choices": [{"message": {"role": "assistant", "content": null, "tool_calls": [{
-                "id": "call_1", "type": "function",
-                "function": {"name": "read_thread", "arguments": "{\"address\":\"t1#1\"}"}
-            }]}}],
-            "usage": {"total_tokens": 100}
-        })),
-        Some(tool) => {
-            let first_line = tool["content"].as_str().unwrap().lines().next().unwrap();
-            Json(json!({
-                "choices": [{"message": {"role": "assistant",
-                    "content": format!("<think>reading</think>I read {first_line}.")}}],
-                "usage": {"total_tokens": 100}
-            }))
-        }
-    }
-}
-
-#[tokio::test]
-async fn the_api_harness_uses_the_tools() {
-    let hub = TestHub::start().await;
-    let (ada, _) = group(&hub).await;
-    let seen: Seen = Arc::default();
-    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-    let model_url = format!("http://{}/v1", listener.local_addr().unwrap());
-    let app = axum::Router::new()
-        .route("/v1/chat/completions", axum::routing::post(mock_model))
-        .with_state(seen.clone());
-    tokio::spawn(async move { axum::serve(listener, app).await });
-
-    ada.post(
-        &hub,
-        "/groups/geometry/agents",
-        json!({"handle": "qwen", "display_name": "Qwen", "runner": "api",
-               "endpoint": "mock", "scope": "group"}),
-    )
-    .await;
-    let work = tempfile::tempdir().unwrap();
-    let token = worker_token(&hub, &ada, "/groups/geometry/workers").await;
-    let running = worker(
-        &hub,
-        &token,
-        work.path(),
-        &format!(
-            "[runners.api]\nmax_steps = 4\n[endpoints.mock]\nurl = {model_url:?}\nmodel = \"mock-model\"\n"
-        ),
-    );
-    ada.post(
-        &hub,
-        "/groups/geometry/threads",
-        json!({"title": "Gluing", "body": "@qwen, what does this say?"}),
-    )
-    .await;
-    let message = answer(&hub, &ada, 1, 2).await;
-    assert_eq!(message["agent"], "Qwen");
-    assert!(
-        message["body"]
-            .as_str()
-            .unwrap()
-            .starts_with("I read ### t1#1 · Ada · "),
-        "{message}"
-    );
-
-    let seen = seen.lock().unwrap();
-    assert_eq!(seen.len(), 2);
-    assert_eq!(seen[0]["model"], "mock-model");
-    let tools: Vec<&str> = seen[0]["tools"]
-        .as_array()
-        .unwrap()
-        .iter()
-        .map(|t| t["function"]["name"].as_str().unwrap())
-        .collect();
-    assert_eq!(
-        tools,
-        [
-            "list_threads",
-            "read_thread",
-            "search",
-            "list_papers",
-            "read_paper",
-            "paper_changes",
-            "library_state",
-            "library_lookup",
-            "library_search",
-            "create_task",
-            "task_status",
-            "list_tasks"
-        ]
-    );
-    running.abort();
-}
-
-/// A fake Claude Code as an editor: it returns a new text of the paper.
-fn fake_editor(dir: &Path) -> PathBuf {
-    script(
-        dir,
-        "claude",
-        r#"cat > "$HERE/claude.stdin"
-printf '%s\n' '{"type":"result","subtype":"success","is_error":false,"result":"Done.\n\n<reason>Recorded the decision of t2#1.</reason>\n<title>Notes</title>\n<paper>\n# Setting\n\nWe glue along $U$ ([[t2#1]]).\n</paper>"}'
-"#,
-    )
-}
-
-#[tokio::test]
-async fn an_editor_updates_a_paper_from_its_threads() {
-    let hub = TestHub::start().await;
-    let (ada, bob) = group(&hub).await;
-    let tools = tempfile::tempdir().unwrap();
-    let work = tempfile::tempdir().unwrap();
-    let running = worker(
-        &hub,
-        &worker_token(&hub, &ada, "/me/workers").await,
-        work.path(),
-        &format!(
-            "[runners.claude-code]\ncommand = {:?}\n",
-            fake_editor(tools.path()).display().to_string()
-        ),
-    );
-    wait_online(&hub, &ada, "/me/workers").await;
-    ada.post(
-        &hub,
-        "/groups/geometry/papers",
-        json!({"slug": "notes", "title": "Notes", "body": "# Setting\n\nOpen.\n"}),
-    )
-    .await;
-    bob.post(
-        &hub,
-        "/groups/geometry/threads",
-        json!({"title": "On the setting", "anchor": "p/notes#setting", "body": "Charts overlap."}),
-    )
-    .await;
-    ada.post(
-        &hub,
-        "/groups/geometry/threads",
-        json!({"title": "Decisions", "body": "We glue along U. @editor update p/notes with this."}),
-    )
-    .await;
-
-    let news = answer(&hub, &ada, 2, 2).await;
-    assert_eq!(news["agent"], "Editor");
-    assert_eq!(
-        news["body"],
-        "Updated [[p/notes]] to revision 2: Recorded the decision of t2#1."
-    );
-    let page = ada.get(&hub, "/groups/geometry/papers/notes").await;
-    assert_eq!(page["paper"]["revision"], 2);
-    assert_eq!(page["paper"]["updated_agent"], "Editor");
-    assert_eq!(page["body"], "# Setting\n\nWe glue along $U$ ([[t2#1]]).\n");
-    // Ada read revision 1, which she wrote: the editor's is news to her.
-    assert_eq!(page["since_read"][0]["number"], 2);
-
-    let input = std::fs::read_to_string(tools.path().join("claude.stdin")).unwrap();
-    assert!(
-        input.contains("at revision 1:\n\n<current>\n# Setting\n\nOpen.\n</current>"),
-        "{input}"
-    );
-    assert!(
-        input.contains("Thread t1, “On the setting”, anchored to p/notes#setting"),
-        "{input}"
-    );
-    assert!(input.contains("Charts overlap."));
-    assert!(input.contains("Update p/notes as message t2#1, by Ada (@ada), asks."));
-    running.abort();
-}
-
 /// Runs git in `dir`, with nobody's configuration.
 fn git(dir: &Path, args: &[&str]) -> std::process::Output {
     std::process::Command::new("git")
@@ -862,81 +684,6 @@ async fn a_revoked_worker_stops() {
     );
 }
 
-/// A mock model that hands a task to the workshop, and then says so.
-async fn mock_handing_over(State(seen): State<Seen>, Json(body): Json<Value>) -> Json<Value> {
-    seen.lock().unwrap().push(body.clone());
-    let messages = body["messages"].as_array().unwrap();
-    match messages.iter().find(|m| m["role"] == "tool") {
-        None => Json(json!({
-            "choices": [{"message": {"role": "assistant", "content": null, "tool_calls": [{
-                "id": "call_1", "type": "function",
-                "function": {"name": "create_task", "arguments": json!({
-                    "title": "Formalize the gluing lemma",
-                    "instructions": "State the lemma of [[t1#1]], with its proof as sorry.",
-                    "schedule": "night"
-                }).to_string()}
-            }]}}],
-        })),
-        Some(tool) => Json(json!({
-            "choices": [{"message": {"role": "assistant",
-                "content": format!("Done: {}", tool["content"].as_str().unwrap())}}],
-        })),
-    }
-}
-
-#[tokio::test]
-async fn an_agent_hands_a_task_to_the_workshop() {
-    let hub = TestHub::start().await;
-    let (ada, _) = group(&hub).await;
-    let seen: Seen = Arc::default();
-    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-    let model_url = format!("http://{}/v1", listener.local_addr().unwrap());
-    let app = axum::Router::new()
-        .route(
-            "/v1/chat/completions",
-            axum::routing::post(mock_handing_over),
-        )
-        .with_state(seen.clone());
-    tokio::spawn(async move { axum::serve(listener, app).await });
-    ada.post(
-        &hub,
-        "/groups/geometry/agents",
-        json!({"handle": "qwen", "display_name": "Qwen", "runner": "api",
-               "endpoint": "mock", "scope": "group"}),
-    )
-    .await;
-    let work = tempfile::tempdir().unwrap();
-    let running = worker(
-        &hub,
-        &worker_token(&hub, &ada, "/groups/geometry/workers").await,
-        work.path(),
-        &format!("[runners.api]\n[endpoints.mock]\nurl = {model_url:?}\nmodel = \"m\"\n"),
-    );
-    ada.post(
-        &hub,
-        "/groups/geometry/threads",
-        json!({"title": "Gluing", "body": "@qwen have the workshop formalize the gluing lemma tonight"}),
-    )
-    .await;
-    let message = answer(&hub, &ada, 1, 2).await;
-    assert_eq!(message["agent"], "Qwen");
-    assert!(
-        message["body"]
-            .as_str()
-            .unwrap()
-            .contains("Handed w1 to the workshop"),
-        "{message}"
-    );
-    let task = ada.get(&hub, "/groups/geometry/tasks/1").await;
-    assert_eq!(task["title"], "Formalize the gluing lemma");
-    assert_eq!(task["origin"], "t1#1");
-    assert_eq!(task["agent"], "Qwen");
-    assert_eq!(task["schedule"], "night");
-    assert_eq!(task["requester"]["username"], "ada");
-    assert_eq!(task["state"], "open");
-    running.abort();
-}
-
 /// A fake `opencode run`, working on the fixture in its worktree: in its
 /// first round it adds a theorem and a definition whose data is `sorry`,
 /// and Ada meanwhile pushes another change to `main`; told that the
@@ -1039,14 +786,8 @@ async fn with_lean_the_workshop_formalizes_a_task_from_a_thread() {
 
     ada.post(
         &hub,
-        "/groups/geometry/papers",
-        json!({"slug": "notes", "title": "Notes", "body": "# Setting\n\nOpen.\n"}),
-    )
-    .await;
-    ada.post(
-        &hub,
         "/groups/geometry/threads",
-        json!({"title": "Doubling", "anchor": "p/notes#setting", "body": "Twice two is four."}),
+        json!({"title": "Doubling", "body": "Twice two is four."}),
     )
     .await;
     ada.post(
@@ -1094,7 +835,6 @@ async fn with_lean_the_workshop_formalizes_a_task_from_a_thread() {
         body.contains("which changed [[lean:Fixture.double_two]], [[lean:Fixture.three]]"),
         "{body}"
     );
-    assert!(body.contains("Editor will update [[p/notes]]."), "{body}");
 
     // What it pushed is the library's state, from its own build.
     let library = ada.get(&hub, "/groups/geometry/library").await;
@@ -1138,18 +878,6 @@ async fn with_lean_the_workshop_formalizes_a_task_from_a_thread() {
     );
     assert!(shown.contains("Notes"), "{shown}");
 
-    // The editor is asked to update the paper the thread is about.
-    let jobs = jobs(&hub, &ada, 1).await;
-    let editor = jobs
-        .as_array()
-        .unwrap()
-        .iter()
-        .find(|j| j["kind"] == "paper_update")
-        .expect("the editor's job");
-    assert_eq!(editor["paper"], "notes");
-    assert_eq!(editor["trigger"], 3);
-    assert_eq!(editor["requester"]["username"], "ada");
-
     // How OpenCode was run: headless, with its own configuration.
     let args = std::fs::read_to_string(tools.path().join("opencode.args")).unwrap();
     assert!(
@@ -1160,7 +888,6 @@ async fn with_lean_the_workshop_formalizes_a_task_from_a_thread() {
         args.contains("You are Workshop, the workshop of Stemma"),
         "{args}"
     );
-    assert!(args.contains("The working paper p/notes"), "{args}");
     let config: Value =
         serde_json::from_str(&std::fs::read_to_string(tools.path().join("opencode.json")).unwrap())
             .unwrap();

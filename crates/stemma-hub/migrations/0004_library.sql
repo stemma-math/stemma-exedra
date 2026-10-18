@@ -1,5 +1,6 @@
 -- Libraries: each group's Lean project, a bare git repository in the data
--- directory, its builds, and what the inspection of each found.
+-- directory, its builds, and what the inspection of each found; and the
+-- workshop's tasks on it.
 
 CREATE TABLE libraries (
     group_id INTEGER PRIMARY KEY REFERENCES groups (id) ON DELETE CASCADE,
@@ -57,3 +58,40 @@ CREATE TABLE library_uses (
     user TEXT NOT NULL,
     PRIMARY KEY (build_id, used, user)
 );
+
+-- The workshop's tasks. A task is open until a worker runs it, then done,
+-- failed or blocked; or cancelled.
+CREATE TABLE tasks (
+    id INTEGER PRIMARY KEY,
+    group_id INTEGER NOT NULL REFERENCES groups (id) ON DELETE CASCADE,
+    number INTEGER NOT NULL,
+    title TEXT NOT NULL,
+    instructions TEXT NOT NULL,
+    -- The message that asked for it.
+    thread_id INTEGER NOT NULL REFERENCES threads (id) ON DELETE CASCADE,
+    origin_message INTEGER NOT NULL,
+    requester_id INTEGER NOT NULL REFERENCES users (id) ON DELETE CASCADE,
+    -- The agent that handed it over for its requester, if one did.
+    agent TEXT,
+    state TEXT NOT NULL
+        CHECK (state IN ('open', 'running', 'done', 'failed', 'blocked', 'cancelled')),
+    -- The job that runs it, now or last.
+    job_id INTEGER REFERENCES jobs (id) ON DELETE SET NULL,
+    runner TEXT,
+    model TEXT,
+    reason TEXT,
+    report TEXT,
+    log TEXT,
+    -- A JSON array of the commits it pushed.
+    commits TEXT NOT NULL DEFAULT '[]',
+    -- The number of the message, in its thread, that reports on it.
+    report_message INTEGER,
+    created_at INTEGER NOT NULL,
+    updated_at INTEGER NOT NULL,
+    started_at INTEGER,
+    finished_at INTEGER,
+    UNIQUE (group_id, number)
+);
+
+CREATE INDEX tasks_group ON tasks (group_id, number DESC);
+CREATE INDEX tasks_job ON tasks (job_id);

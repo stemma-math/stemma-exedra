@@ -7,8 +7,7 @@ use std::fmt::Write;
 use stemma_core::Address;
 use stemma_core::api::{
     Build, BuildState, DeclarationPage, DeclarationState, DeclarationSummary, LibraryState,
-    Message, Paper, Revision, SearchHit, Task, TaskPage, TaskSchedule, TaskState, Thread,
-    ThreadKind,
+    Message, SearchHit, Task, TaskPage, Thread, ThreadKind,
 };
 use time::OffsetDateTime;
 use time::format_description::well_known::Rfc3339;
@@ -139,76 +138,6 @@ pub fn search_hits(hits: &[SearchHit]) -> String {
         );
     }
     out
-}
-
-/// Who wrote something: `Ada`, or `Claude, for Ada`.
-fn by(user: &stemma_core::api::User, agent: Option<&str>) -> String {
-    match agent {
-        Some(agent) => format!("{agent}, for {}", user.display_name),
-        None => user.display_name.clone(),
-    }
-}
-
-/// One line per paper.
-pub fn paper_list(papers: &[Paper]) -> String {
-    if papers.is_empty() {
-        return "No papers.\n".into();
-    }
-    let mut out = String::new();
-    for paper in papers {
-        let read = match paper.last_read {
-            None => " · not read yet".to_owned(),
-            Some(read) if read < paper.revision => {
-                format!(" · changed since you read revision {read}")
-            }
-            Some(_) => String::new(),
-        };
-        let _ = writeln!(
-            out,
-            "p/{} · {} · revision {} by {}, {}{read}",
-            paper.slug,
-            paper.title,
-            paper.revision,
-            by(&paper.updated_by, paper.updated_agent.as_deref()),
-            when(paper.updated_at)
-        );
-    }
-    out
-}
-
-/// A paper's heading, as read now.
-pub fn paper_heading(paper: &Paper) -> String {
-    format!(
-        "# p/{} · {}\n\nRevision {}, by {} on {}.\n",
-        paper.slug,
-        paper.title,
-        paper.revision,
-        by(&paper.updated_by, paper.updated_agent.as_deref()),
-        when(paper.updated_at)
-    )
-}
-
-/// An older revision's heading.
-pub fn revision_heading(slug: &str, revision: &Revision, current: u32) -> String {
-    format!(
-        "# p/{slug} · {}\n\nRevision {} of {current}, by {} on {}: {}\n",
-        revision.title,
-        revision.number,
-        by(&revision.author, revision.agent.as_deref()),
-        when(revision.created_at),
-        revision.reason
-    )
-}
-
-/// A revision in a list.
-pub fn revision_line(revision: &Revision) -> String {
-    format!(
-        "- Revision {}, by {}, {}: {}\n",
-        revision.number,
-        by(&revision.author, revision.agent.as_deref()),
-        when(revision.created_at),
-        revision.reason
-    )
 }
 
 fn short(commit: &str) -> &str {
@@ -359,13 +288,6 @@ pub fn declaration_list(declarations: &[DeclarationSummary]) -> String {
     out
 }
 
-fn task_state_word(task: &Task) -> String {
-    match (task.state, task.schedule) {
-        (TaskState::Open, TaskSchedule::Night) => "open, for the night".into(),
-        (state, _) => state.as_str().into(),
-    }
-}
-
 /// One line per task.
 pub fn task_list(tasks: &[Task]) -> String {
     if tasks.is_empty() {
@@ -378,7 +300,7 @@ pub fn task_list(tasks: &[Task]) -> String {
             "- w{} · {} · {} · from {}, for {} · {}",
             task.number,
             task.title,
-            task_state_word(task),
+            task.state.as_str(),
             task.origin,
             task.requester.display_name,
             when(task.created_at)
@@ -394,7 +316,7 @@ pub fn task(hub: &str, group: &str, page: &TaskPage) -> String {
         "# w{} · {} · {}\n\nAsked in {} by {}",
         task.number,
         task.title,
-        task_state_word(task),
+        task.state.as_str(),
         task.origin,
         task.requester.display_name
     );

@@ -30,8 +30,8 @@ How to work:
   `.lake`.
 - Do not commit, push or change git's state: that is done for you.
 - The Stemma tools let you read what you were not given: threads
-  (`read_thread`, `search`), working papers (`read_paper`) and the library
-  as it was last built (`library_lookup`, `library_search`).
+  (`read_thread`, `search`) and the library as it was last built
+  (`library_lookup`, `library_search`).
 
 When you are done, write your report, in Markdown, to the file
 `{report}` (it is not committed), and end with the same text. Report

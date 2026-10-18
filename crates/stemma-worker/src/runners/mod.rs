@@ -8,10 +8,7 @@
 //!   answering in a thread may also hand a task to the workshop. For a
 //!   task they work in a worktree of the library, where they edit files
 //!   and run commands, Lean's among them.
-//! - `api` is Stemma's own harness: a loop of tool calls over an
-//!   OpenAI-compatible chat API, with the same tools. It only answers.
 
-pub mod api;
 pub mod claude_code;
 pub mod codex;
 pub mod opencode;

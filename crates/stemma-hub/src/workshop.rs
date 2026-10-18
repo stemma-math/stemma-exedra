@@ -1,34 +1,22 @@
 //! The workshop: what works on the library in the background.
 //!
 //! A task is handed over in conversation: an agent answering in a thread
-//! calls `create_task` when someone asks it to ("formalize this tonight"),
-//! or a message mentions the workshop's agent (`@workshop formalize the
-//! lemma in t12#48`). Each task is a job, `task_run`, for a group worker
-//! that offers the workshop, with Lean and the workshop agent's runner; or,
-//! during the group's night window, for a member's worker its owner lends
-//! to the workshop. A group's tasks run one at a time, and a task asked for
-//! the night waits for the night window.
+//! calls `create_task` when someone asks it to ("formalize this"), or a
+//! message mentions the workshop's agent (`@workshop formalize the lemma in
+//! t12#48`). Each task is a job, `task_run`, for a group worker that
+//! offers the workshop, with Lean and the workshop agent's runner. A group's tasks run one at a time.
 //!
 //! The worker pushes what it did to `main` with the job's token, and tells
 //! how it went: the build and inspection of what it pushed become the
-//! library's state, one message in the thread the task came from reports
-//! on it, and the editor is asked to update the papers that reference what
-//! changed, or that the thread is about.
-//!
-//! At night the editor also brings up to date the papers whose threads said
-//! something new since their last revision (see [`update_papers`]).
-
-use std::collections::{HashMap, HashSet};
+//! library's state, and one message in the thread the task came from
+//! reports on it.
 
 use sqlx::FromRow;
 use stemma_core::Address;
-use stemma_core::api::{
-    AgentProfile, AgentRole, AgentScope, Event, JobKind, Task, TaskPage, TaskSchedule, TaskState,
-    User, WorkshopSettings,
-};
-use stemma_core::protocol::{Conversation, PaperSpec, TaskEnd, TaskOutcome, TaskRun};
+use stemma_core::api::{AgentProfile, AgentRole, Event, Task, TaskPage, TaskState, User};
+use stemma_core::protocol::{Conversation, TaskEnd, TaskOutcome, TaskRun};
 
-use crate::api::{Membership, forum, papers};
+use crate::api::{Membership, forum};
 use crate::db;
 use crate::error::{ApiError, ApiResult};
 use crate::jobs;
@@ -41,212 +29,8 @@ const MAX_LOG: usize = 200_000;
 /// The most of a runner's report that goes into the thread, in characters.
 const MAX_REPORT_CHARS: usize = 20_000;
 
-/// How many papers a run is given with their text.
-const MAX_PAPERS: usize = 4;
-
 /// How many changed declarations a report names.
 const MAX_CHANGED: usize = 40;
-
-// ── The night ─────────────────────────────────────────────────────────
-
-/// A group's night window, as dispatching sees it.
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
-pub struct Night {
-    /// Whether it is night now.
-    pub now: bool,
-    /// The window, for what people read: `01:00–07:00 (Europe/Madrid)`.
-    pub window: String,
-    /// How long the window is, in minutes.
-    pub length: i64,
-    /// The members who lend their workers to the workshop at night.
-    pub lenders: HashSet<i64>,
-}
-
-/// Minutes after midnight, from `HH:MM`.
-pub fn parse_clock(text: &str) -> Option<i64> {
-    let (hours, minutes) = text.trim().split_once(':')?;
-    if hours.is_empty() || hours.len() > 2 || minutes.len() != 2 {
-        return None;
-    }
-    let (hours, minutes): (i64, i64) = (hours.parse().ok()?, minutes.parse().ok()?);
-    ((0..24).contains(&hours) && (0..60).contains(&minutes)).then_some(hours * 60 + minutes)
-}
-
-/// `HH:MM`, from minutes after midnight.
-pub fn clock(minutes: i64) -> String {
-    format!("{:02}:{:02}", minutes / 60 % 24, minutes % 60)
-}
-
-/// The time zone a group names, or UTC if it is unknown here.
-fn zone(name: &str) -> jiff::tz::TimeZone {
-    jiff::tz::TimeZone::get(name).unwrap_or(jiff::tz::TimeZone::UTC)
-}
-
-/// Whether `at` is in the window from `from` to `to`, minutes after
-/// midnight in the time zone `zone`; a window may span midnight, and one
-/// that starts where it ends is empty.
-pub fn is_night(at: jiff::Timestamp, zone_name: &str, from: i64, to: i64) -> bool {
-    let local = at.to_zoned(zone(zone_name));
-    let minute = i64::from(local.hour()) * 60 + i64::from(local.minute());
-    if from <= to {
-        from <= minute && minute < to
-    } else {
-        minute >= from || minute < to
-    }
-}
-
-/// Every group's night, now.
-pub async fn nights(state: &AppState) -> ApiResult<HashMap<i64, Night>> {
-    let groups: Vec<(i64, i64, i64, String)> =
-        sqlx::query_as("SELECT id, night_from, night_to, time_zone FROM groups")
-            .fetch_all(&state.db)
-            .await?;
-    let lenders: Vec<(i64, i64)> =
-        sqlx::query_as("SELECT group_id, user_id FROM memberships WHERE lends_worker = 1")
-            .fetch_all(&state.db)
-            .await?;
-    let now = jiff::Timestamp::now();
-    let mut nights: HashMap<i64, Night> = groups
-        .into_iter()
-        .map(|(id, from, to, time_zone)| {
-            let night = Night {
-                now: is_night(now, &time_zone, from, to),
-                window: format!("{}–{} ({time_zone})", clock(from), clock(to)),
-                length: (to - from).rem_euclid(24 * 60),
-                lenders: HashSet::new(),
-            };
-            (id, night)
-        })
-        .collect();
-    for (group_id, user_id) in lenders {
-        if let Some(night) = nights.get_mut(&group_id) {
-            night.lenders.insert(user_id);
-        }
-    }
-    Ok(nights)
-}
-
-/// Hands waiting tasks to workers when a night begins or ends somewhere,
-/// and updates the papers once a night: run every minute or so.
-pub async fn tick(state: &AppState) -> ApiResult<()> {
-    let now = nights(state).await?;
-    let asked = update_papers(state, &now).await?;
-    let changed = {
-        let workers = state.workers.lock().await;
-        workers.nights.iter().any(|(id, night)| {
-            now.get(id)
-                .is_some_and(|n| n.now != night.now || n.lenders != night.lenders)
-        }) || now.keys().any(|id| !workers.nights.contains_key(id))
-    };
-    if asked || changed {
-        jobs::dispatch(state).await?;
-    }
-    Ok(())
-}
-
-/// Once a night, in each group's night window, asks the editor to update
-/// the papers whose threads said something new since their last revision.
-/// An editor of the group's runs on the group's workers, for whoever said
-/// it; a personal one, only for a member who lends their worker at night.
-/// Returns whether it asked for any update.
-pub async fn update_papers(state: &AppState, nights: &HashMap<i64, Night>) -> ApiResult<bool> {
-    let now = db::now();
-    let mut asked = false;
-    for (&group_id, night) in nights {
-        if !night.now {
-            continue;
-        }
-        let Some(editor) = editor(state, group_id).await? else {
-            continue;
-        };
-        let mut lenders: Vec<i64> = night.lenders.iter().copied().collect();
-        lenders.sort_unstable();
-        // Wait for someone to lend their worker, if the editor needs one.
-        if editor.scope == AgentScope::Personal && lenders.is_empty() {
-            continue;
-        }
-        // Not again within a window's length of the last time: once a night.
-        let tonight: Option<i64> = sqlx::query_scalar(
-            "UPDATE groups SET papers_updated_at = ?1
-             WHERE id = ?2 AND (papers_updated_at IS NULL OR papers_updated_at < ?1 - ?3)
-             RETURNING id",
-        )
-        .bind(now)
-        .bind(group_id)
-        .bind(night.length * 60 * 1000)
-        .fetch_optional(&state.db)
-        .await?;
-        if tonight.is_some() {
-            asked |= update_group_papers(state, group_id, &editor, &lenders).await?;
-        }
-    }
-    Ok(asked)
-}
-
-async fn update_group_papers(
-    state: &AppState,
-    group_id: i64,
-    editor: &AgentProfile,
-    lenders: &[i64],
-) -> ApiResult<bool> {
-    // The papers, but not those an editor is updating already.
-    let papers: Vec<(String, i64)> = sqlx::query_as(
-        "SELECT p.slug, p.updated_at FROM papers p
-         WHERE p.group_id = ?1
-           AND NOT EXISTS (SELECT 1 FROM jobs j
-                           WHERE j.group_id = ?1 AND j.kind = 'paper_update'
-                             AND j.paper_slug = p.slug AND j.state IN ('queued', 'running'))
-         ORDER BY p.updated_at",
-    )
-    .bind(group_id)
-    .fetch_all(&state.db)
-    .await?;
-    let mut asked = false;
-    for (slug, updated_at) in papers {
-        // The thread about it where someone said something new last.
-        let mut said = None;
-        for (thread_id, _) in papers::threads_about(state, group_id, &slug).await? {
-            let author: Option<i64> = sqlx::query_scalar(
-                "SELECT author_id FROM messages
-                 WHERE thread_id = ? AND agent IS NULL AND deleted_at IS NULL AND created_at > ?
-                 ORDER BY number DESC LIMIT 1",
-            )
-            .bind(thread_id)
-            .bind(updated_at)
-            .fetch_optional(&state.db)
-            .await?;
-            if let Some(author) = author {
-                said = Some((thread_id, author));
-                break;
-            }
-        }
-        let Some((thread_id, author)) = said else {
-            continue;
-        };
-        let requester = match editor.scope {
-            AgentScope::Personal if !lenders.contains(&author) => lenders[0],
-            _ => author,
-        };
-        let last: i64 = sqlx::query_scalar("SELECT last_message FROM threads WHERE id = ?")
-            .bind(thread_id)
-            .fetch_one(&state.db)
-            .await?;
-        jobs::queue_agent_job(
-            state,
-            group_id,
-            thread_id,
-            last as u32,
-            requester,
-            editor,
-            JobKind::PaperUpdate,
-            Some(&slug),
-            true,
-        )
-        .await?;
-        asked = true;
-    }
-    Ok(asked)
-}
 
 // ── Tasks ─────────────────────────────────────────────────────────────
 
@@ -265,7 +49,6 @@ struct TaskRow {
     display_name: String,
     agent: Option<String>,
     state: String,
-    schedule: String,
     job_id: Option<i64>,
     runner: Option<String>,
     model: Option<String>,
@@ -283,7 +66,7 @@ macro_rules! task_query {
     () => {
         "SELECT k.id, k.group_id, k.number, k.title, k.instructions, k.thread_id,
                 t.number AS thread_number, k.origin_message, u.id AS user_id, u.username,
-                u.display_name, k.agent, k.state, k.schedule, k.job_id, k.runner, k.model,
+                u.display_name, k.agent, k.state, k.job_id, k.runner, k.model,
                 k.reason, k.commits, k.report_message, k.created_at, k.updated_at,
                 k.started_at, k.finished_at, j.progress AS job_progress
          FROM tasks k JOIN threads t ON t.id = k.thread_id
@@ -319,7 +102,6 @@ impl TaskRow {
             },
             agent: self.agent.clone(),
             state,
-            schedule: TaskSchedule::parse(&self.schedule).unwrap_or_default(),
             runner: self.runner.clone(),
             model: self.model.clone(),
             progress: match state {
@@ -469,27 +251,12 @@ pub async fn resolve(
 /// The group's workshop agent: the agent whose role is the workshop,
 /// `@workshop` first.
 pub async fn profile(state: &AppState, group_id: i64) -> ApiResult<Option<AgentProfile>> {
-    profile_with_role(state, group_id, AgentRole::Workshop, "workshop").await
-}
-
-/// The group's editor: the agent whose role it is, `@editor` first.
-async fn editor(state: &AppState, group_id: i64) -> ApiResult<Option<AgentProfile>> {
-    profile_with_role(state, group_id, AgentRole::Editor, "editor").await
-}
-
-async fn profile_with_role(
-    state: &AppState,
-    group_id: i64,
-    role: AgentRole,
-    first: &str,
-) -> ApiResult<Option<AgentProfile>> {
     let handle: Option<String> = sqlx::query_scalar(
         "SELECT handle FROM agent_profiles WHERE group_id = ? AND role = ?
-         ORDER BY handle = ? DESC, handle LIMIT 1",
+         ORDER BY handle = 'workshop' DESC, handle LIMIT 1",
     )
     .bind(group_id)
-    .bind(role.as_str())
-    .bind(first)
+    .bind(AgentRole::Workshop.as_str())
     .fetch_optional(&state.db)
     .await?;
     match handle {
@@ -508,7 +275,6 @@ pub struct NewTask {
     pub requester_id: i64,
     /// The agent handing it over for its requester, if one does.
     pub agent: Option<String>,
-    pub schedule: TaskSchedule,
 }
 
 /// Hands a task to the workshop, and queues its run; the caller then
@@ -551,8 +317,8 @@ pub async fn create(state: &AppState, group: &Membership, new: NewTask) -> ApiRe
     .last_insert_rowid();
     let task_id = sqlx::query(
         "INSERT INTO tasks (group_id, number, title, instructions, thread_id, origin_message,
-                            requester_id, agent, state, schedule, job_id, created_at, updated_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'open', ?, ?, ?, ?)",
+                            requester_id, agent, state, job_id, created_at, updated_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'open', ?, ?, ?)",
     )
     .bind(group.group_id)
     .bind(number)
@@ -562,7 +328,6 @@ pub async fn create(state: &AppState, group: &Membership, new: NewTask) -> ApiRe
     .bind(new.origin_message)
     .bind(new.requester_id)
     .bind(agent)
-    .bind(new.schedule.as_str())
     .bind(job_id)
     .bind(now)
     .bind(now)
@@ -577,10 +342,9 @@ pub async fn create(state: &AppState, group: &Membership, new: NewTask) -> ApiRe
         .await
 }
 
-/// The title and schedule of a task asked for in a message to the
-/// workshop: its first sentence, without the mention; at night if it says
-/// "tonight" or "overnight".
-pub fn from_message(body: &str, handle: &str) -> (String, TaskSchedule) {
+/// The title of a task asked for in a message to the workshop: its first
+/// sentence, without the mention.
+pub fn title_of(body: &str, handle: &str) -> String {
     let mention = format!("@{handle}");
     let text: String = body
         .lines()
@@ -621,16 +385,7 @@ pub fn from_message(body: &str, handle: &str) -> (String, TaskSchedule) {
     if title.is_empty() {
         title = "A task from the thread".into();
     }
-    let lower = body.to_lowercase();
-    let night = ["tonight", "overnight", "at night", "this night"]
-        .iter()
-        .any(|word| lower.contains(word));
-    let schedule = if night {
-        TaskSchedule::Night
-    } else {
-        TaskSchedule::Now
-    };
-    (title, schedule)
+    title
 }
 
 /// Cancels a task that is open or running: its requester, or an admin.
@@ -683,8 +438,8 @@ async fn set_state(
 // ── Runs ──────────────────────────────────────────────────────────────
 
 /// What a worker needs to run a task: the task, the conversation it came
-/// from (with the workshop's agent, as the worker is to run it), the papers
-/// the conversation is about, and the library.
+/// from (with the workshop's agent, as the worker is to run it), and the
+/// library.
 pub async fn work_for(
     state: &AppState,
     group: &Membership,
@@ -694,41 +449,6 @@ pub async fn work_for(
     let row = of_job(state, job_id)
         .await?
         .ok_or_else(|| ApiError::internal("a task's job without its task"))?;
-    let thread: stemma_core::api::Thread =
-        forum::find_thread_by_id(state, row.thread_id).await?.into();
-
-    // The papers: the one the thread is about, then those it references.
-    let mut slugs: Vec<String> = Vec::new();
-    if let Some(Address::Paper { slug, .. }) = &thread.anchor {
-        slugs.push(slug.clone());
-    }
-    let mut texts: Vec<&str> = vec![&row.instructions];
-    for item in &conversation.context {
-        if let stemma_core::protocol::ContextItem::Message { message } = item {
-            texts.push(&message.body);
-        }
-    }
-    for text in texts {
-        for reference in stemma_core::references(text) {
-            if let Ok(Address::Paper { slug, .. }) = reference.address
-                && !slugs.contains(&slug)
-            {
-                slugs.push(slug);
-            }
-        }
-    }
-    let mut papers = Vec::new();
-    for slug in slugs.into_iter().take(MAX_PAPERS) {
-        if let Some(current) = papers::current(state, group.group_id, &slug).await? {
-            papers.push(PaperSpec {
-                slug,
-                title: Some(current.title),
-                revision: current.revision,
-                body: current.body,
-            });
-        }
-    }
-
     let data_sorry = match library::current_build_id(state, group.group_id).await? {
         Some(build) => {
             sqlx::query_scalar(
@@ -746,7 +466,6 @@ pub async fn work_for(
         title: row.title.clone(),
         instructions: row.instructions.clone(),
         conversation,
-        papers,
         repository: format!("/git/{}.git", group.slug),
         data_sorry,
     })
@@ -880,8 +599,7 @@ fn tail(log: &str) -> String {
 }
 
 /// Keeps how a task's run ended: the library's new state from its build,
-/// one message in its thread, and updates of the papers it concerns.
-/// Returns the number of the message. Callers may hold the workers' lock.
+/// and one message in its thread. Returns the number of the message. Callers may hold the workers' lock.
 pub async fn finished(state: &AppState, job_id: i64, outcome: TaskOutcome) -> ApiResult<u32> {
     let row = of_job(state, job_id)
         .await?
@@ -904,28 +622,7 @@ pub async fn finished(state: &AppState, job_id: i64, outcome: TaskOutcome) -> Ap
         TaskEnd::Blocked => TaskState::Blocked,
     };
 
-    // The papers to update: those that reference what changed, and the
-    // one the thread is about.
-    let mut slugs: Vec<String> = Vec::new();
-    if end == TaskState::Done && !outcome.commits.is_empty() {
-        let thread: stemma_core::api::Thread =
-            forum::find_thread_by_id(state, row.thread_id).await?.into();
-        if let Some(Address::Paper { slug, .. }) = &thread.anchor {
-            slugs.push(slug.clone());
-        }
-        for slug in papers_referencing(state, row.group_id, &changed).await? {
-            if !slugs.contains(&slug) {
-                slugs.push(slug);
-            }
-        }
-    }
-    let editor = if slugs.is_empty() {
-        None
-    } else {
-        editor(state, row.group_id).await?
-    };
-
-    let text = report_message(&row, end, &outcome, &changed, &slugs, editor.as_ref());
+    let text = report_message(&row, end, &outcome, &changed);
     let number = say(state, &row, &text).await?;
 
     let now = db::now();
@@ -948,22 +645,6 @@ pub async fn finished(state: &AppState, job_id: i64, outcome: TaskOutcome) -> Ap
     .execute(&state.db)
     .await?;
 
-    if let Some(editor) = editor {
-        for slug in &slugs {
-            jobs::queue_agent_job(
-                state,
-                row.group_id,
-                row.thread_id,
-                number,
-                row.user_id,
-                &editor,
-                JobKind::PaperUpdate,
-                Some(slug),
-                false,
-            )
-            .await?;
-        }
-    }
     Ok(number)
 }
 
@@ -973,8 +654,6 @@ fn report_message(
     end: TaskState,
     outcome: &TaskOutcome,
     changed: &[String],
-    papers: &[String],
-    editor: Option<&AgentProfile>,
 ) -> String {
     let task = format!("[[w{}]], “{}”", row.number, row.title);
     let reason = |default: &str| {
@@ -1022,126 +701,7 @@ fn report_message(
     } else if end != TaskState::Done {
         text.push_str("\n\nNothing was put in the library.");
     }
-    if let Some(editor) = editor {
-        let papers: Vec<String> = papers.iter().map(|slug| format!("[[p/{slug}]]")).collect();
-        text.push_str(&format!(
-            "\n\n{} will update {}.",
-            editor.display_name,
-            papers.join(", ")
-        ));
-    }
     text
-}
-
-/// The papers whose text references any of `names`, as `[[lean:Name]]`.
-async fn papers_referencing(
-    state: &AppState,
-    group_id: i64,
-    names: &[String],
-) -> ApiResult<Vec<String>> {
-    if names.is_empty() {
-        return Ok(Vec::new());
-    }
-    let papers: Vec<(String, String)> = sqlx::query_as(
-        "SELECT p.slug, r.body FROM papers p
-         JOIN paper_revisions r ON r.paper_id = p.id AND r.number = p.revision
-         WHERE p.group_id = ? ORDER BY p.updated_at DESC",
-    )
-    .bind(group_id)
-    .fetch_all(&state.db)
-    .await?;
-    let wanted: HashSet<&str> = names.iter().map(String::as_str).collect();
-    Ok(papers
-        .into_iter()
-        .filter(|(_, body)| {
-            stemma_core::references(body).iter().any(|reference| {
-                matches!(&reference.address, Ok(Address::Declaration(name)) if wanted.contains(name.as_str()))
-            })
-        })
-        .map(|(slug, _)| slug)
-        .collect())
-}
-
-// ── Settings ──────────────────────────────────────────────────────────
-
-/// How the group's workshop works, for `viewer_id`.
-pub async fn settings(
-    state: &AppState,
-    group_id: i64,
-    viewer_id: i64,
-) -> ApiResult<WorkshopSettings> {
-    let (from, to, time_zone): (i64, i64, String) =
-        sqlx::query_as("SELECT night_from, night_to, time_zone FROM groups WHERE id = ?")
-            .bind(group_id)
-            .fetch_one(&state.db)
-            .await?;
-    let lenders: Vec<crate::api::UserColumns> = sqlx::query_as(
-        "SELECT u.id AS user_id, u.username, u.display_name
-         FROM memberships m JOIN users u ON u.id = m.user_id
-         WHERE m.group_id = ? AND m.lends_worker = 1 ORDER BY u.display_name",
-    )
-    .bind(group_id)
-    .fetch_all(&state.db)
-    .await?;
-    let lenders: Vec<User> = lenders.into_iter().map(User::from).collect();
-    Ok(WorkshopSettings {
-        night_from: clock(from),
-        night_to: clock(to),
-        night_now: is_night(jiff::Timestamp::now(), &time_zone, from, to),
-        time_zone,
-        lend: lenders.iter().any(|u| u.id == viewer_id),
-        lenders,
-    })
-}
-
-/// Changes the night window and time zone.
-pub async fn set_night(
-    state: &AppState,
-    group_id: i64,
-    from: Option<&str>,
-    to: Option<&str>,
-    time_zone: Option<&str>,
-) -> ApiResult<()> {
-    let minutes = |text: Option<&str>, what: &str| -> ApiResult<Option<i64>> {
-        text.map(|t| {
-            parse_clock(t)
-                .ok_or_else(|| ApiError::invalid(format!("The night {what} is a time, as 01:00")))
-        })
-        .transpose()
-    };
-    let from = minutes(from, "starts at")?;
-    let to = minutes(to, "ends at")?;
-    let time_zone = time_zone.map(str::trim);
-    if let Some(name) = time_zone
-        && jiff::tz::TimeZone::get(name).is_err()
-    {
-        return Err(ApiError::invalid(format!(
-            "{name} is not a time zone: write one as Europe/Madrid, or UTC"
-        )));
-    }
-    sqlx::query(
-        "UPDATE groups SET night_from = coalesce(?, night_from), night_to = coalesce(?, night_to),
-                           time_zone = coalesce(?, time_zone)
-         WHERE id = ?",
-    )
-    .bind(from)
-    .bind(to)
-    .bind(time_zone)
-    .bind(group_id)
-    .execute(&state.db)
-    .await?;
-    Ok(())
-}
-
-/// Whether a member lends their worker to the workshop at night.
-pub async fn set_lend(state: &AppState, group_id: i64, user_id: i64, lend: bool) -> ApiResult<()> {
-    sqlx::query("UPDATE memberships SET lends_worker = ? WHERE group_id = ? AND user_id = ?")
-        .bind(lend)
-        .bind(group_id)
-        .bind(user_id)
-        .execute(&state.db)
-        .await?;
-    Ok(())
 }
 
 #[cfg(test)]
@@ -1149,48 +709,17 @@ mod tests {
     use super::*;
 
     #[test]
-    fn reads_and_writes_clocks() {
-        assert_eq!(parse_clock("01:00"), Some(60));
-        assert_eq!(parse_clock("7:30"), Some(450));
-        assert_eq!(parse_clock("24:00"), None);
-        assert_eq!(parse_clock("1:5"), None);
-        assert_eq!(clock(420), "07:00");
-    }
-
-    #[test]
-    fn nights_span_midnight() {
-        let at = |text: &str| text.parse::<jiff::Timestamp>().unwrap();
-        // 01:00–07:00 in Madrid, which is UTC+2 in summer.
-        assert!(is_night(
-            at("2026-07-01T00:30:00Z"),
-            "Europe/Madrid",
-            60,
-            420
-        ));
-        assert!(!is_night(
-            at("2026-07-01T05:30:00Z"),
-            "Europe/Madrid",
-            60,
-            420
-        ));
-        // 22:00–06:00 in UTC.
-        assert!(is_night(at("2026-07-01T23:00:00Z"), "UTC", 1320, 360));
-        assert!(is_night(at("2026-07-01T05:00:00Z"), "UTC", 1320, 360));
-        assert!(!is_night(at("2026-07-01T12:00:00Z"), "UTC", 1320, 360));
-        // An empty window.
-        assert!(!is_night(at("2026-07-01T12:00:00Z"), "UTC", 600, 600));
-    }
-
-    #[test]
     fn tasks_from_messages() {
-        let (title, schedule) = from_message(
-            "@workshop formalize the lemma in t12#48 tonight. It is the gluing one.",
-            "workshop",
+        assert_eq!(
+            title_of(
+                "@workshop formalize the lemma in t12#48. It is the gluing one.",
+                "workshop",
+            ),
+            "Formalize the lemma in t12#48"
         );
-        assert_eq!(title, "Formalize the lemma in t12#48 tonight");
-        assert_eq!(schedule, TaskSchedule::Night);
-        let (title, schedule) = from_message("@workshop: prove [[lean:Foo.bar]]", "workshop");
-        assert_eq!(title, "Prove [[lean:Foo.bar]]");
-        assert_eq!(schedule, TaskSchedule::Now);
+        assert_eq!(
+            title_of("@workshop: prove [[lean:Foo.bar]]", "workshop"),
+            "Prove [[lean:Foo.bar]]"
+        );
     }
 }
