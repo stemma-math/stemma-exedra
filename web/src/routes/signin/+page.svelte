@@ -13,7 +13,7 @@
   const next = $derived.by(() => {
     const target = page.url.searchParams.get("next") ?? "/";
     // Only somewhere on this hub.
-    return target.startsWith("/") && !target.startsWith("//") ? target : "/";
+    return /^\/(?![\/\\])/.test(target) && !target.includes("\\") ? target : "/";
   });
 
   // Signing in to the forge goes on at the hub itself, not in the app.
