@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { api, type Machine, RUNNER_NAMES } from "#lib/api.ts";
+  import { api, isolationName, type Machine, RUNNER_NAMES } from "#lib/api.ts";
   import { exactly, when } from "#lib/format.ts";
   import { toastError } from "#lib/toast.ts";
   import WorkshopAgents from "./WorkshopAgents.svelte";
@@ -73,6 +73,9 @@
             {/if}
             {#if machine.preferred}<span class="chip">Preferred</span>{/if}
             {#if machine.workshop.length}<span class="chip chip--info">Workshop</span>{/if}
+            {#if machine.workshop.length && machine.isolation !== "docker" && machine.isolation !== "podman"}
+              <span class="chip chip--warning">{isolationName(machine.isolation)}</span>
+            {/if}
           </span>
           <span class="row" data-density="compact">
             {#if machine.preferred}

@@ -157,6 +157,25 @@ export interface WorkshopAgent {
   today?: AgentToday | null;
 }
 
+/** How a machine isolates the workshop's jobs: each in a container of its
+ * own, with Docker or Podman, or, as its owner chose, on the machine itself,
+ * unisolated. None if it cannot, and then it runs none of them. */
+export type Isolation = "docker" | "podman" | "host";
+
+/** How a machine isolates the workshop's jobs, as people read it. */
+export function isolationName(isolation: Isolation | null): string {
+  switch (isolation) {
+    case "docker":
+      return "Containers (Docker)";
+    case "podman":
+      return "Containers (Podman)";
+    case "host":
+      return "Unisolated";
+    default:
+      return "Cannot isolate";
+  }
+}
+
 /** One of a person's machines, where their own agents run, and the
  * workshops it works for. */
 export interface Machine {
@@ -166,6 +185,7 @@ export interface Machine {
   online: boolean;
   runners: string[];
   lean: boolean;
+  isolation: Isolation | null;
   preferred: boolean;
   workshop: string[];
   workshop_agents: WorkshopAgent[];
@@ -181,6 +201,7 @@ export interface WorkshopMachine {
   owner: User;
   online: boolean;
   lean: boolean;
+  isolation: Isolation | null;
   runners: string[];
   agents: WorkshopAgent[];
   added_at: string;

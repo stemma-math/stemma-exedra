@@ -1,5 +1,12 @@
 <script lang="ts">
-  import { api, type Machine, RUNNER_NAMES, type WorkshopAgent, type WorkshopMachine } from "#lib/api.ts";
+  import {
+    api,
+    isolationName,
+    type Machine,
+    RUNNER_NAMES,
+    type WorkshopAgent,
+    type WorkshopMachine,
+  } from "#lib/api.ts";
   import { toastError } from "#lib/toast.ts";
 
   interface Props {
@@ -91,11 +98,32 @@
               No agents yet: its owner offers them in their settings.
             {/if}
           </span>
-          {#if machine.online}
-            <span class="chip chip--success">Online</span>
-          {:else}
-            <span class="chip">Offline</span>
-          {/if}
+          <span class="row" data-density="compact">
+            {#if machine.online}
+              <span class="chip chip--success">Online</span>
+            {:else}
+              <span class="chip">Offline</span>
+            {/if}
+            {#if machine.isolation === "host"}
+              <span
+                class="chip chip--warning"
+                title="Its owner chose to run the workshop's jobs on the machine itself, with no container: the agents run commands there as the user that serves it."
+              >
+                {isolationName(machine.isolation)}
+              </span>
+            {:else if machine.isolation}
+              <span class="chip" title="Each of the workshop's jobs runs in a container of its own.">
+                {isolationName(machine.isolation)}
+              </span>
+            {:else}
+              <span
+                class="chip chip--warning"
+                title="It has no container runtime with the workshop's image, and runs none of the workshop's jobs."
+              >
+                {isolationName(machine.isolation)}
+              </span>
+            {/if}
+          </span>
           {#if admin}
             <button type="button" class="button button--small button--danger" onclick={() => remove(machine)}>
               Remove
