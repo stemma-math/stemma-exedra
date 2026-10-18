@@ -1,0 +1,49 @@
+% {{title}}: a working paper of {{group}}, kept by Stemma.
+%
+% Stemma compiles this file after each push to `main`, in the workshop, with
+%
+%     latexmk -pdf main.tex
+%
+% that is, pdfLaTeX and BibTeX (not Biber), with the workshop's TeX Live:
+% the packages below, and what else its README lists. The references are
+% in references.bib. Long papers may keep their sections in files of their
+% own, read with \input{sections/introduction}.
+\documentclass[11pt]{amsart}
+
+\usepackage[T1]{fontenc}
+\usepackage{lmodern}
+\usepackage{amssymb}
+\usepackage{mathtools}
+\usepackage{enumitem}
+\usepackage[hidelinks]{hyperref}
+
+\newtheorem{theorem}{Theorem}[section]
+\newtheorem{lemma}[theorem]{Lemma}
+\newtheorem{proposition}[theorem]{Proposition}
+\newtheorem{corollary}[theorem]{Corollary}
+\theoremstyle{definition}
+\newtheorem{definition}[theorem]{Definition}
+\newtheorem{example}[theorem]{Example}
+\theoremstyle{remark}
+\newtheorem{remark}[theorem]{Remark}
+
+\title{{{title}}}
+\author{{{author}}}
+
+\begin{document}
+
+\begin{abstract}
+  What this paper is about, in a few lines.
+\end{abstract}
+
+\maketitle
+
+\section{Introduction}
+
+Start here. Cite what you use from \texttt{references.bib}, as
+in~\cite{example}.
+
+\bibliographystyle{amsplain}
+\bibliography{references}
+
+\end{document}
