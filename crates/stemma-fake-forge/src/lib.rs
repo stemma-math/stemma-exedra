@@ -1,7 +1,9 @@
 //! A stand-in for Forgejo in Stemma's tests: the part of its API the hub
-//! uses, kept in memory, and git's smart HTTP protocol, served by
-//! `git http-backend` over bare repositories in a temporary folder, with
-//! the webhooks Forgejo sends after a push. It needs `git`.
+//! uses, kept in memory (accounts, organizations, teams, repositories,
+//! branches and pull requests, which it merges for real), and git's smart
+//! HTTP protocol, served by `git http-backend` over bare repositories in a
+//! temporary folder, with the webhooks Forgejo sends after a push to
+//! `main`. It needs `git`.
 //!
 //! It knows one admin, [`ADMIN`], whose token is [`TOKEN`]; anything else
 //! is refused. It does not enforce teams: the hub talks to it as its admin.
@@ -90,6 +92,42 @@ struct Team {
 #[derive(Default)]
 struct Repo {
     hooks: Vec<(String, String)>,
+    pulls: Vec<Pull>,
+}
+
+/// A pull request.
+#[derive(Clone)]
+struct Pull {
+    number: u32,
+    head: String,
+    base: String,
+    title: String,
+    open: bool,
+    merged: Option<String>,
+}
+
+impl Pull {
+    fn json(&self, owner: &str, name: &str) -> Value {
+        json!({
+            "number": self.number,
+            "title": self.title,
+            "state": if self.open { "open" } else { "closed" },
+            "html_url": format!("/{owner}/{name}/pulls/{}", self.number),
+            "head": {"ref": self.head},
+            "base": {"ref": self.base},
+            "merged": self.merged.is_some(),
+            "merge_commit_sha": self.merged,
+        })
+    }
+}
+
+/// A pull request, as a test sees it.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct PullState {
+    pub number: u32,
+    pub head: String,
+    pub open: bool,
+    pub merged: Option<String>,
 }
 
 impl Data {
@@ -215,6 +253,79 @@ impl FakeForge {
     pub fn repository_path(&self, owner: &str, name: &str) -> PathBuf {
         self.inner.root.join(owner).join(format!("{name}.git"))
     }
+
+    /// The pull requests of a repository, in order.
+    pub fn pulls(&self, owner: &str, name: &str) -> Vec<PullState> {
+        let data = self.inner.data.lock().unwrap();
+        data.repos
+            .get(&(owner.into(), name.into()))
+            .map(|r| {
+                r.pulls
+                    .iter()
+                    .map(|p| PullState {
+                        number: p.number,
+                        head: p.head.clone(),
+                        open: p.open,
+                        merged: p.merged.clone(),
+                    })
+                    .collect()
+            })
+            .unwrap_or_default()
+    }
+
+    /// Commits to a new branch of a repository, from `main`: `write`
+    /// files (path and text) and `delete` others, as someone could push.
+    /// Returns the commit.
+    pub async fn push_branch(
+        &self,
+        owner: &str,
+        name: &str,
+        branch: &str,
+        write: &[(&str, &str)],
+        delete: &[&str],
+    ) -> String {
+        let bare = self.repository_path(owner, name);
+        let work = tempfile::tempdir().expect("a temporary folder");
+        let target = bare.to_string_lossy().into_owned();
+        let dir = work.path();
+        run_git(dir, &["clone", "-q", "-b", "main", &target, "."])
+            .await
+            .expect("cloned");
+        for (path, text) in write {
+            let path = dir.join(path);
+            if let Some(parent) = path.parent() {
+                std::fs::create_dir_all(parent).expect("a folder");
+            }
+            std::fs::write(path, text).expect("written");
+        }
+        for path in delete {
+            std::fs::remove_file(dir.join(path)).expect("deleted");
+        }
+        run_git(dir, &["add", "-A"]).await.expect("added");
+        run_git(dir, &["commit", "-q", "-m", "Work"])
+            .await
+            .expect("committed");
+        let refspec = format!("HEAD:refs/heads/{branch}");
+        run_git(dir, &["push", "-q", "--force", "origin", &refspec])
+            .await
+            .expect("pushed");
+        run_git(dir, &["rev-parse", "HEAD"])
+            .await
+            .expect("a commit")
+    }
+
+    /// The text of a file on a branch, if it is there.
+    pub async fn file(&self, owner: &str, name: &str, branch: &str, path: &str) -> Option<String> {
+        let bare = self.repository_path(owner, name);
+        run_git(&bare, &["show", &format!("{branch}:{path}")])
+            .await
+            .ok()
+    }
+
+    /// The commit a branch of a repository is at, if it is anywhere.
+    pub async fn branch_commit(&self, owner: &str, name: &str, branch: &str) -> Option<String> {
+        main_of(&self.repository_path(owner, name), branch).await
+    }
 }
 
 fn router(inner: Arc<Inner>) -> Router {
@@ -238,8 +349,21 @@ fn router(inner: Arc<Inner>) -> Router {
         )
         .route("/api/v1/repos/{owner}/{name}/hooks", post(add_hook))
         .route(
-            "/api/v1/repos/{owner}/{name}/branches/{branch}",
-            get(branch),
+            "/api/v1/repos/{owner}/{name}/branches/{*branch}",
+            get(branch).delete(delete_branch),
+        )
+        .route("/api/v1/repos/{owner}/{name}/pulls", post(create_pull))
+        .route(
+            "/api/v1/repos/{owner}/{name}/pulls/{number}",
+            get(get_pull).patch(update_pull),
+        )
+        .route(
+            "/api/v1/repos/{owner}/{name}/pulls/{number}/files",
+            get(pull_files),
+        )
+        .route(
+            "/api/v1/repos/{owner}/{name}/pulls/{number}/merge",
+            post(merge_pull),
         )
         .route("/{owner}/{repo}/{*path}", any(git))
         .layer(axum::middleware::from_fn(authenticate))
@@ -607,21 +731,43 @@ async fn commit_files(
     }
 }
 
+/// What keeps a protected branch from being rewritten or deleted: a hook,
+/// as the rule's branch is in `$BRANCH`.
+const PROTECT: &str = r#"#!/bin/sh
+zero=0000000000000000000000000000000000000000
+while read old new ref; do
+  [ "$ref" = "refs/heads/$BRANCH" ] || continue
+  if [ "$new" = "$zero" ]; then echo "$BRANCH is protected" >&2; exit 1; fi
+  [ "$old" = "$zero" ] && continue
+  git merge-base --is-ancestor "$old" "$new" || { echo "$BRANCH is protected" >&2; exit 1; }
+done
+"#;
+
 async fn protect(
     State(inner): State<Arc<Inner>>,
     UrlPath((owner, name)): UrlPath<(String, String)>,
+    axum::Json(body): axum::Json<Value>,
 ) -> Response {
     if !repo_exists(&inner, &owner, &name) {
         return message(StatusCode::NOT_FOUND, "not found");
     }
     let bare = inner.root.join(&owner).join(format!("{name}.git"));
-    for (key, value) in [
-        ("receive.denyNonFastForwards", "true"),
-        ("receive.denyDeletes", "true"),
-    ] {
-        if let Err(error) = run_git(&bare, &["config", key, value]).await {
-            return message(StatusCode::INTERNAL_SERVER_ERROR, &error);
+    let branch = body["rule_name"].as_str().unwrap_or("main");
+    let hook = bare.join("hooks").join("pre-receive");
+    let script = PROTECT.replace("$BRANCH", branch);
+    let written = async {
+        tokio::fs::create_dir_all(bare.join("hooks")).await?;
+        tokio::fs::write(&hook, script).await?;
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            tokio::fs::set_permissions(&hook, std::fs::Permissions::from_mode(0o755)).await?;
         }
+        std::io::Result::Ok(())
+    }
+    .await;
+    if let Err(error) = written {
+        return message(StatusCode::INTERNAL_SERVER_ERROR, &error.to_string());
     }
     (StatusCode::CREATED, axum::Json(json!({}))).into_response()
 }
@@ -676,6 +822,193 @@ async fn branch(
         }
         None => message(StatusCode::NOT_FOUND, "branch not found"),
     }
+}
+
+async fn delete_branch(
+    State(inner): State<Arc<Inner>>,
+    UrlPath((owner, name, branch)): UrlPath<(String, String, String)>,
+) -> Response {
+    if !repo_exists(&inner, &owner, &name) || branch == "main" {
+        return message(StatusCode::NOT_FOUND, "not found");
+    }
+    let bare = inner.root.join(&owner).join(format!("{name}.git"));
+    if main_of(&bare, &branch).await.is_none() {
+        return message(StatusCode::NOT_FOUND, "branch not found");
+    }
+    let reference = format!("refs/heads/{branch}");
+    match run_git(&bare, &["update-ref", "-d", &reference]).await {
+        Ok(_) => StatusCode::NO_CONTENT.into_response(),
+        Err(error) => message(StatusCode::INTERNAL_SERVER_ERROR, &error),
+    }
+}
+
+fn find_pull<T>(
+    inner: &Inner,
+    owner: &str,
+    name: &str,
+    number: u32,
+    then: impl FnOnce(&mut Pull) -> T,
+) -> Option<T> {
+    let mut data = inner.data.lock().unwrap();
+    let repo = data.repos.get_mut(&(owner.into(), name.into()))?;
+    repo.pulls.iter_mut().find(|p| p.number == number).map(then)
+}
+
+async fn create_pull(
+    State(inner): State<Arc<Inner>>,
+    UrlPath((owner, name)): UrlPath<(String, String)>,
+    axum::Json(body): axum::Json<Value>,
+) -> Response {
+    if !repo_exists(&inner, &owner, &name) {
+        return message(StatusCode::NOT_FOUND, "not found");
+    }
+    let head = body["head"].as_str().unwrap_or_default().to_owned();
+    let base = body["base"].as_str().unwrap_or("main").to_owned();
+    let bare = inner.root.join(&owner).join(format!("{name}.git"));
+    if main_of(&bare, &head).await.is_none() || main_of(&bare, &base).await.is_none() {
+        return message(StatusCode::NOT_FOUND, "the branch does not exist");
+    }
+    let mut data = inner.data.lock().unwrap();
+    let repo = data
+        .repos
+        .get_mut(&(owner.clone(), name.clone()))
+        .expect("checked");
+    if repo.pulls.iter().any(|p| p.open && p.head == head) {
+        return message(
+            StatusCode::CONFLICT,
+            "a pull request of this branch is already open",
+        );
+    }
+    let pull = Pull {
+        number: repo.pulls.len() as u32 + 1,
+        head,
+        base,
+        title: body["title"].as_str().unwrap_or_default().to_owned(),
+        open: true,
+        merged: None,
+    };
+    repo.pulls.push(pull.clone());
+    (StatusCode::CREATED, axum::Json(pull.json(&owner, &name))).into_response()
+}
+
+async fn get_pull(
+    State(inner): State<Arc<Inner>>,
+    UrlPath((owner, name, number)): UrlPath<(String, String, u32)>,
+) -> Response {
+    match find_pull(&inner, &owner, &name, number, |p| p.clone()) {
+        Some(pull) => axum::Json(pull.json(&owner, &name)).into_response(),
+        None => message(StatusCode::NOT_FOUND, "not found"),
+    }
+}
+
+async fn update_pull(
+    State(inner): State<Arc<Inner>>,
+    UrlPath((owner, name, number)): UrlPath<(String, String, u32)>,
+    axum::Json(body): axum::Json<Value>,
+) -> Response {
+    let closing = body["state"] == "closed";
+    let updated = find_pull(&inner, &owner, &name, number, |p| {
+        if closing && p.merged.is_none() {
+            p.open = false;
+        }
+        p.clone()
+    });
+    match updated {
+        Some(pull) => (StatusCode::CREATED, axum::Json(pull.json(&owner, &name))).into_response(),
+        None => message(StatusCode::NOT_FOUND, "not found"),
+    }
+}
+
+async fn pull_files(
+    State(inner): State<Arc<Inner>>,
+    UrlPath((owner, name, number)): UrlPath<(String, String, u32)>,
+    Query(page): Query<Page>,
+) -> Response {
+    let Some(pull) = find_pull(&inner, &owner, &name, number, |p| p.clone()) else {
+        return message(StatusCode::NOT_FOUND, "not found");
+    };
+    let bare = inner.root.join(&owner).join(format!("{name}.git"));
+    let range = format!("refs/heads/{}...refs/heads/{}", pull.base, pull.head);
+    let listed = match run_git(&bare, &["diff", "--name-status", "-M", &range]).await {
+        Ok(listed) => listed,
+        Err(error) => return message(StatusCode::INTERNAL_SERVER_ERROR, &error),
+    };
+    let files: Vec<Value> = listed
+        .lines()
+        .filter_map(|line| {
+            let mut fields = line.split('\t');
+            let status = fields.next()?;
+            let first = fields.next()?;
+            Some(match status.chars().next()? {
+                'A' => json!({"filename": first, "status": "added"}),
+                'D' => json!({"filename": first, "status": "deleted"}),
+                'R' => json!({"filename": fields.next()?, "previous_filename": first,
+                              "status": "renamed"}),
+                _ => json!({"filename": first, "status": "modified"}),
+            })
+        })
+        .collect();
+    axum::Json(page.of(&files)).into_response()
+}
+
+async fn merge_pull(
+    State(inner): State<Arc<Inner>>,
+    UrlPath((owner, name, number)): UrlPath<(String, String, u32)>,
+    axum::Json(body): axum::Json<Value>,
+) -> Response {
+    let Some(pull) = find_pull(&inner, &owner, &name, number, |p| p.clone()) else {
+        return message(StatusCode::NOT_FOUND, "not found");
+    };
+    if !pull.open {
+        return message(StatusCode::METHOD_NOT_ALLOWED, "the pull request is closed");
+    }
+    let bare = inner.root.join(&owner).join(format!("{name}.git"));
+    let before = main_of(&bare, &pull.base).await;
+    let Ok(work) = tempfile::tempdir() else {
+        return message(StatusCode::INTERNAL_SERVER_ERROR, "no folder");
+    };
+    let text = body["merge_message_field"]
+        .as_str()
+        .filter(|m| !m.is_empty())
+        .map(str::to_owned)
+        .unwrap_or_else(|| format!("Merge pull request #{number}"));
+    let target = bare.to_string_lossy().into_owned();
+    let merged = async {
+        run_git(
+            work.path(),
+            &["clone", "-q", "-b", &pull.base, &target, "."],
+        )
+        .await?;
+        let head = format!("origin/{}", pull.head);
+        if let Err(error) =
+            run_git(work.path(), &["merge", "--no-ff", "-q", "-m", &text, &head]).await
+        {
+            return Err(format!("merge conflict: {error}"));
+        }
+        let branch = format!("HEAD:refs/heads/{}", pull.base);
+        run_git(work.path(), &["push", "-q", "origin", &branch]).await?;
+        run_git(work.path(), &["rev-parse", "HEAD"]).await
+    }
+    .await;
+    let commit = match merged {
+        Ok(commit) => commit,
+        Err(error) if error.starts_with("merge conflict") => {
+            return message(StatusCode::CONFLICT, &error);
+        }
+        Err(error) => return message(StatusCode::INTERNAL_SERVER_ERROR, &error),
+    };
+    find_pull(&inner, &owner, &name, number, |p| {
+        p.open = false;
+        p.merged = Some(commit.clone());
+    });
+    if body["delete_branch_after_merge"] == true {
+        let reference = format!("refs/heads/{}", pull.head);
+        let _ = run_git(&bare, &["update-ref", "-d", &reference]).await;
+    }
+    if pull.base == "main" {
+        notify(&inner, &owner, &name, before, Some(commit)).await;
+    }
+    StatusCode::OK.into_response()
 }
 
 /// Git's smart HTTP protocol, through `git http-backend`; after a push,
