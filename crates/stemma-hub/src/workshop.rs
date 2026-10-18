@@ -3,8 +3,9 @@
 //! A task is handed over in conversation: an agent answering in a thread
 //! calls `create_task` when someone asks it to ("formalize this"), or a
 //! message mentions the workshop's agent (`@workshop formalize the lemma in
-//! t12#48`). Each task is a job, `task_run`, for a group worker that
-//! offers the workshop, with Lean and the workshop agent's runner. A group's tasks run one at a time.
+//! t12#48`). Only admins and members ask for work: guests cannot. Each task
+//! is a job, `task_run`, for a group worker that offers the workshop, with
+//! Lean and the workshop agent's runner. A group's tasks run one at a time.
 //!
 //! The worker pushes what it did to `main` with the job's token, and tells
 //! how it went: the build and inspection of what it pushed become the
@@ -278,8 +279,14 @@ pub struct NewTask {
 }
 
 /// Hands a task to the workshop, and queues its run; the caller then
-/// dispatches. Returns the task.
+/// dispatches. Returns the task. `group` is the requester's membership:
+/// guests cannot ask for work.
 pub async fn create(state: &AppState, group: &Membership, new: NewTask) -> ApiResult<Task> {
+    if !group.role.can_ask_for_work() {
+        return Err(ApiError::forbidden(
+            "Guests cannot ask the workshop for work",
+        ));
+    }
     let profile = profile(state, group.group_id).await?.ok_or_else(|| {
         ApiError::invalid("This group has no workshop: add an agent whose role is the workshop")
     })?;

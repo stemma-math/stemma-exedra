@@ -30,7 +30,7 @@ pub async fn groups_of(state: &AppState, user_id: i64) -> ApiResult<Vec<Group>> 
         .map(|(slug, name, role, created_at)| Group {
             slug,
             name,
-            role: Role::parse(&role).unwrap_or(Role::Member),
+            role: Role::parse(&role).unwrap_or(Role::Guest),
             created_at: db::from_millis(created_at),
         })
         .collect())
@@ -147,7 +147,7 @@ pub async fn members(
         rows.into_iter()
             .map(|row| Member {
                 user: row.user.into(),
-                role: Role::parse(&row.role).unwrap_or(Role::Member),
+                role: Role::parse(&row.role).unwrap_or(Role::Guest),
                 joined_at: db::from_millis(row.joined_at),
             })
             .collect(),
@@ -176,6 +176,8 @@ async fn role_of(state: &AppState, group_id: i64, user_id: i64) -> ApiResult<Rol
         .ok_or_else(|| ApiError::not_found("Member"))
 }
 
+/// Changes a member's role: only an admin, and never leaving the group
+/// without one.
 pub async fn update_member(
     State(state): State<AppState>,
     viewer: Viewer,
@@ -187,7 +189,7 @@ pub async fn update_member(
     group.require_admin()?;
     let current = role_of(&state, group.group_id, user_id).await?;
     if current == Role::Admin
-        && body.role == Role::Member
+        && body.role != Role::Admin
         && admin_count(&state, group.group_id).await? == 1
     {
         return Err(ApiError::conflict("A group needs at least one admin"));
@@ -240,7 +242,7 @@ impl From<InvitationRow> for Invitation {
     fn from(row: InvitationRow) -> Self {
         Invitation {
             id: row.id,
-            role: Role::parse(&row.role).unwrap_or(Role::Member),
+            role: Role::parse(&row.role).unwrap_or(Role::Guest),
             created_by: row.creator.into(),
             created_at: db::from_millis(row.created_at),
             expires_at: row.expires_at.map(db::from_millis),
@@ -275,6 +277,7 @@ pub async fn invitations(
     Ok(Json(rows.into_iter().map(Invitation::from).collect()))
 }
 
+/// Creates an invitation that grants a role: a member's, if it names none.
 pub async fn create_invitation(
     State(state): State<AppState>,
     viewer: Viewer,
@@ -378,7 +381,7 @@ async fn valid_invitation(state: &AppState, token: &str) -> ApiResult<ValidInvit
         group_id,
         group_slug,
         group_name,
-        role: Role::parse(&role).unwrap_or(Role::Member),
+        role: Role::parse(&role).unwrap_or(Role::Guest),
     })
 }
 

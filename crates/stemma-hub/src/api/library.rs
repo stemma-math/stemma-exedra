@@ -91,6 +91,9 @@ pub async fn rebuild(
 ) -> ApiResult<(StatusCode, Json<Build>)> {
     viewer.require_full()?;
     let group = Membership::of(&state, &viewer, &group).await?;
+    if !group.role.can_ask_for_work() {
+        return Err(ApiError::forbidden("Guests cannot ask for a build"));
+    }
     let head = library::main_commit(&library::repository(&state, group.group_id))
         .await
         .ok_or_else(|| ApiError::not_found("Library"))?;

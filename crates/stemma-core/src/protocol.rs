@@ -150,6 +150,10 @@ pub struct JobSpec {
     /// A token for the hub's API while the job lasts, scoped to its group;
     /// it reads, and does not post.
     pub token: String,
+    /// Whether the job's agent may hand tasks to the workshop: one
+    /// answering in a thread, for someone who may ask for work.
+    #[serde(default)]
+    pub hands_over: bool,
     pub work: Work,
 }
 

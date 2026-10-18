@@ -2,8 +2,8 @@
 //! `git http-backend`.
 //!
 //! Members clone and push with a personal token as the password (any user
-//! name), or as a bearer token; a job's token only clones, unless it is a
-//! task's, which pushes too. After a person's push the hub looks at `main`,
+//! name), or as a bearer token; guests only clone. A job's token only
+//! clones, unless it is a task's, which pushes too. After a person's push the hub looks at `main`,
 //! and builds its new commit; after a task's, the task's own build and
 //! inspection of what it pushed become the library's state when the task
 //! ends (see [`crate::workshop`]).
@@ -92,6 +92,9 @@ async fn handle(
             StatusCode::FORBIDDEN,
             "A job's token cannot push to the library",
         );
+    }
+    if pushing && !group.role.can_ask_for_work() {
+        return refused(StatusCode::FORBIDDEN, "Guests cannot push to the library");
     }
     // Only the smart protocol's three endpoints.
     if !matches!(

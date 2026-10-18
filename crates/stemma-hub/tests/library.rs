@@ -204,6 +204,24 @@ async fn libraries_are_made_cloned_pushed_and_built() {
     let forced = git(&dir, &["push", "-q", "--force", "origin", "main"]);
     assert!(!forced.status.success());
 
+    // Guests clone the library, but do not push to it.
+    let gus = person(&hub, "gus", false).await;
+    sqlx::query(
+        "INSERT INTO memberships (group_id, user_id, role, joined_at)
+         SELECT g.id, u.id, 'guest', 0 FROM groups g, users u WHERE u.username = 'gus'",
+    )
+    .execute(&hub.state.db)
+    .await
+    .unwrap();
+    let url = format!("http://gus:{gus}@{host}/git/geometry.git");
+    let cloned = git(work.path(), &["clone", "-q", &url, "guest"]);
+    assert!(cloned.status.success(), "{cloned:?}");
+    let guest = work.path().join("guest");
+    std::fs::write(guest.join("Geometry/Basic.lean"), "-- Mine.\n").unwrap();
+    git(&guest, &["commit", "-qam", "Mine"]);
+    let pushed = git(&guest, &["push", "-q", "origin", "main"]);
+    assert!(!pushed.status.success());
+
     // A worker's report becomes the library's state.
     let job_id: i64 = sqlx::query_scalar("SELECT job_id FROM library_builds WHERE commit_sha = ?")
         .bind(second)

@@ -134,11 +134,17 @@ impl TestHub {
 
     /// A new member of `geometry`, through an invitation from `admin`.
     async fn member(&self, admin: &Client, username: &str) -> Client {
+        self.join(admin, username, "member").await
+    }
+
+    /// Someone new in `geometry` with `role`, through an invitation from
+    /// `admin`.
+    async fn join(&self, admin: &Client, username: &str, role: &str) -> Client {
         let reply = self
             .post(
                 admin,
                 "/groups/geometry/invitations",
-                json!({"max_uses": 1}),
+                json!({"max_uses": 1, "role": role}),
             )
             .await;
         assert_eq!(reply.status, StatusCode::CREATED);
@@ -1485,4 +1491,230 @@ async fn the_workshop_takes_tasks_from_conversation() {
         .json();
     assert_eq!(open.as_array().unwrap().len(), 1);
     assert_eq!(open[0]["number"], 2);
+}
+
+#[tokio::test]
+async fn invitations_grant_their_role() {
+    let hub = TestHub::new().await;
+    let ada = hub.admin_with_group().await;
+
+    // An invitation says the role it grants, and gives it.
+    let reply = hub
+        .post(
+            &ada,
+            "/groups/geometry/invitations",
+            json!({"role": "guest"}),
+        )
+        .await;
+    assert_eq!(reply.status, StatusCode::CREATED);
+    assert_eq!(reply.json()["role"], "guest");
+    let token = reply.json()["token"].as_str().unwrap().to_owned();
+    let info = hub
+        .get(&Client::default(), &format!("/invitations/{token}"))
+        .await;
+    assert_eq!(info.json()["role"], "guest");
+    let account =
+        json!({"account": {"username": "gus", "display_name": "Gus", "password": "password1"}});
+    let reply = hub
+        .post(
+            &Client::default(),
+            &format!("/invitations/{token}/accept"),
+            account,
+        )
+        .await;
+    assert_eq!(reply.json()["groups"][0]["role"], "guest");
+    let gus = signed_in(&reply);
+    assert_eq!(
+        hub.get(&gus, "/groups/geometry").await.json()["role"],
+        "guest"
+    );
+
+    // An admin invites with any role; a member or a guest, with none.
+    let carol = hub.join(&ada, "carol", "admin").await;
+    assert_eq!(
+        hub.get(&carol, "/groups/geometry").await.json()["role"],
+        "admin"
+    );
+    let bob = hub.member(&ada, "bob").await;
+    assert_eq!(
+        hub.get(&bob, "/groups/geometry").await.json()["role"],
+        "member"
+    );
+    for (who, role) in [(&bob, "guest"), (&gus, "guest"), (&gus, "member")] {
+        let reply = hub
+            .post(who, "/groups/geometry/invitations", json!({"role": role}))
+            .await;
+        assert_eq!(reply.status, StatusCode::FORBIDDEN);
+    }
+    let reply = hub
+        .post(
+            &ada,
+            "/groups/geometry/invitations",
+            json!({"role": "owner"}),
+        )
+        .await;
+    assert_eq!(reply.status, StatusCode::BAD_REQUEST);
+}
+
+#[tokio::test]
+async fn admins_change_roles() {
+    let hub = TestHub::new().await;
+    let ada = hub.admin_with_group().await;
+    let bob = hub.member(&ada, "bob").await;
+    let gus = hub.join(&ada, "gus", "guest").await;
+    let mut ids = Vec::new();
+    for client in [&ada, &bob, &gus] {
+        ids.push(hub.get(client, "/me").await.json()["id"].as_i64().unwrap());
+    }
+    let (ada_id, bob_id, gus_id) = (ids[0], ids[1], ids[2]);
+    let set = async |client: &Client, user: i64, role: &str| {
+        hub.call(
+            client,
+            Method::PATCH,
+            &format!("/groups/geometry/members/{user}"),
+            Some(json!({"role": role})),
+        )
+        .await
+        .status
+    };
+
+    // Members and guests change nobody's role, not even their own.
+    assert_eq!(set(&bob, gus_id, "member").await, StatusCode::FORBIDDEN);
+    assert_eq!(set(&bob, bob_id, "admin").await, StatusCode::FORBIDDEN);
+    assert_eq!(set(&gus, gus_id, "member").await, StatusCode::FORBIDDEN);
+
+    // An admin does.
+    assert_eq!(set(&ada, gus_id, "member").await, StatusCode::NO_CONTENT);
+    assert_eq!(set(&ada, bob_id, "guest").await, StatusCode::NO_CONTENT);
+    let members = hub.get(&ada, "/groups/geometry/members").await.json();
+    let role_of = |username: &str| {
+        members
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|m| m["username"] == username)
+            .unwrap()["role"]
+            .clone()
+    };
+    assert_eq!(role_of("gus"), "member");
+    assert_eq!(role_of("bob"), "guest");
+
+    // But never leaves the group without an admin.
+    assert_eq!(set(&ada, ada_id, "guest").await, StatusCode::CONFLICT);
+}
+
+#[tokio::test]
+async fn guests_converse_but_ask_for_no_work() {
+    let hub = TestHub::new().await;
+    let ada = hub.admin_with_group().await;
+    let gus = hub.join(&ada, "gus", "guest").await;
+
+    // A guest reads, posts and summons their own agents.
+    let reply = hub
+        .post(
+            &gus,
+            "/groups/geometry/threads",
+            json!({"title": "A question", "body": "@claude is it proper?"}),
+        )
+        .await;
+    assert_eq!(reply.status, StatusCode::CREATED, "{:?}", reply.json());
+    assert_eq!(
+        hub.get(&gus, "/groups/geometry/threads").await.status,
+        StatusCode::OK
+    );
+    let jobs = hub
+        .get(&gus, "/groups/geometry/threads/1/jobs")
+        .await
+        .json();
+    assert_eq!(jobs[0]["agent"], "claude");
+    assert_eq!(jobs[0]["state"], "queued");
+
+    // But asks nothing of the workshop: not in a message…
+    hub.post(
+        &gus,
+        "/groups/geometry/threads/1/messages",
+        json!({"body": "@workshop formalize it."}),
+    )
+    .await;
+    let tasks = hub.get(&gus, "/groups/geometry/tasks").await.json();
+    assert!(tasks.as_array().unwrap().is_empty(), "{tasks}");
+    let jobs = hub
+        .get(&gus, "/groups/geometry/threads/1/jobs")
+        .await
+        .json();
+    assert_eq!(jobs[1]["state"], "failed", "{jobs}");
+    assert_eq!(jobs[1]["error"], "Guests cannot ask @workshop for work");
+
+    // …nor directly…
+    let task = json!({"title": "Formalize it", "instructions": "As in t1#1.", "origin": "t1#1"});
+    let reply = hub.post(&gus, "/groups/geometry/tasks", task.clone()).await;
+    assert_eq!(reply.status, StatusCode::FORBIDDEN);
+
+    // …nor through an agent, with its job's token, which has the guest's
+    // role.
+    let gus_id = hub.get(&gus, "/me").await.json()["id"].as_i64().unwrap();
+    let job = job_token(&hub, gus_id).await;
+    assert_eq!(
+        hub.get(&job, "/groups/geometry").await.json()["role"],
+        "guest"
+    );
+    let reply = hub.post(&job, "/groups/geometry/tasks", task.clone()).await;
+    assert_eq!(reply.status, StatusCode::FORBIDDEN);
+
+    // Nor does a guest summon the group's agents, which run on its workers.
+    let reply = hub
+        .post(
+            &ada,
+            "/groups/geometry/agents",
+            json!({"handle": "qwen", "display_name": "Qwen", "runner": "opencode",
+                   "scope": "group"}),
+        )
+        .await;
+    assert_eq!(reply.status, StatusCode::CREATED);
+    hub.post(
+        &gus,
+        "/groups/geometry/threads/1/messages",
+        json!({"body": "@qwen what do you think?"}),
+    )
+    .await;
+    let jobs = hub
+        .get(&gus, "/groups/geometry/threads/1/jobs")
+        .await
+        .json();
+    assert_eq!(jobs[2]["agent"], "qwen");
+    assert_eq!(jobs[2]["state"], "failed", "{jobs}");
+
+    // Nor asks for a build of the library.
+    let reply = hub
+        .post(&gus, "/groups/geometry/library/builds", json!({}))
+        .await;
+    assert_eq!(reply.status, StatusCode::FORBIDDEN);
+
+    // Nor changes the group's settings.
+    let agent = json!({"handle": "mine", "display_name": "Mine", "runner": "codex",
+                       "scope": "personal"});
+    for (method, path, body) in [
+        (Method::POST, "/groups/geometry/agents", Some(agent.clone())),
+        (Method::PUT, "/groups/geometry/agents/claude", Some(agent)),
+        (Method::DELETE, "/groups/geometry/agents/claude", None),
+        (
+            Method::POST,
+            "/groups/geometry/invitations",
+            Some(json!({})),
+        ),
+        (Method::GET, "/groups/geometry/invitations", None),
+        (
+            Method::POST,
+            "/groups/geometry/workers",
+            Some(json!({"name": "box"})),
+        ),
+    ] {
+        let reply = hub.call(&gus, method.clone(), path, body).await;
+        assert_eq!(reply.status, StatusCode::FORBIDDEN, "{method} {path}");
+    }
+
+    // A member asks the workshop for work.
+    let bob = hub.member(&ada, "bob").await;
+    let reply = hub.post(&bob, "/groups/geometry/tasks", task).await;
+    assert_eq!(reply.status, StatusCode::CREATED, "{:?}", reply.json());
 }

@@ -31,21 +31,24 @@ CREATE TABLE groups (
     created_at INTEGER NOT NULL
 );
 
+-- An admin manages the group; a member also asks the workshop for work; a
+-- guest reads and converses.
 CREATE TABLE memberships (
     group_id INTEGER NOT NULL REFERENCES groups (id) ON DELETE CASCADE,
     user_id INTEGER NOT NULL REFERENCES users (id) ON DELETE CASCADE,
-    role TEXT NOT NULL CHECK (role IN ('admin', 'member')),
+    role TEXT NOT NULL CHECK (role IN ('admin', 'member', 'guest')),
     joined_at INTEGER NOT NULL,
     PRIMARY KEY (group_id, user_id)
 );
 
 CREATE INDEX memberships_user ON memberships (user_id);
 
+-- An invitation grants its role to whoever accepts it.
 CREATE TABLE invitations (
     id INTEGER PRIMARY KEY,
     group_id INTEGER NOT NULL REFERENCES groups (id) ON DELETE CASCADE,
     token_hash TEXT NOT NULL UNIQUE,
-    role TEXT NOT NULL CHECK (role IN ('admin', 'member')),
+    role TEXT NOT NULL CHECK (role IN ('admin', 'member', 'guest')),
     created_by INTEGER NOT NULL REFERENCES users (id),
     created_at INTEGER NOT NULL,
     expires_at INTEGER,

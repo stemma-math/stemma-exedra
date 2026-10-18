@@ -684,6 +684,76 @@ async fn a_revoked_worker_stops() {
     );
 }
 
+/// Ada, an admin, and Gus, a guest, each summon their own Claude Code:
+/// only Ada's may hand tasks to the workshop.
+#[tokio::test]
+async fn only_agents_for_those_who_ask_for_work_hand_tasks_over() {
+    let hub = TestHub::start().await;
+    let (ada, _) = group(&hub).await;
+    let gus = Person::new(&hub, "gus", false).await;
+    let invitation = ada
+        .post(
+            &hub,
+            "/groups/geometry/invitations",
+            json!({"role": "guest"}),
+        )
+        .await;
+    gus.post(
+        &hub,
+        &format!(
+            "/invitations/{}/accept",
+            invitation["token"].as_str().unwrap()
+        ),
+        json!({}),
+    )
+    .await;
+    ada.post(
+        &hub,
+        "/groups/geometry/threads",
+        json!({"title": "Gluing", "body": "The charts glue."}),
+    )
+    .await;
+
+    for (person, asked, hands_over) in [(&ada, 2, true), (&gus, 4, false)] {
+        let tools = tempfile::tempdir().unwrap();
+        let work = tempfile::tempdir().unwrap();
+        let claude = fake_claude(tools.path(), 0);
+        let running = worker(
+            &hub,
+            &worker_token(&hub, person, "/me/workers").await,
+            work.path(),
+            &format!(
+                "[runners.claude-code]\ncommand = {:?}\n",
+                claude.display().to_string()
+            ),
+        );
+        wait_online(&hub, person, "/me/workers").await;
+        person
+            .post(
+                &hub,
+                "/groups/geometry/threads/1/messages",
+                json!({"body": "@claude have the workshop formalize the gluing"}),
+            )
+            .await;
+        let message = answer(&hub, person, 1, asked + 1).await;
+        assert_eq!(message["reply_to"], asked);
+
+        let args = std::fs::read_to_string(tools.path().join("claude.args")).unwrap();
+        assert_eq!(
+            args.contains("mcp__stemma__create_task"),
+            hands_over,
+            "{args}"
+        );
+        let mcp: Value =
+            serde_json::from_str(&std::fs::read_to_string(tools.path().join("mcp.json")).unwrap())
+                .unwrap();
+        let mcp_args = mcp["mcpServers"]["stemma"]["args"].as_array().unwrap();
+        assert!(mcp_args.contains(&json!("--read-only")));
+        assert_eq!(mcp_args.contains(&json!("--hand-over")), hands_over);
+        running.abort();
+    }
+}
+
 /// A fake `opencode run`, working on the fixture in its worktree: in its
 /// first round it adds a theorem and a definition whose data is `sorry`,
 /// and Ada meanwhile pushes another change to `main`; told that the

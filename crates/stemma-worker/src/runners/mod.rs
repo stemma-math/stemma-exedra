@@ -5,9 +5,9 @@
 //!   with the person's own login (or, for OpenCode, the keys of the
 //!   providers it is configured with), and give them Stemma's tools
 //!   through `stemma mcp` with the job's token, read-only: an agent
-//!   answering in a thread may also hand a task to the workshop. For a
-//!   task they work in a worktree of the library, where they edit files
-//!   and run commands, Lean's among them.
+//!   answering in a thread, for someone who may ask for work, may also
+//!   hand a task to the workshop. For a task they work in a worktree of the
+//!   library, where they edit files and run commands, Lean's among them.
 
 pub mod claude_code;
 pub mod codex;
@@ -17,7 +17,7 @@ use std::path::Path;
 use std::process::{ExitStatus, Stdio};
 
 use anyhow::Context as _;
-use stemma_core::api::{AgentProfile, JobKind};
+use stemma_core::api::AgentProfile;
 use stemma_core::protocol::JobSpec;
 use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader};
 use tokio::process::Command;
@@ -35,14 +35,14 @@ pub struct Work<'a> {
     pub max_turns: Option<u32>,
 }
 
-/// Whether a job's agent may hand tasks to the workshop: one answering in
-/// a thread.
+/// Whether a job's agent may hand tasks to the workshop, as the hub says:
+/// one answering in a thread, for someone who may ask for work.
 pub fn hands_over(job: &JobSpec) -> bool {
-    job.kind() == JobKind::Reply
+    job.hands_over
 }
 
 /// The Stemma tools a job's agent may use, by name: those that read, and
-/// for an agent answering in a thread, what hands a task over.
+/// if it may, what hands a task over.
 pub fn allowed_tools(job: &JobSpec) -> Vec<&'static str> {
     let mut names = stemma_client::tools::read_only_names();
     if hands_over(job) {

@@ -78,7 +78,8 @@ async fn origin_of(state: &AppState, group: &Membership, written: &str) -> ApiRe
 
 /// Hands a task to the workshop. A person names the message that asks;
 /// an agent answering in a thread, with its job's token, hands over what
-/// the message it answers asks, unless it names another.
+/// the message it answers asks, unless it names another. Guests cannot,
+/// nor can an agent for them.
 pub async fn create(
     State(state): State<AppState>,
     viewer: Viewer,
@@ -86,6 +87,11 @@ pub async fn create(
     Json(body): Json<CreateTask>,
 ) -> ApiResult<(StatusCode, Json<Task>)> {
     let group = Membership::of(&state, &viewer, &slug).await?;
+    if !group.role.can_ask_for_work() {
+        return Err(ApiError::forbidden(
+            "Guests cannot ask the workshop for work",
+        ));
+    }
     let (origin, agent) = match viewer.job() {
         Some(job) => {
             let asked: Option<(String, Option<i64>, Option<i64>)> = sqlx::query_as(

@@ -187,7 +187,8 @@ impl Membership {
     /// Finds the group `slug` among the viewer's. A group they are not in
     /// is not found, so its existence is not revealed.
     ///
-    /// A job's token sees only its job's group, as a member.
+    /// A job's token sees only its job's group, with its requester's role
+    /// there, but never as an admin.
     pub async fn of(state: &AppState, viewer: &Viewer, slug: &str) -> ApiResult<Membership> {
         let row: Option<(i64, String, String, i64, String)> = sqlx::query_as(
             "SELECT g.id, g.slug, g.name, g.created_at, m.role
@@ -200,10 +201,11 @@ impl Membership {
         .await?;
         let (group_id, slug, name, created_at, role) =
             row.ok_or_else(|| ApiError::not_found("Group"))?;
+        let role = Role::parse(&role).unwrap_or(Role::Guest);
         let role = match viewer.job() {
             Some(job) if job.group_id != group_id => return Err(ApiError::not_found("Group")),
-            Some(_) => Role::Member,
-            None => Role::parse(&role).unwrap_or(Role::Member),
+            Some(_) if role == Role::Admin => Role::Member,
+            _ => role,
         };
         Ok(Membership {
             group_id,
@@ -232,9 +234,10 @@ impl Membership {
     }
 
     pub fn require_admin(&self) -> ApiResult<()> {
-        match self.role {
-            Role::Admin => Ok(()),
-            Role::Member => Err(ApiError::forbidden("Only the group's admins can do this")),
+        if self.role.is_admin() {
+            Ok(())
+        } else {
+            Err(ApiError::forbidden("Only the group's admins can do this"))
         }
     }
 

@@ -116,11 +116,18 @@ pub struct CreatedToken {
 
 // ── Groups ────────────────────────────────────────────────────────────
 
+/// What someone may do in a group.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Role {
+    /// Manages the group (its settings, members, invitations, agents and
+    /// workers), and does everything a member does.
     Admin,
+    /// Reads, converses, summons agents and asks the workshop for work.
     Member,
+    /// Reads and converses, summoning their own agents, but asks the
+    /// workshop for no work and changes nothing of the group's.
+    Guest,
 }
 
 impl Role {
@@ -128,6 +135,7 @@ impl Role {
         match self {
             Role::Admin => "admin",
             Role::Member => "member",
+            Role::Guest => "guest",
         }
     }
 
@@ -135,8 +143,20 @@ impl Role {
         match s {
             "admin" => Some(Role::Admin),
             "member" => Some(Role::Member),
+            "guest" => Some(Role::Guest),
             _ => None,
         }
+    }
+
+    /// Whether it manages the group.
+    pub fn is_admin(self) -> bool {
+        self == Role::Admin
+    }
+
+    /// Whether it may ask the workshop for work: create tasks, directly or
+    /// through an agent that hands one over.
+    pub fn can_ask_for_work(self) -> bool {
+        matches!(self, Role::Admin | Role::Member)
     }
 }
 

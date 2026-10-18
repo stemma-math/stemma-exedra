@@ -24,7 +24,7 @@ use std::collections::{HashMap, HashSet};
 
 use sqlx::FromRow;
 use stemma_core::api::{
-    AgentProfile, AgentRole, AgentScope, Event, Job, JobKind, JobState, Message, Thread,
+    AgentProfile, AgentRole, AgentScope, Event, Job, JobKind, JobState, Message, Role, Thread,
     ThreadKind, User, runners,
 };
 use stemma_core::protocol::{
@@ -276,6 +276,8 @@ struct JobRow {
     updated_at: i64,
     /// For a task's run, the task's number.
     task_number: Option<i64>,
+    /// The requester's role in the group, if they are still in it.
+    requester_role: Option<String>,
 }
 
 macro_rules! job_query {
@@ -283,10 +285,12 @@ macro_rules! job_query {
         "SELECT j.id, j.group_id, j.kind, j.thread_id, t.number AS thread_number,
         j.trigger_message, j.requester_id, u.username, u.display_name, j.agent_handle, j.agent,
         j.runner, j.scope, j.state, j.worker_id, j.token_id, j.attempts, j.progress, j.error,
-        j.answer, j.created_at, j.updated_at, k.number AS task_number
+        j.answer, j.created_at, j.updated_at, k.number AS task_number,
+        m.role AS requester_role
          FROM jobs j LEFT JOIN threads t ON t.id = j.thread_id
               JOIN users u ON u.id = j.requester_id
-              LEFT JOIN tasks k ON k.job_id = j.id"
+              LEFT JOIN tasks k ON k.job_id = j.id
+              LEFT JOIN memberships m ON m.group_id = j.group_id AND m.user_id = j.requester_id"
     };
 }
 
@@ -305,6 +309,17 @@ impl JobRow {
             .as_deref()
             .ok_or_else(|| ApiError::internal("an agent's job without its agent"))?;
         serde_json::from_str(agent).map_err(ApiError::internal)
+    }
+
+    /// Whether its agent may hand tasks to the workshop: one answering in
+    /// a thread, for someone who may ask for work.
+    fn hands_over(&self) -> bool {
+        self.kind() == JobKind::Reply
+            && self
+                .requester_role
+                .as_deref()
+                .and_then(Role::parse)
+                .is_some_and(Role::can_ask_for_work)
     }
 
     fn requester(&self) -> User {
@@ -424,6 +439,36 @@ pub async fn summon(
         let Some(profile) = find_profile(state, group.group_id, &handle).await? else {
             continue;
         };
+        // Guests ask nothing of the group's own: neither work of the
+        // workshop nor answers from the group's agents, on its workers.
+        let refused = if group.role.can_ask_for_work() {
+            None
+        } else if profile.role == AgentRole::Workshop {
+            Some(format!("Guests cannot ask @{} for work", profile.handle))
+        } else if profile.scope == AgentScope::Group {
+            Some(format!(
+                "Guests summon only personal agents, and @{} is the group's",
+                profile.handle
+            ))
+        } else {
+            None
+        };
+        if let Some(error) = refused {
+            // Say why in the thread, as a job that failed.
+            let job_id = insert_agent_job(
+                state,
+                group.group_id,
+                thread_id,
+                message.number,
+                message.author.id,
+                &profile,
+                Some(&error),
+            )
+            .await?;
+            let workers = state.workers.lock().await;
+            publish(state, &workers, job_id).await?;
+            continue;
+        }
         if profile.role == AgentRole::Workshop {
             let task = workshop::NewTask {
                 title: workshop::title_of(&message.body, &profile.handle),
@@ -653,6 +698,7 @@ async fn start(
             name: group.name.clone(),
         },
         token,
+        hands_over: job.hands_over(),
         work,
     })
 }
