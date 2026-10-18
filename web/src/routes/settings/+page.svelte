@@ -1,6 +1,7 @@
 <script lang="ts">
   import { api, type ApiToken, type CreatedToken } from "#lib/api.ts";
-  import WorkerSettings from "#lib/components/WorkerSettings.svelte";
+  import MachineSettings from "#lib/components/MachineSettings.svelte";
+  import PersonalAgentSettings from "#lib/components/PersonalAgentSettings.svelte";
   import { exactly, when } from "#lib/format.ts";
   import { session, setSession } from "#lib/session.svelte.ts";
   import { toast, toastError } from "#lib/toast.ts";
@@ -175,13 +176,33 @@
 
   <section class="card">
     <div class="card__body stack">
-      <h2>Your workers</h2>
+      <h2>Your agents</h2>
       <p>
-        Your worker runs your personal agents, such as <code>@claude</code>, with your own login to
-        Claude Code or Codex, and only when you ask. It connects to the hub from your machine, and
-        your credentials stay there.
+        Your agents answer for you, in every group you are in: when you write <code>@claude</code>,
+        your Claude answers, on your machine, with your own sign-in, and its message is signed
+        “Claude, for {session.me?.display_name}”. You have one for each runner, and may add more, such
+        as <code>@claude-sonnet</code> with another model.
       </p>
-      <WorkerSettings manage />
+      <PersonalAgentSettings />
+    </div>
+  </section>
+
+  <section class="card">
+    <div class="card__body stack">
+      <h2>Your machines</h2>
+      <p>
+        Your machines run your agents, only for you, with the Claude Code, Codex or OpenCode installed
+        and signed in on each. They connect to the hub, and your credentials stay on them. A job goes
+        to the machine you prefer, if it has the runner, or else to any that has it; with none online,
+        it waits. Set one up from its command line, signed in with <code>stemma login</code>:
+      </p>
+      <span class="copy-block">
+        <span class="copy-block__label">On the machine</span>
+        <pre id="machine-commands">stemma machine add
+stemma machine run</pre>
+        <stemma-copy-button for="machine-commands" label="Copy the commands"></stemma-copy-button>
+      </span>
+      <MachineSettings />
     </div>
   </section>
 </main>

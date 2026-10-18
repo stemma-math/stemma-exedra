@@ -1,11 +1,11 @@
 <script lang="ts">
   import { goto } from "$app/navigation";
   import { page } from "$app/state";
-  import { type AgentProfile, api, type ThreadKind } from "#lib/api.ts";
+  import { api, type ThreadKind } from "#lib/api.ts";
   import { addressPath, parseAddress } from "#lib/address.ts";
   import Composer from "#lib/components/Composer.svelte";
   import { groupContext } from "#lib/group.svelte.ts";
-  import { summonable } from "#lib/roles.ts";
+  import { type Summonable, summonable } from "#lib/roles.ts";
 
   const context = groupContext();
   const group = $derived(context.group);
@@ -13,15 +13,14 @@
   let title = $state("");
   let kind = $state<ThreadKind>(page.url.searchParams.get("kind") === "chat" ? "chat" : "discussion");
   let agent = $state(page.url.searchParams.get("agent") ?? "");
-  let agents = $state<AgentProfile[]>([]);
+  let agents = $state<Summonable[]>([]);
   const anchor = page.url.searchParams.get("anchor") ?? undefined;
 
   $effect(() => {
-    api
-      .agents(group.slug)
-      .then((found) => {
-        agents = summonable(found, group.role);
-        if (!agent && found.length) agent = found[0].handle;
+    Promise.all([api.myAgents(), api.agents(group.slug)])
+      .then(([own, groups]) => {
+        agents = summonable(own, groups, group.role);
+        if (!agent && agents.length) agent = agents[0].handle;
       })
       .catch(() => {});
   });
@@ -74,7 +73,8 @@
         {/each}
       </select>
       <span class="field__hint">
-        In a chat, this agent answers every message. Others can join, and mention other agents too.
+        In a chat, this agent answers every message. If it is one of yours, each person who writes is
+        answered by their own agent with that handle. Anyone can mention other agents too.
       </span>
     </div>
   {/if}

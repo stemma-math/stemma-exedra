@@ -354,8 +354,13 @@ stemma-toast-region {
   --columns: minmax(0, 1fr) auto auto;
 }
 
-.workers-table.is-managed {
+.workers-table.is-managed,
+.machines-table {
   --columns: minmax(0, 1fr) auto auto auto;
+}
+
+.my-agents-table {
+  --columns: minmax(0, 1fr) fit-content(14rem) auto;
 }
 
 .members-table {

@@ -1,14 +1,8 @@
 <script lang="ts">
-  import { type AgentProfile, api, RUNNERS } from "#lib/api.ts";
+  import { type AgentProfile, api, RUNNER_NAMES, RUNNERS } from "#lib/api.ts";
   import { toastError } from "#lib/toast.ts";
 
   let { group, admin }: { group: string; admin: boolean } = $props();
-
-  const RUNNER_NAMES: Record<string, string> = {
-    "claude-code": "Claude Code",
-    codex: "Codex",
-    opencode: "OpenCode",
-  };
 
   const ROLES: Record<string, string> = {
     answer: "",
@@ -35,8 +29,8 @@
       display_name: "",
       runner: "opencode",
       model: "",
+      args: [],
       instructions: "",
-      scope: "group",
       role: "answer",
     };
     adding = true;
@@ -83,12 +77,10 @@
           <span class="stack stack--tight">
             <strong>{agent.display_name} <span class="identifier quiet">@{agent.handle}</span></strong>
             <span class="quiet">
-              {ROLES[agent.role] ?? ""}{agent.scope === "personal"
-                ? `Each person's own ${RUNNER_NAMES[agent.runner] ?? agent.runner}, on their worker`
-                : `${RUNNER_NAMES[agent.runner] ?? agent.runner}, on the group's workers`}
+              {ROLES[agent.role] ?? ""}{RUNNER_NAMES[agent.runner] ?? agent.runner}, on the group's workers
             </span>
           </span>
-          <span class="chip">{agent.scope === "personal" ? "Personal" : "Group"}</span>
+          <span class="chip">Group</span>
           <span class="identifier quiet agent-model" title={agent.model ?? undefined}>{agent.model ?? "Default"}</span>
           {#if admin}
             <span class="row" data-density="compact">
@@ -128,13 +120,6 @@
           {#each RUNNERS as runner (runner)}
             <option value={runner}>{RUNNER_NAMES[runner]}</option>
           {/each}
-        </select>
-      </div>
-      <div class="field grow">
-        <label class="field__label" for="agent-scope">Whose</label>
-        <select id="agent-scope" class="input" bind:value={draft.scope}>
-          <option value="personal">Each person's own, on their worker</option>
-          <option value="group">The group's, on its workers</option>
         </select>
       </div>
     </div>

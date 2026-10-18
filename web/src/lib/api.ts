@@ -52,6 +52,8 @@ export interface ApiToken {
   prefix: string;
   created_at: string;
   last_used_at: string | null;
+  /** When it stops working by itself, as a session's does. */
+  expires_at?: string | null;
 }
 
 export interface CreatedToken extends ApiToken {
@@ -117,31 +119,45 @@ export interface SearchHit {
   created_at: string;
 }
 
-/** The runners a worker can run an agent with. */
+/** The runners an agent runs with. */
 export const RUNNERS = ["claude-code", "codex", "opencode"] as const;
 export type Runner = (typeof RUNNERS)[number];
 
-export type AgentScope = "personal" | "group";
+export const RUNNER_NAMES: Record<string, string> = {
+  "claude-code": "Claude Code",
+  codex: "Codex",
+  opencode: "OpenCode",
+};
+
 export type AgentRole = "answer" | "workshop";
 
+/** One of a group's own agents, which run on its workers. */
 export interface AgentProfile {
   handle: string;
   display_name: string;
   runner: string;
   model: string | null;
+  args: string[];
   instructions: string | null;
-  scope: AgentScope;
   role: AgentRole;
 }
 
-export type WorkerScope = "group" | "member";
+/** One of a person's own agents, which answer for them in all their groups. */
+export interface PersonalAgent {
+  handle: string;
+  display_name: string;
+  runner: string;
+  model: string | null;
+  args: string[];
+  /** One everyone has, one per runner: changed, not removed. */
+  default: boolean;
+}
 
+/** A group's worker. */
 export interface Worker {
   id: number;
   name: string;
-  scope: WorkerScope;
-  group: string | null;
-  owner: User | null;
+  group: string;
   prefix: string;
   online: boolean;
   runners: string[];
@@ -154,6 +170,19 @@ export interface Worker {
 
 export interface CreatedWorker extends Worker {
   secret: string;
+}
+
+/** One of a person's machines, where their own agents run. */
+export interface Machine {
+  id: number;
+  name: string;
+  prefix: string;
+  online: boolean;
+  runners: string[];
+  preferred: boolean;
+  version: string | null;
+  created_at: string;
+  last_seen_at: string | null;
 }
 
 export type JobState = "queued" | "running" | "done" | "failed" | "cancelled";
@@ -415,9 +444,17 @@ export const api = {
   createGroupWorker: (group: string, name: string) =>
     post<CreatedWorker>(`${g(group)}/workers`, { name }),
   revokeGroupWorker: (group: string, id: number) => del<void>(`${g(group)}/workers/${id}`),
-  myWorkers: () => get<Worker[]>("/me/workers"),
-  createMyWorker: (name: string) => post<CreatedWorker>("/me/workers", { name }),
-  revokeMyWorker: (id: number) => del<void>(`/me/workers/${id}`),
+
+  myAgents: () => get<PersonalAgent[]>("/me/agents"),
+  createMyAgent: (agent: PersonalAgent) => post<PersonalAgent>("/me/agents", agent),
+  updateMyAgent: (agent: PersonalAgent) =>
+    put<PersonalAgent>(`/me/agents/${encodeURIComponent(agent.handle)}`, agent),
+  deleteMyAgent: (handle: string) => del<void>(`/me/agents/${encodeURIComponent(handle)}`),
+
+  machines: () => get<Machine[]>("/me/machines"),
+  preferMachine: (id: number, preferred: boolean) =>
+    patch<Machine>(`/me/machines/${id}`, { preferred }),
+  revokeMachine: (id: number) => del<void>(`/me/machines/${id}`),
 
   library: (group: string) => get<LibraryState>(`${g(group)}/library`),
   declarations: (

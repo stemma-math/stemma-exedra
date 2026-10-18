@@ -1,29 +1,11 @@
 import { describe, expect, it } from "vitest";
-import type { AgentProfile } from "./api";
 import { asksForWork, summonable } from "./roles";
 
-function agent(
-  handle: string,
-  scope: AgentProfile["scope"],
-  role: AgentProfile["role"],
-): AgentProfile {
-  return {
-    handle,
-    display_name: handle,
-    runner: "claude-code",
-    model: null,
-    instructions: null,
-    scope,
-    role,
-  };
-}
+const agent = (handle: string) => ({ handle, display_name: handle });
 
 describe("roles", () => {
-  const agents = [
-    agent("claude", "personal", "answer"),
-    agent("qwen", "group", "answer"),
-    agent("workshop", "group", "workshop"),
-  ];
+  const own = [agent("claude"), agent("codex"), agent("claude-sonnet")];
+  const group = [agent("workshop")];
 
   it("let admins and members ask for work, not guests", () => {
     expect(asksForWork("admin")).toBe(true);
@@ -31,12 +13,22 @@ describe("roles", () => {
     expect(asksForWork("guest")).toBe(false);
   });
 
-  it("let guests summon only their own agents", () => {
-    expect(summonable(agents, "member").map((a) => a.handle)).toEqual([
+  it("let everyone summon their own agents, and guests no others", () => {
+    expect(summonable(own, group, "member").map((a) => a.handle)).toEqual([
       "claude",
-      "qwen",
+      "codex",
+      "claude-sonnet",
       "workshop",
     ]);
-    expect(summonable(agents, "guest").map((a) => a.handle)).toEqual(["claude"]);
+    expect(summonable(own, group, "guest").map((a) => a.handle)).toEqual([
+      "claude",
+      "codex",
+      "claude-sonnet",
+    ]);
+  });
+
+  it("give a handle the group has to the group's agent", () => {
+    const handles = summonable([agent("workshop")], group, "admin").map((a) => a.handle);
+    expect(handles).toEqual(["workshop"]);
   });
 });

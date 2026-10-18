@@ -207,13 +207,13 @@
   {/if}
 
   <section class="stack">
-    <h2>Agents</h2>
+    <h2>The group's agents</h2>
     <p>
       Agents answer when someone mentions them, as in <code>@claude what do you think?</code>, and in
-      a chat, their resident agent answers every message. Each answer is signed by the agent, for the
-      person who asked. The workshop's agent hands what it is asked to the workshop, as a task. A
-      personal agent runs on the worker of whoever asks, with their own login; a group agent runs on
-      the group's workers.
+      a chat, their resident agent answers every message. Everyone's own agents, such as
+      <code>@claude</code>, are in their <a href="/settings">settings</a>, and answer for them, on
+      their machines. The group's own agents run on its workers; the workshop's hands what it is
+      asked to the workshop, as a task. A handle the group has names its agent.
     </p>
     <AgentSettings group={group.slug} {admin} />
   </section>
@@ -221,10 +221,10 @@
   <section class="stack">
     <h2>Group workers</h2>
     <p>
-      A group worker runs the group's agents and, with Lean, builds its library and works on the
+      A group worker runs the group's own agents and, with Lean, builds its library and works on the
       workshop's tasks, with the logins and keys in its own configuration: the hub never holds them.
-      It connects to the hub from wherever it runs. Each person's own worker, for
-      their personal agents, is in their <a href="/settings">settings</a>.
+      It connects to the hub from wherever it runs. Each person's machines, for their own agents,
+      are in their <a href="/settings">settings</a>.
     </p>
     <WorkerSettings group={group.slug} manage={admin} />
   </section>

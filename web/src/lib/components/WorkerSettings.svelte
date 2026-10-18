@@ -4,8 +4,8 @@
   import { toastError } from "#lib/toast.ts";
 
   interface Props {
-    /** A group's workers, or, without a group, the viewer's own. */
-    group?: string;
+    /** The group whose workers these are. */
+    group: string;
     /** Whether the viewer may register and revoke them. */
     manage: boolean;
   }
@@ -16,13 +16,12 @@
   let name = $state("");
   let created = $state<CreatedWorker | null>(null);
 
-  const load = () => (group ? api.groupWorkers(group) : api.myWorkers());
-
   // Whether a worker is online changes on its own: look again now and then.
   $effect(() => {
     let stopped = false;
     const refresh = () =>
-      load()
+      api
+        .groupWorkers(group)
         .then((found) => {
           if (!stopped) workers = found;
         })
@@ -35,11 +34,13 @@
     };
   });
 
-  const runners = $derived(
-    group
-      ? `[runners.opencode]\n# model = "openrouter/…"\n\n# With Lean, it builds the library; with a runner that edits files, it works\n# on the workshop's tasks too.\n# [lean]\n# [workshop]`
-      : "[runners.claude-code]\n[runners.codex]",
-  );
+  const runners = `[runners.opencode]
+# model = "openrouter/…"
+
+# With Lean, it builds the library; with a runner that edits files, it works
+# on the workshop's tasks too.
+# [lean]
+# [workshop]`;
   const config = $derived(
     created
       ? `hub = "${location.origin}"\ntoken = "${created.secret}"\nconcurrency = 2\n\n${runners}\n`
@@ -60,7 +61,7 @@
   async function create(event: Event) {
     event.preventDefault();
     try {
-      created = group ? await api.createGroupWorker(group, name) : await api.createMyWorker(name);
+      created = await api.createGroupWorker(group, name);
       workers = [...workers, created];
       name = "";
     } catch (error) {
@@ -72,8 +73,7 @@
     if (!confirm(`Revoke the worker “${worker.name}”? It is disconnected, and its jobs wait for another.`))
       return;
     try {
-      if (group) await api.revokeGroupWorker(group, worker.id);
-      else await api.revokeMyWorker(worker.id);
+      await api.revokeGroupWorker(group, worker.id);
       workers = workers.filter((w) => w.id !== worker.id);
       if (created?.id === worker.id) created = null;
     } catch (error) {
@@ -100,12 +100,12 @@
 
 {#if manage}
   <form class="row" onsubmit={create}>
-    <label class="visually-hidden" for="worker-name-{group ?? 'mine'}">Name</label>
+    <label class="visually-hidden" for="worker-name">Name</label>
     <input
-      id="worker-name-{group ?? 'mine'}"
+      id="worker-name"
       class="input grow"
       bind:value={name}
-      placeholder={group ? "Where it runs, such as “server”" : "Where it runs, such as “laptop”"}
+      placeholder="Where it runs, such as “server”"
       required
       maxlength="80"
     />
