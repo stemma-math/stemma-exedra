@@ -1,9 +1,9 @@
 # The workshop's image: where a workshop machine runs each of the
 # workshop's jobs, in a container of its own. It has git and curl, elan
-# with a Lean toolchain, the agents' programs (Claude Code, Codex and
-# OpenCode) and `stemma` of the machine's version, for the agents' tools
-# (`stemma mcp`). Every version is explicit, below, and may be changed
-# with `--build-arg`.
+# with a Lean toolchain, a selection of TeX Live with latexmk for the
+# papers, the agents' programs (Claude Code, Codex and OpenCode) and
+# `stemma` of the machine's version, for the agents' tools (`stemma mcp`).
+# Every version is explicit, below, and may be changed with `--build-arg`.
 #
 # `stemma machine workshop image` builds it, tagged
 # `stemma-workshop:<version>`. From the repository's root,
@@ -52,6 +52,7 @@ WORKDIR /src
 COPY Cargo.toml Cargo.lock ./
 COPY crates/ crates/
 COPY lean/ lean/
+COPY latex/ latex/
 COPY workshop/ workshop/
 COPY docker/workshop/ docker/workshop/
 RUN cargo build --release --locked --bin stemma \
@@ -78,6 +79,19 @@ LABEL org.opencontainers.image.title="Stemma's workshop" \
 RUN apt-get update \
     && apt-get install --yes --no-install-recommends ca-certificates curl git \
     && rm -rf /var/lib/apt/lists/*
+
+# LaTeX, for the papers: Debian's TeX Live (2022, for bookworm), with
+# latexmk, pdfLaTeX and BibTeX (no Biber), and these collections only:
+# LaTeX itself (amsmath, amsthm, the AMS classes, hyperref, graphicx…), the
+# recommended and the extra packages (mathtools, enumitem, thmtools,
+# cleveref, csquotes, microtype…), the recommended fonts with Latin Modern,
+# and the pictures (TikZ, tikz-cd, pgfplots). Without their documentation,
+# they add about 560 MB to the image.
+RUN apt-get update \
+    && apt-get install --yes --no-install-recommends latexmk texlive-latex-base \
+      texlive-latex-recommended texlive-latex-extra texlive-fonts-recommended lmodern \
+      texlive-pictures \
+    && rm -rf /var/lib/apt/lists/* /usr/share/doc/*
 
 # Lean, through elan. Toolchains other than this one are fetched when a
 # library asks for them, into the container, for the job only.
