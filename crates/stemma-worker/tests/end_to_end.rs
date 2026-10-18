@@ -425,12 +425,23 @@ async fn a_persons_agent_waits_for_one_of_their_machines() {
         "Waiting for a machine of Bob's with Claude Code"
     );
 
-    let bobs = worker(
+    let token = worker_token(&hub, &bob, "/me/machines").await;
+    let paused = worker(
         &hub,
-        &worker_token(&hub, &bob, "/me/machines").await,
+        &token,
         work.path(),
-        &config,
+        &format!("personal = false\nworkshop_enabled = false\n{config}"),
     );
+    wait_online(&hub, &bob, "/me/machines").await;
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    let waiting = jobs(&hub, &bob, 1).await;
+    assert_eq!(
+        waiting[0]["state"], "queued",
+        "Personal service is off: {waiting}"
+    );
+    paused.abort();
+    let _ = paused.await;
+    let bobs = worker(&hub, &token, work.path(), &config);
     let message = answer(&hub, &bob, 1, 2).await;
     assert_eq!(message["author"]["username"], "bob");
     assert_eq!(message["agent"], "Claude");

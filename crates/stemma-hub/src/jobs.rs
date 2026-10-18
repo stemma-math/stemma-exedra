@@ -82,6 +82,7 @@ pub struct Workers {
 
 /// A connected machine.
 pub struct Connected {
+    pub personal: bool,
     /// Which connection this is, so that a stale one does not remove a
     /// newer one of the same machine.
     pub connection: u64,
@@ -128,7 +129,9 @@ impl Workers {
     fn can_run(&self, worker: &Connected, job: &JobRow) -> bool {
         match job.kind() {
             JobKind::Reply => {
-                worker.owner_id == job.requester_id && worker.runners.contains(&job.runner)
+                worker.personal
+                    && worker.owner_id == job.requester_id
+                    && worker.runners.contains(&job.runner)
             }
             JobKind::LibraryBuild => worker.for_workshop(job.group_id),
             JobKind::PaperBuild => worker.for_papers(job.group_id),

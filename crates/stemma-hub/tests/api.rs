@@ -2168,6 +2168,7 @@ async fn connect_machine(
         &hub.state,
         id,
         stemma_hub::jobs::Connected {
+            personal: true,
             connection: id as u64,
             owner_id,
             runners: runners.iter().map(|r| (*r).to_owned()).collect(),

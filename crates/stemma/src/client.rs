@@ -8,7 +8,7 @@ use anyhow::Context;
 use clap::Args;
 use serde_json::{Value, json};
 use stemma_client::config::{self, ClientConfig};
-use stemma_client::hub::{Hub, normalize_url};
+use stemma_client::hub::Hub;
 use stemma_client::mcp::StemmaServer;
 use stemma_client::tools::Toolbox;
 
@@ -219,54 +219,28 @@ pub struct McpArgs {
 }
 
 pub async fn login(args: LoginArgs) -> anyhow::Result<()> {
-    let url = normalize_url(&args.hub)?;
-    let mut previous = ClientConfig::load()?;
-    let (token, token_id) = match args.token {
-        Some(token) => (token, None),
+    let config = match args.token {
+        Some(token) => stemma_client::sign_in::save(&args.hub, token, None, args.group).await?,
         None => {
             let username = match args.username {
                 Some(username) => username,
                 None => prompt("Username: ")?,
             };
             let password = rpassword::prompt_password("Password: ")?;
-            let mut hub = Hub::new(&url, None)?;
-            hub.sign_in(&username, &password)
-                .await
-                .context("signing in")?;
-            let name = format!("stemma on {}", hostname());
-            let created = hub.create_token(&name).await?;
-            let _ = hub.sign_out().await;
-            (created.secret, Some(created.token.id))
+            stemma_client::sign_in::password(
+                &args.hub,
+                &username,
+                &password,
+                &hostname(),
+                args.group,
+            )
+            .await?
         }
     };
-    let hub = Hub::new(&url, Some(token.clone()))?;
-    let me = hub.me().await.context("checking the token")?;
-    let group = match args.group {
-        Some(group) => {
-            anyhow::ensure!(
-                me.groups.iter().any(|g| g.slug == group),
-                "you are not in a group {group}"
-            );
-            Some(group)
-        }
-        None => me.groups.first().map(|g| g.slug.clone()),
-    };
-
-    // A token this machine made before is no longer needed.
-    if previous.hub.as_deref() == Some(url.as_str())
-        && let (Some(old), Some(id)) = (previous.token.take(), previous.token_id)
-        && old != token
-    {
-        let _ = Hub::new(&url, Some(old))?.revoke_token(id).await;
-    }
-    let config = ClientConfig {
-        hub: Some(url.clone()),
-        token: Some(token),
-        token_id,
-        username: Some(me.user.username.clone()),
-        group: group.clone(),
-    };
-    config.save()?;
+    let hub = config.hub()?;
+    let me = hub.me().await?;
+    let url = hub.base();
+    let group = &config.group;
     println!("Signed in to {url} as {}.", me.user.username);
     match (&group, me.groups.len()) {
         (Some(group), 1) => println!("Your group is {group}."),

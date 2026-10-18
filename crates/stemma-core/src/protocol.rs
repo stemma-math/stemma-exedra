@@ -20,7 +20,7 @@ pub use crate::api::JobKind;
 use crate::api::{AgentProfile, LibraryReport, Message, ThreadKind, User};
 
 /// The version of this protocol. A hub refuses workers that speak another.
-pub const PROTOCOL_VERSION: u32 = 8;
+pub const PROTOCOL_VERSION: u32 = 9;
 
 /// The path of the workers' WebSocket, under the API's prefix.
 pub const WORKER_PATH: &str = "/worker";
@@ -44,6 +44,9 @@ pub enum WorkerMessage {
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Hello {
+    /// Whether this machine accepts its owner's personal jobs.
+    #[serde(default = "enabled")]
+    pub personal: bool,
     pub protocol: u32,
     /// The worker's version of Stemma.
     pub version: String,
@@ -376,4 +379,8 @@ pub enum ContextItem {
         from: u32,
         to: u32,
     },
+}
+
+fn enabled() -> bool {
+    true
 }

@@ -11,6 +11,10 @@ use crate::isolation::IsolationConfig;
 #[derive(Clone, Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct WorkerConfig {
+    #[serde(default = "enabled")]
+    pub personal: bool,
+    #[serde(default = "enabled")]
+    pub workshop_enabled: bool,
     /// The hub's address.
     pub hub: String,
     /// Where jobs run, each in a folder of its own.
@@ -148,6 +152,10 @@ impl WorkerConfig {
                 .join("worker")
         })
     }
+}
+
+fn enabled() -> bool {
+    true
 }
 
 #[cfg(test)]

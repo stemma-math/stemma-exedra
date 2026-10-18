@@ -117,6 +117,7 @@ async fn session(context: &Arc<Context>, token: &str) -> Ended {
         Err(ended) => return ended,
     };
     let hello = WorkerMessage::Hello(Hello {
+        personal: context.config.personal,
         protocol: PROTOCOL_VERSION,
         version: env!("CARGO_PKG_VERSION").into(),
         runners: context.config.runner_names(),
@@ -166,17 +167,29 @@ async fn welcome(
     }
 }
 
+/// Aborting the service must also abort jobs; dropping a JoinHandle detaches it.
+#[derive(Default)]
+struct RunningJobs(HashMap<i64, JoinHandle<()>>);
+
+impl Drop for RunningJobs {
+    fn drop(&mut self) {
+        for task in self.0.values() {
+            task.abort();
+        }
+    }
+}
+
 /// Runs the hub's jobs until the connection ends; then stops them, for the
 /// hub queues them again.
 async fn work(context: &Arc<Context>, socket: &mut Socket) -> anyhow::Error {
     let (progress, mut progress_out) = mpsc::unbounded_channel::<(i64, String)>();
     let (finished, mut finished_out) = mpsc::unbounded_channel::<(i64, Outcome, Usage)>();
     let slots = Arc::new(Semaphore::new(context.config.concurrency as usize));
-    let mut jobs: HashMap<i64, JoinHandle<()>> = HashMap::new();
+    let mut jobs = RunningJobs::default();
     let mut heard = Instant::now();
     let mut check = tokio::time::interval(Duration::from_secs(15));
 
-    let error = loop {
+    loop {
         tokio::select! {
             incoming = socket.next() => {
                 heard = Instant::now();
@@ -199,10 +212,10 @@ async fn work(context: &Arc<Context>, socket: &mut Socket) -> anyhow::Error {
                             let (outcome, usage) = job::run(context, *spec, progress).await;
                             let _ = finished.send((id, outcome, usage));
                         });
-                        jobs.insert(id, task);
+                        jobs.0.insert(id, task);
                     }
                     Ok(HubMessage::Cancel { job }) => {
-                        if let Some(task) = jobs.remove(&job) {
+                        if let Some(task) = jobs.0.remove(&job) {
                             tracing::info!(job, "job cancelled");
                             task.abort();
                         }
@@ -213,14 +226,14 @@ async fn work(context: &Arc<Context>, socket: &mut Socket) -> anyhow::Error {
                 }
             }
             Some((job, text)) = progress_out.recv() => {
-                if jobs.contains_key(&job)
+                if jobs.0.contains_key(&job)
                     && let Err(error) = send(socket, &WorkerMessage::Progress { job, text }).await
                 {
                     break error;
                 }
             }
             Some((job, outcome, usage)) = finished_out.recv() => {
-                if jobs.remove(&job).is_none() {
+                if jobs.0.remove(&job).is_none() {
                     continue;
                 }
                 tracing::info!(job, failed = matches!(outcome, Outcome::Failed { .. }), "job finished");
@@ -234,11 +247,7 @@ async fn work(context: &Arc<Context>, socket: &mut Socket) -> anyhow::Error {
                 }
             }
         }
-    };
-    for (_, task) in jobs.drain() {
-        task.abort();
     }
-    error
 }
 
 /// Whether the workshop's jobs have Lean: in the image of their
@@ -270,6 +279,19 @@ pub fn has_lean() -> bool {
 #[cfg(test)]
 mod tests {
     use super::socket_url;
+
+    #[tokio::test]
+    async fn dropping_the_connection_cancels_its_jobs() {
+        let (sent, received) = tokio::sync::oneshot::channel::<()>();
+        let task = tokio::spawn(async move {
+            let _sender = sent;
+            std::future::pending::<()>().await;
+        });
+        let mut jobs = super::RunningJobs::default();
+        jobs.0.insert(1, task);
+        drop(jobs);
+        assert!(received.await.is_err());
+    }
 
     #[test]
     fn socket_urls() {

@@ -80,6 +80,110 @@ pub async fn installed(configured: &Runners, search: Option<&OsStr>) -> Vec<Stri
     found
 }
 
+/// A runner's local sign-in state, without exposing credentials.
+#[derive(Clone, Debug, serde::Serialize)]
+pub struct AgentStatus {
+    pub runner: String,
+    pub name: String,
+    pub installed: bool,
+    pub sign_in: String,
+}
+
+pub async fn agents(configured: &Runners) -> Vec<AgentStatus> {
+    let search = std::env::var_os("PATH");
+    let mut agents = Vec::new();
+    for runner in runners::ALL {
+        let program = configured
+            .get(runner)
+            .and_then(|c| c.command.as_deref())
+            .or_else(|| runners::program(runner))
+            .unwrap_or(runner);
+        let path = find_program(program, search.as_deref());
+        let installed = match &path {
+            Some(path) => usable(path).await,
+            None => false,
+        };
+        let sign_in = if !installed {
+            "Not installed".into()
+        } else if *runner == runners::OPENCODE {
+            // OpenCode has multiple providers: report credentials, never infer
+            // that a particular model or subscription is usable.
+            let path = std::env::var_os("XDG_DATA_HOME")
+                .map(PathBuf::from)
+                .or_else(|| dirs::home_dir().map(|p| p.join(".local/share")))
+                .map(|p| p.join("opencode/auth.json"));
+            let configured = path
+                .and_then(|p| std::fs::read(p).ok())
+                .and_then(|s| serde_json::from_slice::<serde_json::Value>(&s).ok())
+                .and_then(|v| v.as_object().map(|o| !o.is_empty()))
+                .unwrap_or(false);
+            if configured {
+                "Signed in (provider credentials found)".into()
+            } else {
+                "No saved sign-in; environment providers may be available".into()
+            }
+        } else {
+            let args: &[&str] = if *runner == runners::CLAUDE_CODE {
+                &["auth", "status", "--json"]
+            } else {
+                &["login", "status"]
+            };
+            let mut cmd = tokio::process::Command::new(path.as_ref().expect("installed"));
+            cmd.args(args).stdin(Stdio::null()).kill_on_drop(true);
+            match tokio::time::timeout(VERSION_WAIT, cmd.output()).await {
+                Ok(Ok(output)) if *runner == runners::CLAUDE_CODE => {
+                    match serde_json::from_slice::<serde_json::Value>(&output.stdout)
+                        .ok()
+                        .and_then(|v| v["loggedIn"].as_bool())
+                    {
+                        Some(true) => "Signed in".into(),
+                        Some(false) => "Not signed in".into(),
+                        None => "Sign-in status unavailable".into(),
+                    }
+                }
+                Ok(Ok(output)) => {
+                    if output.status.success() {
+                        "Signed in".into()
+                    } else {
+                        "Not signed in".into()
+                    }
+                }
+                _ => "Sign-in status unavailable".into(),
+            }
+        };
+        agents.push(AgentStatus {
+            runner: (*runner).into(),
+            name: runners::name(runner).into(),
+            installed,
+            sign_in,
+        });
+    }
+    agents
+}
+
+/// A tool's version, when installed and responsive.
+pub async fn version(program: &str) -> Option<String> {
+    let path = find_program(program, std::env::var_os("PATH").as_deref())?;
+    let output = tokio::time::timeout(
+        VERSION_WAIT,
+        tokio::process::Command::new(path)
+            .arg("--version")
+            .stdin(Stdio::null())
+            .kill_on_drop(true)
+            .output(),
+    )
+    .await
+    .ok()?
+    .ok()?;
+    output.status.success().then(|| {
+        String::from_utf8_lossy(&output.stdout)
+            .lines()
+            .next()
+            .unwrap_or_default()
+            .to_owned()
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

@@ -13,6 +13,7 @@
 
 pub mod config;
 pub mod connection;
+pub mod control;
 pub mod detect;
 pub mod image;
 pub mod isolation;
@@ -53,6 +54,9 @@ impl Context {
         stemma: std::path::PathBuf,
     ) -> anyhow::Result<Context> {
         let mut context = Context::new(config, stemma)?;
+        if !context.config.workshop_enabled {
+            return Ok(context);
+        }
         let search = std::env::var_os("PATH");
         match isolation::resolve(&context.config.isolation, &context.hub, search.as_deref()).await {
             Ok(isolator) => {

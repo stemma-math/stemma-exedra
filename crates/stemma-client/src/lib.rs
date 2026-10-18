@@ -7,6 +7,7 @@ pub mod config;
 pub mod format;
 pub mod hub;
 pub mod mcp;
+pub mod sign_in;
 pub mod tools;
 
 pub use hub::{ApiError, Hub};

@@ -44,19 +44,22 @@
 //! ```
 
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
 
 use anyhow::Context as _;
 use serde::{Deserialize, Serialize};
 use stemma_core::api::runners;
 
 use crate::config::{LatexConfig, LeanConfig, Runners, WorkerConfig, WorkshopConfig};
+use crate::detect;
 use crate::isolation::IsolationConfig;
-use crate::{Context, connection, detect};
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct MachineConfig {
+    #[serde(default = "enabled")]
+    pub personal: bool,
+    #[serde(default)]
+    pub workshop_enabled: bool,
     /// The hub's address.
     pub hub: String,
     /// The machine's token.
@@ -136,6 +139,8 @@ impl MachineConfig {
             offered.set(runner, config);
         }
         WorkerConfig {
+            personal: self.personal,
+            workshop_enabled: self.workshop_enabled,
             hub: self.hub.clone(),
             work_dir: self.work_dir.clone(),
             concurrency: self.concurrency.unwrap_or(2).max(1),
@@ -174,25 +179,21 @@ pub async fn run(path: &Path) -> anyhow::Result<()> {
             path.display()
         )
     })?;
-    let found = installed(&config.runners).await;
-    if found.is_empty() {
-        tracing::warn!(
-            "found none of claude, codex and opencode installed: install one, sign in to it, \
-             and start this machine again"
-        );
-    } else {
-        tracing::info!("found {}", names(&found));
-    }
-    let worker = config.worker_config(&found);
+    let mut service = crate::control::Service::default();
     let stemma = std::env::current_exe().context("finding the stemma binary")?;
-    let context = Context::start(worker, stemma).await?;
+    service.start(config, stemma).await?;
     tokio::select! {
-        served = connection::serve(Arc::new(context), config.token.clone()) => served,
+        served = service.wait() => served,
         _ = tokio::signal::ctrl_c() => {
             tracing::info!("Stopping");
+            service.stop().await;
             Ok(())
         }
     }
+}
+
+fn enabled() -> bool {
+    true
 }
 
 #[cfg(test)]
@@ -205,6 +206,8 @@ mod tests {
         let path = dir.path().join("stemma/machine.toml");
         assert!(MachineConfig::load_from(&path).unwrap().is_none());
         let config = MachineConfig {
+            personal: true,
+            workshop_enabled: true,
             hub: "https://stemma.example.org".into(),
             token: "stw_x".into(),
             id: 3,

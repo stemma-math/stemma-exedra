@@ -341,6 +341,7 @@ async fn serve(state: AppState, machine: MachineRow, mut socket: WebSocket) -> a
         &state,
         machine.id,
         Connected {
+            personal: hello.personal,
             connection,
             owner_id: machine.owner_id,
             runners: hello.runners,

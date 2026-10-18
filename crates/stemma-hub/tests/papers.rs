@@ -218,6 +218,7 @@ async fn machine(hub: &Hub, ada: &Person) -> (i64, UnboundedReceiver<HubMessage>
         &hub.state,
         id,
         stemma_hub::jobs::Connected {
+            personal: true,
             connection: id as u64,
             owner_id: ada.id,
             runners: vec!["claude-code".into()],
