@@ -18,3 +18,7 @@ node_modules/
 
 # The secrets docker/setup.sh writes.
 /docker/.env
+
+# The desktop app.
+/desktop/dist/
+/desktop/src-tauri/gen/

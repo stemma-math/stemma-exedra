@@ -1,0 +1,7 @@
+{
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "identifier": "machine",
+  "description": "Only the local machine window can call native commands.",
+  "windows": ["machine"],
+  "permissions": ["core:default"]
+}

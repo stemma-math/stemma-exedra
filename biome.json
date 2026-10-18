@@ -6,7 +6,14 @@
     "useIgnoreFile": true
   },
   "files": {
-    "includes": ["web/**", "!web/build", "!web/.svelte-kit"]
+    "includes": [
+      "web/**",
+      "desktop/**",
+      "!web/build",
+      "!web/.svelte-kit",
+      "!desktop/dist",
+      "!desktop/src-tauri/gen"
+    ]
   },
   "formatter": {
     "indentStyle": "space",

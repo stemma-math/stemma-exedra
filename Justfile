@@ -8,6 +8,7 @@ default:
 [group('development')]
 setup:
     pnpm --dir web install --frozen-lockfile
+    pnpm --dir desktop install --frozen-lockfile
 
 # Run the hub, with the web app as last built.
 [group('development')]
@@ -40,6 +41,7 @@ check-format:
     else
         cargo fmt --all --check
         pnpm --dir web format:check
+        pnpm --dir desktop format:check
     fi
 
 # Lint the Rust crates and the web app, and check the web app's types.
@@ -48,6 +50,8 @@ lint:
     cargo clippy --all-targets -- --deny warnings
     pnpm --dir web lint
     pnpm --dir web check
+    pnpm --dir desktop lint
+    pnpm --dir desktop check
 
 # Run the Rust and web tests.
 [group('checks')]

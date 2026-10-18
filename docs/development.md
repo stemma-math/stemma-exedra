@@ -2,7 +2,7 @@
 
 ```sh
 nix develop   # the development shell (optional)
-just setup    # the web app's dependencies
+just setup    # the web and desktop dependencies
 just hub      # the hub at 127.0.0.1:8080
 just web      # the web app's development server, beside the hub
 just check    # formatting, lints, tests and the web build
@@ -20,11 +20,21 @@ STEMMA_TEST_CONTAINER=docker STEMMA_TEST_IMAGE=<image> \
 STEMMA_TEST_FORGEJO=http://127.0.0.1:3000 cargo test -p stemma-hub --test forgejo
 ```
 
+## Desktop
+
+With the CLI installed, `pnpm --dir desktop tauri dev` starts the desktop app;
+`pnpm --dir desktop tauri build` builds it on macOS (Xcode command line tools).
+Its Rust crate is a workspace member with shared dependencies, excluded from
+Cargo's default members so server builds need no desktop system libraries.
+`just check` includes its frontend lint and types; native builds stay separate.
+The hub window uses the hub's own browser session. No release packaging yet.
+
 ## Layout
 
 - `crates/`: the binary (`stemma`), the hub, the worker, the client and its
   MCP tools, what they share (`stemma-core`), and the fake forge.
 - `web/`: the web app, in SvelteKit, styled with `@stemma-math/design`.
+- `desktop/`: the Svelte desktop UI and Tauri crate (`src-tauri/`).
 - `docker/`: the hub's image and compose file, and the workshop's image.
 - `workshop/architectures/`, `latex/template/`, `lean/`.
 

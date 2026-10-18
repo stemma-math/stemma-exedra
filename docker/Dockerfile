@@ -17,7 +17,9 @@ FROM rust:1-bookworm AS rust
 WORKDIR /src
 COPY Cargo.toml Cargo.lock ./
 COPY crates/ crates/
+COPY desktop/src-tauri/ desktop/src-tauri/
 COPY lean/ lean/
+COPY latex/ latex/
 COPY workshop/ workshop/
 COPY docker/workshop/ docker/workshop/
 COPY --from=web /src/web/build web/build

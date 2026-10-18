@@ -1,0 +1,24 @@
+[package]
+name = "stemma-desktop"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+description = "Stemma's desktop app and this machine's controls"
+repository.workspace = true
+license.workspace = true
+
+[dependencies]
+anyhow.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+stemma-client.workspace = true
+stemma-core.workspace = true
+stemma-worker.workspace = true
+tauri = { version = "2", features = [] }
+tokio.workspace = true
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[lints]
+workspace = true

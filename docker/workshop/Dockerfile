@@ -51,6 +51,7 @@ FROM rust:1-bookworm AS stemma-local
 WORKDIR /src
 COPY Cargo.toml Cargo.lock ./
 COPY crates/ crates/
+COPY desktop/src-tauri/ desktop/src-tauri/
 COPY lean/ lean/
 COPY latex/ latex/
 COPY workshop/ workshop/

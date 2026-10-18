@@ -1,0 +1,32 @@
+{
+  "name": "stemma-desktop",
+  "version": "0.1.1",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "vite --host 127.0.0.1",
+    "build": "vite build",
+    "check": "svelte-check --tsconfig tsconfig.json --fail-on-warnings",
+    "lint": "biome lint --error-on-warnings .",
+    "tauri": "tauri",
+    "format:check": "biome format ."
+  },
+  "dependencies": {
+    "@stemma-math/design": "https://github.com/stemma-math/design/releases/download/v0.4.0/stemma-math-design-0.4.0.tgz",
+    "@stemma-math/design-elements": "https://github.com/stemma-math/design/releases/download/v0.4.0/stemma-math-design-elements-0.4.0.tgz",
+    "@tauri-apps/api": "^2.0.0",
+    "svelte": "^5.57.2"
+  },
+  "devDependencies": {
+    "@biomejs/biome": "2.5.15",
+    "@sveltejs/vite-plugin-svelte": "^7.3.1",
+    "@tauri-apps/cli": "^2.0.0",
+    "svelte-check": "^4.7.6",
+    "typescript": "^6.0.3",
+    "vite": "^8.3.4"
+  },
+  "engines": {
+    "node": ">=22"
+  },
+  "packageManager": "pnpm@12.9.0"
+}

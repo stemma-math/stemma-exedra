@@ -30,3 +30,14 @@ request, and reports in the thread.
   in `docker/workshop/`.
 - **Architectures**: how the workshop works on a kind of task, each a folder
   in `workshop/architectures/`.
+
+## Desktop
+
+The desktop app opens your hub's web app and has a **This machine** screen:
+separate personal and workshop services, sign-in status, repository folder,
+agents, daily limits and container settings. It shares the CLI's sign-in and
+machine configuration; keep it open while serving. `stemma machine status`
+inspects local tools; `stemma machine configure --personal true --workshop true`
+selects the services for the next `stemma machine run`. The workshop starts
+disabled; only admins can lend a machine. `stemma machine workshop credentials`
+selects the sign-in material passed to its containers.

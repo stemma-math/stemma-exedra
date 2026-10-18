@@ -42,6 +42,14 @@
         "web/src/**/*.svelte"
         "web/src/**/*.css"
         "web/src/**/*.html"
+        "desktop/*.json"
+        "desktop/*.ts"
+        "desktop/*.html"
+        "desktop/src/**/*.ts"
+        "desktop/src/**/*.svelte"
+        "desktop/src/**/*.css"
+        "desktop/src-tauri/*.json"
+        "desktop/src-tauri/capabilities/*.json"
         "biome.json"
       ];
     };
