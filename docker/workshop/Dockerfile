@@ -103,6 +103,8 @@ RUN set -eu; \
       | tar -xz -C /tmp; \
     /tmp/elan-init -y --no-modify-path --default-toolchain "$LEAN_TOOLCHAIN"; \
     rm /tmp/elan-init; \
+    elan toolchain install "$LEAN_TOOLCHAIN"; \
+    lean --version; \
     chmod -R a+rwX /opt/elan
 
 # The agents' programs. They sign in as the machine's owner configures,
