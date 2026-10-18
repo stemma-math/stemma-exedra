@@ -19,10 +19,10 @@ This is an early stage of Stemma. What works today:
   referenced;
 - the workshop, the only place where agents change the group's
   repositories: tasks handed over in conversation ("formalize this"), worked
-  on in the background on machines the group's admins lend it, checked,
-  proposed as a pull request, put in the library once approved, and
-  reported in the thread they came from; what each job consumed is
-  measured;
+  on in the background on machines the group's admins lend it, each job in
+  a container of its own, checked, proposed as a pull request, put in the
+  library once approved, and reported in the thread they came from; what
+  each job consumed is measured;
 - your own agent, opened with Stemma's tools for a session
   (`stemma claude`, `stemma codex`, `stemma opencode`), and Stemma's tools
   for any agent, over MCP and the command line.
@@ -321,11 +321,16 @@ says so there too.
 ### Workshop machines
 
 The workshop runs on machines its group's admins lend it: their own
-machines (see [Your machines](#your-machines)), with Lean (elan) installed
-for the library's builds and tasks. An admin adds one of theirs, in the
-group's settings or from it:
+machines (see [Your machines](#your-machines)), which run each of the
+workshop's jobs in a container of its own (see
+[Isolation](#isolation)), with Docker or Podman and the workshop's image,
+which has Lean. An admin adds one of theirs, in the group's settings or
+from it, once it has connected and said how it isolates the workshop's
+jobs; a machine that cannot is refused:
 
 ```sh
+stemma machine workshop image            # build the workshop's image, once per version
+stemma machine run                       # serve the machine (elsewhere, or as a service)
 stemma machine workshop add geometry     # this machine works for the workshop of geometry
 stemma machine workshop remove geometry
 ```
@@ -348,12 +353,164 @@ stemma machine workshop unoffer 2
 A group's tasks run one at a time, and so do its builds. A machine keeps
 the group's checkout of the library, with its `.lake`, in its work folder,
 so that Mathlib is fetched once; it takes several gigabytes. On a task, the
-agent edits files and runs commands in a worktree of that checkout, as the
-machine's user. Each job's time is measured, and the tokens and cost its
+agent edits files and runs commands in a worktree of that checkout, in the
+task's container. Each job's time is measured, and the tokens and cost its
 runner reports: Claude Code's result (`usage`, `total_cost_usd`), Codex's
 turns (`turn.completed`, tokens only) and OpenCode's steps (`step_finish`,
 tokens and cost). They are kept by job, agent and machine, and the panel
 shows them by day.
+
+### Isolation
+
+The workshop runs work that other people ask for, with agents that run
+commands, so a workshop machine runs each of its jobs, a task or a build of
+the library, in a container of its own, which is removed when the job ends.
+People's own jobs, an agent of theirs answering them, and their sessions
+(`stemma claude`, …) run on their machine, as before: they are their own.
+
+The container has only what the job works on, under `/stemma`, as under the
+machine's work folder:
+
+- for a task, its worktree, read-write; the checkout's Lake packages
+  (Mathlib), read-only, so that Mathlib is neither fetched again nor
+  changed; the job's folder, with its token and what the agent reads
+  Stemma's tools from; and how the agent signs in (below). Nothing else of
+  the machine, its home included;
+- for a build, the group's checkout, read-write, with its `.git` hidden, and
+  where the inspection is compiled.
+
+Lake's builds, the check of a task's work and the agent all run in it; git
+runs on the machine, with the job's token, which pushes only to the task's
+branch, with no hooks, and only after putting back the worktree's link to
+the checkout as it was. The container runs as the machine's user (never
+root: an unprivileged user takes root's place), with every capability
+dropped, no new privileges and never privileged, with limits on memory,
+CPUs and processes, and for as long as the job may take: when that ends, or
+the job is cancelled, it is removed.
+
+The network stays on, as the runtime gives it: the agent needs its model's
+provider and the hub (for Stemma's tools). `network` names another of the
+runtime's networks, and `none` leaves the agent with neither, which only
+suits a machine whose agents reach them otherwise. A hub on the machine
+itself (`localhost`) is reached from the containers by the runtime's name
+for the machine (`host.docker.internal`, `host.containers.internal`); set
+`hub_url` if containers reach it elsewhere.
+
+In the machine's configuration (`stemma/machine.toml`), with the defaults:
+
+```toml
+[isolation]
+runtime = "auto"                    # Docker, or else Podman; docker; podman; or host (below)
+# command = "…"                     # the runtime's program, if not on the PATH
+image = "stemma-workshop:<version>" # this version of Stemma's
+memory = "8g"                       # per job; with no swap beyond it
+cpus = 4
+pids = 4096                         # processes at once
+# network = "…"                     # the runtime's own if absent
+# hub_url = "…"                     # the hub, from a container
+```
+
+`stemma machine workshop isolation` says how the machine would isolate the
+workshop's jobs, and changes it (`auto`, `docker`, `podman`); `stemma
+machine run` says so when it starts, and the hub and the group's workshop
+panel show it for each machine. With rootless Podman, the limits need the
+cgroup controllers delegated to the user, as on most systemd systems.
+
+#### The image
+
+`docker/workshop/Dockerfile` describes the image: Debian with Node.js
+(`node:24-bookworm-slim`), git and curl; elan with Lean's toolchain of a
+new library (`leanprover/lean4:v4.35.0`; other toolchains are fetched in
+the container, for the job only); Claude Code, Codex and OpenCode, from
+npm; and `stemma` of the machine's own version, which the agents run as
+Stemma's tools (`stemma mcp`). Each version is an argument of the build,
+written in the file and on the image's labels. `stemma machine workshop
+image` builds it with the machine's runtime, tagged
+`stemma-workshop:<version>`:
+
+```sh
+stemma machine workshop image                       # with a new library's Lean
+stemma machine workshop image --toolchain leanprover/lean4:v4.36.0
+stemma machine workshop image --source git          # stemma built from its release's tag
+```
+
+A container runs Linux, where the machine's own `stemma` (on macOS, say)
+does not run: the image takes `stemma` from the release's Linux binary,
+checked against its `SHA256SUMS`, where there is one (x86_64), and
+elsewhere (ARM, as on Apple silicon) builds it from the release's tag in a
+stage of the build. From the repository, `just workshop-image` builds it
+with `stemma` built from the repository itself. Build it again for each new
+version of Stemma, or of the agents.
+
+#### How agents sign in inside
+
+The agents in a container sign in as the machine's owner configures, per
+runner, and Stemma sends nothing of it to the hub: environment variables
+passed by name from the machine's environment (their values are on no
+command line), or files of the machine mounted read-only. Only the sign-in
+of the runner of the task's agent enters its container.
+
+```toml
+[isolation.agents.claude-code]
+env = ["CLAUDE_CODE_OAUTH_TOKEN"]          # or ANTHROPIC_API_KEY
+
+[isolation.agents.codex]
+files = [{ from = "~/.codex/auth.json" }]  # to the same place under the container's home
+# env = ["CODEX_API_KEY"]
+
+[isolation.agents.opencode]
+env = ["OPENROUTER_API_KEY"]
+# files = [{ from = "~/.local/share/opencode/auth.json" }]
+```
+
+- **Claude Code**: a subscription signs in with a long-lived token,
+  `claude setup-token`, given as `CLAUDE_CODE_OAUTH_TOKEN`; an API key as
+  `ANTHROPIC_API_KEY`. That works on Linux and on macOS. On macOS, Claude
+  Code keeps its own sign-in in the Keychain, which a container cannot
+  read; on Linux it is a file (`~/.claude/.credentials.json`), which Claude
+  Code refreshes and writes, so the token is the better choice there too.
+- **Codex**: its sign-in, with ChatGPT or a key, is the file
+  `~/.codex/auth.json` on Linux and on macOS, unless its configuration
+  keeps it in the system's keyring (`cli_auth_credentials_store`), where a
+  container cannot read it. Mounted read-only, Codex cannot write back a
+  token it refreshes: sign in again on the machine when it asks. An API
+  key may be given instead, as `CODEX_API_KEY`, which `codex exec` reads.
+  In a container, Codex runs without its own sandbox
+  (`--sandbox danger-full-access`), which needs what a container does not
+  allow: the container is its sandbox.
+- **OpenCode**: each provider's key as its variable (`OPENROUTER_API_KEY`,
+  `ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, …), or the keys `opencode auth
+  login` keeps, in `~/.local/share/opencode/auth.json` on Linux and on
+  macOS.
+
+A runner may also name its program in the container (`command`). `stemma
+machine run` warns of a runner with no sign-in, and of variables named that
+its environment lacks. Before relying on a subscription for unattended work
+for others, check its provider's terms.
+
+#### On the machine itself, unisolated
+
+Where containers are not available, the machine's owner may choose,
+explicitly, to run the workshop's jobs on the machine itself:
+
+```sh
+stemma machine workshop isolation --unisolated
+```
+
+It warns, and so does the machine whenever it starts; the group's workshop
+panel marks the machine "Unisolated". The agents then run commands on the
+machine as the user that serves it, with that user's sign-ins: serve it as
+a dedicated system user, with nothing else on the machine (its own home,
+its own sign-ins to the agents, no access to anyone else's files), for
+instance on Linux:
+
+```sh
+sudo useradd --system --create-home --home-dir /var/lib/stemma-machine stemma-machine
+sudo -iu stemma-machine stemma login https://stemma.example.org
+sudo -iu stemma-machine stemma machine add workshop
+sudo -iu stemma-machine stemma machine workshop isolation --unisolated
+sudo -iu stemma-machine stemma machine run   # or as a service of that user
+```
 
 ## From the command line
 
@@ -422,9 +579,11 @@ workshop. Its instructions are in `crates/stemma-worker/prompts/reply.md`.
 
 Your agents run on your machines: computers of yours, with Claude Code,
 Codex or OpenCode installed and signed in; and, if you lend one to a
-group's workshop, the workshop's agents run there too, with your sign-in. A machine connects to the hub;
-the hub never connects to it, so it can be a laptop behind any network, and
-your sign-ins never leave it. Signed in with `stemma login`, set one up:
+group's workshop, the workshop's agents run there too, each job in a
+container of its own, with the sign-in you give them (see
+[Isolation](#isolation)). A machine connects to the hub; the hub never
+connects to it, so it can be a laptop behind any network, and your
+sign-ins never leave it. Signed in with `stemma login`, set one up:
 
 ```sh
 stemma machine add laptop   # register this machine (named after it if no name is given)
@@ -436,7 +595,8 @@ token in your configuration directory (`stemma/machine.toml`, or where
 `STEMMA_MACHINE_CONFIG` says), readable only by you, and says which runners
 it finds. When it runs, a machine offers the runners it finds installed and
 usable: `claude`, `codex` and `opencode` on its `PATH`, each answering
-`--version`, and whether it has Lean (`elan` or `lake` on its `PATH`). The
+`--version`; whether it has Lean (`elan` or `lake` on its `PATH`, or in the
+workshop's image); and how it isolates the workshop's jobs. The
 file it writes may also say how to run them, how many jobs to run at once,
 and how to work for a workshop:
 
@@ -451,6 +611,8 @@ concurrency = 2                     # jobs at once
 # timeout_minutes = 90; cache = true  # whether to get Mathlib's cache
 [workshop]                          # the workshop's tasks
 # timeout_minutes = 120; rounds = 2; max_turns = 80
+[isolation]                         # the workshop's containers: see Isolation
+# runtime = "auto"; image = "…"
 ```
 
 A job of yours goes to one of your machines that is online and has the
@@ -578,6 +740,19 @@ runs the test in `crates/stemma-hub/tests/forgejo.rs`, which is skipped unless
 variables); it runs a hub of its own at `127.0.0.1:8080`
 (`STEMMA_TEST_HUB`), where the source expects it.
 
+The workshop's containers are tested, without a runtime, by the command
+lines each runtime is given. To run a real job in a real container, with
+Docker or Podman:
+
+```sh
+just workshop-image          # the image, with stemma built from the repository
+just test-container          # a build and a task in containers (`podman` as an argument for Podman)
+```
+
+`just test-container` runs the test in `crates/stemma-worker/tests/end_to_end.rs`
+that is skipped unless `STEMMA_TEST_CONTAINER` names the runtime and
+`STEMMA_TEST_IMAGE` the image.
+
 The repository holds:
 
 - `crates/stemma`: the binary and its subcommands.
@@ -593,8 +768,10 @@ The repository holds:
   MCP server.
 - `crates/stemma-worker`: people's machines, how each agent is launched (for
   a job, or a person's session), what each runner reports it consumed,
-  library builds, the workshop's runs, and the agents' instructions, in
-  `prompts/`.
+  library builds, the workshop's runs and their containers, and the agents'
+  instructions, in `prompts/`.
+- `docker/`: the hub's image, beside Forgejo, and the workshop's image
+  (`docker/workshop/`).
 - `workshop/architectures/`: the workshop's architectures, each a folder
   with its manifest and instructions.
 - `lean/`: the inspection (`Inspect.lean`), the template of a group's library
