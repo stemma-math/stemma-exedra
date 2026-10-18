@@ -921,6 +921,17 @@ async fn a_workshop_machine_with_lean_builds_and_inspects_the_library() {
     running.abort();
 }
 
+/// Paper tests must not wait for the unrelated template's Mathlib build.
+/// Containers offer Lean too, and the worker has only one slot.
+async fn cancel_initial_library_build(hub: &TestHub) {
+    let job: i64 =
+        sqlx::query_scalar("SELECT id FROM jobs WHERE kind = 'library_build' AND state = 'queued'")
+            .fetch_one(&hub.state.db)
+            .await
+            .unwrap();
+    stemma_hub::jobs::stop(&hub.state, job).await.unwrap();
+}
+
 /// How a machine compiles papers here, if it can: in a container, when
 /// `STEMMA_TEST_CONTAINER` names a runtime and `STEMMA_TEST_IMAGE` its
 /// workshop image; or else on the machine itself, with its own `latexmk`.
@@ -972,6 +983,7 @@ async fn a_workshop_machine_with_latex_compiles_a_paper() {
     };
     let hub = TestHub::start().await;
     let (ada, _) = group(&hub).await;
+    cancel_initial_library_build(&hub).await;
     let paper = ada
         .post(
             &hub,
@@ -1060,7 +1072,7 @@ fn fake_writing_opencode(dir: &Path) -> PathBuf {
     script(
         dir,
         "opencode",
-        r#"cp "$(dirname "$OPENCODE_CONFIG")/instructions.md" "$HERE/opencode.instructions"
+        r#"grep -q "edit the working paper p/notes" "$(dirname "$OPENCODE_CONFIG")/instructions.md" || exit 1
 case "$*" in
   *"does not pass yet"*) body='The charts glue, as t1 says.' ;;
   *) body='The charts glue. \oops' ;;
@@ -1084,15 +1096,13 @@ echo '{"type":"text","part":{"text":"Done: see the report."}}'
 /// made.
 #[tokio::test(flavor = "multi_thread")]
 async fn with_latex_the_workshop_writes_in_a_paper() {
-    if !stemma_worker::papers::has_latex() {
-        if std::env::var_os("STEMMA_TEST_LATEX").is_some() {
-            panic!("STEMMA_TEST_LATEX is set, and LaTeX (latexmk) is not installed");
-        }
-        eprintln!("LaTeX is not installed: skipping");
+    let Some(isolation) = latex_here() else {
+        eprintln!("LaTeX is not installed, nor a workshop image named: skipping");
         return;
-    }
+    };
     let hub = TestHub::start().await;
     let (ada, _) = group(&hub).await;
+    cancel_initial_library_build(&hub).await;
     ada.post(
         &hub,
         "/groups/geometry/papers",
@@ -1102,13 +1112,21 @@ async fn with_latex_the_workshop_writes_in_a_paper() {
     let tools = tempfile::tempdir().unwrap();
     let opencode = fake_writing_opencode(tools.path());
     let worker_dir = tempfile::tempdir().unwrap();
+    let contained = if std::env::var_os("STEMMA_TEST_CONTAINER").is_some() {
+        format!(
+            "[isolation.agents.opencode]\ncommand = \"/opt/fake/opencode\"\nfiles = [{{ from = {:?}, to = \"/opt/fake/opencode\" }}]\n",
+            opencode.display().to_string()
+        )
+    } else {
+        String::new()
+    };
     let running = workshop_machine(
         &hub,
         &ada,
         json!([{"runner": "opencode", "model": "fake/model"}]),
         worker_dir.path(),
         &format!(
-            "[runners.opencode]\ncommand = {:?}\n[isolation]\nruntime = \"host\"\n",
+            "[runners.opencode]\ncommand = {:?}\n{isolation}{contained}",
             opencode.display().to_string()
         ),
     )
@@ -1131,11 +1149,6 @@ async fn with_latex_the_workshop_writes_in_a_paper() {
     );
     assert!(log.contains("Accepted: the paper compiles."), "{log}");
     assert_eq!(page["report"], "Wrote the section on charts.");
-    let instructions = std::fs::read_to_string(tools.path().join("opencode.instructions")).unwrap();
-    assert!(
-        instructions.contains("edit the working paper p/notes"),
-        "{instructions}"
-    );
     // The work is proposed, and nothing that compiling made.
     let repository = hub.forge.repository_path("geometry", "paper-notes");
     let shown = git(&repository, &["show", "workshop/w1:main.tex"]);
