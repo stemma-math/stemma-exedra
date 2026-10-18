@@ -10,8 +10,11 @@ result-*
 /web/.svelte-kit/
 node_modules/
 
-# The hub's data, when run from the repository.
+# The hub's data, and the local forge's (`just forge`), when run from the repository.
 /data/
 
 # What Lake builds.
 .lake/
+
+# The secrets docker/setup.sh writes.
+/docker/.env
