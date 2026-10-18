@@ -239,6 +239,7 @@ struct TokenRow {
     prefix: String,
     created_at: i64,
     last_used_at: Option<i64>,
+    expires_at: Option<i64>,
 }
 
 impl From<TokenRow> for ApiToken {
@@ -249,6 +250,7 @@ impl From<TokenRow> for ApiToken {
             prefix: row.prefix,
             created_at: db::from_millis(row.created_at),
             last_used_at: row.last_used_at.map(db::from_millis),
+            expires_at: row.expires_at.map(db::from_millis),
         }
     }
 }
@@ -259,11 +261,13 @@ pub async fn list_tokens(
 ) -> ApiResult<Json<Vec<ApiToken>>> {
     viewer.require_full()?;
     let rows: Vec<TokenRow> = sqlx::query_as(
-        "SELECT id, name, prefix, created_at, last_used_at FROM api_tokens
+        "SELECT id, name, prefix, created_at, last_used_at, expires_at FROM api_tokens
          WHERE user_id = ? AND kind = 'personal' AND revoked_at IS NULL
+           AND (expires_at IS NULL OR expires_at > ?)
          ORDER BY created_at DESC",
     )
     .bind(viewer.id)
+    .bind(db::now())
     .fetch_all(&state.db)
     .await?;
     Ok(Json(rows.into_iter().map(ApiToken::from).collect()))
@@ -279,15 +283,21 @@ pub async fn create_token(
     let secret = secret::token(API_TOKEN_PREFIX);
     let prefix: String = secret.chars().take(API_TOKEN_PREFIX.len() + 6).collect();
     let now = db::now();
+    let expires_at = match body.expires_in_minutes {
+        Some(0) => return Err(ApiError::invalid("A token lasts at least a minute")),
+        Some(minutes) => Some(now + i64::from(minutes) * 60_000),
+        None => None,
+    };
     let id = sqlx::query(
-        "INSERT INTO api_tokens (user_id, name, token_hash, prefix, created_at)
-         VALUES (?, ?, ?, ?, ?)",
+        "INSERT INTO api_tokens (user_id, name, token_hash, prefix, created_at, expires_at)
+         VALUES (?, ?, ?, ?, ?, ?)",
     )
     .bind(viewer.id)
     .bind(&name)
     .bind(secret::token_hash(&secret))
     .bind(&prefix)
     .bind(now)
+    .bind(expires_at)
     .execute(&state.db)
     .await?
     .last_insert_rowid();
@@ -297,6 +307,7 @@ pub async fn create_token(
         prefix,
         created_at: db::from_millis(now),
         last_used_at: None,
+        expires_at: expires_at.map(db::from_millis),
     };
     Ok((StatusCode::CREATED, Json(CreatedToken { token, secret })))
 }

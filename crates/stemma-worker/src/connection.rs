@@ -130,11 +130,11 @@ async fn session(context: &Arc<Context>, token: &str) -> Ended {
     match welcome(&mut socket).await {
         Ok(Ok(welcome)) => {
             let owner = match welcome.owner {
-                WorkerOwner::Group { name, .. } => format!("the group {name}"),
-                WorkerOwner::Member { user } => user.display_name,
+                WorkerOwner::Group { name, .. } => format!("the workers of the group {name}"),
+                WorkerOwner::Person { user } => format!("{}'s machines", user.display_name),
             };
             tracing::info!(
-                "connected to {} as {}, a worker of {owner}; runners: {}",
+                "connected to {} as {}, one of {owner}; runners: {}",
                 context.hub,
                 welcome.name,
                 context.config.runner_names().join(", ")

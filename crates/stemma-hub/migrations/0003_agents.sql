@@ -1,4 +1,5 @@
--- Agents: API tokens, agent profiles, workers and the jobs they run.
+-- Agents: API tokens, people's and groups' agents, the workers and machines
+-- they run on, and their jobs.
 
 -- A personal token acts as its owner, with everything they can do. A job
 -- token acts for a job's requester, in the job's group only, while the job
@@ -24,24 +25,44 @@ CREATE TABLE api_tokens (
 
 CREATE INDEX api_tokens_user ON api_tokens (user_id);
 
--- What an agent does when summoned: answer, or hand the message to the
--- workshop as a task.
-CREATE TABLE agent_profiles (
+-- A person's own agents, beyond those everyone has (`@claude`, `@codex`,
+-- `@opencode`), and what they changed of those. They answer for the person
+-- in every group they are in, and run on the person's machines.
+CREATE TABLE personal_agents (
+    id INTEGER PRIMARY KEY,
+    user_id INTEGER NOT NULL REFERENCES users (id) ON DELETE CASCADE,
+    handle TEXT NOT NULL,
+    display_name TEXT NOT NULL,
+    runner TEXT NOT NULL,
+    model TEXT,
+    -- A JSON array of more arguments for the runner.
+    args TEXT NOT NULL DEFAULT '[]',
+    created_at INTEGER NOT NULL,
+    updated_at INTEGER NOT NULL,
+    UNIQUE (user_id, handle)
+);
+
+CREATE INDEX personal_agents_handle ON personal_agents (handle);
+
+-- A group's own agents, which run on its workers: what each does when
+-- summoned, answer or hand the message to the workshop as a task.
+CREATE TABLE group_agents (
     id INTEGER PRIMARY KEY,
     group_id INTEGER NOT NULL REFERENCES groups (id) ON DELETE CASCADE,
     handle TEXT NOT NULL,
     display_name TEXT NOT NULL,
     runner TEXT NOT NULL,
     model TEXT,
+    args TEXT NOT NULL DEFAULT '[]',
     instructions TEXT,
-    scope TEXT NOT NULL CHECK (scope IN ('personal', 'group')),
     role TEXT NOT NULL DEFAULT 'answer' CHECK (role IN ('answer', 'workshop')),
     created_at INTEGER NOT NULL,
     updated_at INTEGER NOT NULL,
     UNIQUE (group_id, handle)
 );
 
--- A worker is a group's (group_id) or a member's (owner_id), never both.
+-- A group's worker (group_id), or a person's machine (owner_id), never
+-- both.
 CREATE TABLE workers (
     id INTEGER PRIMARY KEY,
     name TEXT NOT NULL,
@@ -58,6 +79,8 @@ CREATE TABLE workers (
     lean INTEGER NOT NULL DEFAULT 0,
     workshop INTEGER NOT NULL DEFAULT 0,
     version TEXT,
+    -- A machine its owner's jobs go to first.
+    preferred INTEGER NOT NULL DEFAULT 0,
     revoked_at INTEGER,
     CHECK ((group_id IS NULL) != (owner_id IS NULL))
 );
@@ -73,12 +96,14 @@ CREATE TABLE jobs (
     thread_id INTEGER REFERENCES threads (id) ON DELETE CASCADE,
     trigger_message INTEGER,
     requester_id INTEGER NOT NULL REFERENCES users (id) ON DELETE CASCADE,
-    -- The agent's profile as it was when the job was created, as JSON, so
-    -- that later edits do not change a job on its way. None for builds.
+    -- The agent as it was when the job was created, as JSON, so that later
+    -- edits do not change a job on its way. None for builds.
     agent_handle TEXT,
     agent TEXT,
     -- The runner, or `lean` for builds.
     runner TEXT NOT NULL,
+    -- Whose agent runs it: the requester's own, on their machines, or the
+    -- group's, on its workers.
     scope TEXT NOT NULL CHECK (scope IN ('personal', 'group')),
     state TEXT NOT NULL CHECK (state IN ('queued', 'running', 'done', 'failed', 'cancelled')),
     worker_id INTEGER REFERENCES workers (id) ON DELETE SET NULL,

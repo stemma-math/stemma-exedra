@@ -6,9 +6,10 @@ use reqwest::{Method, StatusCode};
 use serde::Serialize;
 use serde::de::DeserializeOwned;
 use stemma_core::api::{
-    ApiToken, CreateTask, CreateToken, CreatedToken, DeclarationPage, DeclarationSummary,
-    ErrorBody, LibraryState, Me, Message, PREFIX, PostMessage, SearchHit, SignIn, Task, TaskPage,
-    TaskState, Thread, ThreadKind, ThreadPage,
+    ApiToken, CreateMachine, CreateTask, CreateToken, CreatedMachine, CreatedToken,
+    DeclarationPage, DeclarationSummary, ErrorBody, LibraryState, Machine, Me, Message, PREFIX,
+    PersonalAgent, PostMessage, SearchHit, SignIn, Task, TaskPage, TaskState, Thread, ThreadKind,
+    ThreadPage, UpdateMachine,
 };
 
 /// An error the hub answered with, or not reaching it.
@@ -174,8 +175,20 @@ impl Hub {
     }
 
     pub async fn create_token(&self, name: &str) -> Result<CreatedToken> {
-        self.post("/me/tokens", &CreateToken { name: name.into() })
-            .await
+        let body = CreateToken {
+            name: name.into(),
+            expires_in_minutes: None,
+        };
+        self.post("/me/tokens", &body).await
+    }
+
+    /// A token that stops working by itself after `minutes`.
+    pub async fn create_expiring_token(&self, name: &str, minutes: u32) -> Result<CreatedToken> {
+        let body = CreateToken {
+            name: name.into(),
+            expires_in_minutes: Some(minutes),
+        };
+        self.post("/me/tokens", &body).await
     }
 
     pub async fn tokens(&self) -> Result<Vec<ApiToken>> {
@@ -184,6 +197,43 @@ impl Hub {
 
     pub async fn revoke_token(&self, id: i64) -> Result<()> {
         self.delete(&format!("/me/tokens/{id}")).await
+    }
+
+    // ── Agents and machines ───────────────────────────────────────────
+
+    /// The person's own agents.
+    pub async fn my_agents(&self) -> Result<Vec<PersonalAgent>> {
+        self.get("/me/agents", &[]).await
+    }
+
+    /// The person's machines.
+    pub async fn machines(&self) -> Result<Vec<Machine>> {
+        self.get("/me/machines", &[]).await
+    }
+
+    pub async fn create_machine(&self, name: &str, preferred: bool) -> Result<CreatedMachine> {
+        let body = CreateMachine {
+            name: name.into(),
+            preferred,
+        };
+        self.post("/me/machines", &body).await
+    }
+
+    pub async fn prefer_machine(&self, id: i64, preferred: bool) -> Result<Machine> {
+        let body = UpdateMachine { preferred };
+        Ok(self
+            .send(
+                Method::PATCH,
+                &format!("/me/machines/{id}"),
+                &[],
+                Some(&body),
+            )
+            .await?
+            .0)
+    }
+
+    pub async fn revoke_machine(&self, id: i64) -> Result<()> {
+        self.delete(&format!("/me/machines/{id}")).await
     }
 
     // ── The forum ─────────────────────────────────────────────────────

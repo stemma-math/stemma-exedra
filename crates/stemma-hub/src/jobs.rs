@@ -3,12 +3,14 @@
 //!
 //! A message that mentions an agent (`@claude`), or any message in a chat
 //! with a resident agent, creates a job per agent: an answer; or for the
-//! workshop, a task (see [`crate::workshop`]). A new commit of a group's library
+//! workshop, a task (see [`crate::workshop`]). A handle names the group's
+//! own agent, or else the writer's own (see [`crate::agents`]). A new commit of a group's library
 //! creates a build. A job waits until a worker that can run it is connected
 //! and free:
 //!
-//! - an agent of personal scope runs on a worker of the person who asked;
-//! - an agent of group scope, on a worker of the group with its runner;
+//! - a person's own agent runs on one of their machines with its runner,
+//!   the one they prefer if it can;
+//! - a group's own agent, on a worker of the group with its runner;
 //! - a build, on a worker of the group with Lean, one at a time per group;
 //! - a task, on a worker of the group that offers the workshop, with Lean
 //!   and the workshop agent's runner; one at a time per group.
@@ -24,14 +26,15 @@ use std::collections::{HashMap, HashSet};
 
 use sqlx::FromRow;
 use stemma_core::api::{
-    AgentProfile, AgentRole, AgentScope, Event, Job, JobKind, JobState, Message, Role, Thread,
-    ThreadKind, User, runners,
+    AgentProfile, AgentRole, Event, Job, JobKind, JobState, Message, Role, Thread, ThreadKind,
+    User, runners,
 };
 use stemma_core::protocol::{
     Conversation, GroupRef, HubMessage, JobSpec, Outcome, ThreadRef, Work,
 };
 use tokio::sync::mpsc;
 
+use crate::agents::{self, Summoned};
 use crate::api::Membership;
 use crate::api::forum;
 use crate::auth;
@@ -77,6 +80,8 @@ pub struct Connected {
     /// Whether it works on the workshop's tasks.
     pub workshop: bool,
     pub concurrency: u32,
+    /// Whether it is its owner's preferred machine.
+    pub preferred: bool,
     pub running: HashSet<i64>,
     pub sender: mpsc::UnboundedSender<HubMessage>,
 }
@@ -93,10 +98,10 @@ impl Workers {
             _ => {}
         }
         worker.runners.contains(&job.runner)
-            && match AgentScope::parse(&job.scope) {
-                Some(AgentScope::Personal) => worker.owner_id == Some(job.requester_id),
-                Some(AgentScope::Group) => worker.group_id == Some(job.group_id),
-                None => false,
+            && match job.scope.as_str() {
+                PERSONAL => worker.owner_id == Some(job.requester_id),
+                GROUP => worker.group_id == Some(job.group_id),
+                _ => false,
             }
     }
 
@@ -109,13 +114,23 @@ impl Workers {
             .then(|| job.runner.clone())
     }
 
-    /// A connected worker that can run `job` and has room for it.
+    /// A connected worker that can run `job` and has room for it: the
+    /// person's preferred machine first, then the least busy.
     fn free_for(&self, job: &JobRow) -> Option<i64> {
         self.connected
             .iter()
             .filter(|(_, w)| self.can_run(w, job) && (w.running.len() as u32) < w.concurrency)
-            .min_by_key(|(_, w)| w.running.len())
+            .min_by_key(|(id, w)| (!w.preferred, w.running.len(), **id))
             .map(|(id, _)| *id)
+    }
+
+    /// Marks which of a person's connected machines is preferred.
+    pub fn set_preferred(&mut self, owner_id: i64, preferred: Option<i64>) {
+        for (id, worker) in self.connected.iter_mut() {
+            if worker.owner_id == Some(owner_id) {
+                worker.preferred = preferred == Some(*id);
+            }
+        }
     }
 
     /// Why a queued job waits.
@@ -127,7 +142,7 @@ impl Workers {
             } else {
                 format!(
                     "Waiting for a group worker with Lean and {} to come online",
-                    runner_name(&job.runner)
+                    runners::name(&job.runner)
                 )
             };
         }
@@ -138,11 +153,14 @@ impl Workers {
                 "Waiting for a group worker with Lean to come online".into()
             };
         }
-        let runner = runner_name(&job.runner);
-        match (any, AgentScope::parse(&job.scope)) {
+        let runner = runners::name(&job.runner);
+        match (any, job.scope.as_str()) {
+            (true, PERSONAL) => {
+                format!("Waiting for a machine of {}'s to be free", job.display_name)
+            }
             (true, _) => "Waiting for a free worker".into(),
-            (false, Some(AgentScope::Personal)) => format!(
-                "Waiting for {}'s worker, with {runner}, to come online",
+            (false, PERSONAL) => format!(
+                "Waiting for a machine of {}'s with {runner}",
                 job.display_name
             ),
             _ => format!("Waiting for a group worker with {runner} to come online"),
@@ -150,103 +168,10 @@ impl Workers {
     }
 }
 
-/// How a runner is called in what people read.
-pub fn runner_name(runner: &str) -> &str {
-    match runner {
-        "claude-code" => "Claude Code",
-        "codex" => "Codex",
-        "opencode" => "OpenCode",
-        other => other,
-    }
-}
-
-// ── Agent profiles ────────────────────────────────────────────────────
-
-#[derive(FromRow)]
-struct ProfileRow {
-    handle: String,
-    display_name: String,
-    runner: String,
-    model: Option<String>,
-    instructions: Option<String>,
-    scope: String,
-    role: String,
-}
-
-impl From<ProfileRow> for AgentProfile {
-    fn from(row: ProfileRow) -> Self {
-        AgentProfile {
-            handle: row.handle,
-            display_name: row.display_name,
-            runner: row.runner,
-            model: row.model,
-            instructions: row.instructions,
-            scope: AgentScope::parse(&row.scope).unwrap_or(AgentScope::Group),
-            role: AgentRole::parse(&row.role).unwrap_or_default(),
-        }
-    }
-}
-
-macro_rules! profile_query {
-    () => {
-        "SELECT handle, display_name, runner, model, instructions, scope, role
-         FROM agent_profiles"
-    };
-}
-
-pub async fn profiles(state: &AppState, group_id: i64) -> ApiResult<Vec<AgentProfile>> {
-    let rows: Vec<ProfileRow> = sqlx::query_as(concat!(
-        profile_query!(),
-        " WHERE group_id = ? ORDER BY handle"
-    ))
-    .bind(group_id)
-    .fetch_all(&state.db)
-    .await?;
-    Ok(rows.into_iter().map(AgentProfile::from).collect())
-}
-
-pub async fn find_profile(
-    state: &AppState,
-    group_id: i64,
-    handle: &str,
-) -> ApiResult<Option<AgentProfile>> {
-    let row: Option<ProfileRow> = sqlx::query_as(concat!(
-        profile_query!(),
-        " WHERE group_id = ? AND handle = ?"
-    ))
-    .bind(group_id)
-    .bind(handle)
-    .fetch_optional(&state.db)
-    .await?;
-    Ok(row.map(AgentProfile::from))
-}
-
-/// The agents every group starts with: each person's own Claude and
-/// Codex, and the workshop, on the group's workers, with OpenCode.
-pub fn default_profiles() -> Vec<AgentProfile> {
-    let personal = |handle: &str, name: &str, runner: &str, role: AgentRole| AgentProfile {
-        handle: handle.into(),
-        display_name: name.into(),
-        runner: runner.into(),
-        model: None,
-        instructions: None,
-        scope: AgentScope::Personal,
-        role,
-    };
-    vec![
-        personal("claude", "Claude", "claude-code", AgentRole::Answer),
-        personal("codex", "Codex", "codex", AgentRole::Answer),
-        AgentProfile {
-            scope: AgentScope::Group,
-            ..personal(
-                "workshop",
-                "Workshop",
-                runners::OPENCODE,
-                AgentRole::Workshop,
-            )
-        },
-    ]
-}
+/// Whose agent runs a job, as jobs record it: the requester's own, on
+/// their machines, or the group's, on its workers.
+const PERSONAL: &str = "personal";
+const GROUP: &str = "group";
 
 // ── Jobs ──────────────────────────────────────────────────────────────
 
@@ -415,7 +340,8 @@ pub async fn note_of(state: &AppState, job_id: i64) -> ApiResult<Option<String>>
 }
 
 /// Asks the agents a message summons for what they do: those it mentions,
-/// and in a chat, its resident agent. Messages written by agents summon
+/// and in a chat, its resident agent. Each handle names the group's own
+/// agent, or else the writer's own. Messages written by agents summon
 /// none.
 pub async fn summon(
     state: &AppState,
@@ -434,39 +360,46 @@ pub async fn summon(
     {
         handles.insert(0, resident.clone());
     }
+    let author = &message.author;
     let mut created = false;
     for handle in handles {
-        let Some(profile) = find_profile(state, group.group_id, &handle).await? else {
-            continue;
-        };
+        let (profile, scope) =
+            match agents::resolve(state, group.group_id, author.id, &handle).await? {
+                Summoned::Group(profile) => (profile, GROUP),
+                Summoned::Personal(profile) => (profile, PERSONAL),
+                Summoned::Missing => {
+                    let profile = AgentProfile {
+                        handle: handle.clone(),
+                        display_name: format!("@{handle}"),
+                        runner: String::new(),
+                        model: None,
+                        args: Vec::new(),
+                        instructions: None,
+                        role: AgentRole::Answer,
+                    };
+                    let error = format!(
+                        "{} has no agent @{handle}: add one in the settings",
+                        author.display_name
+                    );
+                    refuse(state, group, thread_id, message, &profile, &error).await?;
+                    continue;
+                }
+                Summoned::Nothing => continue,
+            };
         // Guests ask nothing of the group's own: neither work of the
         // workshop nor answers from the group's agents, on its workers.
-        let refused = if group.role.can_ask_for_work() {
+        let refused = if scope == PERSONAL || group.role.can_ask_for_work() {
             None
         } else if profile.role == AgentRole::Workshop {
             Some(format!("Guests cannot ask @{} for work", profile.handle))
-        } else if profile.scope == AgentScope::Group {
+        } else {
             Some(format!(
-                "Guests summon only personal agents, and @{} is the group's",
+                "Guests summon only their own agents, and @{} is the group's",
                 profile.handle
             ))
-        } else {
-            None
         };
         if let Some(error) = refused {
-            // Say why in the thread, as a job that failed.
-            let job_id = insert_agent_job(
-                state,
-                group.group_id,
-                thread_id,
-                message.number,
-                message.author.id,
-                &profile,
-                Some(&error),
-            )
-            .await?;
-            let workers = state.workers.lock().await;
-            publish(state, &workers, job_id).await?;
+            refuse(state, group, thread_id, message, &profile, &error).await?;
             continue;
         }
         if profile.role == AgentRole::Workshop {
@@ -475,7 +408,7 @@ pub async fn summon(
                 instructions: message.body.clone(),
                 thread_id,
                 origin_message: message.number,
-                requester_id: message.author.id,
+                requester_id: author.id,
                 agent: None,
             };
             match workshop::create(state, group, task).await {
@@ -492,8 +425,9 @@ pub async fn summon(
             group.group_id,
             thread_id,
             message.number,
-            message.author.id,
+            author.id,
             &profile,
+            scope,
             None,
         )
         .await?;
@@ -505,7 +439,32 @@ pub async fn summon(
     Ok(())
 }
 
+/// Says in the thread why an agent does not answer, as a job that failed.
+async fn refuse(
+    state: &AppState,
+    group: &Membership,
+    thread_id: i64,
+    message: &Message,
+    profile: &AgentProfile,
+    error: &str,
+) -> ApiResult<()> {
+    let job_id = insert_agent_job(
+        state,
+        group.group_id,
+        thread_id,
+        message.number,
+        message.author.id,
+        profile,
+        PERSONAL,
+        Some(error),
+    )
+    .await?;
+    let workers = state.workers.lock().await;
+    publish(state, &workers, job_id).await
+}
+
 /// Records an agent's answer to a message: queued, or failed with `error`.
+#[allow(clippy::too_many_arguments)]
 async fn insert_agent_job(
     state: &AppState,
     group_id: i64,
@@ -513,6 +472,7 @@ async fn insert_agent_job(
     trigger: u32,
     requester_id: i64,
     profile: &AgentProfile,
+    scope: &str,
     error: Option<&str>,
 ) -> ApiResult<i64> {
     let now = db::now();
@@ -529,7 +489,7 @@ async fn insert_agent_job(
     .bind(&profile.handle)
     .bind(serde_json::to_string(profile).map_err(ApiError::internal)?)
     .bind(&profile.runner)
-    .bind(profile.scope.as_str())
+    .bind(scope)
     .bind(if error.is_some() { "failed" } else { "queued" })
     .bind(error)
     .bind(now)

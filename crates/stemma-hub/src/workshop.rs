@@ -253,7 +253,7 @@ pub async fn resolve(
 /// `@workshop` first.
 pub async fn profile(state: &AppState, group_id: i64) -> ApiResult<Option<AgentProfile>> {
     let handle: Option<String> = sqlx::query_scalar(
-        "SELECT handle FROM agent_profiles WHERE group_id = ? AND role = ?
+        "SELECT handle FROM group_agents WHERE group_id = ? AND role = ?
          ORDER BY handle = 'workshop' DESC, handle LIMIT 1",
     )
     .bind(group_id)
@@ -261,7 +261,7 @@ pub async fn profile(state: &AppState, group_id: i64) -> ApiResult<Option<AgentP
     .fetch_optional(&state.db)
     .await?;
     match handle {
-        Some(handle) => jobs::find_profile(state, group_id, &handle).await,
+        Some(handle) => crate::agents::group_agent(state, group_id, &handle).await,
         None => Ok(None),
     }
 }

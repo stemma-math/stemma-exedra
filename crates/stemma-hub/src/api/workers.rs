@@ -1,8 +1,11 @@
-//! Workers: registering them, and the WebSocket they connect to.
+//! Workers and machines: registering them, and the WebSocket they connect
+//! to.
 //!
-//! A group's admins register the group's workers; anyone registers their
-//! own. Registering gives a token, shown once, that the worker connects
-//! with. See [`stemma_core::protocol`] for what is said on the connection.
+//! A group's admins register the group's workers, which run its own
+//! agents, builds and tasks; anyone registers their machines, which run
+//! their own agents, for them only. Registering gives a token, shown once,
+//! that the worker or machine connects with. See [`stemma_core::protocol`]
+//! for what is said on the connection.
 
 use std::collections::HashSet;
 use std::sync::atomic::Ordering;
@@ -13,7 +16,10 @@ use axum::extract::{Path, State};
 use axum::http::{HeaderMap, StatusCode};
 use axum::response::Response;
 use futures_util::{SinkExt, StreamExt};
-use stemma_core::api::{CreateWorker, CreatedWorker, User, Worker, WorkerScope};
+use stemma_core::api::{
+    CreateMachine, CreateWorker, CreatedMachine, CreatedWorker, Machine, UpdateMachine, User,
+    Worker,
+};
 use stemma_core::protocol::{HubMessage, PROTOCOL_VERSION, Welcome, WorkerMessage, WorkerOwner};
 use tokio::sync::mpsc;
 
@@ -44,6 +50,7 @@ struct WorkerRow {
     runners: String,
     lean: bool,
     workshop: bool,
+    preferred: bool,
     version: Option<String>,
     created_at: i64,
     last_seen_at: Option<i64>,
@@ -53,8 +60,8 @@ macro_rules! worker_query {
     () => {
         "SELECT w.id, w.name, w.prefix, g.slug AS group_slug,
         g.name AS group_name, w.owner_id, u.username AS owner_username,
-        u.display_name AS owner_display_name, w.runners, w.lean, w.workshop, w.version, w.created_at,
-        w.last_seen_at
+        u.display_name AS owner_display_name, w.runners, w.lean, w.workshop, w.preferred,
+        w.version, w.created_at, w.last_seen_at
          FROM workers w LEFT JOIN groups g ON g.id = w.group_id
               LEFT JOIN users u ON u.id = w.owner_id"
     };
@@ -69,20 +76,18 @@ impl WorkerRow {
         })
     }
 
-    fn to_api(&self, online: bool) -> Worker {
+    fn runners(&self) -> Vec<String> {
+        serde_json::from_str(&self.runners).unwrap_or_default()
+    }
+
+    fn worker(&self, online: bool) -> Worker {
         Worker {
             id: self.id,
             name: self.name.clone(),
-            scope: if self.owner_id.is_some() {
-                WorkerScope::Member
-            } else {
-                WorkerScope::Group
-            },
-            group: self.group_slug.clone(),
-            owner: self.owner(),
+            group: self.group_slug.clone().unwrap_or_default(),
             prefix: self.prefix.clone(),
             online,
-            runners: serde_json::from_str(&self.runners).unwrap_or_default(),
+            runners: self.runners(),
             lean: self.lean,
             workshop: self.workshop,
             version: self.version.clone(),
@@ -90,16 +95,30 @@ impl WorkerRow {
             last_seen_at: self.last_seen_at.map(db::from_millis),
         }
     }
+
+    fn machine(&self, online: bool) -> Machine {
+        Machine {
+            id: self.id,
+            name: self.name.clone(),
+            prefix: self.prefix.clone(),
+            online,
+            runners: self.runners(),
+            preferred: self.preferred,
+            version: self.version.clone(),
+            created_at: db::from_millis(self.created_at),
+            last_seen_at: self.last_seen_at.map(db::from_millis),
+        }
+    }
 }
 
-/// Whose workers to list or revoke.
+/// Whose workers to list or revoke: a group's, or a person's machines.
 #[derive(Clone, Copy)]
 enum Whose {
     Group(i64),
-    Member(i64),
+    Person(i64),
 }
 
-async fn listing(state: &AppState, whose: Whose) -> ApiResult<Vec<Worker>> {
+async fn rows(state: &AppState, whose: Whose) -> ApiResult<Vec<WorkerRow>> {
     let (query, id) = match whose {
         Whose::Group(id) => (
             concat!(
@@ -108,7 +127,7 @@ async fn listing(state: &AppState, whose: Whose) -> ApiResult<Vec<Worker>> {
             ),
             id,
         ),
-        Whose::Member(id) => (
+        Whose::Person(id) => (
             concat!(
                 worker_query!(),
                 " WHERE w.owner_id = ? AND w.revoked_at IS NULL ORDER BY w.created_at"
@@ -116,22 +135,42 @@ async fn listing(state: &AppState, whose: Whose) -> ApiResult<Vec<Worker>> {
             id,
         ),
     };
-    let rows: Vec<WorkerRow> = sqlx::query_as(query).bind(id).fetch_all(&state.db).await?;
-    let workers = state.workers.lock().await;
-    Ok(rows
-        .iter()
-        .map(|row| row.to_api(workers.is_online(row.id)))
-        .collect())
+    Ok(sqlx::query_as(query).bind(id).fetch_all(&state.db).await?)
 }
 
-/// Registers a worker: a group's, or a member's.
+async fn row(state: &AppState, id: i64) -> ApiResult<WorkerRow> {
+    Ok(sqlx::query_as(concat!(worker_query!(), " WHERE w.id = ?"))
+        .bind(id)
+        .fetch_one(&state.db)
+        .await?)
+}
+
+/// Registers a worker of a group, or a machine of the viewer's.
 async fn register(
     state: &AppState,
     viewer: &Viewer,
-    group_id: Option<i64>,
-    body: CreateWorker,
-) -> ApiResult<CreatedWorker> {
-    let name = required_text(&body.name, "The name", 80)?;
+    whose: Whose,
+    name: &str,
+) -> ApiResult<(i64, String)> {
+    let name = required_text(name, "The name", 80)?;
+    if let Whose::Person(owner) = whose {
+        let taken: Option<i64> = sqlx::query_scalar(
+            "SELECT id FROM workers WHERE owner_id = ? AND name = ? AND revoked_at IS NULL",
+        )
+        .bind(owner)
+        .bind(&name)
+        .fetch_optional(&state.db)
+        .await?;
+        if taken.is_some() {
+            return Err(ApiError::conflict(format!(
+                "You already have a machine “{name}”"
+            )));
+        }
+    }
+    let (group_id, owner_id) = match whose {
+        Whose::Group(id) => (Some(id), None),
+        Whose::Person(id) => (None, Some(id)),
+    };
     let secret = secret::token(WORKER_TOKEN_PREFIX);
     let prefix: String = secret.chars().take(WORKER_TOKEN_PREFIX.len() + 6).collect();
     let id = sqlx::query(
@@ -140,11 +179,7 @@ async fn register(
     )
     .bind(&name)
     .bind(group_id)
-    .bind(if group_id.is_none() {
-        Some(viewer.id)
-    } else {
-        None
-    })
+    .bind(owner_id)
     .bind(secret::token_hash(&secret))
     .bind(&prefix)
     .bind(viewer.id)
@@ -152,25 +187,18 @@ async fn register(
     .execute(&state.db)
     .await?
     .last_insert_rowid();
-    let row: WorkerRow = sqlx::query_as(concat!(worker_query!(), " WHERE w.id = ?"))
-        .bind(id)
-        .fetch_one(&state.db)
-        .await?;
-    Ok(CreatedWorker {
-        worker: row.to_api(false),
-        secret,
-    })
+    Ok((id, secret))
 }
 
 async fn revoke(state: &AppState, whose: Whose, id: i64) -> ApiResult<()> {
     let (query, owner) = match whose {
         Whose::Group(owner) => (
-            "UPDATE workers SET revoked_at = ?
+            "UPDATE workers SET revoked_at = ?, preferred = 0
              WHERE id = ? AND group_id = ? AND revoked_at IS NULL",
             owner,
         ),
-        Whose::Member(owner) => (
-            "UPDATE workers SET revoked_at = ?
+        Whose::Person(owner) => (
+            "UPDATE workers SET revoked_at = ?, preferred = 0
              WHERE id = ? AND owner_id = ? AND revoked_at IS NULL",
             owner,
         ),
@@ -182,12 +210,17 @@ async fn revoke(state: &AppState, whose: Whose, id: i64) -> ApiResult<()> {
         .execute(&state.db)
         .await?;
     if done.rows_affected() == 0 {
-        return Err(ApiError::not_found("Worker"));
+        return Err(ApiError::not_found(match whose {
+            Whose::Group(_) => "Worker",
+            Whose::Person(_) => "Machine",
+        }));
     }
     jobs::disconnect(state, id).await
 }
 
-/// The group's workers, for any member to see.
+// ── A group's workers ─────────────────────────────────────────────────
+
+/// The group's workers, for anyone in it but guests to see.
 pub async fn list_group(
     State(state): State<AppState>,
     viewer: Viewer,
@@ -195,7 +228,13 @@ pub async fn list_group(
 ) -> ApiResult<Json<Vec<Worker>>> {
     viewer.require_full()?;
     let group = Membership::of(&state, &viewer, &slug).await?;
-    Ok(Json(listing(&state, Whose::Group(group.group_id)).await?))
+    let rows = rows(&state, Whose::Group(group.group_id)).await?;
+    let workers = state.workers.lock().await;
+    Ok(Json(
+        rows.iter()
+            .map(|row| row.worker(workers.is_online(row.id)))
+            .collect(),
+    ))
 }
 
 pub async fn create_group(
@@ -207,8 +246,9 @@ pub async fn create_group(
     viewer.require_full()?;
     let group = Membership::of(&state, &viewer, &slug).await?;
     group.require_admin()?;
-    let created = register(&state, &viewer, Some(group.group_id), body).await?;
-    Ok((StatusCode::CREATED, Json(created)))
+    let (id, secret) = register(&state, &viewer, Whose::Group(group.group_id), &body.name).await?;
+    let worker = row(&state, id).await?.worker(false);
+    Ok((StatusCode::CREATED, Json(CreatedWorker { worker, secret })))
 }
 
 pub async fn revoke_group(
@@ -223,32 +263,90 @@ pub async fn revoke_group(
     Ok(StatusCode::NO_CONTENT)
 }
 
-/// The viewer's own workers.
-pub async fn list_mine(
+// ── A person's machines ───────────────────────────────────────────────
+
+/// The viewer's machines.
+pub async fn list_machines(
     State(state): State<AppState>,
     viewer: Viewer,
-) -> ApiResult<Json<Vec<Worker>>> {
+) -> ApiResult<Json<Vec<Machine>>> {
     viewer.require_full()?;
-    Ok(Json(listing(&state, Whose::Member(viewer.id)).await?))
+    let rows = rows(&state, Whose::Person(viewer.id)).await?;
+    let workers = state.workers.lock().await;
+    Ok(Json(
+        rows.iter()
+            .map(|row| row.machine(workers.is_online(row.id)))
+            .collect(),
+    ))
 }
 
-pub async fn create_mine(
+pub async fn create_machine(
     State(state): State<AppState>,
     viewer: Viewer,
-    Json(body): Json<CreateWorker>,
-) -> ApiResult<(StatusCode, Json<CreatedWorker>)> {
+    Json(body): Json<CreateMachine>,
+) -> ApiResult<(StatusCode, Json<CreatedMachine>)> {
     viewer.require_full()?;
-    let created = register(&state, &viewer, None, body).await?;
-    Ok((StatusCode::CREATED, Json(created)))
+    let (id, secret) = register(&state, &viewer, Whose::Person(viewer.id), &body.name).await?;
+    if body.preferred {
+        prefer(&state, viewer.id, id, true).await?;
+    }
+    let machine = row(&state, id).await?.machine(false);
+    Ok((
+        StatusCode::CREATED,
+        Json(CreatedMachine { machine, secret }),
+    ))
 }
 
-pub async fn revoke_mine(
+/// Makes a machine the preferred one, or not: there is one at most.
+async fn prefer(state: &AppState, owner: i64, id: i64, preferred: bool) -> ApiResult<()> {
+    let mut tx = state.db.begin().await?;
+    if preferred {
+        sqlx::query("UPDATE workers SET preferred = 0 WHERE owner_id = ?")
+            .bind(owner)
+            .execute(&mut *tx)
+            .await?;
+    }
+    let done = sqlx::query(
+        "UPDATE workers SET preferred = ? WHERE id = ? AND owner_id = ? AND revoked_at IS NULL",
+    )
+    .bind(preferred)
+    .bind(id)
+    .bind(owner)
+    .execute(&mut *tx)
+    .await?;
+    if done.rows_affected() == 0 {
+        return Err(ApiError::not_found("Machine"));
+    }
+    tx.commit().await?;
+    let now: Option<i64> = sqlx::query_scalar(
+        "SELECT id FROM workers WHERE owner_id = ? AND preferred AND revoked_at IS NULL",
+    )
+    .bind(owner)
+    .fetch_optional(&state.db)
+    .await?;
+    state.workers.lock().await.set_preferred(owner, now);
+    jobs::dispatch(state).await
+}
+
+pub async fn update_machine(
+    State(state): State<AppState>,
+    viewer: Viewer,
+    Path(id): Path<i64>,
+    Json(body): Json<UpdateMachine>,
+) -> ApiResult<Json<Machine>> {
+    viewer.require_full()?;
+    prefer(&state, viewer.id, id, body.preferred).await?;
+    let online = state.workers.lock().await.is_online(id);
+    Ok(Json(row(&state, id).await?.machine(online)))
+}
+
+pub async fn revoke_machine(
     State(state): State<AppState>,
     viewer: Viewer,
     Path(id): Path<i64>,
 ) -> ApiResult<StatusCode> {
     viewer.require_full()?;
-    revoke(&state, Whose::Member(viewer.id), id).await?;
+    revoke(&state, Whose::Person(viewer.id), id).await?;
     Ok(StatusCode::NO_CONTENT)
 }
 
@@ -261,6 +359,7 @@ struct Authenticated {
     group_id: Option<i64>,
     owner: WorkerOwner,
     owner_id: Option<i64>,
+    preferred: bool,
 }
 
 async fn authenticate(state: &AppState, headers: &HeaderMap) -> ApiResult<Authenticated> {
@@ -288,7 +387,7 @@ async fn authenticate(state: &AppState, headers: &HeaderMap) -> ApiResult<Authen
             slug: slug.clone(),
             name: name.clone(),
         },
-        (_, _, Some(user)) => WorkerOwner::Member { user },
+        (_, _, Some(user)) => WorkerOwner::Person { user },
         _ => return Err(ApiError::internal("a worker with no owner")),
     };
     Ok(Authenticated {
@@ -297,6 +396,7 @@ async fn authenticate(state: &AppState, headers: &HeaderMap) -> ApiResult<Authen
         group_id,
         owner,
         owner_id: row.owner_id,
+        preferred: row.preferred,
     })
 }
 
@@ -379,6 +479,7 @@ async fn serve(
             lean: hello.lean,
             workshop: hello.workshop,
             concurrency: hello.concurrency.clamp(1, 64),
+            preferred: worker.preferred,
             running: HashSet::new(),
             sender,
         },

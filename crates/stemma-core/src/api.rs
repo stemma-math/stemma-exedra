@@ -100,11 +100,18 @@ pub struct ApiToken {
     pub created_at: OffsetDateTime,
     #[serde(with = "time::serde::rfc3339::option")]
     pub last_used_at: Option<OffsetDateTime>,
+    /// When it stops working by itself, if it does.
+    #[serde(default, with = "time::serde::rfc3339::option")]
+    pub expires_at: Option<OffsetDateTime>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct CreateToken {
     pub name: String,
+    /// How long it lasts, in minutes; until revoked if absent. The
+    /// launcher's tokens last a session.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub expires_in_minutes: Option<u32>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -594,50 +601,43 @@ pub struct DeclarationPage {
 
 // ── Agents ────────────────────────────────────────────────────────────
 
-/// The runners a worker can run an agent with.
+/// The runners an agent runs with: the harnesses Stemma launches.
 pub mod runners {
-    /// Claude Code, headless, with the member's own login.
+    /// Claude Code, with the person's own sign-in.
     pub const CLAUDE_CODE: &str = "claude-code";
-    /// Codex, headless, with the member's own login.
+    /// Codex, with the person's own sign-in.
     pub const CODEX: &str = "codex";
-    /// OpenCode, headless, with a model of any provider it supports.
+    /// OpenCode, with a model of any provider it supports.
     pub const OPENCODE: &str = "opencode";
     /// Every runner this version knows.
     pub const ALL: &[&str] = &[CLAUDE_CODE, CODEX, OPENCODE];
     /// The runners that can work on the library for the workshop: those
     /// that edit files and run commands.
     pub const WORKSHOP: &[&str] = &[OPENCODE, CLAUDE_CODE, CODEX];
-}
 
-/// Whose worker runs an agent.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum AgentScope {
-    /// The worker of whoever summons it, with their own login: `@claude`
-    /// is each person's own Claude.
-    Personal,
-    /// The group's workers.
-    Group,
-}
-
-impl AgentScope {
-    pub fn as_str(self) -> &'static str {
-        match self {
-            AgentScope::Personal => "personal",
-            AgentScope::Group => "group",
+    /// How a runner is called in what people read.
+    pub fn name(runner: &str) -> &str {
+        match runner {
+            CLAUDE_CODE => "Claude Code",
+            CODEX => "Codex",
+            OPENCODE => "OpenCode",
+            other => other,
         }
     }
 
-    pub fn parse(s: &str) -> Option<AgentScope> {
-        match s {
-            "personal" => Some(AgentScope::Personal),
-            "group" => Some(AgentScope::Group),
+    /// The program a runner runs, unless told otherwise.
+    pub fn program(runner: &str) -> Option<&'static str> {
+        match runner {
+            CLAUDE_CODE => Some("claude"),
+            CODEX => Some("codex"),
+            OPENCODE => Some("opencode"),
             _ => None,
         }
     }
 }
 
-/// An agent a group can summon by its handle: `@claude`.
+/// An agent: who it is and how it runs. A person's own agents answer for
+/// them; a group's own agents, such as `@workshop`, run on its workers.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct AgentProfile {
     pub handle: String,
@@ -648,13 +648,81 @@ pub struct AgentProfile {
     /// The model, if not the runner's default.
     #[serde(default)]
     pub model: Option<String>,
-    /// What to tell it beyond Stemma's own instructions.
+    /// More arguments for the runner.
+    #[serde(default)]
+    pub args: Vec<String>,
+    /// What to tell it beyond Stemma's own instructions: a group's agents
+    /// only.
     #[serde(default)]
     pub instructions: Option<String>,
-    pub scope: AgentScope,
-    /// What it does when summoned.
+    /// What it does when summoned: a group's agents only.
     #[serde(default)]
     pub role: AgentRole,
+}
+
+/// One of a person's own agents, which answer for them in every group
+/// they are in, run on their machines with their own sign-in.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PersonalAgent {
+    pub handle: String,
+    /// The name its messages are signed with: `Claude Sonnet, for Ada`.
+    pub display_name: String,
+    /// One of [`runners::ALL`].
+    pub runner: String,
+    /// The model, if not the runner's default.
+    #[serde(default)]
+    pub model: Option<String>,
+    /// More arguments for the runner, as given on its command line.
+    #[serde(default)]
+    pub args: Vec<String>,
+    /// Whether it is one every person has, one per runner: `@claude`,
+    /// `@codex`, `@opencode`. Those are changed, not removed; removing
+    /// one puts it back as it was.
+    #[serde(default)]
+    pub default: bool,
+}
+
+impl PersonalAgent {
+    /// The agents everyone has: one per runner.
+    pub fn defaults() -> Vec<PersonalAgent> {
+        [
+            ("claude", "Claude", runners::CLAUDE_CODE),
+            ("codex", "Codex", runners::CODEX),
+            ("opencode", "OpenCode", runners::OPENCODE),
+        ]
+        .into_iter()
+        .map(|(handle, name, runner)| PersonalAgent {
+            handle: handle.into(),
+            display_name: name.into(),
+            runner: runner.into(),
+            model: None,
+            args: Vec::new(),
+            default: true,
+        })
+        .collect()
+    }
+
+    /// The default agent with `handle`, if there is one.
+    pub fn default_for(handle: &str) -> Option<PersonalAgent> {
+        Self::defaults().into_iter().find(|a| a.handle == handle)
+    }
+
+    /// The default agent of `runner`.
+    pub fn default_of_runner(runner: &str) -> Option<PersonalAgent> {
+        Self::defaults().into_iter().find(|a| a.runner == runner)
+    }
+
+    pub fn profile(&self) -> AgentProfile {
+        AgentProfile {
+            handle: self.handle.clone(),
+            display_name: self.display_name.clone(),
+            runner: self.runner.clone(),
+            model: self.model.clone(),
+            args: self.args.clone(),
+            instructions: None,
+            role: AgentRole::Answer,
+        }
+    }
 }
 
 /// What an agent does when summoned.
@@ -799,28 +867,16 @@ pub struct CreateTask {
     pub agent: Option<String>,
 }
 
-// ── Workers ───────────────────────────────────────────────────────────
+// ── Workers and machines ──────────────────────────────────────────────
 
-/// Whose a worker is, which decides whose jobs it runs.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum WorkerScope {
-    /// A group's: it runs the group's agents.
-    Group,
-    /// A member's: it runs only the jobs that member asks for.
-    Member,
-}
-
-/// A worker registered with the hub.
+/// A group's worker: it runs the group's own agents and, with Lean,
+/// builds its library and works on the workshop's tasks.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Worker {
     pub id: i64,
     pub name: String,
-    pub scope: WorkerScope,
-    /// The group of a group worker.
-    pub group: Option<String>,
-    /// The member of a member worker.
-    pub owner: Option<User>,
+    /// The group it is of.
+    pub group: String,
     /// The first characters of its token, to recognise it.
     pub prefix: String,
     pub online: bool,
@@ -847,6 +903,47 @@ pub struct CreateWorker {
 pub struct CreatedWorker {
     #[serde(flatten)]
     pub worker: Worker,
+    pub secret: String,
+}
+
+/// One of a person's machines: where their own agents run, with their
+/// own sign-in to each runner, and only for them.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct Machine {
+    pub id: i64,
+    pub name: String,
+    /// The first characters of its token, to recognise it.
+    pub prefix: String,
+    pub online: bool,
+    /// The runners it found installed and usable when it last connected.
+    pub runners: Vec<String>,
+    /// Whether their jobs go to it first, when it has the runner.
+    pub preferred: bool,
+    pub version: Option<String>,
+    #[serde(with = "time::serde::rfc3339")]
+    pub created_at: OffsetDateTime,
+    #[serde(with = "time::serde::rfc3339::option")]
+    pub last_seen_at: Option<OffsetDateTime>,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct CreateMachine {
+    pub name: String,
+    /// Whether it is to be the preferred one.
+    #[serde(default)]
+    pub preferred: bool,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct UpdateMachine {
+    pub preferred: bool,
+}
+
+/// A new machine, with the secret of its token, shown once.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct CreatedMachine {
+    #[serde(flatten)]
+    pub machine: Machine,
     pub secret: String,
 }
 

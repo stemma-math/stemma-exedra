@@ -136,12 +136,16 @@ pub async fn create_thread(
             if !stemma_core::mention::is_handle(&agent) {
                 return Err(ApiError::invalid("That is not an agent's handle"));
             }
-            if crate::jobs::find_profile(&state, group.group_id, &agent)
-                .await?
-                .is_none()
-            {
+            // The group's own agent, or one of the writer's: each person
+            // writing in the chat is then answered by theirs.
+            let summoned =
+                crate::agents::resolve(&state, group.group_id, viewer.id, &agent).await?;
+            if !matches!(
+                summoned,
+                crate::agents::Summoned::Group(_) | crate::agents::Summoned::Personal(_)
+            ) {
                 return Err(ApiError::invalid(format!(
-                    "There is no agent @{agent} in this group"
+                    "Neither this group nor you have an agent @{agent}"
                 )));
             }
             Some(agent)

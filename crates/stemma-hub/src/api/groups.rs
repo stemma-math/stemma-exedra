@@ -147,8 +147,8 @@ async fn insert_group(state: &AppState, viewer: &Viewer, slug: &str, name: &str)
     .bind(now)
     .execute(&mut *tx)
     .await?;
-    for profile in crate::jobs::default_profiles() {
-        super::agents::insert(&mut *tx, group_id, &profile).await?;
+    for profile in crate::agents::group_defaults() {
+        crate::agents::insert_group_agent(&mut *tx, group_id, &profile).await?;
     }
     tx.commit().await?;
     Ok(group_id)

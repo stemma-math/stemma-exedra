@@ -112,10 +112,21 @@ pub fn router(state: AppState) -> Router {
             delete(workers::revoke_group),
         )
         .route(
-            "/me/workers",
-            get(workers::list_mine).post(workers::create_mine),
+            "/me/machines",
+            get(workers::list_machines).post(workers::create_machine),
         )
-        .route("/me/workers/{id}", delete(workers::revoke_mine))
+        .route(
+            "/me/machines/{id}",
+            patch(workers::update_machine).delete(workers::revoke_machine),
+        )
+        .route(
+            "/me/agents",
+            get(agents::list_mine).post(agents::create_mine),
+        )
+        .route(
+            "/me/agents/{handle}",
+            put(agents::update_mine).delete(agents::remove_mine),
+        )
         .route(
             "/groups/{group}/threads/{thread}/jobs",
             get(jobs::of_thread),

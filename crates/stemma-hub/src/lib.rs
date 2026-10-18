@@ -4,6 +4,7 @@
 //! forge beside it, which people sign in to through the hub, and whose git
 //! the hub passes on to workers and personal tokens.
 
+pub mod agents;
 pub mod api;
 pub mod auth;
 pub mod config;

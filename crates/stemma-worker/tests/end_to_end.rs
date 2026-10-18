@@ -277,7 +277,7 @@ async fn a_members_claude_answers_a_mention() {
     let tools = tempfile::tempdir().unwrap();
     let work = tempfile::tempdir().unwrap();
     let claude = fake_claude(tools.path(), 0);
-    let token = worker_token(&hub, &ada, "/me/workers").await;
+    let token = worker_token(&hub, &ada, "/me/machines").await;
     let running = worker(
         &hub,
         &token,
@@ -287,8 +287,8 @@ async fn a_members_claude_answers_a_mention() {
             claude.display().to_string()
         ),
     );
-    wait_online(&hub, &ada, "/me/workers").await;
-    let workers = ada.get(&hub, "/me/workers").await;
+    wait_online(&hub, &ada, "/me/machines").await;
+    let workers = ada.get(&hub, "/me/machines").await;
     assert_eq!(workers[0]["runners"], json!(["claude-code"]));
 
     ada.post(
@@ -351,11 +351,11 @@ async fn a_personal_agent_waits_for_its_requesters_worker() {
     );
     let adas = worker(
         &hub,
-        &worker_token(&hub, &ada, "/me/workers").await,
+        &worker_token(&hub, &ada, "/me/machines").await,
         work.path(),
         &config,
     );
-    wait_online(&hub, &ada, "/me/workers").await;
+    wait_online(&hub, &ada, "/me/machines").await;
 
     bob.post(
         &hub,
@@ -368,12 +368,12 @@ async fn a_personal_agent_waits_for_its_requesters_worker() {
     assert_eq!(waiting[0]["state"], "queued", "{waiting}");
     assert_eq!(
         waiting[0]["note"],
-        "Waiting for Bob's worker, with Claude Code, to come online"
+        "Waiting for a machine of Bob's with Claude Code"
     );
 
     let bobs = worker(
         &hub,
-        &worker_token(&hub, &bob, "/me/workers").await,
+        &worker_token(&hub, &bob, "/me/machines").await,
         work.path(),
         &config,
     );
@@ -394,11 +394,11 @@ async fn jobs_outlive_their_workers_and_the_hub() {
         "[runners.claude-code]\ncommand = {:?}\n",
         fake_claude(tools.path(), 30).display().to_string()
     );
-    let token = worker_token(&hub, &ada, "/me/workers").await;
+    let token = worker_token(&hub, &ada, "/me/machines").await;
 
     // The worker goes away while it runs a job: the job is queued again.
     let first = worker(&hub, &token, work.path(), &slow);
-    wait_online(&hub, &ada, "/me/workers").await;
+    wait_online(&hub, &ada, "/me/machines").await;
     ada.post(
         &hub,
         "/groups/geometry/threads",
@@ -454,7 +454,7 @@ async fn a_chat_with_codex_answers_every_message() {
     let codex = fake_codex(tools.path());
     let running = worker(
         &hub,
-        &worker_token(&hub, &ada, "/me/workers").await,
+        &worker_token(&hub, &ada, "/me/machines").await,
         work.path(),
         &format!(
             "[runners.codex]\ncommand = {:?}\n",
@@ -744,14 +744,14 @@ async fn only_agents_for_those_who_ask_for_work_hand_tasks_over() {
         let claude = fake_claude(tools.path(), 0);
         let running = worker(
             &hub,
-            &worker_token(&hub, person, "/me/workers").await,
+            &worker_token(&hub, person, "/me/machines").await,
             work.path(),
             &format!(
                 "[runners.claude-code]\ncommand = {:?}\n",
                 claude.display().to_string()
             ),
         );
-        wait_online(&hub, person, "/me/workers").await;
+        wait_online(&hub, person, "/me/machines").await;
         person
             .post(
                 &hub,

@@ -17,7 +17,7 @@ pub use crate::api::JobKind;
 use crate::api::{AgentProfile, LibraryReport, Message, ThreadKind, User};
 
 /// The version of this protocol. A hub refuses workers that speak another.
-pub const PROTOCOL_VERSION: u32 = 4;
+pub const PROTOCOL_VERSION: u32 = 5;
 
 /// The path of the workers' WebSocket, under the API's prefix.
 pub const WORKER_PATH: &str = "/worker";
@@ -39,7 +39,9 @@ pub struct Hello {
     pub protocol: u32,
     /// The worker's version of Stemma.
     pub version: String,
-    /// The runners it can run, such as `claude-code` or `codex`.
+    /// The runners it can run, such as `claude-code` or `codex`: those
+    /// configured, or for a person's machine, those found installed and
+    /// usable.
     pub runners: Vec<String>,
     /// Whether it has Lean (elan or lake), for library builds.
     pub lean: bool,
@@ -136,10 +138,10 @@ pub struct Welcome {
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum WorkerOwner {
-    /// A group's worker: the group's agents.
+    /// A group's worker: the group's own agents, its builds and tasks.
     Group { slug: String, name: String },
-    /// A member's worker: only the jobs they ask for.
-    Member { user: User },
+    /// A person's machine: their own agents, only for them.
+    Person { user: User },
 }
 
 /// A job, with what its runner needs.
