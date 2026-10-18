@@ -211,9 +211,15 @@ export interface ModuleSummary {
   sorry: number;
 }
 
+export interface ForgeLinks {
+  organization: string;
+  repository: string;
+}
+
 export interface LibraryState {
   available: boolean;
   clone_path: string;
+  forge: ForgeLinks | null;
   head: string | null;
   latest: Build | null;
   current: Build | null;

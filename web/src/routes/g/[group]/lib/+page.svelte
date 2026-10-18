@@ -80,12 +80,18 @@
     <span class="spinner" role="status" aria-label="Loading"></span>
   {:else if !library.available}
     <div class="card card--empty card__body">
-      <p class="empty">This hub keeps no library for the group: it needs <code>git</code> installed.</p>
+      <p class="empty">This hub keeps no library for the group: it needs a forge.</p>
     </div>
   {:else}
     <div class="library-layout">
       <aside class="stack">
         <LibraryStatus {library} group={group.slug} />
+        {#if library.forge}
+          <p class="row">
+            <a class="button button--link" href={library.forge.repository}>The library in the forge</a>
+            <a class="button button--link" href={library.forge.organization}>The group in the forge</a>
+          </p>
+        {/if}
         <details class="card disclosure">
           <summary>Work on it with git</summary>
           <p>It is a Lean project on Mathlib. Clone it with a personal token, from your settings, as the password:</p>
@@ -93,7 +99,10 @@
             <code class="identifier grow" id="clone-command">git clone {cloneUrl}</code>
             <stemma-copy-button for="clone-command" label="Copy the command"></stemma-copy-button>
           </span>
-          <p class="quiet">Each push to <code>main</code> is built and inspected.</p>
+          <p class="quiet">
+            Or sign in to the forge with your Stemma account, and clone it from there. Each push to <code>main</code> is
+            built and inspected.
+          </p>
         </details>
         {#if library.modules.length}
           <section class="stack stack--tight">

@@ -16,8 +16,14 @@
     return target.startsWith("/") && !target.startsWith("//") ? target : "/";
   });
 
+  // Signing in to the forge goes on at the hub itself, not in the app.
+  function proceed() {
+    if (next.startsWith("/oauth/")) location.replace(next);
+    else goto(next, { replaceState: true });
+  }
+
   onMount(async () => {
-    if (session.me) goto(next, { replaceState: true });
+    if (session.me) proceed();
     else if ((await api.setupState()).needed) goto("/setup", { replaceState: true });
   });
 
@@ -27,7 +33,7 @@
     error = "";
     try {
       setSession(await api.signIn(username, password));
-      goto(next, { replaceState: true });
+      proceed();
     } catch (e) {
       error = e instanceof Error ? e.message : String(e);
     } finally {
