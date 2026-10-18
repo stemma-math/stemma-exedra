@@ -15,6 +15,11 @@
   let error = $state("");
   let busy = $state(false);
 
+  /** The role the invitation grants, as people read it. */
+  const joinsAs = $derived(
+    info?.role === "admin" ? ", as an admin" : info?.role === "guest" ? ", as a guest" : "",
+  );
+
   onMount(async () => {
     try {
       info = await api.invitation(token);
@@ -54,10 +59,10 @@
       <form class="card card--raised card__body form" onsubmit={accept}>
         <h2>Join {info.group_name}</h2>
         {#if session.me}
-          <p>You will join as {session.me.display_name}{info.role === "admin" ? ", as an admin" : ""}.</p>
+          <p>You will join as {session.me.display_name}{joinsAs}.</p>
         {:else}
           <p>
-            Create your account to join{info.role === "admin" ? " as an admin" : ""}. Already have one?
+            Create your account to join{joinsAs}. Already have one?
             <a class="button button--link" href="/signin?next={encodeURIComponent(page.url.pathname)}">Sign in</a> first.
           </p>
           <AccountFields bind:username bind:displayName bind:password />

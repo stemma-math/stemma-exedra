@@ -10,6 +10,7 @@
   import { exactly } from "#lib/format.ts";
   import { groupContext } from "#lib/group.svelte.ts";
   import { applyJob } from "#lib/jobs.ts";
+  import { summonable } from "#lib/roles.ts";
   import { forgetReferences } from "#lib/references.ts";
   import { session } from "#lib/session.svelte.ts";
   import { toastError } from "#lib/toast.ts";
@@ -63,7 +64,7 @@
     api
       .agents(group.slug)
       .then((found) => {
-        agents = found.map((a) => a.handle);
+        agents = summonable(found, group.role).map((a) => a.handle);
       })
       .catch(() => {});
   });

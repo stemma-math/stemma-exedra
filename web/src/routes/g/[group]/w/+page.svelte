@@ -4,6 +4,7 @@
   import { listen } from "#lib/events.ts";
   import { exactly, when } from "#lib/format.ts";
   import { groupContext } from "#lib/group.svelte.ts";
+  import { asksForWork } from "#lib/roles.ts";
   import { toastError } from "#lib/toast.ts";
 
   const context = groupContext();
@@ -42,8 +43,14 @@
   </div>
   <p class="quiet">
     The workshop works on the library in the background, one task at a time, on the group's
-    workers. Hand it a task in a thread, as in <code>@workshop formalize the lemma in t12#48</code>,
-    or ask an agent to. It reports once, in the thread the task came from.
+    workers.
+    {#if asksForWork(group.role)}
+      Hand it a task in a thread, as in <code>@workshop formalize the lemma in t12#48</code>, or ask an
+      agent to.
+    {:else}
+      Admins and members hand it tasks; as a guest, you follow them.
+    {/if}
+    It reports once, in the thread the task came from.
   </p>
   {#if tasks === null}
     <span class="spinner" role="status" aria-label="Loading"></span>

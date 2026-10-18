@@ -3,6 +3,7 @@
   import { api, type CreatedInvitation, type Invitation, type Member, type Role } from "#lib/api.ts";
   import { exactly, when } from "#lib/format.ts";
   import { groupContext } from "#lib/group.svelte.ts";
+  import { ROLE_NAMES, ROLES } from "#lib/roles.ts";
   import { loadSession, session } from "#lib/session.svelte.ts";
   import { toastError } from "#lib/toast.ts";
   import AgentSettings from "#lib/components/AgentSettings.svelte";
@@ -106,11 +107,12 @@
                 value={member.role}
                 onchange={(e) => setRole(member, e.currentTarget.value as Role)}
               >
-                <option value="member">Member</option>
-                <option value="admin">Admin</option>
+                {#each ROLES as option (option)}
+                  <option value={option}>{ROLE_NAMES[option]}</option>
+                {/each}
               </select>
             {:else}
-              <span class="chip">{member.role === "admin" ? "Admin" : "Member"}</span>
+              <span class="chip">{ROLE_NAMES[member.role]}</span>
             {/if}
             {#if member.id === session.me?.id}
               <button type="button" class="button button--small" onclick={() => remove(member)}>Leave</button>
@@ -129,8 +131,9 @@
     <section class="stack">
       <h2>Invitations</h2>
       <p>
-        An invitation is a link: whoever opens it can create an account and join {group.name}. Send it
-        the way you like.
+        An invitation is a link: whoever opens it can create an account and join {group.name}, with the
+        role it grants. Admins manage the group; members also ask the workshop for work; guests read and
+        converse, summoning only their own agents. Send it the way you like.
       </p>
 
       {#if created}
@@ -150,8 +153,9 @@
           <div class="field grow">
             <label class="field__label" for="invitation-role">Joins as</label>
             <select id="invitation-role" class="input" bind:value={role}>
-              <option value="member">Member</option>
-              <option value="admin">Admin</option>
+              {#each ROLES as option (option)}
+                <option value={option}>{ROLE_NAMES[option]}</option>
+              {/each}
             </select>
           </div>
           <div class="field grow">
@@ -183,7 +187,7 @@
               <div class="table__row">
                 <span class="stack stack--tight">
                   <span>
-                    {invitation.role === "admin" ? "Admin" : "Member"}, by {invitation.created_by.display_name},
+                    {ROLE_NAMES[invitation.role]}, by {invitation.created_by.display_name},
                     <span title={exactly(invitation.created_at)}>{when(invitation.created_at)}</span>
                   </span>
                   <span class="quiet">

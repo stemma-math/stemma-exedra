@@ -4,6 +4,7 @@
   import { listen } from "#lib/events.ts";
   import { exactly, when } from "#lib/format.ts";
   import { groupContext } from "#lib/group.svelte.ts";
+  import { asksForWork } from "#lib/roles.ts";
   import { toastError } from "#lib/toast.ts";
 
   const context = groupContext();
@@ -45,7 +46,9 @@
   </nav>
   <div class="page__head">
     <h1>Builds</h1>
-    <button type="button" class="button push" onclick={rebuild}>Build main again</button>
+    {#if asksForWork(group.role)}
+      <button type="button" class="button push" onclick={rebuild}>Build main again</button>
+    {/if}
   </div>
   <p class="quiet">
     A group worker with Lean builds each new commit of <code>main</code>, and inspects it. The library's

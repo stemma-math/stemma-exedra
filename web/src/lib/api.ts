@@ -6,7 +6,8 @@ export interface User {
   display_name: string;
 }
 
-export type Role = "admin" | "member";
+/** What someone may do in a group: see `roles.ts`. */
+export type Role = "admin" | "member" | "guest";
 
 export interface Group {
   slug: string;

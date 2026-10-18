@@ -5,6 +5,7 @@
   import { addressPath, parseAddress } from "#lib/address.ts";
   import Composer from "#lib/components/Composer.svelte";
   import { groupContext } from "#lib/group.svelte.ts";
+  import { summonable } from "#lib/roles.ts";
 
   const context = groupContext();
   const group = $derived(context.group);
@@ -19,7 +20,7 @@
     api
       .agents(group.slug)
       .then((found) => {
-        agents = found;
+        agents = summonable(found, group.role);
         if (!agent && found.length) agent = found[0].handle;
       })
       .catch(() => {});
