@@ -10,17 +10,19 @@ This is an early stage of Stemma. What works today:
   with numbered messages in Markdown with math, attachments and live updates,
   served by a hub with a web app and a JSON API;
 - agents in it, that answer when mentioned, and chats with a resident agent:
-  each person's own, run on their machines with their own sign-in, and the
-  group's, run on its workers;
+  each person's own, run on their machines with their own sign-in;
 - the library: each group's Lean project on Mathlib, a repository of the
   group's organization in [Forgejo](https://forgejo.org), the forge beside
   the hub, which people sign in to with their Stemma account; built and
-  inspected by a worker with Lean, and browsable, with the state of each
-  declaration (proved, `sorry`, missing) shown wherever it is referenced;
-- the workshop: tasks handed over in conversation ("formalize this"),
-  worked on in the background by an agent in the library, on the group's
-  workers, checked, put in the library, and reported in the thread they came
-  from;
+  inspected by a workshop machine with Lean, and browsable, with the state
+  of each declaration (proved, `sorry`, missing) shown wherever it is
+  referenced;
+- the workshop, the only place where agents change the group's
+  repositories: tasks handed over in conversation ("formalize this"), worked
+  on in the background on machines the group's admins lend it, checked,
+  proposed as a pull request, put in the library once approved, and
+  reported in the thread they came from; what each job consumed is
+  measured;
 - your own agent, opened with Stemma's tools for a session
   (`stemma claude`, `stemma codex`, `stemma opencode`), and Stemma's tools
   for any agent, over MCP and the command line.
@@ -39,12 +41,14 @@ forge, which keeps the groups' repositories:
 - People have one account, Stemma's. The hub is an OpenID Connect provider,
   and Forgejo signs people in through it; the hub makes each person's Forgejo
   account when they join a group, linked to that sign-in.
-- Workers, machines and personal tokens reach the libraries' git through
+- Machines and personal tokens reach the libraries' git through
   the hub, under `/git`, which applies the group's roles and passes the
   request on to Forgejo with its own credentials; no Forgejo credential
   leaves the hub.
 - A webhook tells the hub of each push to a library's `main`, which it then
   builds.
+- The workshop's changes are pull requests, which the hub opens, merges or
+  closes through Forgejo's API as people approve or reject them in Stemma.
 
 Without a forge, the hub runs the forum and its agents, and refuses to create
 groups.
@@ -101,7 +105,7 @@ max_upload_mb = 50                        # STEMMA_MAX_UPLOAD_MB
 Put the hub behind a reverse proxy that serves HTTPS, and set `public_url`
 to its address: session cookies are then marked secure, and it is the issuer
 of the hub's OpenID Connect tokens. The proxy must pass WebSocket upgrades on
-`/api/v1/worker`, where workers and machines connect. Back up the data directory, which
+`/api/v1/worker`, where machines connect. Back up the data directory, which
 holds the database, the attachments and the key the hub signs its tokens
 with, and Forgejo's data, which holds the repositories.
 
@@ -195,16 +199,19 @@ their addresses before setting them up.
 Everyone in a group has a role, which the invitation that brought them in
 grants and its admins can change in the group's settings:
 
-- An **admin** manages the group: its settings, members, invitations,
-  agents and workers. An admin also does everything a member does. A group
-  always keeps at least one admin.
+- An **admin** manages the group: its settings, members, invitations and
+  workshop machines (their own machines, lent to the workshop). An admin
+  also approves the workshop's big changes, and does everything a member
+  does. A group always keeps at least one admin.
 - A **member** reads, posts in the forum and chats, summons agents, and asks
-  the workshop for work: hands it tasks, directly or through an agent, asks
-  for builds of the library, and pushes to it.
-- A **guest** reads and converses: posts, and summons their own agents. A guest asks for no work: they cannot hand the workshop a task, an
-  agent answering them is not given `create_task`, they do not summon the
-  group's own agents, which run on its workers, and they cannot push to the
-  library or ask for its builds. Nor do they change the group's settings.
+  the workshop for work: hands it tasks, directly or through an agent,
+  approves the changes of the tasks they asked for, asks for builds of the
+  library, and pushes to it.
+- A **guest** reads and converses: posts, and summons their own agents. A
+  guest asks for no work: they cannot hand the workshop a task, an agent
+  answering them is not given `create_task`, they never approve changes, and
+  they cannot push to the library or ask for its builds. Nor do they change
+  the group's settings.
 
 The hub enforces the roles; the web app leaves out what a role cannot do.
 
@@ -225,9 +232,9 @@ git clone https://forge.example.org/geometry/library.git        # in Forgejo, si
 Through the hub, everyone in the group clones it, admins and members push to
 it, and guests do not; in Forgejo, the group's teams say the same. Each new
 commit of `main` (pushes that rewrite its history are refused) is built by a
-group worker with Lean: it gets Mathlib's cache, runs `lake build`,
+workshop machine with Lean: it gets Mathlib's cache, runs `lake build`,
 and then the inspection, `lean/Inspect.lean`, with the library's own
-toolchain. The worker keeps a checkout of the library, so that Mathlib is
+toolchain. The machine keeps a checkout of the library, so that Mathlib is
 fetched once and Lake builds again only the modules that changed; it compiles
 the inspection once per Lean version, and inspects again only the modules that
 changed and those that import them. The inspection reports, for each
@@ -242,37 +249,111 @@ log.
 
 ## The workshop
 
-The workshop works on the library in the background. A task is handed to it in
-conversation: mention it, as in `@workshop formalize the lemma in t12#48`, or
-ask an agent in a thread, which hands it over with `create_task`. Admins and
-members hand tasks over; guests do not. Each task has an address, `w7`, a page
-in the web app with its state, log, commits and report, and is shown on its way
-in the thread it came from, where it can be cancelled.
+The workshop is where agents work in the background, and the only place
+where they change the group's repositories. Conversations ask it for work:
+the forum, chats, and each person's own sessions with their agents. A task
+is handed to it in conversation: mention it, as in `@workshop formalize the
+lemma in t12#48`, or ask an agent in a thread, which hands it over with
+`create_task`. Admins and members hand tasks over; guests do not. Each task
+has an address, `w7`, a page in the web app with its state, log, changes and
+report, and is shown on its way in the thread it came from, where it can be
+cancelled. The web app's workshop panel shows the tasks (queued, running,
+waiting for approval, over), what the workshop consumed day by day, its
+architectures and its machines.
 
-A group worker that offers the workshop runs the group's tasks, one at a time:
+### Architectures
 
-1. It makes a fresh worktree of the library at `main`, with its dependencies
-   and its last build.
-2. The workshop's agent works there with its runner (OpenCode, Claude Code or
-   Codex), given the task, the thread it came from, the library, Lean and
-   Stemma's tools. Its instructions are in
-   `crates/stemma-worker/prompts/task.md`: formalize following the library's
-   structure and Mathlib's conventions, state faithfully what the thread
-   decided, leave `sorry` in proofs rather than weaken a statement, never in a
-   definition's data, and report honestly.
-3. The worker checks the work: `lake build` must pass, and no definition's data
-   may newly depend on `sorry`, as the inspection says. If not, the agent is
-   told why and works again, a limited number of rounds.
-4. It commits the work, with its provenance in trailers (`Task`, `Origin`,
-   `Runner`, `Model`), rebases it on `main` if `main` moved, checks it again and
-   pushes it with the job's token. If `main` moves again meanwhile, it tries
-   once more; if the work does not apply on `main`, the task is blocked, with
-   the reason.
+Each kind of work the workshop knows is an architecture: a folder of
+`workshop/architectures/`, embedded in the binary, which the hub lists
+(`GET /api/v1/workshop/architectures`, and the panel). A folder has a
+manifest, `architecture.toml`, and its agent's instructions, in Markdown:
 
-When the task ends, done, failed or blocked, one message in its thread reports
-on it, for the person who asked: what was done, what is pending, the commits
-and the declarations that changed. The build the worker made of what it pushed
-is the library's new state.
+```toml
+name = "formalize"
+description = "Formalize in the library what a conversation decided, …"
+works_on = "library"                  # the group's repository it changes
+instructions = ["instructions.md"]    # in this folder, in order
+big = ["lakefile.toml", "lakefile.lean", "lean-toolchain", "lake-manifest.json"]
+
+[[steps]]
+name = "work"                         # each step, by a name machines know
+description = "…"
+```
+
+Adding an architecture is adding a folder. There is one now, `formalize`:
+
+1. **work**: a fresh worktree of the library at `main`, with its
+   dependencies and last build, where the agent works, given the task, the
+   thread it came from, the library, Lean, Stemma's tools and the
+   instructions in `workshop/architectures/formalize/instructions.md`:
+   formalize following the library's structure and Mathlib's conventions,
+   state faithfully what the thread decided, leave `sorry` in proofs rather
+   than weaken a statement, never in a definition's data, and report
+   honestly. If it needs the group to decide something, it may open a thread
+   to ask, with `open_thread`, sparingly (twice at most in a task).
+2. **check**: `lake build` must pass, and no definition's data may newly
+   depend on `sorry`, as the inspection says. If not, the agent is told why
+   and works again, a limited number of rounds.
+3. **propose**: the work is committed, with its provenance in trailers
+   (`Task`, `Origin`, `Runner`, `Model`), and pushed to the branch
+   `workshop/w7` with the job's token, which pushes to that branch and
+   nowhere else (the hub reads the refs a push updates). The hub opens a
+   pull request in Forgejo.
+
+### Approval
+
+The changes go in only once approved, in Stemma (the task's page, or
+`stemma approve w7`): by the person who asked for the task, and for a big
+change by an admin too. A change is big when it deletes or renames a file,
+or touches one of its architecture's `big` files: for the library, Lake's
+configuration and manifest and the toolchain. One person may approve as
+both. Guests never approve. Approval merges the pull request through
+Forgejo's API, and the push to `main` is then built; the asker or an admin
+may reject the changes instead (`stemma reject w7`), which closes the pull
+request and deletes its branch. A change that no longer merges is rejected,
+and asked for again.
+
+When a task's run ends, one message in its thread reports on it, for the
+person who asked: what was done, what is pending, the changes and the
+declarations they change, and who approves them; approving or rejecting
+says so there too.
+
+### Workshop machines
+
+The workshop runs on machines its group's admins lend it: their own
+machines (see [Your machines](#your-machines)), with Lean (elan) installed
+for the library's builds and tasks. An admin adds one of theirs, in the
+group's settings or from it:
+
+```sh
+stemma machine workshop add geometry     # this machine works for the workshop of geometry
+stemma machine workshop remove geometry
+```
+
+The machine's owner, and only they, chooses which agents it offers the
+workshop, from the runners it has, with their models and arguments, in
+order of preference, each with a daily limit (UTC days) of jobs, of
+minutes, or both. A task goes to the first agent, on a free machine of the
+group's workshop, that the machine can run and that is under its limit.
+In the web app's settings, or:
+
+```sh
+stemma machine workshop offer claude-code --model opus --jobs 10
+stemma machine workshop offer opencode --model openrouter/qwen/qwen3-coder --minutes 120
+stemma machine workshop offer codex --position 1 -- -c model_reasoning_effort=high
+stemma machine workshop show             # its groups, and its agents with what each did today
+stemma machine workshop unoffer 2
+```
+
+A group's tasks run one at a time, and so do its builds. A machine keeps
+the group's checkout of the library, with its `.lake`, in its work folder,
+so that Mathlib is fetched once; it takes several gigabytes. On a task, the
+agent edits files and runs commands in a worktree of that checkout, as the
+machine's user. Each job's time is measured, and the tokens and cost its
+runner reports: Claude Code's result (`usage`, `total_cost_usd`), Codex's
+turns (`turn.completed`, tokens only) and OpenCode's steps (`step_finish`,
+tokens and cost). They are kept by job, agent and machine, and the panel
+shows them by day.
 
 ## From the command line
 
@@ -299,8 +380,10 @@ stemma read lean:Foo.bar        # a declaration of the library
 stemma library                  # how the library stands
 stemma library gluing           # search its declarations
 stemma tasks                    # the workshop's tasks
-stemma read w7                  # one of them, with its report
+stemma read w7                  # one of them, with its report and changes
 stemma task 'Formalize the gluing lemma' --origin 't12#48' < what.md
+stemma approve w7               # approve its changes: as who asked, or as an admin
+stemma reject w7
 ```
 
 `STEMMA_HUB`, `STEMMA_TOKEN` and `STEMMA_GROUP` override what `login` kept.
@@ -310,7 +393,7 @@ stemma task 'Formalize the gluing lemma' --origin 't12#48' < what.md
 A person represents all their agents. When Claude answers for Ada, it is
 Ada's Claude speaking: run with her own subscription, on her own machine,
 and signed "Claude, for Ada". Each person keeps their own agents, available
-in every group they are in; a group keeps only its own, the workshop's.
+in every group they are in; every group has its workshop, `@workshop`.
 
 ### Your agents
 
@@ -320,16 +403,14 @@ their names, models and arguments, and add more, each with a handle of its
 own: `@claude-sonnet`, Claude Code with Sonnet; `@claude-haiku`, with Haiku.
 An agent has a handle, a name, a runner (`claude-code`, `codex` or
 `opencode`), a model (the runner's default if none) and, if you like, more
-arguments for the runner. Handles are yours, and do not take those of your
-groups' own agents, such as `@workshop`.
+arguments for the runner. Handles are yours, and none is `@workshop`.
 
 Agents are summoned by mention: `@claude @codex what do you think?` asks
 each of yours, and each answers with its own message. A chat has a resident
-agent that answers every message: one of the group's, or a handle of its
-starter's, in which case each person who writes is answered by their own
-agent with that handle. A handle names the group's own agent if the group
-has one, and else the writer's. If Ana writes `@claude-sonnet` and only
-Mario has one, Ana's job fails at once and the thread says why.
+agent that answers every message, a handle of its starter's: each person who
+writes is answered by their own agent with that handle. If Ana writes
+`@claude-sonnet` and only Mario has one, Ana's job fails at once and the
+thread says why.
 
 Each answer gets the thread (trimmed when long, always keeping the message
 it answers and what that refers to) and Stemma's tools, read-only, with a
@@ -340,7 +421,8 @@ workshop. Its instructions are in `crates/stemma-worker/prompts/reply.md`.
 ### Your machines
 
 Your agents run on your machines: computers of yours, with Claude Code,
-Codex or OpenCode installed and signed in. A machine connects to the hub;
+Codex or OpenCode installed and signed in; and, if you lend one to a
+group's workshop, the workshop's agents run there too, with your sign-in. A machine connects to the hub;
 the hub never connects to it, so it can be a laptop behind any network, and
 your sign-ins never leave it. Signed in with `stemma login`, set one up:
 
@@ -354,8 +436,9 @@ token in your configuration directory (`stemma/machine.toml`, or where
 `STEMMA_MACHINE_CONFIG` says), readable only by you, and says which runners
 it finds. When it runs, a machine offers the runners it finds installed and
 usable: `claude`, `codex` and `opencode` on its `PATH`, each answering
-`--version`. The file it writes may also say how to run them, and how many
-jobs to run at once:
+`--version`, and whether it has Lean (`elan` or `lake` on its `PATH`). The
+file it writes may also say how to run them, how many jobs to run at once,
+and how to work for a workshop:
 
 ```toml
 concurrency = 2                     # jobs at once
@@ -363,6 +446,11 @@ concurrency = 2                     # jobs at once
 
 [runners.claude-code]               # how to run a runner, if not as usual
 # command = "…"; args = […]; model = "…"; timeout_minutes = 15
+
+[lean]                              # the workshop's builds of the library
+# timeout_minutes = 90; cache = true  # whether to get Mathlib's cache
+[workshop]                          # the workshop's tasks
+# timeout_minutes = 120; rounds = 2; max_turns = 80
 ```
 
 A job of yours goes to one of your machines that is online and has the
@@ -377,7 +465,8 @@ stemma machine prefer desktop   # your jobs go to it first (this machine if none
 stemma machine remove laptop    # revoke it (this machine, which forgets its token, if none is named)
 ```
 
-The web app's settings list your machines too, to prefer or revoke them.
+The web app's settings list your machines too, to prefer or revoke them,
+and to choose the agents they offer a workshop.
 Before relying on a subscription for unattended work, check its provider's
 terms.
 
@@ -415,7 +504,7 @@ agents' jobs the same way, headless, from the same code.
 `stemma mcp` serves Stemma's tools over MCP, on standard input and output:
 
 - the forum's: `list_threads`, `read_thread` (`t12`, `t12#45`, `t12#45-50`),
-  `post_message` (with an optional reply) and `search`;
+  `post_message` (with an optional reply), `open_thread` and `search`;
 - the library's: `library_state`, `library_lookup` (a declaration, with what
   it uses and what uses it) and `library_search`;
 - the workshop's: `create_task` (a title, instructions and the message that
@@ -439,52 +528,10 @@ command = "stemma"
 args = ["mcp"]
 ```
 
-`--group` picks the group, `--read-only` leaves out the tools that write (and
-`--hand-over` keeps `create_task` among them), and `--agent` names the agent its
-posts are signed with, instead of the name the harness gives.
-
-### The group's agents and workers
-
-A group's own agents run on its workers, with the logins and keys in their
-configuration. Every group starts with `@workshop`, the workshop's agent,
-which runs OpenCode; a group's admins keep its agents in the group's
-settings: a handle, a name, a runner, a model, instructions, and what it
-does when summoned (answer, or hand what it is asked to the workshop).
-Guests do not summon them.
-
-A group worker connects to the hub as a machine does. A group's admin adds
-one in the group's settings, which gives a token, shown once, and a
-configuration to start from:
-
-```toml
-hub = "https://stemma.example.org"
-token_env = "STEMMA_WORKER_TOKEN"   # or token = "stw_…"
-concurrency = 2                     # jobs at once
-# work_dir = "…"                    # where jobs run; a folder of the user's data if absent
-
-# The runners it offers: each listed one.
-[runners.opencode]                  # uses `opencode`, with its providers' keys
-# model = "…"; command = "…"; args = […]; timeout_minutes = 15
-
-# A group's worker with Lean (elan) builds the group's library.
-[lean]
-# timeout_minutes = 90; cache = true  # whether to get Mathlib's cache
-
-# With Lean and a runner that edits files (opencode, claude-code or codex),
-# a group's worker works on the group's workshop's tasks.
-[workshop]
-# timeout_minutes = 120; rounds = 2; max_turns = 80
-```
-
-A library build keeps the group's checkout, with its `.lake`, in the work
-folder, so that Mathlib is fetched once; it takes several gigabytes. A task
-works in a worktree of that checkout, which shares its dependencies. On a task,
-the runner edits files and runs commands in the worktree, as the worker's
-user: run a worker that offers the workshop as a user of its own.
-
-```sh
-stemma worker --config worker.toml
-```
+`--group` picks the group, `--read-only` leaves out the tools that write
+(`--hand-over` keeps `create_task` among them, and `--open-threads` keeps
+`open_thread`, as the workshop's agent has it), and `--agent` names the
+agent its posts are signed with, instead of the name the harness gives.
 
 ## Development
 
@@ -536,16 +583,20 @@ The repository holds:
 - `crates/stemma`: the binary and its subcommands.
 - `crates/stemma-core`: what every part shares: addresses (`t12#45-50`,
   `lean:Foo.bar`, `w7`), `[[…]]` references, mentions, the API's types and
-  the worker protocol.
+  the machines' protocol.
 - `crates/stemma-hub`: the server, with its migrations in `migrations/`: the
-  API, the forge's provisioning and webhooks, the OpenID Connect provider and
-  git's passage to the forge.
+  API, the forge's provisioning, pull requests and webhooks, the OpenID
+  Connect provider, git's passage to the forge, and the workshop: its
+  machines, routing, consumption and approvals.
 - `crates/stemma-fake-forge`: a stand-in for Forgejo, for the tests.
 - `crates/stemma-client`: the hub's API over HTTP, Stemma's tools and their
   MCP server.
-- `crates/stemma-worker`: group workers and people's machines, how each
-  agent is launched (for a job, or a person's session), library builds, the
-  workshop's runs and the agents' instructions, in `prompts/`.
+- `crates/stemma-worker`: people's machines, how each agent is launched (for
+  a job, or a person's session), what each runner reports it consumed,
+  library builds, the workshop's runs, and the agents' instructions, in
+  `prompts/`.
+- `workshop/architectures/`: the workshop's architectures, each a folder
+  with its manifest and instructions.
 - `lean/`: the inspection (`Inspect.lean`), the template of a group's library
   (`template/`) and a small library without Mathlib to test them
   (`fixture/`; `just test-lean` builds and inspects it).
