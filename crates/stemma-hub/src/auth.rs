@@ -3,7 +3,7 @@
 //! as git sends it): a personal token, which can do whatever
 //! its owner can, or a job's token, which reads one group for a job's
 //! requester while the job lasts, and for a task of the workshop, pushes
-//! to the group's library.
+//! to the task's branch and may open a few threads.
 
 use axum::extract::{FromRequestParts, OptionalFromRequestParts};
 use axum::http::header::{AUTHORIZATION, COOKIE, SET_COOKIE};
@@ -52,8 +52,9 @@ pub struct JobScope {
     /// The agent its posts are written by.
     pub agent: String,
     pub can_post: bool,
-    /// Whether it pushes to the library, as a task's token does.
-    pub can_push: bool,
+    /// The one ref it pushes to, as a task's token does:
+    /// `refs/heads/workshop/w7`.
+    pub push_ref: Option<String>,
 }
 
 impl Viewer {
@@ -112,7 +113,7 @@ struct TokenRow {
     thread_id: Option<i64>,
     agent: Option<String>,
     can_post: bool,
-    can_push: bool,
+    push_ref: Option<String>,
 }
 
 impl FromRequestParts<AppState> for Viewer {
@@ -143,7 +144,7 @@ async fn authenticate(headers: &HeaderMap, state: &AppState) -> Result<Option<Vi
         let hash = secret::token_hash(&token);
         let row = sqlx::query_as::<_, TokenRow>(
             "SELECT u.id, u.username, u.display_name, u.hub_admin, t.id AS token_id,
-                    t.kind, t.group_id, t.thread_id, t.agent, t.can_post, t.can_push
+                    t.kind, t.group_id, t.thread_id, t.agent, t.can_post, t.push_ref
              FROM api_tokens t JOIN users u ON u.id = t.user_id
              WHERE t.token_hash = ? AND t.revoked_at IS NULL
                AND (t.expires_at IS NULL OR t.expires_at > ?)",
@@ -176,7 +177,7 @@ async fn authenticate(headers: &HeaderMap, state: &AppState) -> Result<Option<Vi
                 thread_id: row.thread_id,
                 agent: row.agent.unwrap_or_else(|| "Agent".into()),
                 can_post: row.can_post,
-                can_push: row.can_push,
+                push_ref: row.push_ref,
             }),
             ("job", None) => return Err(ApiError::internal("a job token without a group")),
             _ => Scope::Full,
@@ -261,13 +262,35 @@ pub async fn create_job_token(
     Ok((id, secret))
 }
 
-/// Lets a job's token push to its group's library, as a task's does.
-pub async fn grant_push(db: &sqlx::SqlitePool, token_id: i64) -> Result<(), ApiError> {
-    sqlx::query("UPDATE api_tokens SET can_push = 1 WHERE id = ? AND kind = 'job'")
-        .bind(token_id)
-        .execute(db)
-        .await?;
+/// Lets a job's token push to one ref of its group's repositories, as a
+/// task's does to its branch, and open up to `threads` threads.
+pub async fn grant_task(
+    db: &sqlx::SqlitePool,
+    token_id: i64,
+    push_ref: &str,
+    threads: u32,
+) -> Result<(), ApiError> {
+    sqlx::query(
+        "UPDATE api_tokens SET push_ref = ?, threads_left = ? WHERE id = ? AND kind = 'job'",
+    )
+    .bind(push_ref)
+    .bind(threads)
+    .bind(token_id)
+    .execute(db)
+    .await?;
     Ok(())
+}
+
+/// Takes one of the threads a job's token may open; whether there was one.
+pub async fn take_thread(db: &sqlx::SqlitePool, token_id: i64) -> Result<bool, ApiError> {
+    let done = sqlx::query(
+        "UPDATE api_tokens SET threads_left = threads_left - 1
+         WHERE id = ? AND kind = 'job' AND threads_left > 0",
+    )
+    .bind(token_id)
+    .execute(db)
+    .await?;
+    Ok(done.rows_affected() == 1)
 }
 
 /// The value of a cookie in the request.

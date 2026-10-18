@@ -126,9 +126,30 @@ pub async fn create_thread(
     Path(slug): Path<String>,
     Json(body): Json<CreateThread>,
 ) -> ApiResult<(StatusCode, Json<ThreadPage>)> {
-    viewer.require_full()?;
     let group = Membership::of(&state, &viewer, &slug).await?;
     let title = required_text(&body.title, "The title", 200)?;
+    // A job's token opens a thread only as the workshop does, to ask the
+    // group something, and only a few times.
+    let agent = match viewer.job() {
+        None => None,
+        Some(job) => {
+            let asks = body.kind == ThreadKind::Discussion
+                && body.resident_agent.is_none()
+                && body.attachments.is_empty()
+                && body.body.as_deref().is_some_and(|b| !b.trim().is_empty());
+            if !asks {
+                return Err(ApiError::invalid(
+                    "A job opens a discussion, with its first message and nothing more",
+                ));
+            }
+            if !crate::auth::take_thread(&state.db, job.token_id).await? {
+                return Err(ApiError::forbidden(
+                    "This job's token opens no more threads",
+                ));
+            }
+            Some(job.agent.clone())
+        }
+    };
     let resident_agent = match (body.kind, body.resident_agent) {
         (_, None) => None,
         (ThreadKind::Chat, Some(agent)) => {
@@ -136,17 +157,18 @@ pub async fn create_thread(
             if !stemma_core::mention::is_handle(&agent) {
                 return Err(ApiError::invalid("That is not an agent's handle"));
             }
-            // The group's own agent, or one of the writer's: each person
-            // writing in the chat is then answered by theirs.
-            let summoned =
-                crate::agents::resolve(&state, group.group_id, viewer.id, &agent).await?;
-            if !matches!(
-                summoned,
-                crate::agents::Summoned::Group(_) | crate::agents::Summoned::Personal(_)
-            ) {
-                return Err(ApiError::invalid(format!(
-                    "Neither this group nor you have an agent @{agent}"
-                )));
+            // One of the writer's: each person writing in the chat is then
+            // answered by theirs.
+            match crate::agents::resolve(&state, group.group_id, viewer.id, &agent).await? {
+                crate::agents::Summoned::Personal(_) => {}
+                crate::agents::Summoned::Workshop => {
+                    return Err(ApiError::invalid(
+                        "The workshop works on tasks, and is no chat's resident agent",
+                    ));
+                }
+                _ => {
+                    return Err(ApiError::invalid(format!("You have no agent @{agent}")));
+                }
             }
             Some(agent)
         }
@@ -199,7 +221,7 @@ pub async fn create_thread(
             &group,
             thread_id,
             viewer.id,
-            None,
+            agent.as_deref(),
             text,
             None,
             &body.attachments,

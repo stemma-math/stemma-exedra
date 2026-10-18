@@ -120,7 +120,7 @@ pub async fn create(
     Ok((StatusCode::CREATED, Json(group)))
 }
 
-/// Keeps a new group, with `viewer` as its admin and its first agents.
+/// Keeps a new group, with `viewer` as its admin.
 async fn insert_group(state: &AppState, viewer: &Viewer, slug: &str, name: &str) -> ApiResult<i64> {
     let now = db::now();
     let mut tx = state.db.begin().await?;
@@ -147,9 +147,6 @@ async fn insert_group(state: &AppState, viewer: &Viewer, slug: &str, name: &str)
     .bind(now)
     .execute(&mut *tx)
     .await?;
-    for profile in crate::agents::group_defaults() {
-        crate::agents::insert_group_agent(&mut *tx, group_id, &profile).await?;
-    }
     tx.commit().await?;
     Ok(group_id)
 }

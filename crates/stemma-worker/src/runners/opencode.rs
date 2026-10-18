@@ -7,13 +7,16 @@
 //! on a task, with its tools that edit files and run commands, allowed
 //! without asking, in the task's worktree. Its output, with
 //! `--format json`, is a stream of JSON events: tool calls become
-//! progress, and the text after the last of them is the answer.
+//! progress, and the text after the last of them is the answer. Each step's
+//! end (`step_finish`) says its cost, in dollars, and its tokens: `input`,
+//! `output`, `reasoning` (counted here as output) and `cache` (`read`,
+//! `write`).
 
 use serde_json::Value;
 use stemma_core::api::AgentProfile;
-use stemma_core::protocol::JobSpec;
+use stemma_core::protocol::{JobSpec, Usage};
 
-use super::{Work, failed, prepared, run_command};
+use super::{Answer, Work, failed, prepared, run_command, tokens};
 use crate::config::CliRunner;
 use crate::job::{Context, JobDir, Progress, Prompt};
 
@@ -24,6 +27,7 @@ struct Said {
     answer: String,
     error: Option<String>,
     events: usize,
+    usage: Usage,
 }
 
 impl Said {
@@ -48,6 +52,23 @@ impl Said {
                     self.answer.push_str(text);
                 }
             }
+            Some("step_finish") => {
+                let tokens_of = &part["tokens"];
+                let output = match (
+                    tokens(&tokens_of["output"]),
+                    tokens(&tokens_of["reasoning"]),
+                ) {
+                    (Some(o), Some(r)) => Some(o + r),
+                    (o, r) => o.or(r),
+                };
+                self.usage.add(&Usage {
+                    input_tokens: tokens(&tokens_of["input"]),
+                    output_tokens: output,
+                    cache_read_tokens: tokens(&tokens_of["cache"]["read"]),
+                    cache_write_tokens: tokens(&tokens_of["cache"]["write"]),
+                    cost_usd: part["cost"].as_f64(),
+                });
+            }
             Some("error") => {
                 let error = &event["error"];
                 let message = error["data"]["message"]
@@ -62,6 +83,17 @@ impl Said {
     }
 }
 
+/// What a run consumed, from its whole output: all its steps.
+pub fn usage_of_output(output: &str) -> Usage {
+    let (sender, _) = tokio::sync::mpsc::unbounded_channel();
+    let progress = Progress::new(0, sender);
+    let mut said = Said::default();
+    for line in output.lines() {
+        said.read(line, &progress);
+    }
+    said.usage
+}
+
 #[allow(clippy::too_many_arguments)]
 pub async fn run(
     context: &Context,
@@ -72,7 +104,7 @@ pub async fn run(
     work: &Work<'_>,
     prompt: &Prompt,
     progress: &Progress,
-) -> anyhow::Result<String> {
+) -> anyhow::Result<Answer> {
     let prepared = prepared(context, config, job, agent, dir, work, prompt)?;
     let mut command = prepared.command();
     command.current_dir(work.dir).arg(&prompt.user);
@@ -96,7 +128,10 @@ pub async fn run(
     // Without events, its output is the answer.
     let answer = if said.events == 0 { plain } else { said.answer };
     anyhow::ensure!(!answer.trim().is_empty(), "OpenCode gave no answer");
-    Ok(answer.trim().to_owned())
+    Ok(Answer {
+        text: answer.trim().to_owned(),
+        usage: said.usage,
+    })
 }
 
 #[cfg(test)]
@@ -121,5 +156,31 @@ mod tests {
         assert_eq!(said.answer, "It is proper.");
         assert_eq!(said.events, 4);
         assert_eq!(seen.try_recv().unwrap().1, "Reading t1#2");
+    }
+
+    #[test]
+    fn reads_what_a_run_consumed() {
+        let (sender, _seen) = mpsc::unbounded_channel();
+        let progress = Progress::new(1, sender);
+        let mut said = Said::default();
+        for line in include_str!("../../tests/fixtures/opencode-events.jsonl").lines() {
+            said.read(line, &progress);
+        }
+        assert_eq!(said.answer, "Done.");
+        let cost = said.usage.cost_usd.unwrap();
+        assert!((cost - 0.0123).abs() < 1e-9, "{cost}");
+        assert_eq!(
+            Usage {
+                cost_usd: None,
+                ..said.usage
+            },
+            Usage {
+                input_tokens: Some(3_000),
+                output_tokens: Some(700),
+                cache_read_tokens: Some(12_000),
+                cache_write_tokens: Some(500),
+                cost_usd: None,
+            }
+        );
     }
 }

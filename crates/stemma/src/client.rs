@@ -94,12 +94,54 @@ pub struct LibraryArgs {
 pub struct TasksArgs {
     #[command(flatten)]
     group: GroupArg,
-    /// Only the tasks in this state: open, running, done, failed, blocked or
-    /// cancelled.
+    /// Only the tasks in this state: open, running, review, done, failed,
+    /// rejected or cancelled.
     #[arg(long)]
     state: Option<String>,
     #[arg(long, short = 'n', default_value_t = 30)]
     limit: u32,
+}
+
+#[derive(Args)]
+pub struct ReviewArgs {
+    /// The task: w7.
+    task: String,
+    #[command(flatten)]
+    group: GroupArg,
+}
+
+/// The number of a task, as written: `w7` or `7`.
+fn task_number(written: &str) -> anyhow::Result<u32> {
+    written
+        .trim()
+        .trim_start_matches('w')
+        .parse()
+        .with_context(|| format!("{written} is not a task: a task is w7"))
+}
+
+/// Approves a task's changes, as what you may approve them as: their
+/// asker, or an admin.
+pub async fn approve(args: ReviewArgs) -> anyhow::Result<()> {
+    let number = task_number(&args.task)?;
+    let toolbox = toolbox(args.group)?;
+    let group = toolbox.group(None).await?;
+    toolbox.hub().approve_task(&group, number).await?;
+    let page = toolbox.hub().task(&group, number).await?;
+    match page.task.changes.map(|c| c.needs).unwrap_or_default() {
+        needs if needs.is_empty() => println!("Approved: w{number} is in the library."),
+        _ => println!("Approved: w{number} still waits for an admin's approval."),
+    }
+    Ok(())
+}
+
+/// Rejects a task's changes: their asker, or an admin.
+pub async fn reject(args: ReviewArgs) -> anyhow::Result<()> {
+    let number = task_number(&args.task)?;
+    let toolbox = toolbox(args.group)?;
+    let group = toolbox.group(None).await?;
+    toolbox.hub().reject_task(&group, number).await?;
+    println!("Rejected the changes of w{number}.");
+    Ok(())
 }
 
 #[derive(Args)]
@@ -130,6 +172,10 @@ pub struct McpArgs {
     /// workshop.
     #[arg(long, requires = "read_only")]
     hand_over: bool,
+    /// With --read-only, still offer open_thread, for the workshop's agent
+    /// to ask the group something.
+    #[arg(long, requires = "read_only")]
+    open_threads: bool,
     /// The hub, instead of the one signed in to.
     #[arg(long, env = "STEMMA_HUB")]
     hub: Option<String>,
@@ -341,7 +387,8 @@ pub async fn mcp(args: McpArgs) -> anyhow::Result<()> {
     }
     let toolbox = Toolbox::new(config.hub()?, args.group.group.or(config.group))
         .read_only(args.read_only)
-        .hands_over(args.hand_over);
+        .hands_over(args.hand_over)
+        .opens_threads(args.open_threads);
     StemmaServer::new(toolbox, args.agent).serve_stdio().await
 }
 

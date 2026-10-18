@@ -203,6 +203,7 @@ async fn mcp_serves_the_tools_and_names_the_agent() {
             "list_threads",
             "read_thread",
             "post_message",
+            "open_thread",
             "search",
             "library_state",
             "library_lookup",

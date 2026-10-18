@@ -1,6 +1,6 @@
 //! Builds of a group's library, and their inspection.
 //!
-//! A worker with Lean keeps a warm checkout of each group's library in its
+//! A workshop machine with Lean keeps a warm checkout of each group's library in its
 //! work folder (`libraries/<group>`), with its `.lake` between builds. To
 //! build a commit it fetches `main` from the hub with the job's token and
 //! checks the commit out; gets Mathlib's cache, if the library depends on
@@ -268,7 +268,7 @@ pub async fn build(
     build: &LibraryBuild,
     progress: &Progress,
 ) -> anyhow::Result<Outcome> {
-    let config = context.config.lean.clone().unwrap_or_default();
+    let config = context.config.lean.clone();
     let minutes = config.timeout_minutes.unwrap_or(90);
     let log = Log::default();
     let dir = checkout_dir(context, &job.group.slug);

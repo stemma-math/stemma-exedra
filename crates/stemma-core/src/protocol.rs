@@ -1,15 +1,18 @@
-//! The worker protocol: what a worker and the hub say to each other.
+//! The worker protocol: what a person's machine and the hub say to each
+//! other.
 //!
-//! A worker connects outbound to the hub's WebSocket at
+//! A machine connects outbound to the hub's WebSocket at
 //! `/api/v1/worker`, with its token in an `Authorization: Bearer` header,
 //! and sends [`WorkerMessage::Hello`]. The hub answers
 //! [`HubMessage::Welcome`], or [`HubMessage::Refused`] and closes. Then the
-//! hub sends jobs, and the worker sends their progress and their outcome.
-//! Each message is one JSON text frame.
+//! hub sends jobs: its owner's agents' answers and, if it is a workshop
+//! machine, the workshop's tasks and builds; and the machine sends their
+//! progress, their outcome and what they consumed. Each message is one
+//! JSON text frame.
 //!
-//! When the connection drops, the worker stops what it was running and
+//! When the connection drops, the machine stops what it was running and
 //! the hub queues those jobs again, so they run from the start, on this
-//! worker when it is back or on another.
+//! machine when it is back or on another.
 
 use serde::{Deserialize, Serialize};
 
@@ -17,7 +20,7 @@ pub use crate::api::JobKind;
 use crate::api::{AgentProfile, LibraryReport, Message, ThreadKind, User};
 
 /// The version of this protocol. A hub refuses workers that speak another.
-pub const PROTOCOL_VERSION: u32 = 5;
+pub const PROTOCOL_VERSION: u32 = 6;
 
 /// The path of the workers' WebSocket, under the API's prefix.
 pub const WORKER_PATH: &str = "/worker";
@@ -30,8 +33,13 @@ pub enum WorkerMessage {
     Hello(Hello),
     /// What a job is doing now, for people watching: "Reading t12#3-5".
     Progress { job: i64, text: String },
-    /// How a job ended.
-    Finished { job: i64, outcome: Outcome },
+    /// How a job ended, and what its runner said it consumed.
+    Finished {
+        job: i64,
+        outcome: Outcome,
+        #[serde(default)]
+        usage: Usage,
+    },
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -40,14 +48,11 @@ pub struct Hello {
     /// The worker's version of Stemma.
     pub version: String,
     /// The runners it can run, such as `claude-code` or `codex`: those
-    /// configured, or for a person's machine, those found installed and
-    /// usable.
+    /// found installed and usable.
     pub runners: Vec<String>,
-    /// Whether it has Lean (elan or lake), for library builds.
+    /// Whether it has Lean (elan or lake), for the workshop: its tasks and
+    /// the library's builds.
     pub lean: bool,
-    /// Whether it works on the workshop's tasks, with Lean and the runners
-    /// among its own that edit files.
-    pub workshop: bool,
     /// How many jobs it runs at once.
     pub concurrency: u32,
 }
@@ -81,20 +86,55 @@ pub struct Built {
     pub report: Option<LibraryReport>,
 }
 
+/// What a runner said a job consumed, as far as it says: Claude Code
+/// reports tokens and cost, Codex tokens, OpenCode tokens and cost.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+pub struct Usage {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub input_tokens: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub output_tokens: Option<u64>,
+    /// Input read from the provider's cache.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cache_read_tokens: Option<u64>,
+    /// Input written to the provider's cache.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cache_write_tokens: Option<u64>,
+    /// In US dollars, as the runner priced it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cost_usd: Option<f64>,
+}
+
+impl Usage {
+    /// Adds what another run consumed.
+    pub fn add(&mut self, other: &Usage) {
+        fn sum<T: Copy + std::ops::Add<Output = T>>(a: Option<T>, b: Option<T>) -> Option<T> {
+            match (a, b) {
+                (Some(a), Some(b)) => Some(a + b),
+                (a, b) => a.or(b),
+            }
+        }
+        self.input_tokens = sum(self.input_tokens, other.input_tokens);
+        self.output_tokens = sum(self.output_tokens, other.output_tokens);
+        self.cache_read_tokens = sum(self.cache_read_tokens, other.cache_read_tokens);
+        self.cache_write_tokens = sum(self.cache_write_tokens, other.cache_write_tokens);
+        self.cost_usd = sum(self.cost_usd, other.cost_usd);
+    }
+}
+
 /// How a task's run ended.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct TaskOutcome {
     pub end: TaskEnd,
-    /// Why it failed or is blocked, in a line.
+    /// Why it failed, in a line.
     pub reason: Option<String>,
     /// The runner's report, in Markdown: what was done, what is pending.
     pub report: String,
-    /// The commits pushed to `main`, in order; none if nothing changed.
-    pub commits: Vec<String>,
+    /// The commit pushed to the task's branch; none if nothing changed.
+    pub commit: Option<String>,
     /// What the run did, trimmed to its end when long.
     pub log: String,
-    /// The build and inspection of the last commit pushed, which is the
-    /// library's new state.
+    /// The build and inspection of the commit pushed.
     pub built: Option<Built>,
     /// The runner that worked on it, and its model, if known.
     pub runner: String,
@@ -105,9 +145,10 @@ pub struct TaskOutcome {
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum TaskEnd {
+    /// The work passed its checks, and is on the task's branch if it
+    /// changed anything.
     Done,
     Failed,
-    Blocked,
 }
 
 /// From the hub to a worker.
@@ -129,19 +170,10 @@ pub enum HubMessage {
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Welcome {
     pub protocol: u32,
-    /// The worker's name, as registered.
+    /// The machine's name, as registered.
     pub name: String,
-    pub owner: WorkerOwner,
-}
-
-/// Whose jobs a worker runs, as the hub knows from its token.
-#[derive(Clone, Debug, Serialize, Deserialize)]
-#[serde(tag = "kind", rename_all = "snake_case")]
-pub enum WorkerOwner {
-    /// A group's worker: the group's own agents, its builds and tasks.
-    Group { slug: String, name: String },
-    /// A person's machine: their own agents, only for them.
-    Person { user: User },
+    /// Whose it is.
+    pub owner: User,
 }
 
 /// A job, with what its runner needs.
@@ -156,6 +188,10 @@ pub struct JobSpec {
     /// answering in a thread, for someone who may ask for work.
     #[serde(default)]
     pub hands_over: bool,
+    /// Whether the job's agent may open threads of its own in the group,
+    /// to ask it something: the workshop's.
+    #[serde(default)]
+    pub opens_threads: bool,
     pub work: Work,
 }
 
@@ -217,28 +253,47 @@ pub struct LibraryBuild {
     pub commit: String,
 }
 
-/// A task of the workshop, as its worker gets it.
+/// A task of the workshop, as its workshop machine gets it.
 ///
-/// The worker works on a fresh worktree of the library at `main`, with the
-/// task's runner; checks that the build passes and that no definition's
-/// data newly depends on `sorry`; commits, with the task's provenance in
-/// trailers; and pushes to `main` with the job's token, which may push,
-/// rebasing once if `main` moved meanwhile.
+/// The machine runs the steps of the task's architecture: for
+/// `formalize`, it works on a fresh worktree of the library at `main`
+/// with the chosen agent (`work`); checks that the build passes and that
+/// no definition's data newly depends on `sorry` (`check`); and commits,
+/// with the task's provenance in trailers, and pushes to the task's
+/// branch with the job's token, which pushes only there (`propose`). The
+/// hub then opens a pull request, which people approve.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct TaskRun {
     /// Its number: the `7` of `w7`.
     pub task: u32,
     pub title: String,
     pub instructions: String,
-    /// The workshop's agent, with the runner this worker is to use; the
-    /// thread of the message that asked, up to it; and who asked.
+    /// The architecture it runs with.
+    pub architecture: ArchitectureRun,
+    /// The workshop's agent, with the runner, model and arguments this
+    /// machine is to use; the thread of the message that asked, up to it;
+    /// and who asked.
     pub conversation: Conversation,
-    /// Where to fetch and push the library, relative to the hub:
-    /// `/git/geometry/library.git`, with the job's token.
+    /// Where to fetch the repository and push the branch, relative to the
+    /// hub: `/git/geometry/library.git`, with the job's token.
     pub repository: String,
+    /// The branch to push to: `workshop/w7`.
+    pub branch: String,
     /// The definitions whose data already depends on `sorry`, in the
     /// library's state: only new ones fail the task.
     pub data_sorry: Vec<String>,
+}
+
+/// An architecture, as a workshop machine runs it.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct ArchitectureRun {
+    pub name: String,
+    /// Its steps, by name, in order: the machine refuses a task with a
+    /// step it does not know.
+    pub steps: Vec<String>,
+    /// The instructions its agent is given, in Markdown, with `{agent}`,
+    /// `{requester}`, `{group}`, `{task}` and `{report}` to fill in.
+    pub instructions: String,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]

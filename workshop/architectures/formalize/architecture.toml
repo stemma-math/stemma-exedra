@@ -1,0 +1,27 @@
+# An architecture of the workshop: a kind of work it knows. The hub lists
+# every folder beside this one that has an `architecture.toml`.
+
+name = "formalize"
+description = "Formalize in the library what a conversation decided, check it with Lake, and propose the change for approval."
+# The repository of the group it changes.
+works_on = "library"
+# The files the agent is given as its instructions, in this folder, in order.
+instructions = ["instructions.md"]
+# Changing any of these makes a change big: it then also needs an admin's
+# approval. Deleting or renaming any file does too.
+big = ["lakefile.toml", "lakefile.lean", "lean-toolchain", "lake-manifest.json"]
+
+# What it does, in order. A workshop machine runs each step by its name, and
+# refuses a task with a step it does not know.
+
+[[steps]]
+name = "work"
+description = "The agent formalizes the task in a fresh worktree of the library at main, with Lean and Stemma's tools."
+
+[[steps]]
+name = "check"
+description = "lake build must pass, and no definition's data may newly depend on sorry; if not, the agent is told why and works again, a few rounds at most."
+
+[[steps]]
+name = "propose"
+description = "The change is committed with its provenance and pushed to the branch workshop/w<n>; the hub opens a pull request, which the asker approves (and an admin too, for a big change)."

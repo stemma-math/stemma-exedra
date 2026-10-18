@@ -1,30 +1,40 @@
-//! Running a task of the workshop.
+//! Running a task of the workshop, by the steps of its architecture.
 //!
-//! The worker makes a fresh worktree of the library at `main`, from the
-//! group's warm checkout, with the checkout's dependencies and build (so
-//! that Mathlib is not fetched again, and Lake builds only what changes).
-//! The task's runner works there, with the task, the conversation it came
-//! from, and Lean. Then the worker checks the work:
-//! the build must pass, and no definition's data may newly depend on
-//! `sorry`, as the inspection says. If it does not pass, the runner is told
-//! why and works again, as many rounds as configured. Work that passes is
-//! committed, with the task's provenance in trailers, rebased on `main` if
-//! `main` moved, checked again, and pushed with the job's token; if `main`
-//! moved again meanwhile, once more, and then the task is blocked. Whatever
-//! the end, the outcome has the runner's report and the log.
+//! An architecture (in the repository's `workshop/architectures/`, which the
+//! hub sends with the task) names its steps, which a machine runs by name:
+//!
+//! - `work`: the machine makes a fresh worktree of the repository at
+//!   `main`, from the group's warm checkout, with the checkout's
+//!   dependencies and build (so that Mathlib is not fetched again, and Lake
+//!   builds only what changes); the agent works there, with the task, the
+//!   conversation it came from, the architecture's instructions, Lean and
+//!   Stemma's tools.
+//! - `check`: the build must pass, and no definition's data may newly
+//!   depend on `sorry`, as the inspection says. If not, the agent is told
+//!   why and works again, as many rounds as configured.
+//! - `propose`: the work is committed, with the task's provenance in
+//!   trailers, and pushed to the task's branch with the job's token, which
+//!   pushes nowhere else. The hub then opens a pull request, which people
+//!   approve.
+//!
+//! A machine refuses a task with a step it does not know. Whatever the
+//! end, the outcome has the agent's report and the log, and the run adds
+//! up what the agent consumed. How the steps are run (here, in a worktree
+//! on the machine itself) is behind [`Run`], so that another way, such as
+//! a container, can take its place.
 
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use stemma_core::api::LibraryReport;
-use stemma_core::protocol::{Built, JobSpec, Outcome, TaskEnd, TaskOutcome, TaskRun};
+use stemma_core::protocol::{Built, JobSpec, Outcome, TaskEnd, TaskOutcome, TaskRun, Usage};
 
 use crate::job::{self, Context, JobDir, Progress, Prompt, within};
 use crate::library::{self, Log, git, git_output, quietly};
 use crate::runners::Work;
 
-/// Stemma's instructions to the workshop.
-pub const TASK_INSTRUCTIONS: &str = include_str!("../prompts/task.md");
+/// The steps a machine knows, by name.
+pub const STEPS: &[&str] = &["work", "check", "propose"];
 
 /// Where, in the worktree, the runner writes its report.
 const REPORT: &str = ".stemma/report.md";
@@ -32,14 +42,33 @@ const REPORT: &str = ".stemma/report.md";
 /// How much of a failed build's log the runner is shown, in characters.
 const FEEDBACK_CHARS: usize = 12_000;
 
-/// Runs a task to its outcome: done, failed or blocked, with its log.
+/// Runs a task to its outcome, done or failed, with its log; adds what the
+/// agent consumed to `usage`.
 pub async fn run(
     context: &Arc<Context>,
     job: &JobSpec,
     task: &TaskRun,
     progress: &Progress,
+    usage: &mut Usage,
 ) -> anyhow::Result<Outcome> {
-    let config = context.config.workshop.clone().unwrap_or_default();
+    if let Some(unknown) = task
+        .architecture
+        .steps
+        .iter()
+        .find(|step| !STEPS.contains(&step.as_str()))
+    {
+        anyhow::bail!(
+            "This machine does not know the step “{unknown}” of the architecture {}: update \
+             Stemma on it",
+            task.architecture.name
+        );
+    }
+    anyhow::ensure!(
+        task.architecture.steps.iter().any(|s| s == "work"),
+        "The architecture {} has no step where its agent works",
+        task.architecture.name
+    );
+    let config = context.config.workshop.clone();
     let agent = &task.conversation.agent;
     let model = agent.model.clone().or_else(|| {
         job::cli_runner(context, &agent.runner)
@@ -55,11 +84,13 @@ pub async fn run(
         log: &log,
         model: model.clone(),
         worktree: None,
+        usage: Usage::default(),
     };
     let minutes = config.timeout_minutes.unwrap_or(120);
     let ended = within(minutes, "The task", run.work()).await;
     // The worktree goes, even if the run is cancelled and dropped.
     run.worktree = None;
+    usage.add(&run.usage);
     let outcome = match ended {
         Ok(outcome) => outcome,
         Err(error) => {
@@ -71,7 +102,7 @@ pub async fn run(
         end: outcome.end,
         reason: outcome.reason,
         report: outcome.report,
-        commits: outcome.commits,
+        commit: outcome.commit,
         log: log.text(),
         built: outcome.built,
         runner: agent.runner.clone(),
@@ -84,7 +115,7 @@ struct Ended {
     end: TaskEnd,
     reason: Option<String>,
     report: String,
-    commits: Vec<String>,
+    commit: Option<String>,
     built: Option<Built>,
 }
 
@@ -94,15 +125,8 @@ impl Ended {
             end: TaskEnd::Failed,
             reason: Some(reason),
             report,
-            commits: Vec::new(),
+            commit: None,
             built: None,
-        }
-    }
-
-    fn blocked(reason: String, report: String) -> Ended {
-        Ended {
-            end: TaskEnd::Blocked,
-            ..Ended::failed(reason, report)
         }
     }
 }
@@ -117,6 +141,9 @@ enum Checked {
     },
 }
 
+/// A task's run on this machine: its steps, in a worktree of the warm
+/// checkout. The seam where another way of running them (in a container)
+/// fits.
 struct Run<'a> {
     context: &'a Arc<Context>,
     job: &'a JobSpec,
@@ -126,6 +153,8 @@ struct Run<'a> {
     model: Option<String>,
     /// The worktree, once made.
     worktree: Option<Worktree>,
+    /// What the agent consumed, round after round.
+    usage: Usage,
 }
 
 /// A worktree of the warm checkout, removed when dropped.
@@ -156,11 +185,19 @@ impl Run<'_> {
         &self.job.token
     }
 
+    fn has(&self, step: &str) -> bool {
+        self.task.architecture.steps.iter().any(|s| s == step)
+    }
+
     async fn work(&mut self) -> anyhow::Result<Ended> {
         let base = self.prepare().await?;
         let worktree = self.worktree.as_ref().expect("prepared").path.clone();
-        let config = self.context.config.workshop.clone().unwrap_or_default();
-        let rounds = config.rounds.unwrap_or(2).max(1);
+        let config = self.context.config.workshop.clone();
+        let rounds = if self.has("check") {
+            config.rounds.unwrap_or(2).max(1)
+        } else {
+            1
+        };
         let dir = JobDir::create(&self.context.work_dir, self.job)?;
 
         let mut feedback: Option<String> = None;
@@ -193,21 +230,27 @@ impl Run<'_> {
             )
             .await
             {
-                Ok(text) => said = text,
+                Ok(answer) => {
+                    self.usage.add(&answer.usage);
+                    said = answer.text;
+                }
                 Err(error) => {
-                    self.log.line(&format!("The runner failed: {error:#}"));
+                    self.log.line(&format!("The agent failed: {error:#}"));
                     return Ok(Ended::failed(format!("{error:#}"), self.report(&said)));
                 }
             }
             if !self.changed(&worktree, &base).await? {
-                self.log.line("Nothing in the library changed.");
+                self.log.line("Nothing in the repository changed.");
                 return Ok(Ended {
                     end: TaskEnd::Done,
                     reason: None,
                     report: self.report(&said),
-                    commits: Vec::new(),
+                    commit: None,
                     built: None,
                 });
+            }
+            if !self.has("check") {
+                break;
             }
             match self.check(&worktree).await? {
                 Checked::Passed(passed) => {
@@ -227,9 +270,19 @@ impl Run<'_> {
             }
         }
         let report = self.report(&said);
-        let built = built.expect("passed");
+        if !self.has("propose") {
+            self.log
+                .line("The architecture proposes nothing: the work is left out.");
+            return Ok(Ended {
+                end: TaskEnd::Done,
+                reason: None,
+                report,
+                commit: None,
+                built,
+            });
+        }
         self.commit(&worktree, &base).await?;
-        self.push(&worktree, report, built).await
+        self.propose(&worktree, report, built).await
     }
 
     /// Brings the warm checkout up to date and makes the worktree, at
@@ -246,13 +299,7 @@ impl Run<'_> {
         self.log.line(&format!("main is at {base}."));
         // The dependencies, as `main` needs them.
         if library::checkout(&warm, &base, self.token(), self.log).await? {
-            let cache = self
-                .context
-                .config
-                .lean
-                .as_ref()
-                .and_then(|l| l.cache)
-                .unwrap_or(true);
+            let cache = self.context.config.lean.cache.unwrap_or(true);
             if cache {
                 library::get_cache(&warm, self.log, self.progress).await?;
             }
@@ -307,18 +354,14 @@ impl Run<'_> {
     fn prompt(&self, feedback: Option<&str>) -> Prompt {
         let task = self.task;
         let conversation = &task.conversation;
-        let system = TASK_INSTRUCTIONS
+        let system = task
+            .architecture
+            .instructions
             .replace("{agent}", &conversation.agent.display_name)
             .replace("{requester}", &conversation.requester.display_name)
             .replace("{group}", &self.job.group.name)
             .replace("{task}", &task.task.to_string())
             .replace("{report}", REPORT);
-        let mut system = system;
-        if let Some(more) = conversation.agent.instructions.as_deref() {
-            system.push_str("\nFrom the group, for you:\n\n");
-            system.push_str(more.trim());
-            system.push('\n');
-        }
         let mut user = job::conversation_text(&self.job.group, conversation);
         user.push_str("---\n\n");
         if !task.data_sorry.is_empty() {
@@ -465,95 +508,36 @@ impl Run<'_> {
         Ok(())
     }
 
-    /// Pushes the commit to `main`, rebasing it first if `main` moved; if
-    /// `main` moves again before it is pushed, once more, and then the task
-    /// is blocked.
-    async fn push(&self, worktree: &Path, report: String, built: Built) -> anyhow::Result<Ended> {
-        let mut built = built;
-        for attempt in 1..=2 {
-            self.progress.say("Putting it in the library");
-            let mut fetch = git(worktree, self.token());
-            fetch.args([
-                "fetch",
-                "-q",
-                "--force",
-                "origin",
-                "+refs/heads/main:refs/remotes/origin/main",
-            ]);
-            anyhow::ensure!(
-                quietly(fetch, self.log).await?,
-                "Could not fetch the library from the hub"
-            );
-            let main = git_output(worktree, self.token(), &["rev-parse", "origin/main"]).await?;
-            let parent = git_output(worktree, self.token(), &["rev-parse", "HEAD~1"]).await?;
-            if main != parent {
-                self.log
-                    .line(&format!("main moved to {main} meanwhile: rebasing on it."));
-                // The rebased commit keeps the committer its task gave it, so
-                // the worker's machine needs no git identity of its own.
-                let identity = ["log", "-1", "--format=%cn%n%ce"];
-                let committer = git_output(worktree, self.token(), &identity).await?;
-                let (name, email) = committer
-                    .split_once('\n')
-                    .unwrap_or((committer.as_str(), ""));
-                let mut rebase = git(worktree, self.token());
-                rebase
-                    .args(["-c", "commit.gpgsign=false", "rebase", "-q", "origin/main"])
-                    .env("GIT_COMMITTER_NAME", name)
-                    .env("GIT_COMMITTER_EMAIL", email);
-                if !quietly(rebase, self.log).await? {
-                    let conflicts = git_output(
-                        worktree,
-                        self.token(),
-                        &["diff", "--name-only", "--diff-filter=U"],
-                    )
-                    .await
-                    .unwrap_or_default();
-                    let mut abort = git(worktree, self.token());
-                    abort.args(["rebase", "--abort"]);
-                    let _ = quietly(abort, self.log).await;
-                    let files = conflicts.split_whitespace().collect::<Vec<_>>().join(", ");
-                    return Ok(Ended::blocked(
-                        if files.is_empty() {
-                            "Main changed where the workshop worked, and the work does not \
-                             apply on it"
-                                .into()
-                        } else {
-                            format!("Main changed where the workshop worked: {files}")
-                        },
-                        report,
-                    ));
-                }
-                match self.check(worktree).await? {
-                    Checked::Passed(passed) => built = passed,
-                    Checked::Refused { reason, .. } => {
-                        return Ok(Ended::blocked(
-                            format!("On main as it is now, the work does not pass: {reason}"),
-                            report,
-                        ));
-                    }
-                }
-            }
-            let mut push = git(worktree, self.token());
-            push.args(["push", "-q", "origin", "HEAD:refs/heads/main"]);
-            if quietly(push, self.log).await? {
-                let commit = git_output(worktree, self.token(), &["rev-parse", "HEAD"]).await?;
-                self.log.line(&format!("Pushed {commit} to main."));
-                return Ok(Ended {
-                    end: TaskEnd::Done,
-                    reason: None,
-                    report,
-                    commits: vec![commit],
-                    built: Some(built),
-                });
-            }
-            self.log
-                .line(&format!("The push was refused (attempt {attempt})."));
-        }
-        Ok(Ended::blocked(
-            "Main kept moving while the workshop put its work in".into(),
+    /// Pushes the commit to the task's branch, for the hub to propose it.
+    async fn propose(
+        &self,
+        worktree: &Path,
+        report: String,
+        built: Option<Built>,
+    ) -> anyhow::Result<Ended> {
+        self.progress.say("Proposing the change");
+        let branch = &self.task.branch;
+        let mut push = git(worktree, self.token());
+        push.args([
+            "push",
+            "-q",
+            "--force",
+            "origin",
+            &format!("HEAD:refs/heads/{branch}"),
+        ]);
+        anyhow::ensure!(
+            quietly(push, self.log).await?,
+            "Could not push the work to the branch {branch}"
+        );
+        let commit = git_output(worktree, self.token(), &["rev-parse", "HEAD"]).await?;
+        self.log.line(&format!("Pushed {commit} to {branch}."));
+        Ok(Ended {
+            end: TaskEnd::Done,
+            reason: None,
             report,
-        ))
+            commit: Some(commit),
+            built,
+        })
     }
 }
 

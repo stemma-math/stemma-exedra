@@ -92,7 +92,7 @@ pub async fn build(
     Ok(Json(BuildLog { build, log }))
 }
 
-/// Builds `main` again, as when a worker with Lean was missing.
+/// Builds `main` again, as when a workshop machine with Lean was missing.
 pub async fn rebuild(
     State(state): State<AppState>,
     viewer: Viewer,

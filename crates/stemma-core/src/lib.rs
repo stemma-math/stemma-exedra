@@ -1,6 +1,6 @@
 //! Types shared by every part of Stemma: the addresses of things, the
 //! references to them written in Markdown, the bodies of the hub's API and
-//! the protocol of its workers.
+//! the protocol of its machines.
 
 pub mod address;
 pub mod api;

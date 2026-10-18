@@ -6,8 +6,10 @@
 
 pub mod agents;
 pub mod api;
+pub mod architectures;
 pub mod auth;
 pub mod config;
+pub mod consumption;
 pub mod db;
 pub mod error;
 pub mod forge;

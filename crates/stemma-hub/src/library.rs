@@ -2,7 +2,7 @@
 //! group's organization in the forge (see [`crate::forge`]), made from a
 //! template when the group is.
 //!
-//! Each new commit of `main` is built by a group worker with Lean, which
+//! Each new commit of `main` is built by a workshop machine with Lean, which
 //! runs the inspection and reports on every declaration. The library's
 //! state is the report of its last successful build.
 
@@ -161,8 +161,8 @@ pub async fn refresh(state: &AppState, group_id: i64, requester_id: i64) -> ApiR
         .bind(group_id)
         .execute(&state.db)
         .await?;
-    // A task's run builds what it pushes: its build becomes the library's
-    // when the task ends, and none is needed then.
+    // A commit built already, as when `main` comes back to it, is not
+    // built again.
     let built: Option<i64> = sqlx::query_scalar(
         "SELECT id FROM library_builds WHERE group_id = ? AND commit_sha = ? AND succeeded = 1",
     )
@@ -174,33 +174,6 @@ pub async fn refresh(state: &AppState, group_id: i64, requester_id: i64) -> ApiR
         queue(state, group_id, &head, requester_id).await?;
     }
     Ok(())
-}
-
-/// Drops the builds of the group still waiting for a commit that is not
-/// where `main` is now, or that a task's run built already, as after a
-/// task's run put its own build of `main` in place; then looks at `main`,
-/// for `requester_id`.
-pub async fn settle(state: &AppState, group_id: i64, requester_id: i64) -> ApiResult<()> {
-    let head: Option<Option<String>> =
-        sqlx::query_scalar("SELECT head FROM libraries WHERE group_id = ?")
-            .bind(group_id)
-            .fetch_optional(&state.db)
-            .await?;
-    let stale: Vec<i64> = sqlx::query_scalar(
-        "SELECT j.id FROM library_builds b JOIN jobs j ON j.id = b.job_id
-         WHERE b.group_id = ?1 AND j.state = 'queued'
-           AND (b.commit_sha IS NOT ?2 OR EXISTS (
-                SELECT 1 FROM library_builds d
-                WHERE d.group_id = ?1 AND d.commit_sha = b.commit_sha AND d.succeeded = 1))",
-    )
-    .bind(group_id)
-    .bind(head.flatten())
-    .fetch_all(&state.db)
-    .await?;
-    for job in stale {
-        let _ = jobs::stop(state, job).await;
-    }
-    refresh(state, group_id, requester_id).await
 }
 
 /// Queues a build of `commit`, and drops the builds of the group still
@@ -368,7 +341,7 @@ pub async fn current(state: &AppState, group_id: i64) -> ApiResult<Option<Build>
     Ok(row.map(|row| row.to_api(None)))
 }
 
-/// What a group worker needs to build a job's commit.
+/// What a workshop machine needs to build a job's commit.
 pub async fn work_for(
     state: &AppState,
     group: &Membership,
@@ -399,7 +372,7 @@ fn tail(log: &str) -> String {
     format!("[… the beginning is cut]\n{}", &log[start..])
 }
 
-/// Keeps what a worker says of a build: its log, and if it passed, its
+/// Keeps what a machine says of a build: its log, and if it passed, its
 /// report, which becomes the library's state.
 pub async fn build_finished(
     state: &AppState,
@@ -415,40 +388,6 @@ pub async fn build_finished(
             .await?
             .ok_or_else(|| ApiError::internal("a build's job without its build"))?;
     keep(state, group_id, build_id, built).await
-}
-
-/// Keeps a build that a task's run made of the commit it pushed: when that
-/// commit is where `main` is, the build is the library's, as if the hub had
-/// asked for it.
-pub async fn record_build(
-    state: &AppState,
-    group_id: i64,
-    commit: &str,
-    built: Built,
-) -> ApiResult<()> {
-    if main_commit(state, group_id).await?.as_deref() != Some(commit) {
-        return Ok(());
-    }
-    let now = db::now();
-    let build_id = sqlx::query(
-        "INSERT INTO library_builds (group_id, commit_sha, created_at) VALUES (?, ?, ?)",
-    )
-    .bind(group_id)
-    .bind(commit)
-    .bind(now)
-    .execute(&state.db)
-    .await?
-    .last_insert_rowid();
-    sqlx::query("UPDATE libraries SET head = ? WHERE group_id = ?")
-        .bind(commit)
-        .bind(group_id)
-        .execute(&state.db)
-        .await?;
-    keep(state, group_id, build_id, built).await?;
-    if let Some(build) = builds(state, group_id, 1).await?.pop() {
-        state.publish(group_id, stemma_core::api::Event::BuildUpdated { build });
-    }
-    Ok(())
 }
 
 /// Stores how a build went: its log, and if it passed, its report.

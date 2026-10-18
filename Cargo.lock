@@ -2912,6 +2912,7 @@ dependencies = [
  "sqlx",
  "stemma-core",
  "stemma-fake-forge",
+ "stemma-worker",
  "subtle",
  "tempfile",
  "thiserror",

@@ -1049,7 +1049,10 @@ async fn job_tokens_read_one_group_and_post_only_where_allowed() {
     );
     for (path, body) in [
         ("/me/tokens", json!({"name": "more"})),
-        ("/groups/geometry/threads", json!({"title": "New"})),
+        (
+            "/groups/geometry/threads",
+            json!({"title": "New", "body": "Hi"}),
+        ),
         ("/groups/geometry/invitations", json!({})),
     ] {
         let reply = hub.post(&reader, path, body).await;
@@ -1125,85 +1128,6 @@ async fn search_finds_titles_and_messages() {
 
     let reply = hub.get(&ada, "/groups/geometry/search?q=%20").await;
     assert_eq!(reply.status, StatusCode::UNPROCESSABLE_ENTITY);
-}
-
-#[tokio::test]
-async fn admins_keep_the_agents_of_a_group() {
-    let hub = TestHub::new().await;
-    let ada = hub.admin_with_group().await;
-    let bob = hub.member(&ada, "bob").await;
-
-    let agents = hub.get(&bob, "/groups/geometry/agents").await.json();
-    let handles: Vec<&str> = agents
-        .as_array()
-        .unwrap()
-        .iter()
-        .map(|a| a["handle"].as_str().unwrap())
-        .collect();
-    // A group has its own agents only: the workshop's.
-    assert_eq!(handles, ["workshop"]);
-    assert_eq!(agents[0]["role"], "workshop");
-    assert_eq!(agents[0]["runner"], "opencode");
-
-    let qwen = json!({"handle": "@Qwen", "display_name": "Qwen", "runner": "opencode",
-                      "model": "openrouter/qwen/qwen3"});
-    let reply = hub
-        .post(&bob, "/groups/geometry/agents", qwen.clone())
-        .await;
-    assert_eq!(reply.status, StatusCode::FORBIDDEN);
-    let reply = hub
-        .post(&ada, "/groups/geometry/agents", qwen.clone())
-        .await;
-    assert_eq!(reply.status, StatusCode::CREATED, "{:?}", reply.json());
-    assert_eq!(reply.json()["handle"], "qwen");
-    let reply = hub.post(&ada, "/groups/geometry/agents", qwen).await;
-    assert_eq!(reply.status, StatusCode::CONFLICT);
-
-    let reply = hub
-        .post(
-            &ada,
-            "/groups/geometry/agents",
-            json!({"handle": "x", "display_name": "X", "runner": "nope"}),
-        )
-        .await;
-    assert_eq!(reply.status, StatusCode::UNPROCESSABLE_ENTITY);
-    // Nor is there an `api` runner, nor an editor.
-    let reply = hub
-        .post(
-            &ada,
-            "/groups/geometry/agents",
-            json!({"handle": "x", "display_name": "X", "runner": "api"}),
-        )
-        .await;
-    assert_eq!(reply.status, StatusCode::UNPROCESSABLE_ENTITY);
-    let reply = hub
-        .post(
-            &ada,
-            "/groups/geometry/agents",
-            json!({"handle": "x", "display_name": "X", "runner": "codex", "role": "editor"}),
-        )
-        .await;
-    assert!(reply.status.is_client_error(), "{}", reply.status);
-
-    let reply = hub
-        .call(
-            &ada,
-            Method::PUT,
-            "/groups/geometry/agents/qwen",
-            Some(
-                json!({"handle": "ignored", "display_name": "Qwen 3", "runner": "opencode",
-                        "model": ""}),
-            ),
-        )
-        .await;
-    assert_eq!(reply.status, StatusCode::OK, "{:?}", reply.json());
-    assert_eq!(reply.json()["handle"], "qwen");
-    assert!(reply.json()["model"].is_null());
-
-    let reply = hub
-        .call(&ada, Method::DELETE, "/groups/geometry/agents/qwen", None)
-        .await;
-    assert_eq!(reply.status, StatusCode::NO_CONTENT);
 }
 
 #[tokio::test]
@@ -1294,21 +1218,10 @@ async fn mentions_and_chats_queue_jobs() {
 }
 
 #[tokio::test]
-async fn workers_are_the_groups_and_machines_their_owners() {
+async fn machines_are_their_owners() {
     let hub = TestHub::new().await;
     let ada = hub.admin_with_group().await;
     let bob = hub.member(&ada, "bob").await;
-
-    let reply = hub
-        .post(&bob, "/groups/geometry/workers", json!({"name": "server"}))
-        .await;
-    assert_eq!(reply.status, StatusCode::FORBIDDEN);
-    let reply = hub
-        .post(&ada, "/groups/geometry/workers", json!({"name": "server"}))
-        .await;
-    assert_eq!(reply.status, StatusCode::CREATED);
-    assert!(reply.json()["secret"].as_str().unwrap().starts_with("stw_"));
-    assert_eq!(reply.json()["group"], "geometry");
 
     let reply = hub
         .post(&bob, "/me/machines", json!({"name": "laptop"}))
@@ -1332,9 +1245,6 @@ async fn workers_are_the_groups_and_machines_their_owners() {
     assert_eq!(reply.json()["preferred"], true);
     let desktop = reply.json()["id"].as_i64().unwrap();
 
-    let group = hub.get(&bob, "/groups/geometry/workers").await.json();
-    assert_eq!(group[0]["name"], "server");
-    assert_eq!(group[0]["online"], false);
     let mine = hub.get(&bob, "/me/machines").await.json();
     assert_eq!(mine.as_array().unwrap().len(), 2);
 
@@ -1453,7 +1363,7 @@ async fn the_workshop_takes_tasks_from_conversation() {
     assert_eq!(task["requester"]["username"], "ada");
     assert_eq!(
         task["progress"],
-        "Waiting for a group worker with Lean and OpenCode to come online"
+        "Waiting for a workshop machine with Lean to come online"
     );
     // The thread shows it on its way.
     let jobs = hub
@@ -1479,7 +1389,7 @@ async fn the_workshop_takes_tasks_from_conversation() {
     assert_eq!(page["instructions"], "As in t1#1.");
     assert_eq!(
         page["progress"],
-        "Waiting for a group worker with Lean and OpenCode to come online"
+        "Waiting for a workshop machine with Lean to come online"
     );
     assert_eq!(page["log"], "");
     let reply = hub
@@ -1719,28 +1629,6 @@ async fn guests_converse_but_ask_for_no_work() {
     let reply = hub.post(&job, "/groups/geometry/tasks", task.clone()).await;
     assert_eq!(reply.status, StatusCode::FORBIDDEN);
 
-    // Nor does a guest summon the group's agents, which run on its workers.
-    let reply = hub
-        .post(
-            &ada,
-            "/groups/geometry/agents",
-            json!({"handle": "qwen", "display_name": "Qwen", "runner": "opencode"}),
-        )
-        .await;
-    assert_eq!(reply.status, StatusCode::CREATED);
-    hub.post(
-        &gus,
-        "/groups/geometry/threads/1/messages",
-        json!({"body": "@qwen what do you think?"}),
-    )
-    .await;
-    let jobs = hub
-        .get(&gus, "/groups/geometry/threads/1/jobs")
-        .await
-        .json();
-    assert_eq!(jobs[2]["agent"], "qwen");
-    assert_eq!(jobs[2]["state"], "failed", "{jobs}");
-
     // Nor asks for a build of the library.
     let reply = hub
         .post(&gus, "/groups/geometry/library/builds", json!({}))
@@ -1748,22 +1636,18 @@ async fn guests_converse_but_ask_for_no_work() {
     assert_eq!(reply.status, StatusCode::FORBIDDEN);
 
     // Nor changes the group's settings.
-    let agent = json!({"handle": "mine", "display_name": "Mine", "runner": "codex"});
     for (method, path, body) in [
-        (Method::POST, "/groups/geometry/agents", Some(agent.clone())),
-        (Method::PUT, "/groups/geometry/agents/workshop", Some(agent)),
-        (Method::DELETE, "/groups/geometry/agents/workshop", None),
+        (
+            Method::POST,
+            "/groups/geometry/workshop/machines",
+            Some(json!({"machine": 1})),
+        ),
         (
             Method::POST,
             "/groups/geometry/invitations",
             Some(json!({})),
         ),
         (Method::GET, "/groups/geometry/invitations", None),
-        (
-            Method::POST,
-            "/groups/geometry/workers",
-            Some(json!({"name": "box"})),
-        ),
     ] {
         let reply = hub.call(&gus, method.clone(), path, body).await;
         assert_eq!(reply.status, StatusCode::FORBIDDEN, "{method} {path}");
@@ -1902,25 +1786,15 @@ async fn people_keep_their_own_agents() {
         assert_eq!(reply.status, status);
     }
 
-    // A group's agent takes no handle that is someone's own there.
+    // Nobody's own agent takes the workshop's handle.
     let reply = hub
         .post(
             &bob,
             "/me/agents",
-            json!({"handle": "sage", "display_name": "Sage", "runner": "opencode"}),
+            json!({"handle": "workshop", "display_name": "Mine", "runner": "opencode"}),
         )
         .await;
-    assert_eq!(reply.status, StatusCode::CREATED);
-    for handle in ["claude", "sage"] {
-        let reply = hub
-            .post(
-                &ada,
-                "/groups/geometry/agents",
-                json!({"handle": handle, "display_name": "X", "runner": "opencode"}),
-            )
-            .await;
-        assert_eq!(reply.status, StatusCode::CONFLICT, "{handle}");
-    }
+    assert_eq!(reply.status, StatusCode::CONFLICT);
 }
 
 #[tokio::test]
@@ -2048,11 +1922,10 @@ async fn connect_machine(
         id,
         stemma_hub::jobs::Connected {
             connection: id as u64,
-            group_id: None,
-            owner_id: Some(owner_id),
+            owner_id,
             runners: runners.iter().map(|r| (*r).to_owned()).collect(),
             lean: false,
-            workshop: false,
+            workshop: Default::default(),
             concurrency: 4,
             preferred,
             running: Default::default(),

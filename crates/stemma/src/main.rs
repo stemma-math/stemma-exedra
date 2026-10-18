@@ -24,10 +24,8 @@ struct Cli {
 enum Command {
     /// Run the hub: accounts, groups, the forum and the web app.
     Hub(HubArgs),
-    /// Run a group's worker: connect to a hub and run the group's agents,
-    /// builds and tasks.
-    Worker(WorkerArgs),
-    /// Set up and serve this machine, where your own agents run.
+    /// Set up and serve this machine, where your own agents run, and the
+    /// workshops it works for.
     Machine(machine::MachineArgs),
     /// Sign in to a hub from this machine.
     Login(client::LoginArgs),
@@ -48,6 +46,10 @@ enum Command {
     Tasks(client::TasksArgs),
     /// Hand a task to the workshop, with its instructions on standard input.
     Task(client::TaskArgs),
+    /// Approve a task's changes (w7): as the one who asked, or as an admin.
+    Approve(client::ReviewArgs),
+    /// Reject a task's changes (w7): as the one who asked, or as an admin.
+    Reject(client::ReviewArgs),
     /// Open your Claude Code, with Stemma's tools and instructions for the
     /// session.
     Claude(launcher::LaunchArgs),
@@ -60,13 +62,6 @@ enum Command {
     /// Serve Stemma's tools to an agent over MCP, on standard input and
     /// output, for agents you install Stemma into.
     Mcp(client::McpArgs),
-}
-
-#[derive(Args)]
-struct WorkerArgs {
-    /// The worker's configuration file (TOML).
-    #[arg(long, short, env = "STEMMA_WORKER_CONFIG")]
-    config: PathBuf,
 }
 
 #[derive(Args)]
@@ -102,7 +97,7 @@ async fn main() -> anyhow::Result<()> {
     // Standard output is for what commands print, and for MCP's messages:
     // logs go to standard error, and the client commands log only problems.
     let default = match cli.command {
-        Command::Hub(_) | Command::Worker(_) => "info,sqlx=warn,tower_http=info",
+        Command::Hub(_) => "info,sqlx=warn,tower_http=info",
         Command::Machine(_) => "info",
         _ => "warn",
     };
@@ -115,7 +110,6 @@ async fn main() -> anyhow::Result<()> {
 
     match cli.command {
         Command::Hub(args) => hub(args).await,
-        Command::Worker(args) => stemma_worker::run(&args.config).await,
         Command::Machine(args) => machine::machine(args).await,
         Command::Login(args) => client::login(args).await,
         Command::Logout => client::logout().await,
@@ -126,6 +120,8 @@ async fn main() -> anyhow::Result<()> {
         Command::Library(args) => client::library(args).await,
         Command::Tasks(args) => client::tasks(args).await,
         Command::Task(args) => client::task(args).await,
+        Command::Approve(args) => client::approve(args).await,
+        Command::Reject(args) => client::reject(args).await,
         Command::Mcp(args) => client::mcp(args).await,
         Command::Claude(args) => exit(launcher::launch(runners::CLAUDE_CODE, args).await?),
         Command::Codex(args) => exit(launcher::launch(runners::CODEX, args).await?),

@@ -346,9 +346,36 @@ pub fn task(hub: &str, group: &str, page: &TaskPage) -> String {
     if let Some(reason) = &task.reason {
         let _ = writeln!(out, "\nWhy: {reason}");
     }
-    if !task.commits.is_empty() {
-        let commits: Vec<&str> = task.commits.iter().map(|c| short(c)).collect();
-        let _ = writeln!(out, "\nCommits: {}.", commits.join(", "));
+    if let Some(changes) = &task.changes {
+        let _ = write!(
+            out,
+            "\nChanges: {} on the branch {}, in {}",
+            short(&changes.commit),
+            changes.branch,
+            changes.url
+        );
+        if changes.big {
+            let _ = write!(out, "; big ({})", changes.why_big.join("; "));
+        }
+        out.push_str(".\n");
+        if !changes.needs.is_empty() {
+            let needs: Vec<&str> = changes.needs.iter().map(|n| n.as_str()).collect();
+            let _ = writeln!(out, "Waiting for the approval of: {}.", needs.join(", "));
+        }
+        for approval in &changes.approvals {
+            let _ = writeln!(
+                out,
+                "Approved by {}, as {}.",
+                approval.user.display_name,
+                approval.approver.as_str()
+            );
+        }
+        if let Some(user) = &changes.rejected_by {
+            let _ = writeln!(out, "Rejected by {}.", user.display_name);
+        }
+        if let Some(merged) = &changes.merged {
+            let _ = writeln!(out, "Merged into main as {}.", short(merged));
+        }
     }
     if let Some(message) = &task.report_message {
         let _ = writeln!(out, "\nReported in {message}.");

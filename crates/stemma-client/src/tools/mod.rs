@@ -30,6 +30,10 @@ fn all_definitions() -> Vec<ToolDef> {
 /// use, when its toolbox hands over: handing a task to the workshop.
 pub const HANDS_OVER: &[&str] = &["create_task"];
 
+/// The tools that write which the workshop's agent may still use, when its
+/// toolbox opens threads: asking the group for a decision.
+pub const OPENS_THREADS: &[&str] = &["open_thread"];
+
 /// The names of the tools that only read: what agents' jobs may use.
 pub fn read_only_names() -> Vec<&'static str> {
     all_definitions()
@@ -78,6 +82,8 @@ pub struct Toolbox {
     read_only: bool,
     /// With `read_only`, still offer [`HANDS_OVER`].
     hands_over: bool,
+    /// With `read_only`, still offer [`OPENS_THREADS`].
+    opens_threads: bool,
 }
 
 impl Toolbox {
@@ -87,6 +93,7 @@ impl Toolbox {
             default_group,
             read_only: false,
             hands_over: false,
+            opens_threads: false,
         }
     }
 
@@ -103,6 +110,13 @@ impl Toolbox {
         self
     }
 
+    /// With [`Toolbox::read_only`], still offers what opens a thread:
+    /// [`OPENS_THREADS`], for the workshop's agent.
+    pub fn opens_threads(mut self, opens_threads: bool) -> Toolbox {
+        self.opens_threads = opens_threads;
+        self
+    }
+
     pub fn hub(&self) -> &Hub {
         &self.hub
     }
@@ -114,7 +128,8 @@ impl Toolbox {
             .filter(|tool| {
                 !(self.read_only
                     && tool.writes
-                    && !(self.hands_over && HANDS_OVER.contains(&tool.name)))
+                    && !(self.hands_over && HANDS_OVER.contains(&tool.name))
+                    && !(self.opens_threads && OPENS_THREADS.contains(&tool.name)))
             })
             .collect()
     }

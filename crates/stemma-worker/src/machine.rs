@@ -1,5 +1,7 @@
 //! A person's machine: where their own agents run, with their own sign-in
-//! to each runner, and only for them.
+//! to each runner, and only for them; and, if its owner makes it work for a
+//! group's workshop, where the workshop's tasks and builds run, with the
+//! agents its owner offers the workshop.
 //!
 //! `stemma machine add` registers it with the hub and writes its
 //! configuration, with its token, in the user's configuration directory
@@ -21,6 +23,12 @@
 //! # How to run a runner, if not as usual:
 //! # [runners.claude-code]
 //! # command = "…"; args = […]; model = "…"; timeout_minutes = 15
+//!
+//! # For the workshop, with Lean (elan) installed:
+//! # [lean]
+//! # timeout_minutes = 90; cache = true   # whether to get Mathlib's cache
+//! # [workshop]
+//! # timeout_minutes = 120; rounds = 2; max_turns = 80
 //! ```
 
 use std::path::{Path, PathBuf};
@@ -30,7 +38,7 @@ use anyhow::Context as _;
 use serde::{Deserialize, Serialize};
 use stemma_core::api::runners;
 
-use crate::config::{Runners, WorkerConfig};
+use crate::config::{LeanConfig, Runners, WorkerConfig, WorkshopConfig};
 use crate::{Context, connection, detect};
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -52,6 +60,12 @@ pub struct MachineConfig {
     /// How to run the runners it finds, if not as usual.
     #[serde(default)]
     pub runners: Runners,
+    /// How it builds libraries for the workshop, with Lean.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub lean: Option<LeanConfig>,
+    /// How it works on the workshop's tasks.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub workshop: Option<WorkshopConfig>,
 }
 
 /// Where a machine's configuration is.
@@ -104,14 +118,11 @@ impl MachineConfig {
         }
         WorkerConfig {
             hub: self.hub.clone(),
-            token: Some(self.token.clone()),
-            token_env: None,
             work_dir: self.work_dir.clone(),
             concurrency: self.concurrency.unwrap_or(2).max(1),
-            stemma: None,
             runners: offered,
-            lean: None,
-            workshop: None,
+            lean: self.lean.clone().unwrap_or_default(),
+            workshop: self.workshop.clone().unwrap_or_default(),
         }
     }
 }
@@ -180,6 +191,8 @@ mod tests {
             concurrency: None,
             work_dir: None,
             runners: toml::from_str("[codex]\nmodel = \"gpt-5\"\n").unwrap(),
+            lean: None,
+            workshop: None,
         };
         config.save_to(&path).unwrap();
         let read = MachineConfig::load_from(&path).unwrap().unwrap();
@@ -198,7 +211,6 @@ mod tests {
             Some("gpt-5")
         );
         assert_eq!(worker.concurrency, 2);
-        assert_eq!(worker.token().unwrap(), "stw_x");
         assert_eq!(names(&worker.runner_names()), "Claude Code, Codex");
     }
 }

@@ -1,10 +1,10 @@
 //! The forum's tools: list threads, read a thread or some of its messages,
-//! post a message and search.
+//! post a message, open a thread and search.
 
 use serde::Deserialize;
 use serde_json::{Value, json};
 use stemma_core::Address;
-use stemma_core::api::{PostMessage, ThreadKind};
+use stemma_core::api::{CreateThread, PostMessage, ThreadKind};
 
 use super::{GROUP, ToolDef, ToolError, ToolResult, Toolbox, address_in, parse};
 use crate::format;
@@ -71,6 +71,24 @@ pub fn definitions() -> Vec<ToolDef> {
             writes: true,
         },
         ToolDef {
+            name: "open_thread",
+            description: "Open a new thread in the group, to ask it something: a short title, \
+                          and a first message in Markdown that cites by address what it is \
+                          about ([[t12#45]], [[lean:Foo.bar]], [[w7]]). Use it sparingly, only \
+                          when a decision is needed and no thread fits. Returns the thread's \
+                          address.",
+            input_schema: json!({
+                "type": "object",
+                "properties": {
+                    "title": {"type": "string", "description": "What it asks, in a line."},
+                    "body": {"type": "string", "description": "The question, in Markdown."},
+                    "group": {"type": "string", "description": GROUP}
+                },
+                "required": ["title", "body"]
+            }),
+            writes: true,
+        },
+        ToolDef {
             name: "search",
             description: "Search a group's threads and messages for words, regardless of case. \
                           Results come with their addresses, to read them with read_thread.",
@@ -100,9 +118,43 @@ pub async fn call(
         "list_threads" => list_threads(toolbox, args).await,
         "read_thread" => read_thread(toolbox, args).await,
         "post_message" => post_message(toolbox, args, agent).await,
+        "open_thread" => open_thread(toolbox, args).await,
         "search" => search(toolbox, args).await,
         _ => return None,
     })
+}
+
+#[derive(Deserialize)]
+struct OpenThread {
+    title: String,
+    body: String,
+    group: Option<String>,
+}
+
+async fn open_thread(toolbox: &Toolbox, args: Value) -> ToolResult {
+    let args: OpenThread = parse(args)?;
+    let group = toolbox.group(args.group.as_deref()).await?;
+    let page = toolbox
+        .hub()
+        .create_thread(
+            &group,
+            &CreateThread {
+                title: args.title,
+                kind: ThreadKind::Discussion,
+                resident_agent: None,
+                anchor: None,
+                body: Some(args.body),
+                attachments: Vec::new(),
+            },
+        )
+        .await?;
+    let number = page.thread.number;
+    Ok(format!(
+        "Opened t{number}, “{}”: cite it as [[t{number}]]. {}{}\n",
+        page.thread.title,
+        toolbox.hub().base(),
+        Address::Thread(number).web_path(&group)
+    ))
 }
 
 #[derive(Deserialize)]

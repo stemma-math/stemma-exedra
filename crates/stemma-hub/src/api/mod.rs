@@ -2,7 +2,7 @@
 
 mod account;
 pub use account::create_user;
-mod agents;
+pub(crate) mod agents;
 mod attachments;
 mod events;
 pub(crate) mod forum;
@@ -11,6 +11,7 @@ mod jobs;
 mod library;
 mod tasks;
 pub mod workers;
+mod workshop;
 
 use axum::Router;
 use axum::extract::rejection::JsonRejection;
@@ -95,21 +96,18 @@ pub fn router(state: AppState) -> Router {
         )
         .route("/groups/{group}/resolve", post(forum::resolve))
         .route("/groups/{group}/search", get(forum::search))
+        .route("/workshop/architectures", get(workshop::architectures))
         .route(
-            "/groups/{group}/agents",
-            get(agents::list).post(agents::create),
+            "/groups/{group}/workshop/machines",
+            get(workshop::list_machines).post(workshop::add_machine),
         )
         .route(
-            "/groups/{group}/agents/{handle}",
-            put(agents::update).delete(agents::remove),
+            "/groups/{group}/workshop/machines/{id}",
+            delete(workshop::remove_machine),
         )
         .route(
-            "/groups/{group}/workers",
-            get(workers::list_group).post(workers::create_group),
-        )
-        .route(
-            "/groups/{group}/workers/{id}",
-            delete(workers::revoke_group),
+            "/groups/{group}/workshop/consumption",
+            get(workshop::consumption),
         )
         .route(
             "/me/machines",
@@ -118,6 +116,10 @@ pub fn router(state: AppState) -> Router {
         .route(
             "/me/machines/{id}",
             patch(workers::update_machine).delete(workers::revoke_machine),
+        )
+        .route(
+            "/me/machines/{id}/workshop-agents",
+            put(workers::set_workshop_agents),
         )
         .route(
             "/me/agents",
@@ -139,6 +141,14 @@ pub fn router(state: AppState) -> Router {
         .route(
             "/groups/{group}/tasks/{number}",
             get(tasks::get).delete(tasks::cancel),
+        )
+        .route(
+            "/groups/{group}/tasks/{number}/approve",
+            post(workshop::approve),
+        )
+        .route(
+            "/groups/{group}/tasks/{number}/reject",
+            post(workshop::reject),
         )
         .route(stemma_core::protocol::WORKER_PATH, get(workers::connect))
         .route(

@@ -127,8 +127,9 @@ pub struct CreatedToken {
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Role {
-    /// Manages the group (its settings, members, invitations, agents and
-    /// workers), and does everything a member does.
+    /// Manages the group (its settings, members, invitations and workshop
+    /// machines), also approves big changes, and does everything a member
+    /// does.
     Admin,
     /// Reads, converses, summons agents and asks the workshop for work.
     Member,
@@ -636,8 +637,12 @@ pub mod runners {
     }
 }
 
+/// The handle of the group's workshop, which every group has: a message
+/// that mentions it hands the workshop a task. Nobody's own agent has it.
+pub const WORKSHOP: &str = "workshop";
+
 /// An agent: who it is and how it runs. A person's own agents answer for
-/// them; a group's own agents, such as `@workshop`, run on its workers.
+/// them; the workshop's run on the group's workshop machines.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct AgentProfile {
     pub handle: String,
@@ -651,13 +656,6 @@ pub struct AgentProfile {
     /// More arguments for the runner.
     #[serde(default)]
     pub args: Vec<String>,
-    /// What to tell it beyond Stemma's own instructions: a group's agents
-    /// only.
-    #[serde(default)]
-    pub instructions: Option<String>,
-    /// What it does when summoned: a group's agents only.
-    #[serde(default)]
-    pub role: AgentRole,
 }
 
 /// One of a person's own agents, which answer for them in every group
@@ -719,36 +717,6 @@ impl PersonalAgent {
             runner: self.runner.clone(),
             model: self.model.clone(),
             args: self.args.clone(),
-            instructions: None,
-            role: AgentRole::Answer,
-        }
-    }
-}
-
-/// What an agent does when summoned.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum AgentRole {
-    /// It answers, with a message.
-    #[default]
-    Answer,
-    /// It hands what the message asks to the workshop, as a task.
-    Workshop,
-}
-
-impl AgentRole {
-    pub fn as_str(self) -> &'static str {
-        match self {
-            AgentRole::Answer => "answer",
-            AgentRole::Workshop => "workshop",
-        }
-    }
-
-    pub fn parse(s: &str) -> Option<AgentRole> {
-        match s {
-            "answer" => Some(AgentRole::Answer),
-            "workshop" => Some(AgentRole::Workshop),
-            _ => None,
         }
     }
 }
@@ -759,17 +727,18 @@ impl AgentRole {
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum TaskState {
-    /// Waiting for its turn, or a worker.
+    /// Waiting for its turn, or a workshop machine.
     Open,
-    /// A worker is on it.
+    /// A workshop machine is on it.
     Running,
-    /// Done: what it did is in the library, if it did anything.
+    /// Its changes wait for approval, in a pull request.
+    Review,
+    /// Done: its changes were approved and merged, or it changed nothing.
     Done,
-    /// It could not be done: the build did not pass, or the runner failed.
+    /// It could not be done: the check did not pass, or the agent failed.
     Failed,
-    /// It was done, but could not be put in the library: `main` moved
-    /// where it worked, or kept moving.
-    Blocked,
+    /// Its changes were rejected.
+    Rejected,
     /// Someone cancelled it.
     Cancelled,
 }
@@ -779,9 +748,10 @@ impl TaskState {
         match self {
             TaskState::Open => "open",
             TaskState::Running => "running",
+            TaskState::Review => "review",
             TaskState::Done => "done",
             TaskState::Failed => "failed",
-            TaskState::Blocked => "blocked",
+            TaskState::Rejected => "rejected",
             TaskState::Cancelled => "cancelled",
         }
     }
@@ -790,9 +760,10 @@ impl TaskState {
         match s {
             "open" => Some(TaskState::Open),
             "running" => Some(TaskState::Running),
+            "review" => Some(TaskState::Review),
             "done" => Some(TaskState::Done),
             "failed" => Some(TaskState::Failed),
-            "blocked" => Some(TaskState::Blocked),
+            "rejected" => Some(TaskState::Rejected),
             "cancelled" => Some(TaskState::Cancelled),
             _ => None,
         }
@@ -800,12 +771,86 @@ impl TaskState {
 
     /// Whether the task is over.
     pub fn is_final(self) -> bool {
-        !matches!(self, TaskState::Open | TaskState::Running)
+        !matches!(
+            self,
+            TaskState::Open | TaskState::Running | TaskState::Review
+        )
     }
 }
 
-/// A task of the workshop: work on the library, asked for in a
-/// conversation, done in the background.
+/// Whose approval a change needs. More kinds come with more repositories
+/// (a paper's author, for its paper).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Approver {
+    /// The person who asked for the task.
+    Asker,
+    /// One of the group's admins: for big changes.
+    Admin,
+}
+
+impl Approver {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Approver::Asker => "asker",
+            Approver::Admin => "admin",
+        }
+    }
+
+    pub fn parse(s: &str) -> Option<Approver> {
+        match s {
+            "asker" => Some(Approver::Asker),
+            "admin" => Some(Approver::Admin),
+            _ => None,
+        }
+    }
+}
+
+/// An approval a change was given.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct Approval {
+    pub user: User,
+    /// What it approves as.
+    pub approver: Approver,
+    #[serde(with = "time::serde::rfc3339")]
+    pub at: OffsetDateTime,
+}
+
+/// The changes a task proposes: a branch of a repository, in a pull
+/// request of the forge, which approval merges.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct Changes {
+    /// The repository: `library`.
+    pub repository: String,
+    /// The branch: `workshop/w12`.
+    pub branch: String,
+    /// The commit the branch is at.
+    pub commit: String,
+    /// The pull request's number in the forge.
+    pub pull: u32,
+    /// Where people see its changes, in the forge.
+    pub url: String,
+    /// Whether it is big, and so also needs an admin's approval.
+    pub big: bool,
+    /// Why it is big: "deletes Geometry/Old.lean".
+    #[serde(default)]
+    pub why_big: Vec<String>,
+    /// The approvals it still needs, while it waits for any.
+    #[serde(default)]
+    pub needs: Vec<Approver>,
+    #[serde(default)]
+    pub approvals: Vec<Approval>,
+    /// Who rejected it, if anyone did.
+    #[serde(default)]
+    pub rejected_by: Option<User>,
+    /// The commit that merged it into `main`, once merged.
+    #[serde(default)]
+    pub merged: Option<String>,
+}
+
+/// A task of the workshop: work on a repository of the group, asked for
+/// in a conversation, done in the background, and put in only once
+/// approved.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Task {
     /// Its number in the group: the `7` of `w7`.
@@ -813,6 +858,8 @@ pub struct Task {
     pub title: String,
     /// What to do, as asked.
     pub instructions: String,
+    /// The architecture it runs with: `formalize`.
+    pub architecture: String,
     /// The message that asked for it: `t12#48`. The report goes to its
     /// thread.
     pub origin: Address,
@@ -826,10 +873,10 @@ pub struct Task {
     pub model: Option<String>,
     /// What it is doing, while it runs; why it waits, while it is open.
     pub progress: Option<String>,
-    /// Why it failed or is blocked.
+    /// Why it failed.
     pub reason: Option<String>,
-    /// The commits it put in the library, in order.
-    pub commits: Vec<String>,
+    /// What it proposes, once it does.
+    pub changes: Option<Changes>,
     /// The message in the origin's thread that reports on it.
     pub report_message: Option<Address>,
     #[serde(with = "time::serde::rfc3339")]
@@ -865,49 +912,133 @@ pub struct CreateTask {
     /// The agent handing it over for the person whose token asks.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub agent: Option<String>,
+    /// The architecture to run it with; `formalize` if absent.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub architecture: Option<String>,
 }
 
-// ── Workers and machines ──────────────────────────────────────────────
+/// A kind of work the workshop knows: a folder of the repository, with a
+/// manifest and the instructions its agent is given.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Architecture {
+    /// Its name: `formalize`.
+    pub name: String,
+    /// What it does, in a line.
+    pub description: String,
+    /// The repository of the group it changes: `library`.
+    pub works_on: String,
+    /// What it does, in order.
+    pub steps: Vec<ArchitectureStep>,
+    /// The files whose change makes a change big, besides deleting or
+    /// renaming any file.
+    pub big: Vec<String>,
+    /// The files of its instructions, in order.
+    pub instructions: Vec<String>,
+}
 
-/// A group's worker: it runs the group's own agents and, with Lean,
-/// builds its library and works on the workshop's tasks.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ArchitectureStep {
+    /// The step, as workshop machines know it: `work`, `check`, `propose`.
+    pub name: String,
+    pub description: String,
+}
+
+/// One of the agents a workshop machine offers the workshop, in the order
+/// its owner prefers them, with how much it may do in a day.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct WorkshopAgent {
+    /// Its id, once kept; absent for a new one.
+    #[serde(default)]
+    pub id: Option<i64>,
+    /// One of [`runners::WORKSHOP`].
+    pub runner: String,
+    #[serde(default)]
+    pub model: Option<String>,
+    #[serde(default)]
+    pub args: Vec<String>,
+    /// How many jobs it may run in a day (UTC); no limit if absent.
+    #[serde(default)]
+    pub daily_jobs: Option<u32>,
+    /// How many minutes it may work in a day (UTC); no limit if absent.
+    #[serde(default)]
+    pub daily_minutes: Option<u32>,
+    /// What it did today, as the hub counts it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub today: Option<AgentToday>,
+}
+
+/// How much a workshop agent did today.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AgentToday {
+    pub jobs: u32,
+    pub minutes: u32,
+}
+
+/// A machine working for a group's workshop.
 #[derive(Clone, Debug, Serialize, Deserialize)]
-pub struct Worker {
+pub struct WorkshopMachine {
     pub id: i64,
     pub name: String,
-    /// The group it is of.
-    pub group: String,
-    /// The first characters of its token, to recognise it.
-    pub prefix: String,
+    /// Whose it is: only they configure it.
+    pub owner: User,
     pub online: bool,
-    /// What it announced when it last connected.
-    pub runners: Vec<String>,
     pub lean: bool,
-    /// Whether it works on the workshop's tasks.
-    #[serde(default)]
-    pub workshop: bool,
-    pub version: Option<String>,
+    pub runners: Vec<String>,
+    /// Its agents for the workshop, in order of preference.
+    pub agents: Vec<WorkshopAgent>,
     #[serde(with = "time::serde::rfc3339")]
-    pub created_at: OffsetDateTime,
-    #[serde(with = "time::serde::rfc3339::option")]
-    pub last_seen_at: Option<OffsetDateTime>,
+    pub added_at: OffsetDateTime,
 }
 
+/// Makes one of the admin's own machines a workshop machine of the group.
 #[derive(Clone, Debug, Serialize, Deserialize)]
-pub struct CreateWorker {
-    pub name: String,
+pub struct AddWorkshopMachine {
+    pub machine: i64,
 }
 
-/// A new worker, with the secret of its token, shown once.
+/// What the workshop's jobs consumed.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+pub struct Consumption {
+    /// The jobs: the runs of tasks and the builds of the library.
+    pub jobs: u32,
+    /// How long they took, in seconds.
+    pub seconds: u64,
+    /// The tokens and cost the runners reported; absent if none did.
+    pub input_tokens: Option<u64>,
+    pub output_tokens: Option<u64>,
+    pub cache_read_tokens: Option<u64>,
+    pub cache_write_tokens: Option<u64>,
+    pub cost_usd: Option<f64>,
+}
+
+/// What the workshop's jobs consumed in a day, on a machine, with a runner
+/// and model.
 #[derive(Clone, Debug, Serialize, Deserialize)]
-pub struct CreatedWorker {
+pub struct ConsumptionRow {
+    pub machine: String,
+    /// The runner, or `lean` for builds.
+    pub runner: String,
+    pub model: Option<String>,
     #[serde(flatten)]
-    pub worker: Worker,
-    pub secret: String,
+    pub consumption: Consumption,
 }
+
+/// A day of the workshop's consumption.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct ConsumptionDay {
+    /// The day, in UTC: `2026-10-18`.
+    pub day: String,
+    #[serde(flatten)]
+    pub total: Consumption,
+    pub rows: Vec<ConsumptionRow>,
+}
+
+// ── Machines ──────────────────────────────────────────────────────────
 
 /// One of a person's machines: where their own agents run, with their
-/// own sign-in to each runner, and only for them.
+/// own sign-in to each runner, and only for them; and, if its owner
+/// adds it to a group they administer, where the group's workshop works
+/// and builds its library.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Machine {
     pub id: i64,
@@ -917,8 +1048,17 @@ pub struct Machine {
     pub online: bool,
     /// The runners it found installed and usable when it last connected.
     pub runners: Vec<String>,
+    /// Whether it has Lean, for the workshop.
+    #[serde(default)]
+    pub lean: bool,
     /// Whether their jobs go to it first, when it has the runner.
     pub preferred: bool,
+    /// The groups whose workshop it works for, by slug.
+    #[serde(default)]
+    pub workshop: Vec<String>,
+    /// Its agents for the workshop, in order of preference.
+    #[serde(default)]
+    pub workshop_agents: Vec<WorkshopAgent>,
     pub version: Option<String>,
     #[serde(with = "time::serde::rfc3339")]
     pub created_at: OffsetDateTime,
@@ -1083,6 +1223,6 @@ pub enum Event {
     },
     /// A task of the workshop is new, or changed.
     TaskUpdated {
-        task: Task,
+        task: Box<Task>,
     },
 }

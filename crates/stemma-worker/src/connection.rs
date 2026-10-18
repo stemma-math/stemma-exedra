@@ -9,7 +9,7 @@ use anyhow::Context as _;
 use futures_util::{SinkExt, StreamExt};
 use stemma_core::api::PREFIX;
 use stemma_core::protocol::{
-    Hello, HubMessage, Outcome, PROTOCOL_VERSION, WORKER_PATH, WorkerMessage, WorkerOwner,
+    Hello, HubMessage, Outcome, PROTOCOL_VERSION, Usage, WORKER_PATH, WorkerMessage,
 };
 use tokio::sync::{Semaphore, mpsc};
 use tokio::task::JoinHandle;
@@ -120,8 +120,7 @@ async fn session(context: &Arc<Context>, token: &str) -> Ended {
         protocol: PROTOCOL_VERSION,
         version: env!("CARGO_PKG_VERSION").into(),
         runners: context.config.runner_names(),
-        lean: context.config.lean.is_some() && has_lean(),
-        workshop: context.config.workshop.is_some() && context.config.lean.is_some() && has_lean(),
+        lean: has_lean(),
         concurrency: context.config.concurrency,
     });
     if let Err(error) = send(&mut socket, &hello).await {
@@ -129,15 +128,13 @@ async fn session(context: &Arc<Context>, token: &str) -> Ended {
     }
     match welcome(&mut socket).await {
         Ok(Ok(welcome)) => {
-            let owner = match welcome.owner {
-                WorkerOwner::Group { name, .. } => format!("the workers of the group {name}"),
-                WorkerOwner::Person { user } => format!("{}'s machines", user.display_name),
-            };
             tracing::info!(
-                "connected to {} as {}, one of {owner}; runners: {}",
+                "connected to {} as {}, one of {}'s machines; runners: {}; Lean: {}",
                 context.hub,
                 welcome.name,
-                context.config.runner_names().join(", ")
+                welcome.owner.display_name,
+                context.config.runner_names().join(", "),
+                if has_lean() { "yes" } else { "no" }
             );
         }
         Ok(Err(reason)) => return Ended::Refused(anyhow::anyhow!("the hub refused: {reason}")),
@@ -170,7 +167,7 @@ async fn welcome(
 /// hub queues them again.
 async fn work(context: &Arc<Context>, socket: &mut Socket) -> anyhow::Error {
     let (progress, mut progress_out) = mpsc::unbounded_channel::<(i64, String)>();
-    let (finished, mut finished_out) = mpsc::unbounded_channel::<(i64, Outcome)>();
+    let (finished, mut finished_out) = mpsc::unbounded_channel::<(i64, Outcome, Usage)>();
     let slots = Arc::new(Semaphore::new(context.config.concurrency as usize));
     let mut jobs: HashMap<i64, JoinHandle<()>> = HashMap::new();
     let mut heard = Instant::now();
@@ -196,8 +193,8 @@ async fn work(context: &Arc<Context>, socket: &mut Socket) -> anyhow::Error {
                         let slots = slots.clone();
                         let task = tokio::spawn(async move {
                             let _slot = slots.acquire_owned().await;
-                            let outcome = job::run(context, *spec, progress).await;
-                            let _ = finished.send((id, outcome));
+                            let (outcome, usage) = job::run(context, *spec, progress).await;
+                            let _ = finished.send((id, outcome, usage));
                         });
                         jobs.insert(id, task);
                     }
@@ -219,12 +216,12 @@ async fn work(context: &Arc<Context>, socket: &mut Socket) -> anyhow::Error {
                     break error;
                 }
             }
-            Some((job, outcome)) = finished_out.recv() => {
+            Some((job, outcome, usage)) = finished_out.recv() => {
                 if jobs.remove(&job).is_none() {
                     continue;
                 }
                 tracing::info!(job, failed = matches!(outcome, Outcome::Failed { .. }), "job finished");
-                if let Err(error) = send(socket, &WorkerMessage::Finished { job, outcome }).await {
+                if let Err(error) = send(socket, &WorkerMessage::Finished { job, outcome, usage }).await {
                     break error;
                 }
             }

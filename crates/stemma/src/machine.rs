@@ -1,10 +1,11 @@
 //! `stemma machine`: setting up this machine, where the person's own
-//! agents run, and the person's other machines.
+//! agents run, and the person's other machines; and making one work for a
+//! group's workshop, with the agents it offers it.
 
 use anyhow::Context as _;
 use clap::{Args, Subcommand};
 use stemma_client::config::ClientConfig;
-use stemma_core::api::Machine;
+use stemma_core::api::{Machine, WorkshopAgent, runners};
 use stemma_worker::machine::{self, MachineConfig};
 
 use crate::client::hostname;
@@ -42,6 +43,65 @@ enum MachineCommand {
         /// The machine; this one if absent.
         name: Option<String>,
     },
+    /// Make a machine work for a group's workshop, and choose the agents
+    /// it offers it.
+    #[command(subcommand)]
+    Workshop(WorkshopCommand),
+}
+
+#[derive(Subcommand)]
+enum WorkshopCommand {
+    /// Make one of your machines work for the workshop of a group you
+    /// administer: its tasks, with the agents you offer it, and the
+    /// library's builds, with Lean.
+    Add {
+        /// The group.
+        group: String,
+        /// The machine; this one if absent.
+        #[arg(long)]
+        machine: Option<String>,
+    },
+    /// Take a machine from a group's workshop.
+    Remove {
+        group: String,
+        #[arg(long)]
+        machine: Option<String>,
+    },
+    /// The groups a machine works for, and its agents for the workshop,
+    /// in order, with what each did today.
+    Show {
+        #[arg(long)]
+        machine: Option<String>,
+    },
+    /// Offer the workshop an agent, last in order unless told otherwise.
+    Offer {
+        /// The runner: claude-code, codex or opencode.
+        runner: String,
+        /// The model, if not the runner's default.
+        #[arg(long)]
+        model: Option<String>,
+        /// How many jobs it may run in a day (UTC).
+        #[arg(long)]
+        jobs: Option<u32>,
+        /// How many minutes it may work in a day (UTC).
+        #[arg(long)]
+        minutes: Option<u32>,
+        /// Where it goes in the order, from 1; last if absent.
+        #[arg(long)]
+        position: Option<usize>,
+        #[arg(long)]
+        machine: Option<String>,
+        /// More arguments for the runner, after --.
+        #[arg(last = true)]
+        args: Vec<String>,
+    },
+    /// Stop offering the workshop an agent, by its place in the order.
+    Unoffer {
+        /// Its place in the order, from 1, as `show` lists it.
+        position: usize,
+        #[arg(long)]
+        machine: Option<String>,
+    },
 }
 
 pub async fn machine(args: MachineArgs) -> anyhow::Result<()> {
@@ -51,6 +111,121 @@ pub async fn machine(args: MachineArgs) -> anyhow::Result<()> {
         MachineCommand::List => list().await,
         MachineCommand::Prefer { name } => prefer(name).await,
         MachineCommand::Remove { name } => remove(name).await,
+        MachineCommand::Workshop(command) => workshop(command).await,
+    }
+}
+
+async fn workshop(command: WorkshopCommand) -> anyhow::Result<()> {
+    let hub = ClientConfig::load()?.with_env().hub()?;
+    match command {
+        WorkshopCommand::Add { group, machine } => {
+            let found = find(&hub, machine.as_deref()).await?;
+            hub.add_workshop_machine(&group, found.id).await?;
+            println!(
+                "“{}” works for the workshop of {group}. Offer it agents with \
+                 `stemma machine workshop offer`.",
+                found.name
+            );
+            if !found.lean && found.last_seen_at.is_some() {
+                println!("It has no Lean: install elan for it to run the workshop's tasks.");
+            }
+        }
+        WorkshopCommand::Remove { group, machine } => {
+            let found = find(&hub, machine.as_deref()).await?;
+            hub.remove_workshop_machine(&group, found.id).await?;
+            println!(
+                "“{}” no longer works for the workshop of {group}.",
+                found.name
+            );
+        }
+        WorkshopCommand::Show { machine } => {
+            let found = find(&hub, machine.as_deref()).await?;
+            show(&found);
+        }
+        WorkshopCommand::Offer {
+            runner,
+            model,
+            jobs,
+            minutes,
+            position,
+            machine,
+            args,
+        } => {
+            let found = find(&hub, machine.as_deref()).await?;
+            let mut agents = found.workshop_agents.clone();
+            let agent = WorkshopAgent {
+                id: None,
+                runner,
+                model,
+                args,
+                daily_jobs: jobs,
+                daily_minutes: minutes,
+                today: None,
+            };
+            let at = position
+                .map(|p| p.saturating_sub(1).min(agents.len()))
+                .unwrap_or(agents.len());
+            agents.insert(at, agent);
+            let agents = hub.set_workshop_agents(found.id, &agents).await?;
+            show(&Machine {
+                workshop_agents: agents,
+                ..found
+            });
+        }
+        WorkshopCommand::Unoffer { position, machine } => {
+            let found = find(&hub, machine.as_deref()).await?;
+            let mut agents = found.workshop_agents.clone();
+            anyhow::ensure!(
+                (1..=agents.len()).contains(&position),
+                "“{}” offers the workshop {} agents",
+                found.name,
+                agents.len()
+            );
+            agents.remove(position - 1);
+            let agents = hub.set_workshop_agents(found.id, &agents).await?;
+            show(&Machine {
+                workshop_agents: agents,
+                ..found
+            });
+        }
+    }
+    Ok(())
+}
+
+/// What a machine does for the workshop.
+fn show(machine: &Machine) {
+    if machine.workshop.is_empty() {
+        println!("“{}” works for no workshop.", machine.name);
+    } else {
+        println!(
+            "“{}” works for the workshop of {}.",
+            machine.name,
+            machine.workshop.join(", ")
+        );
+    }
+    if machine.workshop_agents.is_empty() {
+        println!("It offers the workshop no agents.");
+        return;
+    }
+    println!("Its agents for the workshop, in order:");
+    for (i, agent) in machine.workshop_agents.iter().enumerate() {
+        let mut line = format!("{}. {}", i + 1, runners::name(&agent.runner));
+        if let Some(model) = &agent.model {
+            line.push_str(&format!(" ({model})"));
+        }
+        if !agent.args.is_empty() {
+            line.push_str(&format!(" {}", agent.args.join(" ")));
+        }
+        let today = agent.today.clone().unwrap_or_default();
+        let jobs = match agent.daily_jobs {
+            Some(n) => format!("{}/{n} jobs", today.jobs),
+            None => format!("{} jobs", today.jobs),
+        };
+        let minutes = match agent.daily_minutes {
+            Some(n) => format!("{}/{n} minutes", today.minutes),
+            None => format!("{} minutes", today.minutes),
+        };
+        println!("{line} · today: {jobs}, {minutes}");
     }
 }
 
@@ -77,6 +252,8 @@ async fn add(name: Option<String>, preferred: bool) -> anyhow::Result<()> {
         concurrency: None,
         work_dir: None,
         runners: Default::default(),
+        lean: None,
+        workshop: None,
     };
     config.save_to(&path)?;
     let found = machine::installed(&config.runners).await;

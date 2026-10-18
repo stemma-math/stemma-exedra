@@ -1,25 +1,37 @@
-//! The workshop: what works on the library in the background.
+//! The workshop: where the group's repositories are changed by agents, in
+//! the background, the only place where they are.
 //!
-//! A task is handed over in conversation: an agent answering in a thread
-//! calls `create_task` when someone asks it to ("formalize this"), or a
-//! message mentions the workshop's agent (`@workshop formalize the lemma in
-//! t12#48`). Only admins and members ask for work: guests cannot. Each task
-//! is a job, `task_run`, for a group worker that offers the workshop, with
-//! Lean and the workshop agent's runner. A group's tasks run one at a time.
+//! Conversations ask it for work. A task is handed over in conversation:
+//! an agent answering in a thread calls `create_task` when someone asks it
+//! to ("formalize this"), or a message mentions the workshop
+//! (`@workshop formalize the lemma in t12#48`). Only admins and members
+//! ask for work: guests cannot. Each task runs with an architecture (see
+//! [`crate::architectures`]): a kind of work the workshop knows.
 //!
-//! The worker pushes what it did to `main` with the job's token, and tells
-//! how it went: the build and inspection of what it pushed become the
-//! library's state, and one message in the thread the task came from
-//! reports on it.
+//! A task is a job, `task_run`, for one of the group's workshop machines
+//! (see [`machines`]), with Lean, run with the first of the machine's
+//! agents under its daily limit. A group's tasks run one at a time.
+//!
+//! The machine pushes what it did to the task's branch, `workshop/w7`,
+//! with the job's token, which pushes nowhere else; the hub opens a pull
+//! request in the forge, and reports in the thread the task came from.
+//! The changes go in only once approved (see [`review`]).
+
+pub mod machines;
+pub mod review;
 
 use sqlx::FromRow;
 use stemma_core::Address;
-use stemma_core::api::{AgentProfile, AgentRole, Event, Task, TaskPage, TaskState, User};
+use stemma_core::api::{
+    AgentProfile, Approval, Changes, Event, Task, TaskPage, TaskState, User, WORKSHOP,
+};
 use stemma_core::protocol::{Conversation, TaskEnd, TaskOutcome, TaskRun};
 
 use crate::api::{Membership, forum};
+use crate::architectures;
 use crate::db;
 use crate::error::{ApiError, ApiResult};
+use crate::forge;
 use crate::jobs;
 use crate::library;
 use crate::state::AppState;
@@ -33,28 +45,56 @@ const MAX_REPORT_CHARS: usize = 20_000;
 /// How many changed declarations a report names.
 const MAX_CHANGED: usize = 40;
 
+/// The branch a task's changes are pushed to.
+pub fn branch_of(number: u32) -> String {
+    format!("workshop/w{number}")
+}
+
+/// The workshop, as an agent: what signs its messages and commits. Its
+/// runner is that of the machine's agent that runs a task.
+pub fn profile() -> AgentProfile {
+    AgentProfile {
+        handle: WORKSHOP.into(),
+        display_name: "Workshop".into(),
+        runner: WORKSHOP.into(),
+        model: None,
+        args: Vec::new(),
+    }
+}
+
 // ── Tasks ─────────────────────────────────────────────────────────────
 
 #[derive(FromRow)]
-struct TaskRow {
-    id: i64,
-    group_id: i64,
-    number: i64,
+pub(crate) struct TaskRow {
+    pub id: i64,
+    pub group_id: i64,
+    pub number: i64,
     title: String,
     instructions: String,
-    thread_id: i64,
+    pub architecture: String,
+    pub thread_id: i64,
     thread_number: i64,
-    origin_message: i64,
-    user_id: i64,
+    pub origin_message: i64,
+    pub user_id: i64,
     username: String,
     display_name: String,
     agent: Option<String>,
     state: String,
-    job_id: Option<i64>,
+    pub job_id: Option<i64>,
     runner: Option<String>,
     model: Option<String>,
     reason: Option<String>,
-    commits: String,
+    pub repository: Option<String>,
+    pub branch: Option<String>,
+    commit_sha: Option<String>,
+    pub pull: Option<i64>,
+    pull_url: Option<String>,
+    pub big: bool,
+    why_big: String,
+    merged_commit: Option<String>,
+    rejected_by: Option<i64>,
+    rejected_username: Option<String>,
+    rejected_display_name: Option<String>,
     report_message: Option<i64>,
     created_at: i64,
     updated_at: i64,
@@ -65,19 +105,22 @@ struct TaskRow {
 
 macro_rules! task_query {
     () => {
-        "SELECT k.id, k.group_id, k.number, k.title, k.instructions, k.thread_id,
+        "SELECT k.id, k.group_id, k.number, k.title, k.instructions, k.architecture, k.thread_id,
                 t.number AS thread_number, k.origin_message, u.id AS user_id, u.username,
-                u.display_name, k.agent, k.state, k.job_id, k.runner, k.model,
-                k.reason, k.commits, k.report_message, k.created_at, k.updated_at,
-                k.started_at, k.finished_at, j.progress AS job_progress
+                u.display_name, k.agent, k.state, k.job_id, k.runner, k.model, k.reason,
+                k.repository, k.branch, k.commit_sha, k.pull, k.pull_url, k.big, k.why_big,
+                k.merged_commit, k.rejected_by, r.username AS rejected_username,
+                r.display_name AS rejected_display_name, k.report_message, k.created_at,
+                k.updated_at, k.started_at, k.finished_at, j.progress AS job_progress
          FROM tasks k JOIN threads t ON t.id = k.thread_id
               JOIN users u ON u.id = k.requester_id
+              LEFT JOIN users r ON r.id = k.rejected_by
               LEFT JOIN jobs j ON j.id = k.job_id"
     };
 }
 
 impl TaskRow {
-    fn state(&self) -> TaskState {
+    pub fn state(&self) -> TaskState {
         TaskState::parse(&self.state).unwrap_or(TaskState::Failed)
     }
 
@@ -88,19 +131,55 @@ impl TaskRow {
         }
     }
 
+    pub fn requester(&self) -> User {
+        User {
+            id: self.user_id,
+            username: self.username.clone(),
+            display_name: self.display_name.clone(),
+        }
+    }
+
     /// The task as people see it; `note` says why it waits, if it does.
-    fn to_api(&self, note: Option<String>) -> Task {
+    fn to_api(&self, note: Option<String>, approvals: Vec<Approval>) -> Task {
         let state = self.state();
+        let changes = match (&self.branch, &self.commit_sha, self.pull, &self.pull_url) {
+            (Some(branch), Some(commit), Some(pull), Some(url)) => Some(Changes {
+                repository: self.repository.clone().unwrap_or_default(),
+                branch: branch.clone(),
+                commit: commit.clone(),
+                pull: pull as u32,
+                url: url.clone(),
+                big: self.big,
+                why_big: serde_json::from_str(&self.why_big).unwrap_or_default(),
+                needs: if state == TaskState::Review {
+                    review::missing(self, &approvals)
+                } else {
+                    Vec::new()
+                },
+                approvals,
+                rejected_by: match (
+                    self.rejected_by,
+                    &self.rejected_username,
+                    &self.rejected_display_name,
+                ) {
+                    (Some(id), Some(username), Some(display_name)) => Some(User {
+                        id,
+                        username: username.clone(),
+                        display_name: display_name.clone(),
+                    }),
+                    _ => None,
+                },
+                merged: self.merged_commit.clone(),
+            }),
+            _ => None,
+        };
         Task {
             number: self.number as u32,
             title: self.title.clone(),
             instructions: self.instructions.clone(),
+            architecture: self.architecture.clone(),
             origin: self.origin(),
-            requester: User {
-                id: self.user_id,
-                username: self.username.clone(),
-                display_name: self.display_name.clone(),
-            },
+            requester: self.requester(),
             agent: self.agent.clone(),
             state,
             runner: self.runner.clone(),
@@ -111,7 +190,7 @@ impl TaskRow {
                 _ => None,
             },
             reason: self.reason.clone(),
-            commits: serde_json::from_str(&self.commits).unwrap_or_default(),
+            changes,
             report_message: self.report_message.map(|message| Address::Message {
                 thread: self.thread_number as u32,
                 message: message as u32,
@@ -128,11 +207,12 @@ impl TaskRow {
             (TaskState::Open, Some(job)) => jobs::note_of(state, job).await?,
             _ => None,
         };
-        Ok(self.to_api(note))
+        let approvals = review::approvals(state, self.id).await?;
+        Ok(self.to_api(note, approvals))
     }
 }
 
-async fn find(state: &AppState, group_id: i64, number: u32) -> ApiResult<TaskRow> {
+pub(crate) async fn find(state: &AppState, group_id: i64, number: u32) -> ApiResult<TaskRow> {
     sqlx::query_as(concat!(
         task_query!(),
         " WHERE k.group_id = ? AND k.number = ?"
@@ -142,6 +222,13 @@ async fn find(state: &AppState, group_id: i64, number: u32) -> ApiResult<TaskRow
     .fetch_optional(&state.db)
     .await?
     .ok_or_else(|| ApiError::not_found("Task"))
+}
+
+async fn by_id(state: &AppState, task_id: i64) -> ApiResult<Option<TaskRow>> {
+    Ok(sqlx::query_as(concat!(task_query!(), " WHERE k.id = ?"))
+        .bind(task_id)
+        .fetch_optional(&state.db)
+        .await?)
 }
 
 async fn of_job(state: &AppState, job_id: i64) -> ApiResult<Option<TaskRow>> {
@@ -157,10 +244,11 @@ async fn of_job(state: &AppState, job_id: i64) -> ApiResult<Option<TaskRow>> {
 /// `note` is why the job waits, as the job's own news says.
 pub async fn publish_of_job(state: &AppState, job_id: i64, note: Option<String>) -> ApiResult<()> {
     if let Some(row) = of_job(state, job_id).await? {
+        let approvals = review::approvals(state, row.id).await?;
         state.publish(
             row.group_id,
             Event::TaskUpdated {
-                task: row.to_api(note),
+                task: Box::new(row.to_api(note, approvals)),
             },
         );
     }
@@ -170,32 +258,18 @@ pub async fn publish_of_job(state: &AppState, job_id: i64, note: Option<String>)
 /// Tells the task's group how it is. It does not say why an open task
 /// waits: the news of its job, which follows, does. Callers may hold the
 /// workers' lock.
-async fn publish(state: &AppState, task_id: i64) -> ApiResult<()> {
-    let row: Option<TaskRow> = sqlx::query_as(concat!(task_query!(), " WHERE k.id = ?"))
-        .bind(task_id)
-        .fetch_optional(&state.db)
-        .await?;
-    if let Some(row) = row {
-        let task = row.to_api(None);
-        state.publish(row.group_id, Event::TaskUpdated { task });
+pub(crate) async fn publish(state: &AppState, task_id: i64) -> ApiResult<()> {
+    if let Some(row) = by_id(state, task_id).await? {
+        let approvals = review::approvals(state, row.id).await?;
+        let task = row.to_api(None, approvals);
+        state.publish(
+            row.group_id,
+            Event::TaskUpdated {
+                task: Box::new(task),
+            },
+        );
     }
     Ok(())
-}
-
-/// Looks at where the library's `main` is, soon: a run may have pushed.
-/// It is not done here, for callers may hold the workers' lock, which
-/// queueing a build takes.
-fn refresh_soon(state: &AppState, group_id: i64, requester_id: i64) {
-    let state = state.clone();
-    tokio::spawn(async move {
-        if let Err(error) = library::settle(&state, group_id, requester_id).await {
-            tracing::error!(
-                group_id,
-                error = error.message,
-                "could not look at the library"
-            );
-        }
-    });
 }
 
 /// The group's tasks, newest first; only those in `only`, if given.
@@ -249,27 +323,12 @@ pub async fn resolve(
     }
 }
 
-/// The group's workshop agent: the agent whose role is the workshop,
-/// `@workshop` first.
-pub async fn profile(state: &AppState, group_id: i64) -> ApiResult<Option<AgentProfile>> {
-    let handle: Option<String> = sqlx::query_scalar(
-        "SELECT handle FROM group_agents WHERE group_id = ? AND role = ?
-         ORDER BY handle = 'workshop' DESC, handle LIMIT 1",
-    )
-    .bind(group_id)
-    .bind(AgentRole::Workshop.as_str())
-    .fetch_optional(&state.db)
-    .await?;
-    match handle {
-        Some(handle) => crate::agents::group_agent(state, group_id, &handle).await,
-        None => Ok(None),
-    }
-}
-
 /// A task as it is handed over.
 pub struct NewTask {
     pub title: String,
     pub instructions: String,
+    /// The architecture to run it with; the default if none.
+    pub architecture: Option<String>,
     /// The thread and the number of the message that asks.
     pub thread_id: i64,
     pub origin_message: u32,
@@ -287,9 +346,19 @@ pub async fn create(state: &AppState, group: &Membership, new: NewTask) -> ApiRe
             "Guests cannot ask the workshop for work",
         ));
     }
-    let profile = profile(state, group.group_id).await?.ok_or_else(|| {
-        ApiError::invalid("This group has no workshop: add an agent whose role is the workshop")
-    })?;
+    let architecture = new
+        .architecture
+        .as_deref()
+        .map(str::trim)
+        .filter(|a| !a.is_empty())
+        .unwrap_or(architectures::DEFAULT);
+    let Some(architecture) = architectures::find(architecture) else {
+        let known: Vec<String> = architectures::all().into_iter().map(|a| a.name).collect();
+        return Err(ApiError::invalid(format!(
+            "The workshop has no architecture {architecture}: it knows {}",
+            known.join(", ")
+        )));
+    };
     let title = crate::api::required_text(&new.title, "The title", 200)?;
     let instructions = crate::api::required_text(&new.instructions, "The instructions", 20_000)?;
     let agent = new
@@ -297,6 +366,7 @@ pub async fn create(state: &AppState, group: &Membership, new: NewTask) -> ApiRe
         .as_deref()
         .map(str::trim)
         .filter(|a| !a.is_empty());
+    let profile = profile();
     let now = db::now();
     let mut tx = state.db.begin().await?;
     let number: i64 = sqlx::query_scalar(
@@ -307,8 +377,8 @@ pub async fn create(state: &AppState, group: &Membership, new: NewTask) -> ApiRe
     .await?;
     let job_id = sqlx::query(
         "INSERT INTO jobs (group_id, thread_id, kind, trigger_message, requester_id, agent_handle,
-                           agent, runner, scope, state, created_at, updated_at)
-         VALUES (?, ?, 'task_run', ?, ?, ?, ?, ?, 'group', 'queued', ?, ?)",
+                           agent, runner, state, created_at, updated_at)
+         VALUES (?, ?, 'task_run', ?, ?, ?, ?, ?, 'queued', ?, ?)",
     )
     .bind(group.group_id)
     .bind(new.thread_id)
@@ -323,14 +393,16 @@ pub async fn create(state: &AppState, group: &Membership, new: NewTask) -> ApiRe
     .await?
     .last_insert_rowid();
     let task_id = sqlx::query(
-        "INSERT INTO tasks (group_id, number, title, instructions, thread_id, origin_message,
-                            requester_id, agent, state, job_id, created_at, updated_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'open', ?, ?, ?)",
+        "INSERT INTO tasks (group_id, number, title, instructions, architecture, thread_id,
+                            origin_message, requester_id, agent, state, job_id, created_at,
+                            updated_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'open', ?, ?, ?)",
     )
     .bind(group.group_id)
     .bind(number)
     .bind(&title)
     .bind(&instructions)
+    .bind(&architecture.name)
     .bind(new.thread_id)
     .bind(new.origin_message)
     .bind(new.requester_id)
@@ -396,6 +468,7 @@ pub fn title_of(body: &str, handle: &str) -> String {
 }
 
 /// Cancels a task that is open or running: its requester, or an admin.
+/// One whose changes wait for approval is rejected instead.
 pub async fn cancel(
     state: &AppState,
     group: &Membership,
@@ -406,8 +479,14 @@ pub async fn cancel(
     if row.user_id != user_id {
         group.require_admin()?;
     }
-    if row.state().is_final() {
-        return Err(ApiError::conflict("This task is over"));
+    match row.state() {
+        TaskState::Review => {
+            return Err(ApiError::conflict(
+                "This task's changes wait for approval: reject them instead",
+            ));
+        }
+        state if state.is_final() => return Err(ApiError::conflict("This task is over")),
+        _ => {}
     }
     match row.job_id {
         // Stopping the job cancels the task.
@@ -419,7 +498,7 @@ pub async fn cancel(
     }
 }
 
-async fn set_state(
+pub(crate) async fn set_state(
     state: &AppState,
     task_id: i64,
     to: TaskState,
@@ -444,9 +523,9 @@ async fn set_state(
 
 // ── Runs ──────────────────────────────────────────────────────────────
 
-/// What a worker needs to run a task: the task, the conversation it came
-/// from (with the workshop's agent, as the worker is to run it), and the
-/// library.
+/// What a workshop machine needs to run a task: the task, its
+/// architecture, the conversation it came from (with the workshop's agent,
+/// as the machine is to run it), and the repository.
 pub async fn work_for(
     state: &AppState,
     group: &Membership,
@@ -456,6 +535,12 @@ pub async fn work_for(
     let row = of_job(state, job_id)
         .await?
         .ok_or_else(|| ApiError::internal("a task's job without its task"))?;
+    let architecture = architectures::find(&row.architecture).ok_or_else(|| {
+        ApiError::invalid(format!(
+            "The workshop no longer knows the architecture {}",
+            row.architecture
+        ))
+    })?;
     let data_sorry = match library::current_build_id(state, group.group_id).await? {
         Some(build) => {
             sqlx::query_scalar(
@@ -472,13 +557,15 @@ pub async fn work_for(
         task: row.number as u32,
         title: row.title.clone(),
         instructions: row.instructions.clone(),
+        architecture: architectures::run_of(&architecture).map_err(ApiError::internal)?,
         conversation,
-        repository: library::clone_path(&group.slug),
+        repository: format!("/git/{}/{}.git", group.slug, architecture.works_on),
+        branch: branch_of(row.number as u32),
         data_sorry,
     })
 }
 
-/// A task's run started, on a worker, with `runner`.
+/// A task's run started, on a machine, with `runner`.
 pub async fn started(
     state: &AppState,
     job_id: i64,
@@ -501,20 +588,15 @@ pub async fn started(
     Ok(())
 }
 
-/// A task's run will start again: its worker went away. It may have
-/// pushed before it did, so the hub looks at the library.
+/// A task's run will start again: its machine went away.
 pub async fn requeued(state: &AppState, job_id: i64) -> ApiResult<()> {
-    let Some(row) = of_job(state, job_id).await? else {
-        return Ok(());
-    };
     sqlx::query(
-        "UPDATE tasks SET state = 'open', updated_at = ? WHERE id = ? AND state = 'running'",
+        "UPDATE tasks SET state = 'open', updated_at = ? WHERE job_id = ? AND state = 'running'",
     )
     .bind(db::now())
-    .bind(row.id)
+    .bind(job_id)
     .execute(&state.db)
     .await?;
-    refresh_soon(state, row.group_id, row.user_id);
     Ok(())
 }
 
@@ -530,7 +612,7 @@ pub async fn job_ended(
     let Some(row) = of_job(state, job_id).await? else {
         return Ok(());
     };
-    if row.state().is_final() {
+    if row.state().is_final() || row.state() == TaskState::Review {
         return Ok(());
     }
     if cancelled {
@@ -539,7 +621,7 @@ pub async fn job_ended(
         let reason = error.unwrap_or("The run failed");
         set_state(state, row.id, TaskState::Failed, Some(reason)).await?;
         let text = format!(
-            "**Failed:** [[w{}]], “{}”. {}.\n\nNothing was put in the library.",
+            "**Failed:** [[w{}]], “{}”. {}.\n\nNothing was proposed.",
             row.number,
             row.title,
             one_line(reason).trim_end_matches('.')
@@ -551,36 +633,19 @@ pub async fn job_ended(
             .execute(&state.db)
             .await?;
     }
-    // It may have pushed before it ended.
-    refresh_soon(state, row.group_id, row.user_id);
     publish(state, row.id).await
 }
 
 /// Posts a message in a task's thread, by the workshop for its requester,
 /// in reply to the message that asked. Returns its number.
-async fn say(state: &AppState, row: &TaskRow, text: &str) -> ApiResult<u32> {
+pub(crate) async fn say(state: &AppState, row: &TaskRow, text: &str) -> ApiResult<u32> {
     let group = Membership::of_group(state, row.group_id).await?;
-    let agent = match row.job_id {
-        Some(job) => {
-            let profile: Option<Option<String>> =
-                sqlx::query_scalar("SELECT agent FROM jobs WHERE id = ?")
-                    .bind(job)
-                    .fetch_optional(&state.db)
-                    .await?;
-            profile
-                .flatten()
-                .and_then(|json| serde_json::from_str::<AgentProfile>(&json).ok())
-                .map(|p| p.display_name)
-        }
-        None => None,
-    }
-    .unwrap_or_else(|| "Workshop".into());
     let message = forum::post(
         state,
         &group,
         row.thread_id,
         row.user_id,
-        Some(&agent),
+        Some(&profile().display_name),
         text,
         Some(row.origin_message as u32),
         &[],
@@ -589,7 +654,7 @@ async fn say(state: &AppState, row: &TaskRow, text: &str) -> ApiResult<u32> {
     Ok(message.number)
 }
 
-fn one_line(text: &str) -> String {
+pub(crate) fn one_line(text: &str) -> String {
     text.split_whitespace().collect::<Vec<_>>().join(" ")
 }
 
@@ -605,53 +670,134 @@ fn tail(log: &str) -> String {
     format!("[… the beginning is cut]\n{}", &log[start..])
 }
 
-/// Keeps how a task's run ended: the library's new state from its build,
-/// and one message in its thread. Returns the number of the message. Callers may hold the workers' lock.
+/// What a task proposes, once its pull request is open.
+struct Proposed {
+    pull: u32,
+    url: String,
+    why_big: Vec<String>,
+}
+
+/// Opens the pull request of a task's branch, and says whether its changes
+/// are big.
+async fn propose(state: &AppState, row: &TaskRow, report: &str) -> ApiResult<Proposed> {
+    let forge = forge::require(state)?;
+    let architecture = architectures::find(&row.architecture)
+        .ok_or_else(|| ApiError::internal("a task without its architecture"))?;
+    let group = Membership::of_group(state, row.group_id).await?;
+    let repository = &architecture.works_on;
+    let branch = branch_of(row.number as u32);
+    let body = format!(
+        "Task w{} of Stemma, asked by {} in {}.\n\n{}\n\nIt is approved, or rejected, in Stemma.",
+        row.number,
+        row.display_name,
+        row.origin(),
+        report.trim()
+    );
+    let title = format!("w{}: {}", row.number, row.title);
+    let pull = forge
+        .create_pull(&group.slug, repository, &branch, forge::MAIN, &title, &body)
+        .await
+        .map_err(forge::api_error)?;
+    let files = forge
+        .pull_files(&group.slug, repository, pull.number)
+        .await
+        .map_err(forge::api_error)?;
+    let touched: Vec<architectures::Touched> = files
+        .iter()
+        .map(|f| architectures::Touched {
+            path: &f.filename,
+            previous: f.previous_filename.as_deref(),
+            status: &f.status,
+        })
+        .collect();
+    Ok(Proposed {
+        pull: pull.number,
+        url: forge.public_url(&format!(
+            "{}/{repository}/pulls/{}/files",
+            group.slug, pull.number
+        )),
+        why_big: architectures::why_big(&architecture, &touched),
+    })
+}
+
+/// Keeps how a task's run ended. Work that changed something is proposed
+/// in a pull request, and waits for approval; one message in its thread
+/// reports on it. Returns the number of the message. Callers may hold the
+/// workers' lock.
 pub async fn finished(state: &AppState, job_id: i64, outcome: TaskOutcome) -> ApiResult<u32> {
     let row = of_job(state, job_id)
         .await?
         .ok_or_else(|| ApiError::internal("a task's job without its task"))?;
-
-    // What it pushed becomes the library's state.
-    let mut changed: Vec<String> = Vec::new();
-    if let (Some(built), Some(commit)) = (&outcome.built, outcome.commits.last())
-        && built.succeeded
-        && let Some(report) = &built.report
-    {
-        changed = library::changed_declarations(state, row.group_id, report).await?;
-        library::record_build(state, row.group_id, commit, built.clone()).await?;
-    }
-    refresh_soon(state, row.group_id, row.user_id);
-
-    let end = match outcome.end {
+    let report = outcome.report.trim().to_owned();
+    let mut end = match outcome.end {
+        TaskEnd::Done if outcome.commit.is_some() => TaskState::Review,
         TaskEnd::Done => TaskState::Done,
         TaskEnd::Failed => TaskState::Failed,
-        TaskEnd::Blocked => TaskState::Blocked,
     };
-
-    let text = report_message(&row, end, &outcome, &changed);
-    let number = say(state, &row, &text).await?;
-
+    let mut reason = outcome.reason.as_deref().map(one_line);
+    let mut changed: Vec<String> = Vec::new();
+    let mut proposed = None;
+    if end == TaskState::Review {
+        if let Some(report) = outcome.built.as_ref().and_then(|b| b.report.as_ref()) {
+            changed = library::changed_declarations(state, row.group_id, report).await?;
+        }
+        match propose(state, &row, &report).await {
+            Ok(done) => proposed = Some(done),
+            Err(error) => {
+                end = TaskState::Failed;
+                reason = Some(format!(
+                    "The changes could not be proposed: {}",
+                    error.message
+                ));
+            }
+        }
+    }
+    let architecture = architectures::find(&row.architecture);
     let now = db::now();
     sqlx::query(
-        "UPDATE tasks SET state = ?, reason = ?, report = ?, log = ?, commits = ?, runner = ?,
-                          model = ?, report_message = ?, finished_at = ?, updated_at = ?
+        "UPDATE tasks SET state = ?, reason = ?, report = ?, log = ?, runner = coalesce(?, runner),
+                          model = coalesce(?, model), repository = ?, branch = ?,
+                          commit_sha = ?, pull = ?, pull_url = ?, big = ?, why_big = ?,
+                          finished_at = ?, updated_at = ?
          WHERE id = ?",
     )
     .bind(end.as_str())
-    .bind(outcome.reason.as_deref().map(one_line))
-    .bind(outcome.report.trim())
+    .bind(&reason)
+    .bind(&report)
     .bind(tail(&outcome.log))
-    .bind(serde_json::to_string(&outcome.commits).map_err(ApiError::internal)?)
     .bind(&outcome.runner)
     .bind(&outcome.model)
-    .bind(number)
-    .bind(now)
+    .bind(architecture.as_ref().map(|a| a.works_on.clone()))
+    .bind(proposed.as_ref().map(|_| branch_of(row.number as u32)))
+    .bind(proposed.as_ref().and(outcome.commit.as_deref()))
+    .bind(proposed.as_ref().map(|p| p.pull))
+    .bind(proposed.as_ref().map(|p| p.url.clone()))
+    .bind(proposed.as_ref().is_some_and(|p| !p.why_big.is_empty()))
+    .bind(
+        serde_json::to_string(
+            &proposed
+                .as_ref()
+                .map(|p| p.why_big.clone())
+                .unwrap_or_default(),
+        )
+        .map_err(ApiError::internal)?,
+    )
+    .bind(end.is_final().then_some(now))
     .bind(now)
     .bind(row.id)
     .execute(&state.db)
     .await?;
 
+    let row = by_id(state, row.id)
+        .await?
+        .ok_or_else(|| ApiError::internal("a task gone"))?;
+    let text = report_message(&row, end, reason.as_deref(), &report, &changed);
+    let number = say(state, &row, &text).await?;
+    sqlx::query("UPDATE tasks SET report_message = ? WHERE id = ?")
+        .bind(number)
+        .bind(row.id)
+        .execute(&state.db)
+        .await?;
     Ok(number)
 }
 
@@ -659,24 +805,21 @@ pub async fn finished(state: &AppState, job_id: i64, outcome: TaskOutcome) -> Ap
 fn report_message(
     row: &TaskRow,
     end: TaskState,
-    outcome: &TaskOutcome,
+    reason: Option<&str>,
+    report: &str,
     changed: &[String],
 ) -> String {
     let task = format!("[[w{}]], “{}”", row.number, row.title);
     let reason = |default: &str| {
-        one_line(outcome.reason.as_deref().unwrap_or(default))
+        one_line(reason.unwrap_or(default))
             .trim_end_matches('.')
             .to_owned()
     };
     let mut text = match end {
-        TaskState::Done if outcome.commits.is_empty() => {
-            format!("**Done:** {task}. Nothing in the library changed.")
-        }
-        TaskState::Done => format!("**Done:** {task}."),
-        TaskState::Blocked => format!("**Blocked:** {task}. {}.", reason("It could not be pushed")),
+        TaskState::Review => format!("**Ready for review:** {task}."),
+        TaskState::Done => format!("**Done:** {task}. Nothing in the library changed."),
         _ => format!("**Failed:** {task}. {}.", reason("The run failed")),
     };
-    let report = outcome.report.trim();
     if !report.is_empty() {
         text.push_str("\n\n");
         if report.chars().count() > MAX_REPORT_CHARS {
@@ -686,27 +829,37 @@ fn report_message(
             text.push_str(report);
         }
     }
-    if !outcome.commits.is_empty() {
-        let commits: Vec<String> = outcome
-            .commits
-            .iter()
-            .map(|c| format!("`{}`", &c[..c.len().min(10)]))
-            .collect();
-        text.push_str(&format!("\n\nIn the library: {}", commits.join(", ")));
-        if !changed.is_empty() {
-            let shown: Vec<String> = changed
-                .iter()
-                .take(MAX_CHANGED)
-                .map(|name| format!("[[lean:{name}]]"))
-                .collect();
-            text.push_str(&format!(", which changed {}", shown.join(", ")));
-            if changed.len() > MAX_CHANGED {
-                text.push_str(&format!(" and {} more", changed.len() - MAX_CHANGED));
+    match (end, &row.pull_url, &row.branch) {
+        (TaskState::Review, Some(url), Some(branch)) => {
+            text.push_str(&format!(
+                "\n\nThe changes are on the branch `{branch}`: [see them]({url})"
+            ));
+            if !changed.is_empty() {
+                let shown: Vec<String> = changed
+                    .iter()
+                    .take(MAX_CHANGED)
+                    .map(|name| format!("[[lean:{name}]]"))
+                    .collect();
+                text.push_str(&format!("; they change {}", shown.join(", ")));
+                if changed.len() > MAX_CHANGED {
+                    text.push_str(&format!(" and {} more", changed.len() - MAX_CHANGED));
+                }
             }
+            text.push_str(&format!(
+                ".\n\nThey go in once {} approves them",
+                row.display_name
+            ));
+            let why: Vec<String> = serde_json::from_str(&row.why_big).unwrap_or_default();
+            if row.big {
+                text.push_str(&format!(
+                    ", and an admin too, for they are big ({})",
+                    why.join("; ")
+                ));
+            }
+            text.push_str(&format!(": approve or reject them in [[w{}]].", row.number));
         }
-        text.push('.');
-    } else if end != TaskState::Done {
-        text.push_str("\n\nNothing was put in the library.");
+        (TaskState::Failed, _, _) => text.push_str("\n\nNothing was proposed."),
+        _ => {}
     }
     text
 }

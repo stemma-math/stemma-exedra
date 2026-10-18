@@ -14,7 +14,7 @@ use stemma_hub::config::{ForgeConfig, ForgeSecrets};
 struct Hub {
     url: String,
     state: stemma_hub::AppState,
-    _forge: FakeForge,
+    forge: FakeForge,
     _data: tempfile::TempDir,
 }
 
@@ -44,7 +44,7 @@ async fn hub() -> Hub {
     Hub {
         url,
         state,
-        _forge: forge,
+        forge,
         _data: data,
     }
 }
@@ -155,7 +155,7 @@ async fn libraries_are_made_cloned_pushed_and_built() {
     assert_eq!(library["latest"]["commit"], first.as_str());
     assert_eq!(
         library["latest"]["progress"],
-        "Waiting for a group worker with Lean to come online"
+        "Waiting for a workshop machine with Lean to come online"
     );
     assert!(library["current"].is_null());
 
@@ -264,7 +264,8 @@ async fn libraries_are_made_cloned_pushed_and_built() {
         .unwrap();
     assert_eq!(dumb.status(), 404);
 
-    // A job's token clones; it pushes only once it is a task's.
+    // A job's token clones; it pushes only once it is a task's, and then
+    // only to the task's branch.
     let (ada_id, group_id): (i64, i64) =
         sqlx::query_as("SELECT u.id, g.id FROM users u, groups g WHERE u.username = 'ada'")
             .fetch_one(&hub.state.db)
@@ -289,12 +290,35 @@ async fn libraries_are_made_cloned_pushed_and_built() {
     git(&checkout, &["commit", "-qm", "Notes"]);
     let pushed = git(&checkout, &["push", "-q", "origin", "main"]);
     assert!(!pushed.status.success());
-    stemma_hub::auth::grant_push(&hub.state.db, token_id)
+    stemma_hub::auth::grant_task(&hub.state.db, token_id, "refs/heads/workshop/w1", 0)
         .await
         .unwrap();
-    let pulled = git(&checkout, &["pull", "-q", "--rebase", "origin", "main"]);
-    assert!(pulled.status.success(), "{pulled:?}");
     let pushed = git(&checkout, &["push", "-q", "origin", "main"]);
+    assert!(!pushed.status.success(), "{pushed:?}");
+    let both = git(
+        &checkout,
+        &[
+            "push",
+            "-q",
+            "origin",
+            "HEAD:refs/heads/workshop/w1",
+            "HEAD:refs/heads/main",
+        ],
+    );
+    assert!(!both.status.success(), "{both:?}");
+    let pushed = git(
+        &checkout,
+        &["push", "-q", "origin", "HEAD:refs/heads/workshop/w1"],
+    );
+    assert!(pushed.status.success(), "{pushed:?}");
+    let branch = hub
+        .forge
+        .branch_commit("geometry", "library", "workshop/w1")
+        .await;
+    assert!(branch.is_some());
+    // Ada puts it on main herself.
+    let ada_url = format!("http://ada:{ada}@{host}/git/geometry/library.git");
+    let pushed = git(&checkout, &["push", "-q", &ada_url, "HEAD:refs/heads/main"]);
     assert!(pushed.status.success(), "{pushed:?}");
     let third = String::from_utf8(git(&checkout, &["rev-parse", "HEAD"]).stdout).unwrap();
     let third = third.trim().to_owned();

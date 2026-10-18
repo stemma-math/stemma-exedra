@@ -1,36 +1,37 @@
-//! Jobs: what agents and workers are asked to do, queued in the database
-//! and handed to the workers connected to the hub.
+//! Jobs: what agents and machines are asked to do, queued in the database
+//! and handed to the machines connected to the hub.
 //!
 //! A message that mentions an agent (`@claude`), or any message in a chat
-//! with a resident agent, creates a job per agent: an answer; or for the
-//! workshop, a task (see [`crate::workshop`]). A handle names the group's
-//! own agent, or else the writer's own (see [`crate::agents`]). A new commit of a group's library
-//! creates a build. A job waits until a worker that can run it is connected
-//! and free:
+//! with a resident agent, creates a job per agent: an answer by the
+//! writer's own agent (see [`crate::agents`]); or for the workshop, a task
+//! (see [`crate::workshop`]). A new commit of a group's library creates a
+//! build. A job waits until a machine that can run it is connected and
+//! free:
 //!
 //! - a person's own agent runs on one of their machines with its runner,
 //!   the one they prefer if it can;
-//! - a group's own agent, on a worker of the group with its runner;
-//! - a build, on a worker of the group with Lean, one at a time per group;
-//! - a task, on a worker of the group that offers the workshop, with Lean
-//!   and the workshop agent's runner; one at a time per group.
+//! - a build, on one of the group's workshop machines with Lean, one at a
+//!   time per group;
+//! - a task, on one of the group's workshop machines with Lean, with the
+//!   first of the machine's agents for the workshop that it can run and
+//!   that is under its daily limit; one at a time per group.
 //!
 //! An answer is posted in the thread as a message by the agent, for the
 //! person who asked; a build's report becomes the library's state; a
-//! task's run is reported in its thread.
+//! task's run is proposed and reported in its thread. Each run is kept,
+//! with what it consumed (see [`crate::consumption`]).
 //!
 //! Jobs live in the database, so they survive the hub's restarts; a job
-//! whose worker goes away is queued again, up to [`MAX_ATTEMPTS`] times.
+//! whose machine goes away is queued again, up to [`MAX_ATTEMPTS`] times.
 
 use std::collections::{HashMap, HashSet};
 
 use sqlx::FromRow;
 use stemma_core::api::{
-    AgentProfile, AgentRole, Event, Job, JobKind, JobState, Message, Role, Thread, ThreadKind,
-    User, runners,
+    AgentProfile, Event, Job, JobKind, JobState, Message, Role, Thread, ThreadKind, User, runners,
 };
 use stemma_core::protocol::{
-    Conversation, GroupRef, HubMessage, JobSpec, Outcome, ThreadRef, Work,
+    Conversation, GroupRef, HubMessage, JobSpec, Outcome, ThreadRef, Usage, Work,
 };
 use tokio::sync::mpsc;
 
@@ -38,13 +39,14 @@ use crate::agents::{self, Summoned};
 use crate::api::Membership;
 use crate::api::forum;
 use crate::auth;
+use crate::consumption;
 use crate::db;
 use crate::error::{ApiError, ApiResult};
 use crate::library;
 use crate::state::AppState;
-use crate::workshop;
+use crate::workshop::{self, machines::AgentRow};
 
-/// How many times a job is handed to a worker before it fails.
+/// How many times a job is handed to a machine before it fails.
 pub const MAX_ATTEMPTS: i64 = 3;
 
 /// How long a job's token lasts, in milliseconds.
@@ -52,6 +54,9 @@ const JOB_TOKEN_MILLIS: i64 = 2 * 60 * 60 * 1000;
 
 /// How long a build's or a task's token lasts: they can be long.
 const BUILD_TOKEN_MILLIS: i64 = 12 * 60 * 60 * 1000;
+
+/// How many threads the workshop may open in a task's run.
+const TASK_THREADS: u32 = 2;
 
 /// About how many characters of a thread an agent is given.
 const CONTEXT_BUDGET: usize = 60_000;
@@ -62,28 +67,35 @@ const MAX_ANSWER_CHARS: usize = 100_000;
 /// The runner of builds, as jobs record it.
 pub const LEAN: &str = "lean";
 
-/// The workers connected now.
+/// The machines connected now, and why the workshop's tasks wait.
 #[derive(Default)]
 pub struct Workers {
     connected: HashMap<i64, Connected>,
+    /// Why each task waits, as dispatching last found.
+    waiting: HashMap<i64, String>,
 }
 
-/// A connected worker.
+/// A connected machine.
 pub struct Connected {
     /// Which connection this is, so that a stale one does not remove a
-    /// newer one of the same worker.
+    /// newer one of the same machine.
     pub connection: u64,
-    pub group_id: Option<i64>,
-    pub owner_id: Option<i64>,
+    pub owner_id: i64,
     pub runners: Vec<String>,
     pub lean: bool,
-    /// Whether it works on the workshop's tasks.
-    pub workshop: bool,
+    /// The groups whose workshop it works for.
+    pub workshop: HashSet<i64>,
     pub concurrency: u32,
     /// Whether it is its owner's preferred machine.
     pub preferred: bool,
     pub running: HashSet<i64>,
     pub sender: mpsc::UnboundedSender<HubMessage>,
+}
+
+impl Connected {
+    fn has_room(&self) -> bool {
+        (self.running.len() as u32) < self.concurrency
+    }
 }
 
 impl Workers {
@@ -93,41 +105,37 @@ impl Workers {
 
     fn can_run(&self, worker: &Connected, job: &JobRow) -> bool {
         match job.kind() {
-            JobKind::LibraryBuild => return worker.lean && worker.group_id == Some(job.group_id),
-            JobKind::TaskRun => return self.task_runner(worker, job).is_some(),
-            _ => {}
-        }
-        worker.runners.contains(&job.runner)
-            && match job.scope.as_str() {
-                PERSONAL => worker.owner_id == Some(job.requester_id),
-                GROUP => worker.group_id == Some(job.group_id),
-                _ => false,
+            JobKind::Reply => {
+                worker.owner_id == job.requester_id && worker.runners.contains(&job.runner)
             }
+            JobKind::LibraryBuild => worker.lean && worker.workshop.contains(&job.group_id),
+            JobKind::TaskRun => {
+                worker.lean
+                    && worker.workshop.contains(&job.group_id)
+                    && worker
+                        .runners
+                        .iter()
+                        .any(|r| runners::WORKSHOP.contains(&r.as_str()))
+            }
+        }
     }
 
-    /// The runner a worker would work on a task with, if it can: a worker
-    /// of the task's group that offers the workshop, with the workshop
-    /// agent's runner.
-    fn task_runner(&self, worker: &Connected, job: &JobRow) -> Option<String> {
-        let offers = worker.runners.contains(&job.runner);
-        (worker.lean && worker.workshop && worker.group_id == Some(job.group_id) && offers)
-            .then(|| job.runner.clone())
-    }
-
-    /// A connected worker that can run `job` and has room for it: the
-    /// person's preferred machine first, then the least busy.
-    fn free_for(&self, job: &JobRow) -> Option<i64> {
-        self.connected
+    /// The connected machines that can run `job` and have room for it,
+    /// best first: the person's preferred machine, then the least busy.
+    fn free_for(&self, job: &JobRow) -> Vec<i64> {
+        let mut free: Vec<(&i64, &Connected)> = self
+            .connected
             .iter()
-            .filter(|(_, w)| self.can_run(w, job) && (w.running.len() as u32) < w.concurrency)
-            .min_by_key(|(id, w)| (!w.preferred, w.running.len(), **id))
-            .map(|(id, _)| *id)
+            .filter(|(_, w)| self.can_run(w, job) && w.has_room())
+            .collect();
+        free.sort_by_key(|(id, w)| (!w.preferred, w.running.len(), **id));
+        free.into_iter().map(|(id, _)| *id).collect()
     }
 
     /// Marks which of a person's connected machines is preferred.
     pub fn set_preferred(&mut self, owner_id: i64, preferred: Option<i64>) {
         for (id, worker) in self.connected.iter_mut() {
-            if worker.owner_id == Some(owner_id) {
+            if worker.owner_id == owner_id {
                 worker.preferred = preferred == Some(*id);
             }
         }
@@ -136,42 +144,35 @@ impl Workers {
     /// Why a queued job waits.
     fn note(&self, job: &JobRow) -> String {
         let any = self.connected.values().any(|w| self.can_run(w, job));
-        if job.kind() == JobKind::TaskRun {
-            return if any {
-                "Waiting for the workshop to be free".into()
-            } else {
-                format!(
-                    "Waiting for a group worker with Lean and {} to come online",
-                    runners::name(&job.runner)
-                )
-            };
-        }
-        if job.kind() == JobKind::LibraryBuild {
-            return if any {
-                "Waiting for a free worker with Lean".into()
-            } else {
-                "Waiting for a group worker with Lean to come online".into()
-            };
-        }
-        let runner = runners::name(&job.runner);
-        match (any, job.scope.as_str()) {
-            (true, PERSONAL) => {
-                format!("Waiting for a machine of {}'s to be free", job.display_name)
+        match job.kind() {
+            JobKind::TaskRun => self.waiting.get(&job.id).cloned().unwrap_or_else(|| {
+                if any {
+                    "Waiting for the workshop to be free".into()
+                } else {
+                    "Waiting for a workshop machine with Lean to come online".into()
+                }
+            }),
+            JobKind::LibraryBuild => {
+                if any {
+                    "Waiting for a free workshop machine".into()
+                } else {
+                    "Waiting for a workshop machine with Lean to come online".into()
+                }
             }
-            (true, _) => "Waiting for a free worker".into(),
-            (false, PERSONAL) => format!(
-                "Waiting for a machine of {}'s with {runner}",
-                job.display_name
-            ),
-            _ => format!("Waiting for a group worker with {runner} to come online"),
+            JobKind::Reply => {
+                let runner = runners::name(&job.runner);
+                if any {
+                    format!("Waiting for a machine of {}'s to be free", job.display_name)
+                } else {
+                    format!(
+                        "Waiting for a machine of {}'s with {runner}",
+                        job.display_name
+                    )
+                }
+            }
         }
     }
 }
-
-/// Whose agent runs a job, as jobs record it: the requester's own, on
-/// their machines, or the group's, on its workers.
-const PERSONAL: &str = "personal";
-const GROUP: &str = "group";
 
 // ── Jobs ──────────────────────────────────────────────────────────────
 
@@ -189,7 +190,6 @@ struct JobRow {
     agent_handle: Option<String>,
     agent: Option<String>,
     runner: String,
-    scope: String,
     state: String,
     worker_id: Option<i64>,
     token_id: Option<i64>,
@@ -209,7 +209,7 @@ macro_rules! job_query {
     () => {
         "SELECT j.id, j.group_id, j.kind, j.thread_id, t.number AS thread_number,
         j.trigger_message, j.requester_id, u.username, u.display_name, j.agent_handle, j.agent,
-        j.runner, j.scope, j.state, j.worker_id, j.token_id, j.attempts, j.progress, j.error,
+        j.runner, j.state, j.worker_id, j.token_id, j.attempts, j.progress, j.error,
         j.answer, j.created_at, j.updated_at, k.number AS task_number,
         m.role AS requester_role
          FROM jobs j LEFT JOIN threads t ON t.id = j.thread_id
@@ -295,7 +295,8 @@ async fn load_job(state: &AppState, job_id: i64) -> ApiResult<Option<JobRow>> {
         .await?)
 }
 
-/// Tells the job's group how it is now: and for a build, how the build is.
+/// Tells the job's group how it is now: and for a build or a task, how
+/// that is.
 async fn publish(state: &AppState, workers: &Workers, job_id: i64) -> ApiResult<()> {
     let Some(row) = load_job(state, job_id).await? else {
         return Ok(());
@@ -330,7 +331,7 @@ pub async fn of_thread(state: &AppState, thread_id: i64) -> ApiResult<Vec<Job>> 
     Ok(rows.iter().map(|row| row.to_api(&workers)).collect())
 }
 
-/// Why a job waits, if it does: for a build's page.
+/// Why a job waits, if it does: for a build's or a task's page.
 pub async fn note_of(state: &AppState, job_id: i64) -> ApiResult<Option<String>> {
     let Some(row) = load_job(state, job_id).await? else {
         return Ok(None);
@@ -340,9 +341,8 @@ pub async fn note_of(state: &AppState, job_id: i64) -> ApiResult<Option<String>>
 }
 
 /// Asks the agents a message summons for what they do: those it mentions,
-/// and in a chat, its resident agent. Each handle names the group's own
-/// agent, or else the writer's own. Messages written by agents summon
-/// none.
+/// and in a chat, its resident agent. Each handle names the writer's own
+/// agent, or the workshop. Messages written by agents summon none.
 pub async fn summon(
     state: &AppState,
     group: &Membership,
@@ -363,63 +363,57 @@ pub async fn summon(
     let author = &message.author;
     let mut created = false;
     for handle in handles {
-        let (profile, scope) =
-            match agents::resolve(state, group.group_id, author.id, &handle).await? {
-                Summoned::Group(profile) => (profile, GROUP),
-                Summoned::Personal(profile) => (profile, PERSONAL),
-                Summoned::Missing => {
-                    let profile = AgentProfile {
-                        handle: handle.clone(),
-                        display_name: format!("@{handle}"),
-                        runner: String::new(),
-                        model: None,
-                        args: Vec::new(),
-                        instructions: None,
-                        role: AgentRole::Answer,
-                    };
-                    let error = format!(
-                        "{} has no agent @{handle}: add one in the settings",
-                        author.display_name
-                    );
-                    refuse(state, group, thread_id, message, &profile, &error).await?;
+        let profile = match agents::resolve(state, group.group_id, author.id, &handle).await? {
+            Summoned::Workshop => {
+                if !group.role.can_ask_for_work() {
+                    let error = format!("Guests cannot ask @{handle} for work");
+                    refuse(
+                        state,
+                        group,
+                        thread_id,
+                        message,
+                        &workshop::profile(),
+                        &error,
+                    )
+                    .await?;
                     continue;
                 }
-                Summoned::Nothing => continue,
-            };
-        // Guests ask nothing of the group's own: neither work of the
-        // workshop nor answers from the group's agents, on its workers.
-        let refused = if scope == PERSONAL || group.role.can_ask_for_work() {
-            None
-        } else if profile.role == AgentRole::Workshop {
-            Some(format!("Guests cannot ask @{} for work", profile.handle))
-        } else {
-            Some(format!(
-                "Guests summon only their own agents, and @{} is the group's",
-                profile.handle
-            ))
-        };
-        if let Some(error) = refused {
-            refuse(state, group, thread_id, message, &profile, &error).await?;
-            continue;
-        }
-        if profile.role == AgentRole::Workshop {
-            let task = workshop::NewTask {
-                title: workshop::title_of(&message.body, &profile.handle),
-                instructions: message.body.clone(),
-                thread_id,
-                origin_message: message.number,
-                requester_id: author.id,
-                agent: None,
-            };
-            match workshop::create(state, group, task).await {
-                Ok(_) => created = true,
-                Err(error) if error.status.is_client_error() => {
-                    tracing::warn!(error = error.message, "could not hand a task over");
+                let task = workshop::NewTask {
+                    title: workshop::title_of(&message.body, &handle),
+                    instructions: message.body.clone(),
+                    architecture: None,
+                    thread_id,
+                    origin_message: message.number,
+                    requester_id: author.id,
+                    agent: None,
+                };
+                match workshop::create(state, group, task).await {
+                    Ok(_) => created = true,
+                    Err(error) if error.status.is_client_error() => {
+                        tracing::warn!(error = error.message, "could not hand a task over");
+                    }
+                    Err(error) => return Err(error),
                 }
-                Err(error) => return Err(error),
+                continue;
             }
-            continue;
-        }
+            Summoned::Personal(profile) => profile,
+            Summoned::Missing => {
+                let profile = AgentProfile {
+                    handle: handle.clone(),
+                    display_name: format!("@{handle}"),
+                    runner: String::new(),
+                    model: None,
+                    args: Vec::new(),
+                };
+                let error = format!(
+                    "{} has no agent @{handle}: add one in the settings",
+                    author.display_name
+                );
+                refuse(state, group, thread_id, message, &profile, &error).await?;
+                continue;
+            }
+            Summoned::Nothing => continue,
+        };
         insert_agent_job(
             state,
             group.group_id,
@@ -427,7 +421,6 @@ pub async fn summon(
             message.number,
             author.id,
             &profile,
-            scope,
             None,
         )
         .await?;
@@ -455,7 +448,6 @@ async fn refuse(
         message.number,
         message.author.id,
         profile,
-        PERSONAL,
         Some(error),
     )
     .await?;
@@ -464,7 +456,6 @@ async fn refuse(
 }
 
 /// Records an agent's answer to a message: queued, or failed with `error`.
-#[allow(clippy::too_many_arguments)]
 async fn insert_agent_job(
     state: &AppState,
     group_id: i64,
@@ -472,15 +463,13 @@ async fn insert_agent_job(
     trigger: u32,
     requester_id: i64,
     profile: &AgentProfile,
-    scope: &str,
     error: Option<&str>,
 ) -> ApiResult<i64> {
     let now = db::now();
     Ok(sqlx::query(
         "INSERT INTO jobs (group_id, thread_id, kind, trigger_message, requester_id,
-                           agent_handle, agent, runner, scope, state, error, created_at,
-                           updated_at)
-         VALUES (?, ?, 'reply', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                           agent_handle, agent, runner, state, error, created_at, updated_at)
+         VALUES (?, ?, 'reply', ?, ?, ?, ?, ?, ?, ?, ?, ?)",
     )
     .bind(group_id)
     .bind(thread_id)
@@ -489,7 +478,6 @@ async fn insert_agent_job(
     .bind(&profile.handle)
     .bind(serde_json::to_string(profile).map_err(ApiError::internal)?)
     .bind(&profile.runner)
-    .bind(scope)
     .bind(if error.is_some() { "failed" } else { "queued" })
     .bind(error)
     .bind(now)
@@ -504,9 +492,8 @@ async fn insert_agent_job(
 pub async fn queue_build(state: &AppState, group_id: i64, requester_id: i64) -> ApiResult<i64> {
     let now = db::now();
     let id = sqlx::query(
-        "INSERT INTO jobs (group_id, kind, requester_id, runner, scope, state, created_at,
-                           updated_at)
-         VALUES (?, 'library_build', ?, ?, 'group', 'queued', ?, ?)",
+        "INSERT INTO jobs (group_id, kind, requester_id, runner, state, created_at, updated_at)
+         VALUES (?, 'library_build', ?, ?, 'queued', ?, ?)",
     )
     .bind(group_id)
     .bind(requester_id)
@@ -519,7 +506,7 @@ pub async fn queue_build(state: &AppState, group_id: i64, requester_id: i64) -> 
     Ok(id)
 }
 
-/// Hands the queued jobs to the workers that can run them, oldest first,
+/// Hands the queued jobs to the machines that can run them, oldest first,
 /// and tells everyone how the queued ones are.
 pub async fn dispatch(state: &AppState) -> ApiResult<()> {
     let mut workers = state.workers.lock().await;
@@ -529,7 +516,7 @@ pub async fn dispatch(state: &AppState) -> ApiResult<()> {
     ))
     .fetch_all(&state.db)
     .await?;
-    // A group's library is built by one worker at a time.
+    // A group's library is built by one machine at a time.
     let mut building: HashSet<i64> = sqlx::query_scalar(
         "SELECT group_id FROM jobs WHERE kind = 'library_build' AND state = 'running'",
     )
@@ -545,25 +532,42 @@ pub async fn dispatch(state: &AppState) -> ApiResult<()> {
     .await?
     .into_iter()
     .collect();
+    workers.waiting.clear();
     for job in queued {
         let is_build = job.kind() == JobKind::LibraryBuild;
         let is_task = job.kind() == JobKind::TaskRun;
         let busy = (is_build && building.contains(&job.group_id))
             || (is_task && tasking.contains(&job.group_id));
-        let worker_id = if busy { None } else { workers.free_for(&job) };
-        let Some(worker_id) = worker_id else {
+        let free = if busy {
+            Vec::new()
+        } else {
+            workers.free_for(&job)
+        };
+        // A task goes with the first agent, on the best machine, that can
+        // run it and is under its limit.
+        let mut chosen: Option<(i64, Option<AgentRow>)> = None;
+        if is_task {
+            for worker_id in &free {
+                let offered = workers.connected[worker_id].runners.clone();
+                if let Some(agent) = workshop::machines::pick(state, *worker_id, &offered).await? {
+                    chosen = Some((*worker_id, Some(agent)));
+                    break;
+                }
+            }
+            if chosen.is_none() && !free.is_empty() {
+                workers.waiting.insert(
+                    job.id,
+                    "Waiting for a workshop agent under its daily limit".into(),
+                );
+            }
+        } else {
+            chosen = free.first().map(|id| (*id, None));
+        }
+        let Some((worker_id, agent)) = chosen else {
             publish(state, &workers, job.id).await?;
             continue;
         };
-        let runner = if is_task {
-            workers
-                .connected
-                .get(&worker_id)
-                .and_then(|worker| workers.task_runner(worker, &job))
-        } else {
-            None
-        };
-        match start(state, &job, worker_id, runner).await {
+        match start(state, &job, worker_id, agent).await {
             Ok(spec) => {
                 let worker = workers
                     .connected
@@ -580,7 +584,12 @@ pub async fn dispatch(state: &AppState) -> ApiResult<()> {
             }
             Err(error) => {
                 tracing::error!(job = job.id, error = error.message, "could not start a job");
-                fail(state, job.id, "The hub could not prepare this job").await?;
+                let why = if error.status.is_client_error() {
+                    error.message
+                } else {
+                    "The hub could not prepare this job".into()
+                };
+                fail(state, job.id, &why).await?;
             }
         }
         publish(state, &workers, job.id).await?;
@@ -588,39 +597,42 @@ pub async fn dispatch(state: &AppState) -> ApiResult<()> {
     Ok(())
 }
 
-/// Marks a job as running on a worker, with a new token, and returns what
-/// the worker needs; a task's run, with `runner`.
+/// Marks a job as running on a machine, with a new token, and returns what
+/// the machine needs; a task's run, with the workshop agent `agent`.
 async fn start(
     state: &AppState,
     job: &JobRow,
     worker_id: i64,
-    runner: Option<String>,
+    agent: Option<AgentRow>,
 ) -> ApiResult<JobSpec> {
     let group = Membership::of_group(state, job.group_id).await?;
     let now = db::now();
     let mut task_profile = None;
+    let mut branch = None;
     let work = match job.kind() {
         JobKind::Reply => Work::Reply(Box::new(conversation(state, &group, job).await?)),
         JobKind::LibraryBuild => {
             Work::LibraryBuild(library::work_for(state, &group, job.id).await?)
         }
         JobKind::TaskRun => {
-            // The worker's runner, if it is not the agent's: then the
-            // agent's model is not for it.
-            let mut profile = job.profile()?;
-            let runner = runner.unwrap_or_else(|| profile.runner.clone());
-            if runner != profile.runner {
-                profile.runner = runner;
-                profile.model = None;
-            }
+            let agent = agent
+                .as_ref()
+                .ok_or_else(|| ApiError::internal("a task without its agent"))?;
+            let profile = AgentProfile {
+                runner: agent.runner.clone(),
+                model: agent.model.clone(),
+                args: agent.args(),
+                ..workshop::profile()
+            };
             let mut conversation = conversation(state, &group, job).await?;
             conversation.agent = profile.clone();
             let run = workshop::work_for(state, &group, job.id, conversation).await?;
+            branch = Some(run.branch.clone());
             task_profile = Some(profile);
             Work::TaskRun(Box::new(run))
         }
     };
-    let (agent, lasts) = match job.kind() {
+    let (name, lasts) = match job.kind() {
         JobKind::LibraryBuild => ("Lean".to_owned(), BUILD_TOKEN_MILLIS),
         JobKind::TaskRun => (job.profile()?.display_name, BUILD_TOKEN_MILLIS),
         _ => (job.profile()?.display_name, JOB_TOKEN_MILLIS),
@@ -630,12 +642,18 @@ async fn start(
         job.requester_id,
         job.group_id,
         None,
-        &agent,
+        &name,
         now + lasts,
     )
     .await?;
-    if task_profile.is_some() {
-        auth::grant_push(&state.db, token_id).await?;
+    if let Some(branch) = &branch {
+        auth::grant_task(
+            &state.db,
+            token_id,
+            &format!("refs/heads/{branch}"),
+            TASK_THREADS,
+        )
+        .await?;
     }
     sqlx::query(
         "UPDATE jobs SET state = 'running', worker_id = ?, token_id = ?, attempts = attempts + 1,
@@ -648,8 +666,29 @@ async fn start(
     .bind(job.id)
     .execute(&state.db)
     .await?;
-    if let Some(profile) = &task_profile {
-        workshop::started(state, job.id, &profile.runner, profile.model.as_deref()).await?;
+    let (runner, model) = match (&task_profile, job.kind()) {
+        (Some(profile), _) => (profile.runner.clone(), profile.model.clone()),
+        (None, JobKind::LibraryBuild) => (LEAN.to_owned(), None),
+        (None, _) => {
+            let profile = job.profile()?;
+            (profile.runner, profile.model)
+        }
+    };
+    consumption::started(
+        state,
+        consumption::Start {
+            job_id: job.id,
+            group_id: job.group_id,
+            kind: job.kind(),
+            worker_id,
+            workshop_agent_id: agent.as_ref().map(|a| a.id),
+            runner: &runner,
+            model: model.as_deref(),
+        },
+    )
+    .await?;
+    if task_profile.is_some() {
+        workshop::started(state, job.id, &runner, model.as_deref()).await?;
     }
     Ok(JobSpec {
         id: job.id,
@@ -659,6 +698,7 @@ async fn start(
         },
         token,
         hands_over: job.hands_over(),
+        opens_threads: task_profile.is_some(),
         work,
     })
 }
@@ -727,14 +767,14 @@ async fn done(state: &AppState, job: &JobRow, answer: Option<u32>) -> ApiResult<
     revoke_token(state, job.token_id).await
 }
 
-/// A job a worker runs, if it is running on that worker.
+/// A job a machine runs, if it is running on that machine.
 async fn running_on(state: &AppState, worker_id: i64, job_id: i64) -> ApiResult<Option<JobRow>> {
     Ok(load_job(state, job_id)
         .await?
         .filter(|job| job.state() == JobState::Running && job.worker_id == Some(worker_id)))
 }
 
-/// What a worker says a job is doing.
+/// What a machine says a job is doing.
 pub async fn progress(state: &AppState, worker_id: i64, job_id: i64, text: &str) -> ApiResult<()> {
     let workers = state.workers.lock().await;
     if running_on(state, worker_id, job_id).await?.is_none() {
@@ -750,13 +790,15 @@ pub async fn progress(state: &AppState, worker_id: i64, job_id: i64, text: &str)
     publish(state, &workers, job_id).await
 }
 
-/// How a worker says a job ended: an answer is posted in the thread, a
-/// build's report is kept, a task's run is reported.
+/// How a machine says a job ended, and what it consumed: an answer is
+/// posted in the thread, a build's report is kept, a task's run is
+/// proposed and reported.
 pub async fn finished(
     state: &AppState,
     worker_id: i64,
     job_id: i64,
     outcome: Outcome,
+    usage: Usage,
 ) -> ApiResult<()> {
     {
         let mut workers = state.workers.lock().await;
@@ -766,6 +808,14 @@ pub async fn finished(
         let Some(job) = running_on(state, worker_id, job_id).await? else {
             return Ok(());
         };
+        let failed = matches!(outcome, Outcome::Failed { .. });
+        consumption::ended(
+            state,
+            job_id,
+            if failed { "failed" } else { "done" },
+            Some(&usage),
+        )
+        .await?;
         let failure = match (job.kind(), outcome) {
             (_, Outcome::Failed { error }) => Some(error.trim().chars().take(2_000).collect()),
             (JobKind::Reply, Outcome::Answer { body }) => answered(state, &job, &body).await?,
@@ -779,7 +829,7 @@ pub async fn finished(
                 done(state, &job, Some(number)).await?;
                 None
             }
-            _ => Some("The worker answered with something else than was asked".into()),
+            _ => Some("The machine answered with something else than was asked".into()),
         };
         if let Some(error) = failure {
             fail(state, job_id, &error).await?;
@@ -826,7 +876,7 @@ async fn say(state: &AppState, job: &JobRow, text: &str) -> ApiResult<u32> {
     Ok(message.number)
 }
 
-/// Registers a connected worker, replacing an older connection of it,
+/// Registers a connected machine, replacing an older connection of it,
 /// whose jobs are queued again.
 pub async fn connected(state: &AppState, worker_id: i64, worker: Connected) -> ApiResult<()> {
     let old = state
@@ -841,7 +891,17 @@ pub async fn connected(state: &AppState, worker_id: i64, worker: Connected) -> A
     dispatch(state).await
 }
 
-/// Forgets a worker's connection, if it is still the current one, and
+/// The groups a machine works for changed: its connection learns it, and
+/// the jobs are dispatched again.
+pub async fn workshop_changed(state: &AppState, worker_id: i64) -> ApiResult<()> {
+    let groups = workshop::machines::groups_of(state, worker_id).await?;
+    if let Some(worker) = state.workers.lock().await.connected.get_mut(&worker_id) {
+        worker.workshop = groups;
+    }
+    dispatch(state).await
+}
+
+/// Forgets a machine's connection, if it is still the current one, and
 /// queues its jobs again.
 pub async fn disconnected(state: &AppState, worker_id: i64, connection: u64) -> ApiResult<()> {
     let gone = {
@@ -857,7 +917,7 @@ pub async fn disconnected(state: &AppState, worker_id: i64, connection: u64) -> 
     dispatch(state).await
 }
 
-/// Disconnects a worker, as when its token is revoked.
+/// Disconnects a machine, as when its token is revoked.
 pub async fn disconnect(state: &AppState, worker_id: i64) -> ApiResult<()> {
     let gone = state.workers.lock().await.connected.remove(&worker_id);
     if let Some(gone) = gone {
@@ -866,18 +926,19 @@ pub async fn disconnect(state: &AppState, worker_id: i64) -> ApiResult<()> {
     dispatch(state).await
 }
 
-/// Queues again the jobs a worker was running, unless they ran too often.
+/// Queues again the jobs a machine was running, unless they ran too often.
 async fn requeue(state: &AppState, worker_id: i64, jobs: HashSet<i64>) -> ApiResult<()> {
     for job_id in jobs {
         let Some(job) = running_on(state, worker_id, job_id).await? else {
             continue;
         };
         revoke_token(state, job.token_id).await?;
+        consumption::ended(state, job_id, "requeued", None).await?;
         if job.attempts >= MAX_ATTEMPTS {
             fail(
                 state,
                 job_id,
-                "The workers that took this job went away before finishing it",
+                "The machines that took this job went away before finishing it",
             )
             .await?;
         } else {
@@ -898,7 +959,7 @@ async fn requeue(state: &AppState, worker_id: i64, jobs: HashSet<i64>) -> ApiRes
     Ok(())
 }
 
-/// After a restart no worker is connected: queue again what was running.
+/// After a restart no machine is connected: queue again what was running.
 pub async fn recover(state: &AppState) -> anyhow::Result<()> {
     let tokens: Vec<Option<i64>> = sqlx::query_scalar(
         "UPDATE jobs SET state = 'queued', worker_id = NULL, token_id = NULL, progress = NULL
@@ -911,6 +972,12 @@ pub async fn recover(state: &AppState) -> anyhow::Result<()> {
             .await
             .map_err(|e| anyhow::anyhow!(e.message))?;
     }
+    sqlx::query(
+        "UPDATE job_runs SET finished_at = ?, outcome = 'requeued' WHERE finished_at IS NULL",
+    )
+    .bind(db::now())
+    .execute(&state.db)
+    .await?;
     sqlx::query("UPDATE tasks SET state = 'open' WHERE state = 'running'")
         .execute(&state.db)
         .await?;
@@ -958,6 +1025,7 @@ pub async fn stop(state: &AppState, job_id: i64) -> ApiResult<()> {
     .execute(&state.db)
     .await?;
     revoke_token(state, job.token_id).await?;
+    consumption::ended(state, job_id, "cancelled", None).await?;
     workshop::job_ended(state, job_id, true, None).await?;
     publish(state, &workers, job_id).await?;
     drop(workers);

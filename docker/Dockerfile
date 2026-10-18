@@ -18,6 +18,7 @@ WORKDIR /src
 COPY Cargo.toml Cargo.lock ./
 COPY crates/ crates/
 COPY lean/ lean/
+COPY workshop/ workshop/
 COPY --from=web /src/web/build web/build
 RUN cargo build --release --locked --bin stemma
 

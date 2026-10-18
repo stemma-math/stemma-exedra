@@ -6,10 +6,11 @@ use reqwest::{Method, StatusCode};
 use serde::Serialize;
 use serde::de::DeserializeOwned;
 use stemma_core::api::{
-    ApiToken, CreateMachine, CreateTask, CreateToken, CreatedMachine, CreatedToken,
-    DeclarationPage, DeclarationSummary, ErrorBody, LibraryState, Machine, Me, Message, PREFIX,
-    PersonalAgent, PostMessage, SearchHit, SignIn, Task, TaskPage, TaskState, Thread, ThreadKind,
-    ThreadPage, UpdateMachine,
+    AddWorkshopMachine, ApiToken, Architecture, ConsumptionDay, CreateMachine, CreateTask,
+    CreateThread, CreateToken, CreatedMachine, CreatedToken, DeclarationPage, DeclarationSummary,
+    ErrorBody, LibraryState, Machine, Me, Message, PREFIX, PersonalAgent, PostMessage, SearchHit,
+    SignIn, Task, TaskPage, TaskState, Thread, ThreadKind, ThreadPage, UpdateMachine,
+    WorkshopAgent, WorkshopMachine,
 };
 
 /// An error the hub answered with, or not reaching it.
@@ -236,6 +237,88 @@ impl Hub {
         self.delete(&format!("/me/machines/{id}")).await
     }
 
+    /// Sets the agents one of the person's machines offers the workshop,
+    /// in order of preference.
+    pub async fn set_workshop_agents(
+        &self,
+        id: i64,
+        agents: &[WorkshopAgent],
+    ) -> Result<Vec<WorkshopAgent>> {
+        Ok(self
+            .send(
+                Method::PUT,
+                &format!("/me/machines/{id}/workshop-agents"),
+                &[],
+                Some(agents),
+            )
+            .await?
+            .0)
+    }
+
+    // ── The workshop ──────────────────────────────────────────────────
+
+    /// The kinds of work the workshop knows.
+    pub async fn architectures(&self) -> Result<Vec<Architecture>> {
+        self.get("/workshop/architectures", &[]).await
+    }
+
+    pub async fn workshop_machines(&self, group: &str) -> Result<Vec<WorkshopMachine>> {
+        self.get(&format!("{}/workshop/machines", g(group)), &[])
+            .await
+    }
+
+    /// Makes one of the person's machines work for a group's workshop.
+    pub async fn add_workshop_machine(&self, group: &str, machine: i64) -> Result<()> {
+        self.send::<serde_json::Value>(
+            Method::POST,
+            &format!("{}/workshop/machines", g(group)),
+            &[],
+            Some(&AddWorkshopMachine { machine }),
+        )
+        .await?;
+        Ok(())
+    }
+
+    pub async fn remove_workshop_machine(&self, group: &str, machine: i64) -> Result<()> {
+        self.delete(&format!("{}/workshop/machines/{machine}", g(group)))
+            .await
+    }
+
+    /// What a group's workshop consumed, day by day.
+    pub async fn workshop_consumption(
+        &self,
+        group: &str,
+        days: u32,
+    ) -> Result<Vec<ConsumptionDay>> {
+        self.get(
+            &format!("{}/workshop/consumption", g(group)),
+            &[("days", days.to_string())],
+        )
+        .await
+    }
+
+    pub async fn approve_task(&self, group: &str, number: u32) -> Result<()> {
+        self.send::<serde_json::Value>(
+            Method::POST,
+            &format!("{}/tasks/{number}/approve", g(group)),
+            &[],
+            None::<&()>,
+        )
+        .await?;
+        Ok(())
+    }
+
+    pub async fn reject_task(&self, group: &str, number: u32) -> Result<()> {
+        self.send::<serde_json::Value>(
+            Method::POST,
+            &format!("{}/tasks/{number}/reject", g(group)),
+            &[],
+            None::<&()>,
+        )
+        .await?;
+        Ok(())
+    }
+
     // ── The forum ─────────────────────────────────────────────────────
 
     pub async fn threads(
@@ -249,6 +332,10 @@ impl Hub {
             query.push(("kind", kind.as_str().to_owned()));
         }
         self.get(&format!("{}/threads", g(group)), &query).await
+    }
+
+    pub async fn create_thread(&self, group: &str, thread: &CreateThread) -> Result<ThreadPage> {
+        self.post(&format!("{}/threads", g(group)), thread).await
     }
 
     pub async fn thread(&self, group: &str, number: u32) -> Result<ThreadPage> {

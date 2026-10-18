@@ -142,6 +142,7 @@ pub async fn create(
         workshop::NewTask {
             title: body.title,
             instructions: body.instructions,
+            architecture: body.architecture,
             thread_id: origin.0,
             origin_message: origin.1,
             requester_id: viewer.id,

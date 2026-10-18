@@ -19,7 +19,7 @@ use std::process::{ExitStatus, Stdio};
 
 use anyhow::Context as _;
 use stemma_core::api::AgentProfile;
-use stemma_core::protocol::JobSpec;
+use stemma_core::protocol::{JobSpec, Usage};
 use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader};
 use tokio::process::Command;
 
@@ -38,6 +38,17 @@ pub struct Work<'a> {
     pub max_turns: Option<u32>,
 }
 
+/// What an agent said, and what it consumed, as its runner reports it.
+pub struct Answer {
+    pub text: String,
+    pub usage: Usage,
+}
+
+/// A count of tokens, from a runner's JSON.
+pub(crate) fn tokens(value: &serde_json::Value) -> Option<u64> {
+    value.as_u64()
+}
+
 /// Whether a job's agent may hand tasks to the workshop, as the hub says:
 /// one answering in a thread, for someone who may ask for work.
 pub fn hands_over(job: &JobSpec) -> bool {
@@ -45,11 +56,14 @@ pub fn hands_over(job: &JobSpec) -> bool {
 }
 
 /// The Stemma tools a job's agent may use, by name: those that read, and
-/// if it may, what hands a task over.
+/// if it may, what hands a task over, or what opens a thread.
 pub fn allowed_tools(job: &JobSpec) -> Vec<&'static str> {
     let mut names = stemma_client::tools::read_only_names();
     if hands_over(job) {
         names.extend(stemma_client::tools::HANDS_OVER);
+    }
+    if job.opens_threads {
+        names.extend(stemma_client::tools::OPENS_THREADS);
     }
     names
 }
@@ -77,6 +91,9 @@ pub fn mcp_args(
     ];
     if hands_over(job) {
         args.push("--hand-over".into());
+    }
+    if job.opens_threads {
+        args.push("--open-threads".into());
     }
     args
 }

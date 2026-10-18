@@ -59,14 +59,18 @@ CREATE TABLE library_uses (
     PRIMARY KEY (build_id, used, user)
 );
 
--- The workshop's tasks. A task is open until a worker runs it, then done,
--- failed or blocked; or cancelled.
+-- The workshop's tasks. A task is open until a workshop machine runs it;
+-- then in review, while its changes wait for approval, or done if it
+-- changed nothing, or failed; then done, once its changes are merged, or
+-- rejected; or cancelled.
 CREATE TABLE tasks (
     id INTEGER PRIMARY KEY,
     group_id INTEGER NOT NULL REFERENCES groups (id) ON DELETE CASCADE,
     number INTEGER NOT NULL,
     title TEXT NOT NULL,
     instructions TEXT NOT NULL,
+    -- The architecture it runs with: `formalize`.
+    architecture TEXT NOT NULL,
     -- The message that asked for it.
     thread_id INTEGER NOT NULL REFERENCES threads (id) ON DELETE CASCADE,
     origin_message INTEGER NOT NULL,
@@ -74,7 +78,7 @@ CREATE TABLE tasks (
     -- The agent that handed it over for its requester, if one did.
     agent TEXT,
     state TEXT NOT NULL
-        CHECK (state IN ('open', 'running', 'done', 'failed', 'blocked', 'cancelled')),
+        CHECK (state IN ('open', 'running', 'review', 'done', 'failed', 'rejected', 'cancelled')),
     -- The job that runs it, now or last.
     job_id INTEGER REFERENCES jobs (id) ON DELETE SET NULL,
     runner TEXT,
@@ -82,8 +86,19 @@ CREATE TABLE tasks (
     reason TEXT,
     report TEXT,
     log TEXT,
-    -- A JSON array of the commits it pushed.
-    commits TEXT NOT NULL DEFAULT '[]',
+    -- What it proposes: the repository, its branch and commit, and the
+    -- pull request in the forge.
+    repository TEXT,
+    branch TEXT,
+    commit_sha TEXT,
+    pull INTEGER,
+    pull_url TEXT,
+    -- Whether its changes are big, and why: a JSON array.
+    big INTEGER NOT NULL DEFAULT 0,
+    why_big TEXT NOT NULL DEFAULT '[]',
+    -- Once merged, the commit that merged it; once rejected, by whom.
+    merged_commit TEXT,
+    rejected_by INTEGER REFERENCES users (id) ON DELETE SET NULL,
     -- The number of the message, in its thread, that reports on it.
     report_message INTEGER,
     created_at INTEGER NOT NULL,
@@ -95,3 +110,13 @@ CREATE TABLE tasks (
 
 CREATE INDEX tasks_group ON tasks (group_id, number DESC);
 CREATE INDEX tasks_job ON tasks (job_id);
+
+-- The approvals a task's changes were given: by whom, and as what (the
+-- asker, an admin). One person may approve as several.
+CREATE TABLE task_approvals (
+    task_id INTEGER NOT NULL REFERENCES tasks (id) ON DELETE CASCADE,
+    user_id INTEGER NOT NULL REFERENCES users (id) ON DELETE CASCADE,
+    approver TEXT NOT NULL CHECK (approver IN ('asker', 'admin')),
+    created_at INTEGER NOT NULL,
+    PRIMARY KEY (task_id, approver)
+);

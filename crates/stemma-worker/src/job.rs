@@ -9,18 +9,18 @@ use std::time::Duration;
 use stemma_client::format;
 use stemma_core::api::{AgentProfile, ThreadKind, runners as names};
 use stemma_core::protocol::{
-    ContextItem, Conversation, GroupRef, JobSpec, Outcome, ThreadRef, Work,
+    ContextItem, Conversation, GroupRef, JobSpec, Outcome, ThreadRef, Usage, Work,
 };
 use tokio::sync::mpsc;
 
 use crate::config::WorkerConfig;
-use crate::runners::Work as RunnerWork;
+use crate::runners::{Answer, Work as RunnerWork};
 use crate::{library, runners, workshop};
 
 /// Stemma's instructions to an agent answering in a thread.
 pub const REPLY_INSTRUCTIONS: &str = include_str!("../prompts/reply.md");
 
-/// What every job of a worker shares.
+/// What every job of a machine shares.
 pub struct Context {
     pub config: WorkerConfig,
     /// The hub's address.
@@ -121,18 +121,12 @@ pub struct Prompt {
     pub user: String,
 }
 
-/// Stemma's instructions, filled in, and the profile's own.
+/// Stemma's instructions, filled in.
 fn instructions(template: &str, group: &GroupRef, conversation: &Conversation) -> String {
-    let mut system = template
+    template
         .replace("{agent}", &conversation.agent.display_name)
         .replace("{requester}", &conversation.requester.display_name)
-        .replace("{group}", &group.name);
-    if let Some(more) = conversation.agent.instructions.as_deref() {
-        system.push_str("\nFrom the group, for you:\n\n");
-        system.push_str(more.trim());
-        system.push('\n');
-    }
-    system
+        .replace("{group}", &group.name)
 }
 
 /// A thread's messages, with the messages left out marked.
@@ -224,33 +218,36 @@ impl Drop for JobDir {
     }
 }
 
-/// Runs a job to its outcome.
-pub async fn run(context: Arc<Context>, job: JobSpec, progress: Progress) -> Outcome {
+/// Runs a job to its outcome, with what its runner said it consumed.
+pub async fn run(context: Arc<Context>, job: JobSpec, progress: Progress) -> (Outcome, Usage) {
+    let mut usage = Usage::default();
     let outcome = match &job.work {
         Work::Reply(conversation) => {
             let prompt = reply_prompt(&job.group, conversation);
             ask(&context, &job, &conversation.agent, &prompt, &progress)
                 .await
-                .and_then(|body| {
+                .and_then(|answer| {
+                    usage = answer.usage;
                     anyhow::ensure!(
-                        !body.trim().is_empty(),
+                        !answer.text.trim().is_empty(),
                         "{} gave no answer",
                         conversation.agent.display_name
                     );
                     Ok(Outcome::Answer {
-                        body: body.trim().to_owned(),
+                        body: answer.text.trim().to_owned(),
                     })
                 })
         }
         Work::LibraryBuild(build) => library::build(&context, &job, build, &progress).await,
-        Work::TaskRun(run) => workshop::run(&context, &job, run, &progress).await,
+        Work::TaskRun(run) => workshop::run(&context, &job, run, &progress, &mut usage).await,
     };
-    outcome.unwrap_or_else(|error| {
+    let outcome = outcome.unwrap_or_else(|error| {
         tracing::warn!(job = job.id, error = format!("{error:#}"), "a job failed");
         Outcome::Failed {
             error: format!("{error:#}"),
         }
-    })
+    });
+    (outcome, usage)
 }
 
 /// What an agent says to a prompt, through its runner.
@@ -260,7 +257,7 @@ async fn ask(
     agent: &AgentProfile,
     prompt: &Prompt,
     progress: &Progress,
-) -> anyhow::Result<String> {
+) -> anyhow::Result<Answer> {
     let dir = JobDir::create(&context.work_dir, job)?;
     progress.say("Thinking");
     let work = RunnerWork {
@@ -287,7 +284,7 @@ pub fn cli_runner(context: &Context, runner: &str) -> anyhow::Result<crate::conf
         .runners
         .get(runner)
         .cloned()
-        .ok_or_else(|| anyhow::anyhow!("this worker has no runner {runner}"))
+        .ok_or_else(|| anyhow::anyhow!("this machine has no runner {runner}"))
 }
 
 /// Runs one of the command-line runners: Claude Code, Codex or OpenCode.
@@ -299,7 +296,7 @@ pub async fn run_cli(
     work: &RunnerWork<'_>,
     prompt: &Prompt,
     progress: &Progress,
-) -> anyhow::Result<String> {
+) -> anyhow::Result<Answer> {
     let config = cli_runner(context, &agent.runner)?;
     match agent.runner.as_str() {
         names::CLAUDE_CODE => {
@@ -312,7 +309,7 @@ pub async fn run_cli(
         names::OPENCODE => {
             runners::opencode::run(context, &config, job, agent, dir, work, prompt, progress).await
         }
-        other => anyhow::bail!("this worker has no runner {other}"),
+        other => anyhow::bail!("this machine has no runner {other}"),
     }
 }
 

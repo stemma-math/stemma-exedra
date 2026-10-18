@@ -18,8 +18,9 @@ pub fn definitions() -> Vec<ToolDef> {
                           \"formalize this\". Give a short title, and instructions that say \
                           exactly what to do, citing by address what the thread decided \
                           ([[t12#45-48]], [[lean:Foo.bar]]). The workshop \
-                          reports in the thread of the message that asked, once, when it is \
-                          done. Returns the task's address, w7, to cite as [[w7]].",
+                          proposes its changes, which the person who asked approves, and \
+                          reports in the thread of the message that asked. Returns the task's \
+                          address, w7, to cite as [[w7]].",
             input_schema: json!({
                 "type": "object",
                 "properties": {
@@ -39,8 +40,9 @@ pub fn definitions() -> Vec<ToolDef> {
         ToolDef {
             name: "task_status",
             description: "How a task of the workshop is, by address (w7): its state (open, \
-                          running, done, failed, blocked, cancelled), what it is doing or why it \
-                          waits, its commits, and its report.",
+                          running, review, done, failed, rejected, cancelled), what it is doing \
+                          or why it waits, the changes it proposes and who approved them, and \
+                          its report.",
             input_schema: json!({
                 "type": "object",
                 "properties": {
@@ -59,7 +61,8 @@ pub fn definitions() -> Vec<ToolDef> {
                 "type": "object",
                 "properties": {
                     "state": {"type": "string",
-                              "enum": ["open", "running", "done", "failed", "blocked", "cancelled"],
+                              "enum": ["open", "running", "review", "done", "failed", "rejected",
+                                       "cancelled"],
                               "description": "Only the tasks in this state."},
                     "group": {"type": "string", "description": GROUP},
                     "limit": {"type": "integer", "minimum": 1, "maximum": 200,
@@ -118,6 +121,7 @@ async fn create(toolbox: &Toolbox, args: Value, agent: Option<&str>) -> ToolResu
                 instructions: args.instructions,
                 origin,
                 agent: agent.map(str::to_owned),
+                architecture: None,
             },
         )
         .await?;

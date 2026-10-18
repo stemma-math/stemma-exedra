@@ -1,12 +1,12 @@
-//! Agents: each person's own, which they keep in their settings, and each
-//! group's own, which its admins keep. See [`crate::agents`].
+//! People's own agents, which they keep in their settings. See
+//! [`crate::agents`].
 
 use axum::extract::{Path, State};
 use axum::http::StatusCode;
-use stemma_core::api::{AgentProfile, PersonalAgent, runners};
+use stemma_core::api::{PersonalAgent, WORKSHOP, runners};
 use stemma_core::mention::is_handle;
 
-use super::{Json, Membership, required_text};
+use super::{Json, required_text};
 use crate::agents;
 use crate::auth::Viewer;
 use crate::db;
@@ -27,7 +27,7 @@ fn handle_of(text: &str) -> ApiResult<String> {
     Ok(handle)
 }
 
-fn runner_of(text: &str) -> ApiResult<String> {
+pub(crate) fn runner_of(text: &str) -> ApiResult<String> {
     let runner = text.trim().to_owned();
     if !runners::ALL.contains(&runner.as_str()) {
         return Err(ApiError::invalid(format!(
@@ -38,14 +38,14 @@ fn runner_of(text: &str) -> ApiResult<String> {
     Ok(runner)
 }
 
-fn optional(value: Option<String>, what: &str, max: usize) -> ApiResult<Option<String>> {
+pub(crate) fn optional(value: Option<String>, what: &str, max: usize) -> ApiResult<Option<String>> {
     match value.as_deref().map(str::trim) {
         None | Some("") => Ok(None),
         Some(text) => required_text(text, what, max).map(Some),
     }
 }
 
-fn args_of(args: Vec<String>) -> ApiResult<Vec<String>> {
+pub(crate) fn args_of(args: Vec<String>) -> ApiResult<Vec<String>> {
     if args.len() > MAX_ARGS {
         return Err(ApiError::invalid(format!(
             "An agent has at most {MAX_ARGS} arguments"
@@ -57,117 +57,6 @@ fn args_of(args: Vec<String>) -> ApiResult<Vec<String>> {
         )));
     }
     Ok(args.into_iter().filter(|a| !a.is_empty()).collect())
-}
-
-// ── A group's own ─────────────────────────────────────────────────────
-
-pub async fn list(
-    State(state): State<AppState>,
-    viewer: Viewer,
-    Path(slug): Path<String>,
-) -> ApiResult<Json<Vec<AgentProfile>>> {
-    let group = Membership::of(&state, &viewer, &slug).await?;
-    Ok(Json(agents::of_group(&state, group.group_id).await?))
-}
-
-/// Checks a group's agent and tidies it: trimmed, empty optional text as
-/// none.
-fn checked(profile: AgentProfile) -> ApiResult<AgentProfile> {
-    Ok(AgentProfile {
-        handle: handle_of(&profile.handle)?,
-        display_name: required_text(&profile.display_name, "The name", 60)?,
-        runner: runner_of(&profile.runner)?,
-        model: optional(profile.model, "The model", 200)?,
-        args: args_of(profile.args)?,
-        instructions: optional(profile.instructions, "The instructions", 8_000)?,
-        role: profile.role,
-    })
-}
-
-pub async fn create(
-    State(state): State<AppState>,
-    viewer: Viewer,
-    Path(slug): Path<String>,
-    Json(body): Json<AgentProfile>,
-) -> ApiResult<(StatusCode, Json<AgentProfile>)> {
-    viewer.require_full()?;
-    let group = Membership::of(&state, &viewer, &slug).await?;
-    group.require_admin()?;
-    let profile = checked(body)?;
-    // A handle someone in the group has for an agent of their own would
-    // take it from them.
-    if agents::someone_in_group_has(&state, group.group_id, &profile.handle).await? {
-        return Err(ApiError::conflict(format!(
-            "@{} is someone's own agent here: choose another handle",
-            profile.handle
-        )));
-    }
-    agents::insert_group_agent(&state.db, group.group_id, &profile)
-        .await
-        .map_err(|e| {
-            if db::is_unique_violation(&e) {
-                ApiError::conflict(format!("There is already an agent @{}", profile.handle))
-            } else {
-                e.into()
-            }
-        })?;
-    Ok((StatusCode::CREATED, Json(profile)))
-}
-
-/// Changes a group's agent; its handle stays. Jobs already asked for keep
-/// the agent as it was.
-pub async fn update(
-    State(state): State<AppState>,
-    viewer: Viewer,
-    Path((slug, handle)): Path<(String, String)>,
-    Json(body): Json<AgentProfile>,
-) -> ApiResult<Json<AgentProfile>> {
-    viewer.require_full()?;
-    let group = Membership::of(&state, &viewer, &slug).await?;
-    group.require_admin()?;
-    let profile = checked(AgentProfile {
-        handle: handle.clone(),
-        ..body
-    })?;
-    let done = sqlx::query(
-        "UPDATE group_agents SET display_name = ?, runner = ?, model = ?, args = ?,
-                                 instructions = ?, role = ?, updated_at = ?
-         WHERE group_id = ? AND handle = ?",
-    )
-    .bind(&profile.display_name)
-    .bind(&profile.runner)
-    .bind(&profile.model)
-    .bind(serde_json::to_string(&profile.args).map_err(ApiError::internal)?)
-    .bind(&profile.instructions)
-    .bind(profile.role.as_str())
-    .bind(db::now())
-    .bind(group.group_id)
-    .bind(&profile.handle)
-    .execute(&state.db)
-    .await?;
-    if done.rows_affected() == 0 {
-        return Err(ApiError::not_found("Agent"));
-    }
-    Ok(Json(profile))
-}
-
-pub async fn remove(
-    State(state): State<AppState>,
-    viewer: Viewer,
-    Path((slug, handle)): Path<(String, String)>,
-) -> ApiResult<StatusCode> {
-    viewer.require_full()?;
-    let group = Membership::of(&state, &viewer, &slug).await?;
-    group.require_admin()?;
-    let done = sqlx::query("DELETE FROM group_agents WHERE group_id = ? AND handle = ?")
-        .bind(group.group_id)
-        .bind(&handle)
-        .execute(&state.db)
-        .await?;
-    if done.rows_affected() == 0 {
-        return Err(ApiError::not_found("Agent"));
-    }
-    Ok(StatusCode::NO_CONTENT)
 }
 
 // ── A person's own ────────────────────────────────────────────────────
@@ -204,13 +93,11 @@ fn checked_personal(agent: PersonalAgent) -> ApiResult<PersonalAgent> {
     })
 }
 
-/// Refuses a handle that one of the viewer's groups has for an agent of
-/// its own: it would always name the group's.
-async fn check_not_a_groups(state: &AppState, viewer: &Viewer, handle: &str) -> ApiResult<()> {
-    let groups = agents::groups_with_agent(state, viewer.id, handle).await?;
-    if let Some(group) = groups.first() {
+/// Refuses the workshop's handle: it names every group's workshop.
+fn check_not_the_workshop(handle: &str) -> ApiResult<()> {
+    if handle == WORKSHOP {
         return Err(ApiError::conflict(format!(
-            "@{handle} is the agent of the group {group}: choose another handle"
+            "@{WORKSHOP} is every group's workshop: choose another handle"
         )));
     }
     Ok(())
@@ -256,7 +143,7 @@ pub async fn create_mine(
             agent.handle
         )));
     }
-    check_not_a_groups(&state, &viewer, &agent.handle).await?;
+    check_not_the_workshop(&agent.handle)?;
     save_personal(&state, viewer.id, &agent).await?;
     Ok((StatusCode::CREATED, Json(agent)))
 }
