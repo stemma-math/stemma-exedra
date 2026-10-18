@@ -8,7 +8,9 @@ use stemma_core::api::Event;
 use tokio::sync::broadcast;
 
 use crate::config::Config;
+use crate::forge::Forge;
 use crate::jobs::Workers;
+use crate::oidc::SigningKey;
 
 pub type AppState = Arc<Hub>;
 
@@ -24,8 +26,13 @@ pub struct Hub {
     pub workers: tokio::sync::Mutex<Workers>,
     /// The number of the last worker connection.
     pub connections: AtomicU64,
-    /// Whether `git` runs here, which the libraries need.
-    pub git: bool,
+    /// The forge that keeps the groups' repositories, if there is one.
+    pub forge: Option<Arc<Forge>>,
+    /// Taken while the hub changes the forge's teams.
+    pub forge_sync: tokio::sync::Mutex<()>,
+    /// The key the hub signs its OpenID Connect tokens with, when it has a
+    /// forge to sign people in to.
+    pub signing_key: Option<SigningKey>,
 }
 
 #[derive(Clone, Debug)]
@@ -35,17 +42,28 @@ pub struct GroupEvent {
 }
 
 impl Hub {
-    pub fn new(db: SqlitePool, config: Config) -> Hub {
+    /// The hub over `db`; with a forge, its signing key is read from the
+    /// data directory, or made there.
+    pub fn new(db: SqlitePool, config: Config) -> anyhow::Result<Hub> {
         let (events, _) = broadcast::channel(256);
-        Hub {
+        let (forge, signing_key) = match &config.forge {
+            Some(forge) => (
+                Some(Arc::new(Forge::new(forge)?)),
+                Some(SigningKey::load_or_create(&config.signing_key_path())?),
+            ),
+            None => (None, None),
+        };
+        Ok(Hub {
             db,
             config,
             events,
             setup_token: Mutex::new(None),
             workers: tokio::sync::Mutex::new(Workers::default()),
             connections: AtomicU64::new(0),
-            git: crate::library::git_available(),
-        }
+            forge,
+            forge_sync: tokio::sync::Mutex::new(()),
+            signing_key,
+        })
     }
 
     /// Tells a group's listeners what happened.

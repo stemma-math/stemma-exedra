@@ -1,22 +1,20 @@
-//! Libraries: each group's Lean project, a bare git repository in the data
-//! directory (`libraries/<group id>.git`), made from a template when the
-//! group is, and served over git's HTTP protocol (see [`crate::git`]).
+//! Libraries: each group's Lean project, the repository `library` of the
+//! group's organization in the forge (see [`crate::forge`]), made from a
+//! template when the group is.
 //!
 //! Each new commit of `main` is built by a group worker with Lean, which
 //! runs the inspection and reports on every declaration. The library's
 //! state is the report of its last successful build.
 
-use std::path::{Path, PathBuf};
-
 use stemma_core::api::{
     Build, BuildState, Declaration, DeclarationState, LibraryReport, SourceRange,
 };
 use stemma_core::protocol::{Built, LibraryBuild};
-use tokio::process::Command;
 
 use crate::api::Membership;
 use crate::db;
 use crate::error::{ApiError, ApiResult};
+use crate::forge::{self, LIBRARY, MAIN};
 use crate::jobs;
 use crate::state::AppState;
 
@@ -53,19 +51,6 @@ const KEEP_REPORTS: i64 = 5;
 
 /// The most of a build's log that is kept, in bytes: its end.
 const MAX_LOG: usize = 200_000;
-
-/// Whether `git` can be run here.
-pub fn git_available() -> bool {
-    std::process::Command::new("git")
-        .arg("--version")
-        .output()
-        .is_ok_and(|o| o.status.success())
-}
-
-/// Where the group's repository is.
-pub fn repository(state: &AppState, group_id: i64) -> PathBuf {
-    state.config.libraries_dir().join(format!("{group_id}.git"))
-}
 
 /// The name of a library's root module, from its group's slug:
 /// `number-theory` is `NumberTheory`. Names Lean or Mathlib use are
@@ -105,98 +90,45 @@ pub fn root_module(slug: &str) -> String {
     name
 }
 
-/// Runs git in `dir` with `args`, failing with what it wrote.
-async fn git(dir: &Path, args: &[&str]) -> anyhow::Result<String> {
-    let output = Command::new("git")
-        .current_dir(dir)
-        .args([
-            "-c",
-            "user.name=Stemma",
-            "-c",
-            "user.email=stemma@localhost",
-        ])
-        .args(args)
-        .env("GIT_TERMINAL_PROMPT", "0")
-        .output()
-        .await?;
-    anyhow::ensure!(
-        output.status.success(),
-        "git {} failed: {}",
-        args.join(" "),
-        String::from_utf8_lossy(&output.stderr).trim()
-    );
-    Ok(String::from_utf8_lossy(&output.stdout).trim().to_owned())
-}
-
-/// Makes the group's repository from the template, with its first commit.
-async fn create_repository(path: &Path, slug: &str, name: &str) -> anyhow::Result<()> {
-    let parent = path.parent().expect("a repository is in a folder");
-    tokio::fs::create_dir_all(parent).await?;
-    let work = tempfile::tempdir_in(parent)?;
+/// The files a group's library starts with: the template, for the group.
+pub fn template(slug: &str, name: &str) -> Vec<(String, String)> {
     let root = root_module(slug);
-    for (file, text) in TEMPLATE {
-        let file = file.replace("Library", &root);
-        let text = text
-            .replace("{{package}}", slug)
-            .replace("{{Library}}", &root)
-            .replace("{{name}}", name);
-        let target = work.path().join(&file);
-        if let Some(dir) = target.parent() {
-            tokio::fs::create_dir_all(dir).await?;
-        }
-        tokio::fs::write(target, text).await?;
-    }
-    git(work.path(), &["init", "-q", "-b", "main"]).await?;
-    git(work.path(), &["add", "-A"]).await?;
-    git(work.path(), &["commit", "-q", "-m", "Start the library"]).await?;
-    let target = path.to_string_lossy();
-    git(parent, &["init", "-q", "--bare", "-b", "main", &target]).await?;
-    for (key, value) in [
-        ("receive.denyNonFastForwards", "true"),
-        ("receive.denyDeletes", "true"),
-        ("http.receivepack", "true"),
-        ("http.uploadpack", "true"),
-    ] {
-        git(path, &["config", key, value]).await?;
-    }
-    git(work.path(), &["push", "-q", &target, "main"]).await?;
-    Ok(())
+    TEMPLATE
+        .iter()
+        .map(|(file, text)| {
+            let file = file.replace("Library", &root);
+            let text = text
+                .replace("{{package}}", slug)
+                .replace("{{Library}}", &root)
+                .replace("{{name}}", name);
+            (file, text)
+        })
+        .collect()
 }
 
-/// The commit `main` is at, if it is anywhere.
-pub async fn main_commit(path: &Path) -> Option<String> {
-    git(path, &["rev-parse", "--verify", "-q", "refs/heads/main"])
+/// Where the hub serves a group's library over git, relative to it.
+pub fn clone_path(slug: &str) -> String {
+    format!("/git/{slug}/{LIBRARY}.git")
+}
+
+/// The commit the library's `main` is at, if it is anywhere.
+pub async fn main_commit(state: &AppState, group_id: i64) -> ApiResult<Option<String>> {
+    let Some(forge) = state.forge.as_deref() else {
+        return Ok(None);
+    };
+    let slug: String = sqlx::query_scalar("SELECT slug FROM groups WHERE id = ?")
+        .bind(group_id)
+        .fetch_one(&state.db)
+        .await?;
+    forge
+        .branch_commit(&slug, LIBRARY, MAIN)
         .await
-        .ok()
-        .filter(|c| !c.is_empty())
+        .map_err(forge::api_error)
 }
 
-/// Makes the group's library if it has none, and queues its first build,
-/// for `requester_id`. Does nothing without git.
-pub async fn ensure(state: &AppState, group_id: i64, requester_id: i64) -> ApiResult<()> {
-    if !state.git {
-        return Ok(());
-    }
-    let exists: Option<i64> =
-        sqlx::query_scalar("SELECT group_id FROM libraries WHERE group_id = ?")
-            .bind(group_id)
-            .fetch_optional(&state.db)
-            .await?;
-    if exists.is_some() {
-        return Ok(());
-    }
-    let (slug, name): (String, String) =
-        sqlx::query_as("SELECT slug, name FROM groups WHERE id = ?")
-            .bind(group_id)
-            .fetch_one(&state.db)
-            .await?;
-    let path = repository(state, group_id);
-    if main_commit(&path).await.is_none() {
-        let _ = tokio::fs::remove_dir_all(&path).await;
-        create_repository(&path, &slug, &name)
-            .await
-            .map_err(ApiError::internal)?;
-    }
+/// Keeps that the group, just made, has a library, as the forge made it,
+/// and queues its first build, for `requester_id`.
+pub async fn created(state: &AppState, group_id: i64, requester_id: i64) -> ApiResult<()> {
     sqlx::query(
         "INSERT INTO libraries (group_id, created_at) VALUES (?, ?) ON CONFLICT DO NOTHING",
     )
@@ -204,36 +136,13 @@ pub async fn ensure(state: &AppState, group_id: i64, requester_id: i64) -> ApiRe
     .bind(db::now())
     .execute(&state.db)
     .await?;
-    tracing::info!(group = slug, "made the group's library");
     refresh(state, group_id, requester_id).await
-}
-
-/// Makes the libraries of the groups that have none, as after an upgrade.
-pub async fn ensure_all(state: &AppState) -> anyhow::Result<()> {
-    if !state.git {
-        tracing::warn!("git is not installed: groups have no library");
-        return Ok(());
-    }
-    let groups: Vec<(i64, i64)> = sqlx::query_as(
-        "SELECT g.id, (SELECT m.user_id FROM memberships m WHERE m.group_id = g.id
-                       ORDER BY m.role = 'admin' DESC, m.joined_at LIMIT 1)
-         FROM groups g WHERE g.id NOT IN (SELECT group_id FROM libraries)
-           AND EXISTS (SELECT 1 FROM memberships m WHERE m.group_id = g.id)",
-    )
-    .fetch_all(&state.db)
-    .await?;
-    for (group_id, requester) in groups {
-        if let Err(error) = ensure(state, group_id, requester).await {
-            tracing::error!(group_id, error = error.message, "could not make a library");
-        }
-    }
-    Ok(())
 }
 
 /// Looks at where `main` is; if it moved, queues a build of the new
 /// commit, for `requester_id`, in place of the builds still waiting.
 pub async fn refresh(state: &AppState, group_id: i64, requester_id: i64) -> ApiResult<()> {
-    let Some(head) = main_commit(&repository(state, group_id)).await else {
+    let Some(head) = main_commit(state, group_id).await? else {
         return Ok(());
     };
     let known: Option<Option<String>> =
@@ -241,7 +150,10 @@ pub async fn refresh(state: &AppState, group_id: i64, requester_id: i64) -> ApiR
             .bind(group_id)
             .fetch_optional(&state.db)
             .await?;
-    if known.flatten().as_deref() == Some(head.as_str()) {
+    let Some(known) = known else {
+        return Ok(());
+    };
+    if known.as_deref() == Some(head.as_str()) {
         return Ok(());
     }
     sqlx::query("UPDATE libraries SET head = ? WHERE group_id = ?")
@@ -249,13 +161,25 @@ pub async fn refresh(state: &AppState, group_id: i64, requester_id: i64) -> ApiR
         .bind(group_id)
         .execute(&state.db)
         .await?;
-    queue(state, group_id, &head, requester_id).await?;
+    // A task's run builds what it pushes: its build becomes the library's
+    // when the task ends, and none is needed then.
+    let built: Option<i64> = sqlx::query_scalar(
+        "SELECT id FROM library_builds WHERE group_id = ? AND commit_sha = ? AND succeeded = 1",
+    )
+    .bind(group_id)
+    .bind(&head)
+    .fetch_optional(&state.db)
+    .await?;
+    if built.is_none() {
+        queue(state, group_id, &head, requester_id).await?;
+    }
     Ok(())
 }
 
 /// Drops the builds of the group still waiting for a commit that is not
-/// where `main` is now, as after a task's run put its own build of `main`
-/// in place; then looks at `main`, for `requester_id`.
+/// where `main` is now, or that a task's run built already, as after a
+/// task's run put its own build of `main` in place; then looks at `main`,
+/// for `requester_id`.
 pub async fn settle(state: &AppState, group_id: i64, requester_id: i64) -> ApiResult<()> {
     let head: Option<Option<String>> =
         sqlx::query_scalar("SELECT head FROM libraries WHERE group_id = ?")
@@ -264,7 +188,10 @@ pub async fn settle(state: &AppState, group_id: i64, requester_id: i64) -> ApiRe
             .await?;
     let stale: Vec<i64> = sqlx::query_scalar(
         "SELECT j.id FROM library_builds b JOIN jobs j ON j.id = b.job_id
-         WHERE b.group_id = ? AND j.state = 'queued' AND b.commit_sha IS NOT ?",
+         WHERE b.group_id = ?1 AND j.state = 'queued'
+           AND (b.commit_sha IS NOT ?2 OR EXISTS (
+                SELECT 1 FROM library_builds d
+                WHERE d.group_id = ?1 AND d.commit_sha = b.commit_sha AND d.succeeded = 1))",
     )
     .bind(group_id)
     .bind(head.flatten())
@@ -455,7 +382,7 @@ pub async fn work_for(
             .ok_or_else(|| ApiError::internal("a build's job without its build"))?;
     Ok(LibraryBuild {
         build,
-        repository: format!("/git/{}.git", group.slug),
+        repository: clone_path(&group.slug),
         commit,
     })
 }
@@ -499,7 +426,7 @@ pub async fn record_build(
     commit: &str,
     built: Built,
 ) -> ApiResult<()> {
-    if main_commit(&repository(state, group_id)).await.as_deref() != Some(commit) {
+    if main_commit(state, group_id).await?.as_deref() != Some(commit) {
         return Ok(());
     }
     let now = db::now();

@@ -177,12 +177,15 @@ fn state_word(state: DeclarationState, kind: &str) -> &'static str {
 /// How the library stands.
 pub fn library_state(hub: &str, library: &LibraryState, sorry: &[DeclarationSummary]) -> String {
     if !library.available {
-        return "This hub keeps no library for the group (it needs git).\n".into();
+        return "This hub keeps no library for the group (it needs a forge).\n".into();
     }
     let mut out = format!(
         "# The library\n\nClone it with git from {hub}{}, with your token as the password.\n",
         library.clone_path
     );
+    if let Some(forge) = &library.forge {
+        let _ = writeln!(out, "It is in the forge at {}.", forge.repository);
+    }
     if let Some(head) = &library.head {
         let _ = writeln!(out, "main is at {}.", short(head));
     }

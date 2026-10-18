@@ -209,7 +209,7 @@ pub struct LibraryBuild {
     /// The build's number on the hub.
     pub build: i64,
     /// Where to fetch the library from, relative to the hub:
-    /// `/git/geometry.git`, with the job's token.
+    /// `/git/geometry/library.git`, with the job's token.
     pub repository: String,
     /// The commit, in full.
     pub commit: String,
@@ -232,7 +232,7 @@ pub struct TaskRun {
     /// thread of the message that asked, up to it; and who asked.
     pub conversation: Conversation,
     /// Where to fetch and push the library, relative to the hub:
-    /// `/git/geometry.git`, with the job's token.
+    /// `/git/geometry/library.git`, with the job's token.
     pub repository: String,
     /// The definitions whose data already depends on `sorry`, in the
     /// library's state: only new ones fail the task.

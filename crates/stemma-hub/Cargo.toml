@@ -13,29 +13,36 @@ argon2.workspace = true
 axum.workspace = true
 base64.workspace = true
 futures-util.workspace = true
+hmac.workspace = true
+jsonwebtoken.workspace = true
 mime_guess.workspace = true
+p256.workspace = true
 rand.workspace = true
+reqwest = { workspace = true, features = ["stream"] }
+rustls.workspace = true
 rust-embed.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 sha2.workspace = true
 sqlx.workspace = true
 stemma-core.workspace = true
-tempfile.workspace = true
+subtle.workspace = true
 thiserror.workspace = true
 time.workspace = true
-tokio = { workspace = true, features = ["process", "time"] }
+tokio = { workspace = true, features = ["time"] }
 tokio-stream.workspace = true
 tokio-util.workspace = true
 toml.workspace = true
 tower-http.workspace = true
 tracing.workspace = true
+url.workspace = true
 
 [dev-dependencies]
 http-body-util.workspace = true
-reqwest.workspace = true
-rustls.workspace = true
+stemma-fake-forge.workspace = true
+tempfile.workspace = true
 tower.workspace = true
+wiremock.workspace = true
 
 [lints]
 workspace = true

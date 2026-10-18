@@ -1,5 +1,6 @@
-//! Libraries, end to end over HTTP: made from the template, cloned and
-//! pushed with git, built, and their reports kept and queried.
+//! Libraries, end to end over HTTP: made from the template in the forge,
+//! cloned and pushed with git through the hub, built after each push, and
+//! their reports kept and queried. The forge is a stand-in for Forgejo.
 
 use std::path::Path;
 use std::sync::Arc;
@@ -7,31 +8,43 @@ use std::sync::Arc;
 use serde_json::{Value, json};
 use stemma_core::api::{Declaration, LibraryReport, NewAccount};
 use stemma_core::protocol::Built;
+use stemma_fake_forge::FakeForge;
+use stemma_hub::config::{ForgeConfig, ForgeSecrets};
 
 struct Hub {
     url: String,
     state: stemma_hub::AppState,
+    _forge: FakeForge,
     _data: tempfile::TempDir,
 }
 
 async fn hub() -> Hub {
-    let _ = rustls::crypto::ring::default_provider().install_default();
+    let forge = FakeForge::start().await;
     let data = tempfile::tempdir().unwrap();
-    let config = stemma_hub::Config {
-        data_dir: data.path().to_owned(),
-        ..Default::default()
-    };
-    let state = Arc::new(stemma_hub::Hub::new(
-        stemma_hub::db::in_memory().await.unwrap(),
-        config,
-    ));
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let url = format!("http://{}", listener.local_addr().unwrap());
+    let config = stemma_hub::Config {
+        data_dir: data.path().to_owned(),
+        public_url: Some(url.clone()),
+        forge: Some(ForgeConfig::new(
+            &forge.url,
+            "http://forge.test/user/oauth2/stemma/callback",
+            ForgeSecrets {
+                token: stemma_fake_forge::TOKEN.into(),
+                webhook_secret: "the webhook's secret".into(),
+                client_secret: "the client's secret".into(),
+            },
+        )),
+        ..Default::default()
+    };
+    let state =
+        Arc::new(stemma_hub::Hub::new(stemma_hub::db::in_memory().await.unwrap(), config).unwrap());
     let app = stemma_hub::app(state.clone());
     tokio::spawn(async move { axum::serve(listener, app).await });
     Hub {
         url,
         state,
+        _forge: forge,
         _data: data,
     }
 }
@@ -123,10 +136,6 @@ fn declaration(name: &str, sorry: bool, uses: &[&str]) -> Declaration {
 #[tokio::test(flavor = "multi_thread")]
 async fn libraries_are_made_cloned_pushed_and_built() {
     let hub = hub().await;
-    if !hub.state.git {
-        eprintln!("git is not installed: skipping");
-        return;
-    }
     let ada = person(&hub, "ada", true).await;
     call(
         &hub,
@@ -140,7 +149,7 @@ async fn libraries_are_made_cloned_pushed_and_built() {
     // The group has a library, waiting for a worker with Lean.
     let library = call(&hub, &ada, "GET", "/groups/geometry/library", None).await;
     assert_eq!(library["available"], true);
-    assert_eq!(library["clone_path"], "/git/geometry.git");
+    assert_eq!(library["clone_path"], "/git/geometry/library.git");
     let first = library["head"].as_str().unwrap().to_owned();
     assert_eq!(library["latest"]["state"], "queued");
     assert_eq!(library["latest"]["commit"], first.as_str());
@@ -158,12 +167,12 @@ async fn libraries_are_made_cloned_pushed_and_built() {
         &[
             "clone",
             "-q",
-            &format!("{}/git/geometry.git", hub.url),
+            &format!("{}/git/geometry/library.git", hub.url),
             "nobody",
         ],
     );
     assert!(!anonymous.status.success());
-    let url = format!("http://ada:{ada}@{host}/git/geometry.git");
+    let url = format!("http://ada:{ada}@{host}/git/geometry/library.git");
     let cloned = git(work.path(), &["clone", "-q", &url, "geometry"]);
     assert!(cloned.status.success(), "{cloned:?}");
     let dir = work.path().join("geometry");
@@ -213,7 +222,7 @@ async fn libraries_are_made_cloned_pushed_and_built() {
     .execute(&hub.state.db)
     .await
     .unwrap();
-    let url = format!("http://gus:{gus}@{host}/git/geometry.git");
+    let url = format!("http://gus:{gus}@{host}/git/geometry/library.git");
     let cloned = git(work.path(), &["clone", "-q", &url, "guest"]);
     assert!(cloned.status.success(), "{cloned:?}");
     let guest = work.path().join("guest");
@@ -221,6 +230,82 @@ async fn libraries_are_made_cloned_pushed_and_built() {
     git(&guest, &["commit", "-qam", "Mine"]);
     let pushed = git(&guest, &["push", "-q", "origin", "main"]);
     assert!(!pushed.status.success());
+
+    // Nor does anyone outside the group clone it.
+    let eve = person(&hub, "eve", false).await;
+    let url = format!("http://eve:{eve}@{host}/git/geometry/library.git");
+    let cloned = git(work.path(), &["clone", "-q", &url, "outsider"]);
+    assert!(!cloned.status.success());
+
+    // A session of the web app does not reach git; only tokens do.
+    let session = reqwest::Client::new()
+        .post(format!("{}/api/v1/session", hub.url))
+        .json(&json!({"username": "ada", "password": "password1"}))
+        .send()
+        .await
+        .unwrap();
+    let cookie = session.headers()["set-cookie"].to_str().unwrap().to_owned();
+    let refs = reqwest::Client::new()
+        .get(format!(
+            "{}/git/geometry/library.git/info/refs?service=git-upload-pack",
+            hub.url
+        ))
+        .header("cookie", cookie.split(';').next().unwrap())
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(refs.status(), 401);
+    // Nor the dumb protocol, with a token.
+    let dumb = reqwest::Client::new()
+        .get(format!("{}/git/geometry/library.git/HEAD", hub.url))
+        .bearer_auth(&ada)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(dumb.status(), 404);
+
+    // A job's token clones; it pushes only once it is a task's.
+    let (ada_id, group_id): (i64, i64) =
+        sqlx::query_as("SELECT u.id, g.id FROM users u, groups g WHERE u.username = 'ada'")
+            .fetch_one(&hub.state.db)
+            .await
+            .unwrap();
+    let (token_id, job) = stemma_hub::auth::create_job_token(
+        &hub.state.db,
+        ada_id,
+        group_id,
+        None,
+        "Lean",
+        stemma_hub::db::now() + 60_000,
+    )
+    .await
+    .unwrap();
+    let url = format!("http://job:{job}@{host}/git/geometry/library.git");
+    let cloned = git(work.path(), &["clone", "-q", &url, "job"]);
+    assert!(cloned.status.success(), "{cloned:?}");
+    let checkout = work.path().join("job");
+    std::fs::write(checkout.join("NOTES.md"), "Notes.\n").unwrap();
+    git(&checkout, &["add", "NOTES.md"]);
+    git(&checkout, &["commit", "-qm", "Notes"]);
+    let pushed = git(&checkout, &["push", "-q", "origin", "main"]);
+    assert!(!pushed.status.success());
+    stemma_hub::auth::grant_push(&hub.state.db, token_id)
+        .await
+        .unwrap();
+    let pulled = git(&checkout, &["pull", "-q", "--rebase", "origin", "main"]);
+    assert!(pulled.status.success(), "{pulled:?}");
+    let pushed = git(&checkout, &["push", "-q", "origin", "main"]);
+    assert!(pushed.status.success(), "{pushed:?}");
+    let third = String::from_utf8(git(&checkout, &["rev-parse", "HEAD"]).stdout).unwrap();
+    let third = third.trim().to_owned();
+    for _ in 0..100 {
+        builds = call(&hub, &ada, "GET", "/groups/geometry/library/builds", None).await;
+        if builds[0]["commit"] == third.as_str() {
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+    }
+    assert_eq!(builds[0]["commit"], third.as_str());
 
     // A worker's report becomes the library's state.
     let job_id: i64 = sqlx::query_scalar("SELECT job_id FROM library_builds WHERE commit_sha = ?")

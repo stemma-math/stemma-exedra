@@ -59,20 +59,27 @@ pub async fn create_user(state: &AppState, account: NewAccount, hub_admin: bool)
     let username = account.username.trim().to_lowercase();
     if !valid_username(&username) {
         return Err(ApiError::invalid(
-            "A username is 1 to 32 lowercase letters, digits, '.', '_' or '-', starting with a letter or digit",
+            "A username is 1 to 32 lowercase letters, digits, '.', '_' or '-', starting and \
+             ending with a letter or digit, with no two of '.', '_' and '-' in a row",
         ));
+    }
+    if crate::forge::is_reserved(&username) {
+        return Err(ApiError::invalid(format!(
+            "{username} is a name the forge keeps for itself"
+        )));
     }
     let display_name = required_text(&account.display_name, "The name", 80)?;
     check_password(&account.password)?;
     let hash = auth::hash_password(account.password).await?;
     let result = sqlx::query(
-        "INSERT INTO users (username, display_name, password_hash, hub_admin, created_at)
-         VALUES (?, ?, ?, ?, ?)",
+        "INSERT INTO users (username, display_name, password_hash, hub_admin, subject, created_at)
+         VALUES (?, ?, ?, ?, ?, ?)",
     )
     .bind(&username)
     .bind(&display_name)
     .bind(hash)
     .bind(hub_admin)
+    .bind(secret::token(""))
     .bind(db::now())
     .execute(&state.db)
     .await;
@@ -85,13 +92,17 @@ pub async fn create_user(state: &AppState, account: NewAccount, hub_admin: bool)
     }
 }
 
+/// Whether `name` can be a username: also a valid account name in the
+/// forge.
 pub fn valid_username(name: &str) -> bool {
-    let mut bytes = name.bytes();
-    name.len() <= 32
-        && bytes
-            .next()
-            .is_some_and(|b| b.is_ascii_lowercase() || b.is_ascii_digit())
-        && bytes.all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b"._-".contains(&b))
+    let plain = |b: u8| b.is_ascii_lowercase() || b.is_ascii_digit();
+    let bytes = name.as_bytes();
+    !bytes.is_empty()
+        && bytes.len() <= 32
+        && bytes.first().copied().is_some_and(plain)
+        && bytes.last().copied().is_some_and(plain)
+        && bytes.iter().all(|&b| plain(b) || b"._-".contains(&b))
+        && bytes.windows(2).all(|w| plain(w[0]) || plain(w[1]))
 }
 
 fn check_password(password: &str) -> ApiResult<()> {
@@ -325,6 +336,9 @@ mod tests {
             "Ada",
             "-ada",
             ".a",
+            "ada.",
+            "ada__lovelace",
+            "ada.-lovelace",
             "ada lovelace",
             "ñ",
             &"a".repeat(33),

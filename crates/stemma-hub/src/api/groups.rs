@@ -13,6 +13,8 @@ use super::{Json, Membership, UserColumns, required_text};
 use crate::auth::{self, Viewer};
 use crate::db;
 use crate::error::{ApiError, ApiResult};
+use crate::forge;
+use crate::library;
 use crate::secret;
 use crate::state::AppState;
 
@@ -57,7 +59,9 @@ pub async fn get(
     Ok(Json(Membership::of(&state, &viewer, &slug).await?.group()))
 }
 
-/// Creates a group, with its creator as its admin. Only for hub admins.
+/// Creates a group, with its creator as its admin: its organization in
+/// the forge, with its teams and its library, then the group. Only for hub
+/// admins, and only with a forge.
 pub async fn create(
     State(state): State<AppState>,
     viewer: Viewer,
@@ -69,18 +73,60 @@ pub async fn create(
             "Only the hub's admins can create groups",
         ));
     }
+    let forge = forge::require(&state)?;
     let slug = body.slug.trim().to_owned();
     if !is_slug(&slug) || slug.len() > 40 {
         return Err(ApiError::invalid(
             "A group's short name is up to 40 lowercase letters, digits and inner dashes",
         ));
     }
+    if forge::is_reserved(&slug) {
+        return Err(ApiError::invalid(format!(
+            "{slug} is a name the forge keeps for itself"
+        )));
+    }
     let name = required_text(&body.name, "The name", 80)?;
+    let taken: Option<i64> = sqlx::query_scalar("SELECT id FROM groups WHERE slug = ?")
+        .bind(&slug)
+        .fetch_optional(&state.db)
+        .await?;
+    if taken.is_some() {
+        return Err(ApiError::conflict(format!(
+            "There is already a group {slug}"
+        )));
+    }
+    forge::create_group(
+        forge,
+        &state,
+        &slug,
+        &name,
+        &library::template(&slug, &name),
+    )
+    .await?;
+    match insert_group(&state, &viewer, &slug, &name).await {
+        Ok(group) => {
+            library::created(&state, group, viewer.id).await?;
+            forge::sync_members_or_log(&state, group).await;
+        }
+        Err(error) => {
+            // The organization is the group's alone: without the group, it
+            // goes too.
+            let _ = forge.delete_repository(&slug, forge::LIBRARY).await;
+            let _ = forge.delete_organization(&slug).await;
+            return Err(error);
+        }
+    }
+    let group = Membership::of(&state, &viewer, &slug).await?.group();
+    Ok((StatusCode::CREATED, Json(group)))
+}
+
+/// Keeps a new group, with `viewer` as its admin and its first agents.
+async fn insert_group(state: &AppState, viewer: &Viewer, slug: &str, name: &str) -> ApiResult<i64> {
     let now = db::now();
     let mut tx = state.db.begin().await?;
     let inserted = sqlx::query("INSERT INTO groups (slug, name, created_at) VALUES (?, ?, ?)")
-        .bind(&slug)
-        .bind(&name)
+        .bind(slug)
+        .bind(name)
         .bind(now)
         .execute(&mut *tx)
         .await;
@@ -105,20 +151,7 @@ pub async fn create(
         super::agents::insert(&mut *tx, group_id, &profile).await?;
     }
     tx.commit().await?;
-    if let Err(error) = crate::library::ensure(&state, group_id, viewer.id).await {
-        tracing::error!(
-            group = slug,
-            error = error.message,
-            "could not make the library"
-        );
-    }
-    let group = Group {
-        slug,
-        name,
-        role: Role::Admin,
-        created_at: db::from_millis(now),
-    };
-    Ok((StatusCode::CREATED, Json(group)))
+    Ok(group_id)
 }
 
 #[derive(sqlx::FromRow)]
@@ -200,6 +233,7 @@ pub async fn update_member(
         .bind(user_id)
         .execute(&state.db)
         .await?;
+    forge::sync_members_or_log(&state, group.group_id).await;
     Ok(StatusCode::NO_CONTENT)
 }
 
@@ -223,6 +257,7 @@ pub async fn remove_member(
         .bind(user_id)
         .execute(&state.db)
         .await?;
+    forge::sync_members_or_log(&state, group.group_id).await;
     Ok(StatusCode::NO_CONTENT)
 }
 
@@ -437,6 +472,9 @@ pub async fn accept_invitation(
             .await?;
     }
     tx.commit().await?;
+    if joined > 0 {
+        forge::sync_members_or_log(&state, invitation.group_id).await;
+    }
 
     let me = super::account::me_of(&state, user_id).await?;
     Ok((cookie, Json(me)))

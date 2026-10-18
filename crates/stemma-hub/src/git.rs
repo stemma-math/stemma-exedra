@@ -1,37 +1,95 @@
-//! Git over HTTP for the groups' libraries: `/git/<group>.git`, through
-//! `git http-backend`.
+//! Git over HTTP for the groups' repositories, `/git/<group>/<name>.git`,
+//! passed on to the forge, which keeps them.
 //!
-//! Members clone and push with a personal token as the password (any user
-//! name), or as a bearer token; guests only clone. A job's token only
-//! clones, unless it is a task's, which pushes too. After a person's push the hub looks at `main`,
-//! and builds its new commit; after a task's, the task's own build and
-//! inspection of what it pushed become the library's state when the task
-//! ends (see [`crate::workshop`]).
-
-use std::process::Stdio;
+//! Workers and people with a personal token talk only to the hub, which
+//! decides what each may do and then asks Forgejo as its admin: no
+//! credential of Forgejo ever leaves the hub. A personal token is the
+//! password (with any user name), or a bearer token. Everyone in the group
+//! fetches; admins and members push, guests never do. A job's token only
+//! fetches, unless it is a workshop task's, which pushes too. Only git's
+//! smart protocol is served.
+//!
+//! Forgejo itself keeps `main` from being rewritten or deleted, and tells
+//! the hub of each push to it with a webhook (see [`crate::forge::hook`]).
 
 use axum::Router;
 use axum::body::Body;
 use axum::extract::{Path, Request, State};
-use axum::http::{HeaderMap, HeaderValue, Method, StatusCode, header};
+use axum::http::{HeaderValue, Method, StatusCode, header};
 use axum::response::{IntoResponse, Response};
 use axum::routing::any;
-use futures_util::TryStreamExt;
-use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
-use tokio::process::Command;
-use tokio_util::io::{ReaderStream, StreamReader};
+use stemma_core::api::Role;
 
 use crate::api::Membership;
-use crate::auth::Viewer;
-use crate::error::ApiError;
-use crate::library;
+use crate::auth::{Scope, Viewer};
+use crate::forge::Forge;
 use crate::state::AppState;
 
 pub fn router(state: AppState) -> Router {
     Router::new()
-        .route("/git/{repo}", any(serve_root))
-        .route("/git/{repo}/{*path}", any(serve))
+        .route("/git/{group}/{repository}/{*path}", any(serve))
         .with_state(state)
+}
+
+/// What a request to git asks for.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Service {
+    /// Clone or fetch: `git-upload-pack`.
+    Fetch,
+    /// Push: `git-receive-pack`.
+    Push,
+}
+
+/// Which of the smart protocol's requests this is, if it is one: the
+/// advertisement of a service's refs, or the service itself.
+pub fn service(method: &Method, path: &str, query: Option<&str>) -> Option<Service> {
+    let named = |name: &str| match name {
+        "git-upload-pack" => Some(Service::Fetch),
+        "git-receive-pack" => Some(Service::Push),
+        _ => None,
+    };
+    match (method, path) {
+        (&Method::GET, "info/refs") => {
+            let mut asked = url::form_urlencoded::parse(query.unwrap_or_default().as_bytes())
+                .filter(|(key, _)| key == "service");
+            let (_, value) = asked.next()?;
+            // One service, and only one.
+            if asked.next().is_some() {
+                return None;
+            }
+            named(&value)
+        }
+        (&Method::POST, path) => named(path),
+        _ => None,
+    }
+}
+
+/// Whether a request with `scope`, from someone with `role` in the group,
+/// may do `service`; if not, why.
+pub fn allowed(scope: &Scope, role: Role, service: Service) -> Result<(), &'static str> {
+    if service == Service::Fetch {
+        return Ok(());
+    }
+    if let Scope::Job(job) = scope
+        && !job.can_push
+    {
+        return Err("A job's token pushes only for a task of the workshop");
+    }
+    if !role.can_ask_for_work() {
+        return Err("Guests cannot push to the group's repositories");
+    }
+    Ok(())
+}
+
+/// Whether `name` can be a repository of a group: as Forgejo's names, but
+/// never `.` or `..`.
+fn is_repository_name(name: &str) -> bool {
+    !name.is_empty()
+        && name.len() <= 100
+        && !name.starts_with('.')
+        && name
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || b"._-".contains(&b))
 }
 
 /// What asks for a password, so that git prompts for one.
@@ -52,179 +110,176 @@ fn refused(status: StatusCode, message: &str) -> Response {
     (status, format!("{message}\n")).into_response()
 }
 
-async fn serve_root(
-    state: State<AppState>,
-    viewer: Option<Viewer>,
-    Path(repo): Path<String>,
-    request: Request,
-) -> Response {
-    handle(state, viewer, repo, String::new(), request).await
-}
-
 async fn serve(
-    state: State<AppState>,
-    viewer: Option<Viewer>,
-    Path((repo, path)): Path<(String, String)>,
-    request: Request,
-) -> Response {
-    handle(state, viewer, repo, path, request).await
-}
-
-async fn handle(
     State(state): State<AppState>,
     viewer: Option<Viewer>,
-    repo: String,
-    path: String,
+    Path((group, repository, path)): Path<(String, String, String)>,
     request: Request,
 ) -> Response {
-    let Some(viewer) = viewer else {
+    // Git is for tokens: a session does not reach it.
+    let Some(viewer) = viewer.filter(|v| v.with_token) else {
         return ask_for_token();
     };
-    let slug = repo.strip_suffix(".git").unwrap_or(&repo);
-    let group = match Membership::of(&state, &viewer, slug).await {
-        Ok(group) => group,
-        Err(error) => return error.into_response(),
+    let Some(forge) = state.forge.as_deref() else {
+        return refused(StatusCode::NOT_FOUND, "This hub keeps no repositories");
     };
-    let query = request.uri().query().unwrap_or_default().to_owned();
-    let pushing = path == "git-receive-pack" || query.contains("service=git-receive-pack");
-    if pushing && viewer.job().is_some_and(|job| !job.can_push) {
-        return refused(
-            StatusCode::FORBIDDEN,
-            "A job's token cannot push to the library",
-        );
-    }
-    if pushing && !group.role.can_ask_for_work() {
-        return refused(StatusCode::FORBIDDEN, "Guests cannot push to the library");
-    }
-    // Only the smart protocol's three endpoints.
-    if !matches!(
-        path.as_str(),
-        "info/refs" | "git-upload-pack" | "git-receive-pack"
-    ) {
+    let name = repository.strip_suffix(".git").unwrap_or(&repository);
+    if !is_repository_name(name) {
         return refused(StatusCode::NOT_FOUND, "Not found");
     }
-    let repository = library::repository(&state, group.group_id);
-    if !state.git || !repository.exists() {
-        return refused(StatusCode::NOT_FOUND, "This group has no library");
+    let membership = match Membership::of(&state, &viewer, &group).await {
+        Ok(membership) => membership,
+        Err(error) => return error.into_response(),
+    };
+    let Some(service) = service(request.method(), &path, request.uri().query()) else {
+        return refused(StatusCode::NOT_FOUND, "Only git's smart protocol is served");
+    };
+    if let Err(why) = allowed(&viewer.scope, membership.role, service) {
+        return refused(StatusCode::FORBIDDEN, why);
     }
-    match backend(
-        &state,
-        &viewer,
-        group.group_id,
-        &path,
-        &query,
-        request,
-        pushing,
-    )
-    .await
-    {
+    let upstream = format!("{}/{name}.git/{path}", membership.slug);
+    match pass_on(forge, &upstream, request).await {
         Ok(response) => response,
-        Err(error) => ApiError::internal(error).into_response(),
+        Err(error) => {
+            tracing::error!(%error, upstream, "could not reach the forge for git");
+            refused(StatusCode::BAD_GATEWAY, "The hub could not reach the forge")
+        }
     }
 }
 
-/// Runs `git http-backend` for one request, streaming both ways.
-async fn backend(
-    state: &AppState,
-    viewer: &Viewer,
-    group_id: i64,
-    path: &str,
-    query: &str,
-    request: Request,
-    pushing: bool,
-) -> anyhow::Result<Response> {
-    let root = std::path::absolute(state.config.libraries_dir())?;
-    let headers: HeaderMap = request.headers().clone();
-    let header_value = |name: header::HeaderName| {
-        headers
-            .get(name)
-            .and_then(|v| v.to_str().ok())
-            .unwrap_or_default()
-            .to_owned()
-    };
-    let mut command = Command::new("git");
-    command
-        .arg("http-backend")
-        .env_clear()
-        .env("PATH", std::env::var_os("PATH").unwrap_or_default())
-        .env("GIT_PROJECT_ROOT", &root)
-        .env("GIT_HTTP_EXPORT_ALL", "1")
-        .env("PATH_INFO", format!("/{group_id}.git/{path}"))
-        .env("REQUEST_METHOD", request.method().as_str())
-        .env("QUERY_STRING", query)
-        .env("CONTENT_TYPE", header_value(header::CONTENT_TYPE))
-        .env("REMOTE_USER", &viewer.username)
-        .env("REMOTE_ADDR", "127.0.0.1")
-        .env("GIT_COMMITTER_NAME", &viewer.display_name)
-        .env("GIT_COMMITTER_EMAIL", format!("{}@stemma", viewer.username))
-        .stdin(Stdio::piped())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::inherit())
-        .kill_on_drop(true);
-    let encoding = header_value(header::CONTENT_ENCODING);
-    if !encoding.is_empty() {
-        command.env("HTTP_CONTENT_ENCODING", encoding);
-    }
-    if let Some(protocol) = headers.get("git-protocol").and_then(|v| v.to_str().ok()) {
-        command.env("GIT_PROTOCOL", protocol);
-    }
-    let mut child = command.spawn()?;
+/// The request headers git's protocol needs, passed on as they are.
+const REQUEST_HEADERS: &[header::HeaderName] = &[
+    header::CONTENT_TYPE,
+    header::CONTENT_ENCODING,
+    header::ACCEPT,
+    header::ACCEPT_ENCODING,
+    header::USER_AGENT,
+];
 
-    // The request's body goes to the backend as it comes.
-    let mut stdin = child.stdin.take().expect("piped");
-    let is_post = request.method() == Method::POST;
-    let body = request
-        .into_body()
-        .into_data_stream()
-        .map_err(std::io::Error::other);
-    tokio::spawn(async move {
-        if is_post {
-            let mut reader = StreamReader::new(body);
-            let _ = tokio::io::copy(&mut reader, &mut stdin).await;
-        }
-        let _ = stdin.shutdown().await;
-    });
+/// The answer's headers, passed back as they are.
+const RESPONSE_HEADERS: &[header::HeaderName] = &[
+    header::CONTENT_TYPE,
+    header::CONTENT_ENCODING,
+    header::CACHE_CONTROL,
+    header::EXPIRES,
+    header::PRAGMA,
+];
 
-    // Its answer: CGI headers, then the body.
-    let mut stdout = BufReader::new(child.stdout.take().expect("piped"));
-    let mut status = StatusCode::OK;
-    let mut response_headers = HeaderMap::new();
-    loop {
-        let mut line = String::new();
-        if stdout.read_line(&mut line).await? == 0 {
-            break;
-        }
-        let line = line.trim_end_matches(['\r', '\n']);
-        if line.is_empty() {
-            break;
-        }
-        let Some((name, value)) = line.split_once(':') else {
-            continue;
-        };
-        let value = value.trim();
-        if name.eq_ignore_ascii_case("status") {
-            let code = value.split_whitespace().next().unwrap_or("500");
-            status = code.parse().unwrap_or(StatusCode::INTERNAL_SERVER_ERROR);
-        } else if let (Ok(name), Ok(value)) = (
-            header::HeaderName::from_bytes(name.trim().as_bytes()),
-            HeaderValue::from_str(value),
-        ) {
-            response_headers.append(name, value);
+/// Sends the request on to Forgejo, as its admin, streaming both ways.
+async fn pass_on(forge: &Forge, path: &str, request: Request) -> anyhow::Result<Response> {
+    let (parts, body) = request.into_parts();
+    let mut upstream = forge.git(parts.method.clone(), path, parts.uri.query());
+    for name in REQUEST_HEADERS {
+        if let Some(value) = parts.headers.get(name) {
+            upstream = upstream.header(name, value);
         }
     }
-
-    // After a person's push, the hub looks at where `main` is.
-    let (state, user) = (state.clone(), viewer.id);
-    let refresh = pushing && viewer.job().is_none();
-    tokio::spawn(async move {
-        let _ = child.wait().await;
-        if refresh && let Err(error) = library::refresh(&state, group_id, user).await {
-            tracing::error!(group_id, error = error.message, "could not look at a push");
+    if let Some(protocol) = parts.headers.get("git-protocol") {
+        upstream = upstream.header("git-protocol", protocol);
+    }
+    if parts.method == Method::POST {
+        upstream = upstream.body(reqwest::Body::wrap_stream(body.into_data_stream()));
+    }
+    let answer = upstream.send().await?;
+    let status = answer.status();
+    if matches!(
+        status,
+        reqwest::StatusCode::UNAUTHORIZED | reqwest::StatusCode::FORBIDDEN
+    ) {
+        anyhow::bail!("Forgejo refused the hub's own credentials ({status})");
+    }
+    let mut response = Response::builder().status(status.as_u16());
+    for name in RESPONSE_HEADERS {
+        if let Some(value) = answer.headers().get(name) {
+            response = response.header(name, value);
         }
-    });
+    }
+    Ok(response.body(Body::from_stream(answer.bytes_stream()))?)
+}
 
-    let mut response = Response::new(Body::from_stream(ReaderStream::new(stdout)));
-    *response.status_mut() = status;
-    *response.headers_mut() = response_headers;
-    Ok(response)
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::auth::JobScope;
+
+    fn job(can_push: bool) -> Scope {
+        Scope::Job(JobScope {
+            token_id: 1,
+            group_id: 1,
+            thread_id: None,
+            agent: "Lean".into(),
+            can_post: false,
+            can_push,
+        })
+    }
+
+    #[test]
+    fn only_the_smart_protocol_is_served() {
+        let get = Method::GET;
+        let post = Method::POST;
+        let fetch = Some("service=git-upload-pack");
+        let push = Some("service=git-receive-pack");
+        assert_eq!(service(&get, "info/refs", fetch), Some(Service::Fetch));
+        assert_eq!(service(&get, "info/refs", push), Some(Service::Push));
+        assert_eq!(
+            service(&post, "git-upload-pack", None),
+            Some(Service::Fetch)
+        );
+        assert_eq!(
+            service(&post, "git-receive-pack", None),
+            Some(Service::Push)
+        );
+        // A push is a push, whatever the query says.
+        assert_eq!(
+            service(&post, "git-receive-pack", fetch),
+            Some(Service::Push)
+        );
+        // The dumb protocol, other files and other methods are not.
+        assert_eq!(service(&get, "info/refs", None), None);
+        assert_eq!(service(&get, "HEAD", None), None);
+        assert_eq!(service(&get, "objects/info/packs", None), None);
+        assert_eq!(service(&get, "git-upload-pack", None), None);
+        assert_eq!(service(&Method::PUT, "git-receive-pack", None), None);
+        assert_eq!(service(&get, "info/refs", Some("service=git-other")), None);
+        // Asking for two services at once is asking for neither.
+        assert_eq!(
+            service(
+                &get,
+                "info/refs",
+                Some("service=git-upload-pack&service=git-receive-pack")
+            ),
+            None
+        );
+    }
+
+    #[test]
+    fn everyone_fetches() {
+        for role in [Role::Admin, Role::Member, Role::Guest] {
+            assert!(allowed(&Scope::Full, role, Service::Fetch).is_ok());
+            assert!(allowed(&job(false), role, Service::Fetch).is_ok());
+        }
+    }
+
+    #[test]
+    fn admins_and_members_push_and_guests_never_do() {
+        assert!(allowed(&Scope::Full, Role::Admin, Service::Push).is_ok());
+        assert!(allowed(&Scope::Full, Role::Member, Service::Push).is_ok());
+        assert!(allowed(&Scope::Full, Role::Guest, Service::Push).is_err());
+        assert!(allowed(&job(true), Role::Guest, Service::Push).is_err());
+    }
+
+    #[test]
+    fn only_a_tasks_job_token_pushes() {
+        assert!(allowed(&job(false), Role::Member, Service::Push).is_err());
+        assert!(allowed(&job(true), Role::Member, Service::Push).is_ok());
+    }
+
+    #[test]
+    fn repository_names() {
+        assert!(is_repository_name("library"));
+        assert!(is_repository_name("paper-2.v1"));
+        for name in ["", ".", "..", ".git", "a/b", "a b", "%2e%2e"] {
+            assert!(!is_repository_name(name), "{name}");
+        }
+    }
 }

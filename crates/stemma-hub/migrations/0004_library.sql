@@ -1,6 +1,6 @@
--- Libraries: each group's Lean project, a bare git repository in the data
--- directory, its builds, and what the inspection of each found; and the
--- workshop's tasks on it.
+-- Libraries: each group's Lean project, a repository in the forge, its
+-- builds, and what the inspection of each found; and the workshop's tasks
+-- on it.
 
 CREATE TABLE libraries (
     group_id INTEGER PRIMARY KEY REFERENCES groups (id) ON DELETE CASCADE,

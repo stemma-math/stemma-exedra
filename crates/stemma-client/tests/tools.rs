@@ -8,18 +8,29 @@ use serde_json::{Value, json};
 use stemma_client::mcp::StemmaServer;
 use stemma_client::{Hub, Toolbox};
 use stemma_core::api::NewAccount;
+use stemma_fake_forge::FakeForge;
+use stemma_hub::config::{ForgeConfig, ForgeSecrets};
 
-/// A hub on a free local port, with Ada, who administers it, and her token.
-async fn hub_with_ada() -> (String, String, tempfile::TempDir) {
+/// A hub on a free local port, beside a stand-in for its forge, with Ada,
+/// who administers it, and her token.
+async fn hub_with_ada() -> (String, String, (tempfile::TempDir, FakeForge)) {
+    let forge = FakeForge::start().await;
     let data = tempfile::tempdir().unwrap();
     let config = stemma_hub::Config {
         data_dir: data.path().to_owned(),
+        forge: Some(ForgeConfig::new(
+            &forge.url,
+            "http://forge.test/user/oauth2/stemma/callback",
+            ForgeSecrets {
+                token: stemma_fake_forge::TOKEN.into(),
+                webhook_secret: "the webhook's secret".into(),
+                client_secret: "the client's secret".into(),
+            },
+        )),
         ..Default::default()
     };
-    let state = Arc::new(stemma_hub::Hub::new(
-        stemma_hub::db::in_memory().await.unwrap(),
-        config,
-    ));
+    let state =
+        Arc::new(stemma_hub::Hub::new(stemma_hub::db::in_memory().await.unwrap(), config).unwrap());
     let account = NewAccount {
         username: "ada".into(),
         display_name: "Ada".into(),
@@ -36,7 +47,7 @@ async fn hub_with_ada() -> (String, String, tempfile::TempDir) {
     hub.sign_in("ada", "analytical").await.unwrap();
     let token = hub.create_token("tests").await.unwrap().secret;
     hub.sign_out().await.unwrap();
-    (url, token, data)
+    (url, token, (data, forge))
 }
 
 async fn raw_post(url: &str, token: &str, path: &str, body: Value) -> Value {

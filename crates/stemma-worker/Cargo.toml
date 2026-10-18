@@ -29,6 +29,7 @@ axum.workspace = true
 reqwest.workspace = true
 sqlx.workspace = true
 stemma-hub.workspace = true
+stemma-fake-forge.workspace = true
 tempfile.workspace = true
 
 [lints]

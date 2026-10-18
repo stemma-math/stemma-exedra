@@ -473,7 +473,7 @@ pub async fn work_for(
         title: row.title.clone(),
         instructions: row.instructions.clone(),
         conversation,
-        repository: format!("/git/{}.git", group.slug),
+        repository: library::clone_path(&group.slug),
         data_sorry,
     })
 }

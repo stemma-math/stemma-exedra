@@ -7,13 +7,14 @@ use serde::Deserialize;
 use sqlx::AssertSqlSafe;
 use stemma_core::Address;
 use stemma_core::api::{
-    Build, BuildLog, DeclarationPage, DeclarationState, DeclarationSummary, LibraryState,
-    ModuleSummary, ReferenceSite,
+    Build, BuildLog, DeclarationPage, DeclarationState, DeclarationSummary, ForgeLinks,
+    LibraryState, ModuleSummary, ReferenceSite,
 };
 
 use super::{Json, Membership};
 use crate::auth::Viewer;
 use crate::error::{ApiError, ApiResult};
+use crate::forge::LIBRARY;
 use crate::library::{self, DECLARATION_COLUMNS, DeclarationRow};
 use crate::state::AppState;
 
@@ -29,7 +30,7 @@ pub async fn state(
             .bind(group.group_id)
             .fetch_optional(&state.db)
             .await?;
-    let available = state.git && head.is_some();
+    let available = state.forge.is_some() && head.is_some();
     let latest = library::builds(&state, group.group_id, 1).await?.pop();
     let current = library::current(&state, group.group_id).await?;
     let mut modules = Vec::new();
@@ -52,7 +53,15 @@ pub async fn state(
     }
     Ok(Json(LibraryState {
         available,
-        clone_path: format!("/git/{}.git", group.slug),
+        clone_path: library::clone_path(&group.slug),
+        forge: state
+            .forge
+            .as_deref()
+            .filter(|_| available)
+            .map(|forge| ForgeLinks {
+                organization: forge.public_url(&group.slug),
+                repository: forge.public_url(&format!("{}/{LIBRARY}", group.slug)),
+            }),
         head: head.flatten(),
         latest,
         declarations: modules.iter().map(|m| m.declarations).sum(),
@@ -94,8 +103,8 @@ pub async fn rebuild(
     if !group.role.can_ask_for_work() {
         return Err(ApiError::forbidden("Guests cannot ask for a build"));
     }
-    let head = library::main_commit(&library::repository(&state, group.group_id))
-        .await
+    let head = library::main_commit(&state, group.group_id)
+        .await?
         .ok_or_else(|| ApiError::not_found("Library"))?;
     let id = library::queue(&state, group.group_id, &head, viewer.id).await?;
     let (build, _) = library::build(&state, group.group_id, id).await?;

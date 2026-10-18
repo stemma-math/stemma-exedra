@@ -7,14 +7,22 @@ use axum::body::Body;
 use axum::http::{Method, Request, StatusCode, header};
 use http_body_util::BodyExt;
 use serde_json::{Value, json};
+use stemma_fake_forge::FakeForge;
+use stemma_hub::config::{ForgeConfig, ForgeSecrets};
 use stemma_hub::{Config, Hub, app, db};
 use tower::ServiceExt;
 
 struct TestHub {
     app: Router,
     state: stemma_hub::AppState,
+    forge: FakeForge,
     _data: tempfile::TempDir,
 }
+
+/// Where Forgejo sends people back to after they sign in.
+const CALLBACK: &str = "http://forge.test/user/oauth2/stemma/callback";
+const CLIENT_SECRET: &str = "the client's secret";
+const WEBHOOK_SECRET: &str = "the webhook's secret";
 
 /// A person using the API, with their session cookie or token.
 #[derive(Clone, Default)]
@@ -37,17 +45,36 @@ impl Reply {
 
 impl TestHub {
     async fn new() -> TestHub {
+        let forge = FakeForge::start().await;
+        let config = Config {
+            forge: Some(ForgeConfig::new(
+                &forge.url,
+                CALLBACK,
+                ForgeSecrets {
+                    token: stemma_fake_forge::TOKEN.into(),
+                    webhook_secret: WEBHOOK_SECRET.into(),
+                    client_secret: CLIENT_SECRET.into(),
+                },
+            )),
+            ..Config::default()
+        };
+        Self::with(config, forge).await
+    }
+
+    /// A hub with `config`, in a folder of its own.
+    async fn with(config: Config, forge: FakeForge) -> TestHub {
         let data = tempfile::tempdir().unwrap();
         let config = Config {
             data_dir: data.path().to_owned(),
             max_upload_mb: 1,
-            ..Config::default()
+            ..config
         };
-        let hub = Arc::new(Hub::new(db::in_memory().await.unwrap(), config));
+        let hub = Arc::new(Hub::new(db::in_memory().await.unwrap(), config).unwrap());
         *hub.setup_token.lock().unwrap() = Some("setup-secret".into());
         TestHub {
             app: app(hub.clone()),
             state: hub,
+            forge,
             _data: data,
         }
     }
@@ -1717,4 +1744,243 @@ async fn guests_converse_but_ask_for_no_work() {
     let bob = hub.member(&ada, "bob").await;
     let reply = hub.post(&bob, "/groups/geometry/tasks", task).await;
     assert_eq!(reply.status, StatusCode::CREATED, "{:?}", reply.json());
+}
+
+// ── The forge ─────────────────────────────────────────────────────────
+
+#[tokio::test]
+async fn without_a_forge_no_group_is_made() {
+    let hub = TestHub::with(Config::default(), FakeForge::start().await).await;
+    let reply = hub
+        .post(
+            &Client::default(),
+            "/setup",
+            json!({"token": "setup-secret", "username": "ada", "display_name": "Ada", "password": "analytical"}),
+        )
+        .await;
+    let ada = signed_in(&reply);
+    let reply = hub
+        .post(
+            &ada,
+            "/groups",
+            json!({"slug": "geometry", "name": "Geometry"}),
+        )
+        .await;
+    assert_eq!(reply.status, StatusCode::SERVICE_UNAVAILABLE);
+    assert_eq!(reply.json()["error"]["code"], "no_forge");
+    assert!(
+        hub.get(&ada, "/me").await.json()["groups"]
+            .as_array()
+            .unwrap()
+            .is_empty()
+    );
+    // Nor does it speak OpenID Connect.
+    let reply = hub
+        .fetch(&Client::default(), "/.well-known/openid-configuration")
+        .await;
+    assert_eq!(reply.status, StatusCode::NOT_FOUND);
+}
+
+#[tokio::test]
+async fn a_group_is_an_organization_with_a_team_per_role() {
+    let hub = TestHub::new().await;
+    let ada = hub.admin_with_group().await;
+    let forge = &hub.forge;
+    assert!(forge.organization_exists("geometry"));
+    assert!(forge.repository_exists("geometry", "library"));
+    assert_eq!(
+        forge.hooks("geometry", "library"),
+        ["http://127.0.0.1:8080/forge/hook"]
+    );
+    assert_eq!(
+        forge.team_permission("geometry", "Members").unwrap(),
+        "write"
+    );
+    assert_eq!(forge.team_permission("geometry", "Guests").unwrap(), "read");
+    // The hub's own account stays an owner.
+    assert_eq!(
+        forge.team_members("geometry", "Owners"),
+        ["ada", stemma_fake_forge::ADMIN]
+    );
+    let subject: String = sqlx::query_scalar("SELECT subject FROM users WHERE username = 'ada'")
+        .fetch_one(&hub.state.db)
+        .await
+        .unwrap();
+    assert_eq!(forge.linked_login(1, &subject).as_deref(), Some("ada"));
+
+    // The teams follow the roles.
+    let bob = hub.member(&ada, "bob").await;
+    hub.join(&ada, "gus", "guest").await;
+    assert_eq!(forge.team_members("geometry", "Members"), ["bob"]);
+    assert_eq!(forge.team_members("geometry", "Guests"), ["gus"]);
+    let bob_id = hub.get(&bob, "/me").await.json()["id"].as_i64().unwrap();
+    let reply = hub
+        .call(
+            &ada,
+            Method::PATCH,
+            &format!("/groups/geometry/members/{bob_id}"),
+            Some(json!({"role": "admin"})),
+        )
+        .await;
+    assert_eq!(reply.status, StatusCode::NO_CONTENT);
+    assert!(forge.team_members("geometry", "Members").is_empty());
+    assert_eq!(
+        forge.team_members("geometry", "Owners"),
+        ["ada", "bob", stemma_fake_forge::ADMIN]
+    );
+    let reply = hub
+        .call(
+            &bob,
+            Method::DELETE,
+            &format!("/groups/geometry/members/{bob_id}"),
+            None,
+        )
+        .await;
+    assert_eq!(reply.status, StatusCode::NO_CONTENT);
+    assert_eq!(
+        forge.team_members("geometry", "Owners"),
+        ["ada", stemma_fake_forge::ADMIN]
+    );
+
+    // The library is shown where it is in the forge.
+    let library = hub.get(&ada, "/groups/geometry/library").await.json();
+    assert_eq!(library["available"], true);
+    assert_eq!(library["clone_path"], "/git/geometry/library.git");
+    assert_eq!(
+        library["forge"]["repository"],
+        format!("{}/geometry/library", forge.url)
+    );
+    assert_eq!(
+        library["forge"]["organization"],
+        format!("{}/geometry", forge.url)
+    );
+}
+
+#[tokio::test]
+async fn a_group_the_forge_cannot_hold_is_not_made() {
+    let hub = TestHub::new().await;
+    let reply = hub
+        .post(
+            &Client::default(),
+            "/setup",
+            json!({"token": "setup-secret", "username": "ada", "display_name": "Ada", "password": "analytical"}),
+        )
+        .await;
+    let ada = signed_in(&reply);
+
+    // A name the forge has already.
+    hub.forge.add_user("algebra");
+    let reply = hub
+        .post(
+            &ada,
+            "/groups",
+            json!({"slug": "algebra", "name": "Algebra"}),
+        )
+        .await;
+    assert_eq!(reply.status, StatusCode::CONFLICT, "{:?}", reply.json());
+
+    // A name the forge keeps.
+    let reply = hub
+        .post(
+            &ada,
+            "/groups",
+            json!({"slug": "explore", "name": "Explore"}),
+        )
+        .await;
+    assert_eq!(reply.status, StatusCode::UNPROCESSABLE_ENTITY);
+
+    // A library the forge does not make: nothing is left behind.
+    hub.forge.refuse_repositories(true);
+    let reply = hub
+        .post(
+            &ada,
+            "/groups",
+            json!({"slug": "geometry", "name": "Geometry"}),
+        )
+        .await;
+    assert_eq!(reply.status, StatusCode::BAD_GATEWAY, "{:?}", reply.json());
+    assert!(!hub.forge.organization_exists("geometry"));
+    assert_eq!(
+        hub.get(&ada, "/groups/geometry").await.status,
+        StatusCode::NOT_FOUND
+    );
+    hub.forge.refuse_repositories(false);
+    let reply = hub
+        .post(
+            &ada,
+            "/groups",
+            json!({"slug": "geometry", "name": "Geometry"}),
+        )
+        .await;
+    assert_eq!(reply.status, StatusCode::CREATED, "{:?}", reply.json());
+}
+
+#[tokio::test]
+async fn names_the_forge_keeps_are_not_usernames() {
+    let hub = TestHub::new().await;
+    let ada = hub.admin_with_group().await;
+    let reply = hub
+        .post(&ada, "/groups/geometry/invitations", json!({}))
+        .await;
+    let token = reply.json()["token"].as_str().unwrap().to_owned();
+    for username in ["admin", "explore", "ada.", "a--b"] {
+        let reply = hub
+            .post(
+                &Client::default(),
+                &format!("/invitations/{token}/accept"),
+                json!({"account": {"username": username, "display_name": "X", "password": "password1"}}),
+            )
+            .await;
+        assert_eq!(reply.status, StatusCode::UNPROCESSABLE_ENTITY, "{username}");
+    }
+}
+
+#[tokio::test]
+async fn someone_whose_name_the_forge_has_still_joins() {
+    let hub = TestHub::new().await;
+    let ada = hub.admin_with_group().await;
+    // Someone in Forgejo, not linked to the hub, has the name.
+    hub.forge.add_user("bob");
+    let bob = hub.member(&ada, "bob").await;
+    assert_eq!(
+        hub.get(&bob, "/groups/geometry").await.json()["role"],
+        "member"
+    );
+    // That account is not given the group.
+    assert!(hub.forge.team_members("geometry", "Members").is_empty());
+}
+
+#[tokio::test]
+async fn webhooks_must_be_signed() {
+    let hub = TestHub::new().await;
+    hub.admin_with_group().await;
+    let body = json!({
+        "ref": "refs/heads/main",
+        "repository": {"name": "library", "owner": {"login": "geometry"}},
+        "pusher": {"login": "ada"},
+    })
+    .to_string();
+    let send = async |signature: Option<String>, event: &str| {
+        let mut request = Request::post("/forge/hook")
+            .header(header::CONTENT_TYPE, "application/json")
+            .header("x-forgejo-event", event);
+        if let Some(signature) = signature {
+            request = request.header("x-forgejo-signature", signature);
+        }
+        hub.send(
+            &Client::default(),
+            request.body(Body::from(body.clone())).unwrap(),
+        )
+        .await
+        .status
+    };
+    assert_eq!(send(None, "push").await, StatusCode::UNAUTHORIZED);
+    let forged = stemma_hub::forge::hook::sign("another secret", body.as_bytes());
+    assert_eq!(send(Some(forged), "push").await, StatusCode::UNAUTHORIZED);
+    let signed = stemma_hub::forge::hook::sign(WEBHOOK_SECRET, body.as_bytes());
+    assert_eq!(
+        send(Some(signed.clone()), "push").await,
+        StatusCode::NO_CONTENT
+    );
+    assert_eq!(send(Some(signed), "issues").await, StatusCode::NO_CONTENT);
 }

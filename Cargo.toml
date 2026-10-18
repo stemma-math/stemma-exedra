@@ -17,8 +17,11 @@ base64 = "0.23.1"
 clap = { version = "4.6.7", features = ["derive", "env"] }
 dirs = "7.0.0"
 futures-util = "0.3.34"
+hmac = "0.13.0"
 http-body-util = "0.1.5"
+jsonwebtoken = { version = "11.1.0", default-features = false, features = ["rust_crypto", "use_pem"] }
 mime_guess = "2.0.5"
+p256 = { version = "0.13.2", features = ["pem", "pkcs8"] }
 rand = "0.10.3"
 reqwest = { version = "0.13.5", default-features = false, features = ["charset", "http2", "json", "query", "rustls-no-provider"] }
 rmcp = { version = "3.5.1", default-features = false, features = ["base64", "server", "transport-io"] }
@@ -32,8 +35,10 @@ sha2 = "0.11.1"
 sqlx = { version = "0.9.0", default-features = false, features = ["macros", "migrate", "runtime-tokio", "sqlite"] }
 stemma-client = { path = "crates/stemma-client" }
 stemma-core = { path = "crates/stemma-core" }
+stemma-fake-forge = { path = "crates/stemma-fake-forge" }
 stemma-hub = { path = "crates/stemma-hub" }
 stemma-worker = { path = "crates/stemma-worker" }
+subtle = "2.6.1"
 tempfile = "3"
 thiserror = "2.0.21"
 time = { version = "0.3.55", features = ["formatting", "parsing", "serde"] }
@@ -46,6 +51,8 @@ tower = { version = "0.5.3", features = ["util"] }
 tower-http = { version = "0.7.1", features = ["limit", "trace"] }
 tracing = "0.1.44"
 tracing-subscriber = { version = "0.3.23", features = ["env-filter"] }
+url = "2.5.4"
+wiremock = "0.6.5"
 
 [workspace.lints.clippy]
 all = { level = "warn", priority = -1 }

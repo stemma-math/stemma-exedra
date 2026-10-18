@@ -9,25 +9,31 @@ use std::time::Duration;
 
 use serde_json::{Value, json};
 use stemma_core::api::NewAccount;
+use stemma_fake_forge::FakeForge;
+use stemma_hub::config::{ForgeConfig, ForgeSecrets};
 use stemma_worker::{Context, WorkerConfig, connection};
 use tokio::task::JoinHandle;
 
-/// A hub serving on a local port, over a database in a folder.
+/// A hub serving on a local port, over a database in a folder, beside a
+/// stand-in for its forge.
 struct TestHub {
     url: String,
     state: stemma_hub::AppState,
     server: JoinHandle<()>,
+    forge: FakeForge,
     data: tempfile::TempDir,
 }
 
 impl TestHub {
     async fn start() -> TestHub {
+        let forge = FakeForge::start().await;
         let data = tempfile::tempdir().unwrap();
-        let (url, state, server) = serve(data.path()).await;
+        let (url, state, server) = serve(data.path(), &forge).await;
         TestHub {
             url,
             state,
             server,
+            forge,
             data,
         }
     }
@@ -36,7 +42,7 @@ impl TestHub {
     /// restart: what was running is queued again.
     async fn restart(&mut self) {
         self.server.abort();
-        let (url, state, server) = serve(self.data.path()).await;
+        let (url, state, server) = serve(self.data.path(), &self.forge).await;
         stemma_hub::jobs::recover(&state).await.unwrap();
         self.url = url;
         self.state = state;
@@ -44,15 +50,25 @@ impl TestHub {
     }
 }
 
-async fn serve(dir: &Path) -> (String, stemma_hub::AppState, JoinHandle<()>) {
+async fn serve(dir: &Path, forge: &FakeForge) -> (String, stemma_hub::AppState, JoinHandle<()>) {
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let url = format!("http://{}", listener.local_addr().unwrap());
     let config = stemma_hub::Config {
         data_dir: dir.to_owned(),
+        public_url: Some(url.clone()),
+        forge: Some(ForgeConfig::new(
+            &forge.url,
+            "http://forge.test/user/oauth2/stemma/callback",
+            ForgeSecrets {
+                token: stemma_fake_forge::TOKEN.into(),
+                webhook_secret: "the webhook's secret".into(),
+                client_secret: "the client's secret".into(),
+            },
+        )),
         ..Default::default()
     };
     let db = stemma_hub::db::open(&config.database_path()).await.unwrap();
-    let state = Arc::new(stemma_hub::Hub::new(db, config));
-    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-    let url = format!("http://{}", listener.local_addr().unwrap());
+    let state = Arc::new(stemma_hub::Hub::new(db, config).unwrap());
     let app = stemma_hub::app(state.clone());
     let server = tokio::spawn(async move {
         let _ = axum::serve(listener, app).await;
@@ -559,13 +575,21 @@ async fn fixture_library(hub: &TestHub, ada: &Person) -> (tempfile::TempDir, Pat
             .success()
     );
     let commit = String::from_utf8(git(&dir, &["rev-parse", "HEAD"]).stdout).unwrap();
-    (work, dir, commit.trim().to_owned())
+    let commit = commit.trim().to_owned();
+    // The forge tells the hub of the push; until it has, the template's
+    // build, with Mathlib, is the one waiting.
+    eventually("the hub to see the push", || async {
+        let library = ada.get(hub, "/groups/geometry/library").await;
+        (library["head"] == commit.as_str()).then_some(())
+    })
+    .await;
+    (work, dir, commit)
 }
 
 /// Where Ada clones the library from, with her token.
 fn clone_url(hub: &TestHub, ada: &Person) -> String {
     let host = hub.url.trim_start_matches("http://");
-    format!("http://ada:{}@{host}/git/geometry.git", ada.token)
+    format!("http://ada:{}@{host}/git/geometry/library.git", ada.token)
 }
 
 #[tokio::test(flavor = "multi_thread")]
@@ -924,13 +948,7 @@ async fn with_lean_the_workshop_formalizes_a_task_from_a_thread() {
     assert_eq!(three["data_sorry"], false);
 
     // On top of Ada's change, with its provenance, signed by the workshop.
-    let repository = hub.data.path().join("libraries");
-    let repository = std::fs::read_dir(&repository)
-        .unwrap()
-        .flatten()
-        .next()
-        .unwrap()
-        .path();
+    let repository = hub.forge.repository_path("geometry", "library");
     let shown = String::from_utf8(
         git(
             &repository,

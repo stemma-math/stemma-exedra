@@ -117,7 +117,7 @@ pub struct CreatedToken {
 // ── Groups ────────────────────────────────────────────────────────────
 
 /// What someone may do in a group.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Role {
     /// Manages the group (its settings, members, invitations, agents and
@@ -531,10 +531,13 @@ pub struct ModuleSummary {
 /// The library as it stands: its last successful build.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct LibraryState {
-    /// Whether the hub keeps a library for the group: it needs `git`.
+    /// Whether the group has a library: the hub needs a forge to keep it.
     pub available: bool,
-    /// Where to clone it from, relative to the hub: `/git/geometry.git`.
+    /// Where to clone it from with a personal token, relative to the hub:
+    /// `/git/geometry/library.git`.
     pub clone_path: String,
+    /// Where it is in the forge, for people signed in there.
+    pub forge: Option<ForgeLinks>,
     /// The commit `main` is at.
     pub head: Option<String>,
     /// The newest build, whatever its state.
@@ -545,6 +548,15 @@ pub struct LibraryState {
     pub declarations: u32,
     /// How many depend on `sorry`.
     pub sorry: u32,
+}
+
+/// Where a group's library is in the forge.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct ForgeLinks {
+    /// The group's organization.
+    pub organization: String,
+    /// The library's repository.
+    pub repository: String,
 }
 
 /// A declaration in a list.

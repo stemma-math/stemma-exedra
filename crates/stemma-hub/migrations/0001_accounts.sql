@@ -8,6 +8,11 @@ CREATE TABLE users (
     password_hash TEXT NOT NULL,
     -- Administers the hub: creates groups.
     hub_admin INTEGER NOT NULL DEFAULT 0,
+    -- Who they are to the forge, as the subject of OpenID Connect: random,
+    -- so that it is never anyone else's, even after an account is gone.
+    subject TEXT NOT NULL UNIQUE,
+    -- The login of their account in the forge, once the hub has made it.
+    forge_login TEXT UNIQUE,
     created_at INTEGER NOT NULL
 );
 
