@@ -345,9 +345,12 @@ async fn with_forgejo() {
     }
     assert_eq!(
         team_members(&setting, &slug, "Members").await,
-        [bob.clone()]
+        [bob.as_str()]
     );
-    assert_eq!(team_members(&setting, &slug, "Guests").await, [gus.clone()]);
+    assert_eq!(
+        team_members(&setting, &slug, "Guests").await,
+        [gus.as_str()]
+    );
 
     // Git goes through the hub; a push to main is built.
     let work = tempfile::tempdir().unwrap();
