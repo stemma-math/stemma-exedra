@@ -483,8 +483,10 @@ async fn a_chat_with_codex_answers_every_message() {
     assert!(args.starts_with("exec\n"), "{args}");
     assert!(args.contains("read-only"));
     assert!(args.contains("mcp_servers.stemma.args=["));
+    // Its instructions, as configuration: a string of TOML.
+    assert!(args.contains("developer_instructions=\"\"\"\nYou are Codex, an agent in Stemma"));
     let input = std::fs::read_to_string(tools.path().join("codex.stdin")).unwrap();
-    assert!(input.starts_with("You are Codex, an agent in Stemma"));
+    assert!(input.starts_with("Group: Geometry (geometry)."), "{input}");
     running.abort();
 }
 
@@ -790,6 +792,7 @@ fn fake_opencode(dir: &Path, clone_url: &str) -> PathBuf {
             r#"printf '%s\n' "$@" > "$HERE/opencode.args"
 echo call >> "$HERE/opencode.calls"
 cp "$OPENCODE_CONFIG" "$HERE/opencode.json"
+cp "$(dirname "$OPENCODE_CONFIG")/instructions.md" "$HERE/opencode.instructions"
 case "$*" in
   *"does not pass yet"*)
     sed -i.bak 's/def three : Nat := sorry/def three : Nat := 3/' Fixture/More.lean
@@ -972,9 +975,10 @@ async fn with_lean_the_workshop_formalizes_a_task_from_a_thread() {
         args.starts_with("run\n--format\njson\n--model\nfake/model\n"),
         "{args}"
     );
+    let instructions = std::fs::read_to_string(tools.path().join("opencode.instructions")).unwrap();
     assert!(
-        args.contains("You are Workshop, the workshop of Stemma"),
-        "{args}"
+        instructions.starts_with("You are Workshop, the workshop of Stemma"),
+        "{instructions}"
     );
     let config: Value =
         serde_json::from_str(&std::fs::read_to_string(tools.path().join("opencode.json")).unwrap())

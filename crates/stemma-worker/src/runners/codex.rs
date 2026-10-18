@@ -1,26 +1,17 @@
-//! Codex, headless (`codex exec`), with the member's own login.
+//! Codex, headless (`codex exec`), with the person's own sign-in.
 //!
+//! Launched as [`crate::launch`] says, with the request on standard input.
 //! To answer, it runs in a read-only sandbox in the job's folder; to work
-//! on a task, in a sandbox where it writes in the task's worktree. It has
-//! Stemma's tools through `stemma mcp`, read-only, with the job's token,
-//! configured on the command line so that the member's own configuration
-//! stays as it is.
-//! Codex has no separate system prompt here: Stemma's instructions come
-//! first in its input. Its last message is the answer.
+//! on a task, in a sandbox where it writes in the task's worktree. Its
+//! last message is the answer.
 
 use serde_json::Value;
 use stemma_core::api::AgentProfile;
 use stemma_core::protocol::JobSpec;
-use tokio::process::Command;
 
-use super::{Work, failed, mcp_args, run_command};
+use super::{Work, failed, prepared, run_command};
 use crate::config::CliRunner;
 use crate::job::{Context, JobDir, Progress, Prompt};
-
-/// A TOML value, as `codex -c key=value` reads it.
-fn toml_value(value: toml::Value) -> String {
-    value.to_string()
-}
 
 #[allow(clippy::too_many_arguments)]
 pub async fn run(
@@ -33,43 +24,15 @@ pub async fn run(
     prompt: &Prompt,
     progress: &Progress,
 ) -> anyhow::Result<String> {
-    let answer_file = dir.path.join("answer.md");
-    let command_value = toml_value(toml::Value::String(context.stemma.display().to_string()));
-    let args_value = toml_value(toml::Value::Array(
-        mcp_args(context, job, agent, dir)
-            .into_iter()
-            .map(toml::Value::String)
-            .collect(),
-    ));
+    let prepared = prepared(context, config, job, agent, dir, work, prompt)?;
+    let answer_file = prepared
+        .answer
+        .clone()
+        .ok_or_else(|| anyhow::anyhow!("Codex was launched without an answer's file"))?;
+    let mut command = prepared.command();
+    command.current_dir(work.dir);
 
-    let program = config.command.as_deref().unwrap_or("codex");
-    let mut command = Command::new(program);
-    let sandbox = if work.edits {
-        "workspace-write"
-    } else {
-        "read-only"
-    };
-    command
-        .current_dir(work.dir)
-        .arg("exec")
-        .args(["--skip-git-repo-check", "--ephemeral", "--json"])
-        .args(["--sandbox", sandbox, "--color", "never"])
-        .arg("--cd")
-        .arg(work.dir)
-        .arg("--output-last-message")
-        .arg(&answer_file)
-        .args(["-c", "approval_policy=\"never\""])
-        .arg("-c")
-        .arg(format!("mcp_servers.stemma.command={command_value}"))
-        .arg("-c")
-        .arg(format!("mcp_servers.stemma.args={args_value}"));
-    if let Some(model) = agent.model.as_ref().or(config.model.as_ref()) {
-        command.args(["--model", model]);
-    }
-    command.args(&config.args).arg("-");
-
-    let input = format!("{}\n---\n\n{}", prompt.system, prompt.user);
-    let ran = run_command(command, &input, |line| {
+    let ran = run_command(command, &prompt.user, |line| {
         let Ok(event) = serde_json::from_str::<Value>(line) else {
             return;
         };
@@ -87,7 +50,7 @@ pub async fn run(
     })
     .await?;
     if !ran.status.success() {
-        return Err(failed(program, &ran));
+        return Err(failed(&prepared.program, &ran));
     }
     std::fs::read_to_string(&answer_file).map_err(|_| anyhow::anyhow!("Codex gave no answer"))
 }

@@ -2,12 +2,13 @@
 //! on the library for the workshop.
 //!
 //! - `claude-code`, `codex` and `opencode` run those harnesses headless,
-//!   with the person's own login (or, for OpenCode, the keys of the
-//!   providers it is configured with), and give them Stemma's tools
-//!   through `stemma mcp` with the job's token, read-only: an agent
-//!   answering in a thread, for someone who may ask for work, may also
-//!   hand a task to the workshop. For a task they work in a worktree of the
-//!   library, where they edit files and run commands, Lean's among them.
+//!   launched as [`crate::launch`] says, with the person's own sign-in (or,
+//!   for OpenCode, the keys of the providers it is configured with), and
+//!   give them Stemma's tools through `stemma mcp` with the job's token,
+//!   read-only: an agent answering in a thread, for someone who may ask for
+//!   work, may also hand a task to the workshop. For a task they work in a
+//!   worktree of the library, where they edit files and run commands,
+//!   Lean's among them.
 
 pub mod claude_code;
 pub mod codex;
@@ -22,7 +23,9 @@ use stemma_core::protocol::JobSpec;
 use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader};
 use tokio::process::Command;
 
-use crate::job::{Context, JobDir};
+use crate::config::CliRunner;
+use crate::job::{Context, JobDir, Prompt};
+use crate::launch::{self, Launch, Mcp, Mode, Prepared};
 
 /// Where and how a runner works.
 pub struct Work<'a> {
@@ -76,6 +79,41 @@ pub fn mcp_args(
         args.push("--hand-over".into());
     }
     args
+}
+
+/// Prepares a runner's launch for a job: its own and the agent's
+/// arguments, the agent's model or else its own, Stemma's instructions,
+/// and Stemma's tools with the job's token.
+pub fn prepared(
+    context: &Context,
+    config: &CliRunner,
+    job: &JobSpec,
+    agent: &AgentProfile,
+    dir: &JobDir,
+    work: &Work<'_>,
+    prompt: &Prompt,
+) -> anyhow::Result<Prepared> {
+    let mcp = Mcp {
+        command: context.stemma.clone(),
+        args: mcp_args(context, job, agent, dir),
+    };
+    let mut args = config.args.clone();
+    args.extend(agent.args.iter().cloned());
+    launch::prepare(&Launch {
+        runner: &agent.runner,
+        program: config.command.as_deref(),
+        model: agent.model.as_deref().or(config.model.as_deref()),
+        args: &args,
+        instructions: &prompt.system,
+        mcp: &mcp,
+        files: &dir.path,
+        mode: Mode::Job {
+            dir: work.dir,
+            edits: work.edits,
+            max_turns: work.max_turns,
+            allowed: allowed_tools(job).into_iter().map(str::to_owned).collect(),
+        },
+    })
 }
 
 /// How a command ended.

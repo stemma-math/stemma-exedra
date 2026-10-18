@@ -1,49 +1,21 @@
 //! OpenCode, headless (`opencode run`), with a model of any provider it
-//! supports: OpenRouter's open models among them, with the keys of the
-//! worker's own configuration.
+//! supports: OpenRouter's open models among them, with the keys of its own
+//! configuration.
 //!
-//! It gets a configuration of its own, through `OPENCODE_CONFIG`: Stemma's
-//! tools through `stemma mcp`, read-only, with the job's token; to answer,
-//! none of its own tools that edit or run commands; to work on a task, its
-//! tools that edit files and run commands, allowed without asking, in the
-//! task's worktree. Stemma's instructions come first in its message. Its
-//! output, with `--format json`, is a stream of JSON events: tool calls
-//! become progress, and the text after the last of them is the answer.
+//! Launched as [`crate::launch`] says, with the request as its message: to
+//! answer, with none of its own tools that edit or run commands; to work
+//! on a task, with its tools that edit files and run commands, allowed
+//! without asking, in the task's worktree. Its output, with
+//! `--format json`, is a stream of JSON events: tool calls become
+//! progress, and the text after the last of them is the answer.
 
-use serde_json::{Value, json};
+use serde_json::Value;
 use stemma_core::api::AgentProfile;
 use stemma_core::protocol::JobSpec;
-use tokio::process::Command;
 
-use super::{Work, failed, mcp_args, run_command};
+use super::{Work, failed, prepared, run_command};
 use crate::config::CliRunner;
 use crate::job::{Context, JobDir, Progress, Prompt};
-
-/// OpenCode's configuration for a job.
-fn configuration(
-    context: &Context,
-    job: &JobSpec,
-    agent: &AgentProfile,
-    dir: &JobDir,
-    edits: bool,
-) -> Value {
-    let mut command = vec![context.stemma.display().to_string()];
-    command.extend(mcp_args(context, job, agent, dir));
-    let allow = if edits { "allow" } else { "deny" };
-    let mut config = json!({
-        "$schema": "https://opencode.ai/config.json",
-        "autoupdate": false,
-        "share": "disabled",
-        "mcp": {
-            "stemma": {"type": "local", "command": command, "enabled": true}
-        },
-        "permission": {"edit": allow, "bash": allow, "webfetch": "deny"}
-    });
-    if !edits {
-        config["tools"] = json!({"write": false, "edit": false, "patch": false, "bash": false});
-    }
-    config
-}
 
 /// What OpenCode said, from its events.
 #[derive(Default)]
@@ -101,23 +73,9 @@ pub async fn run(
     prompt: &Prompt,
     progress: &Progress,
 ) -> anyhow::Result<String> {
-    let config_file = dir.path.join("opencode.json");
-    std::fs::write(
-        &config_file,
-        serde_json::to_vec_pretty(&configuration(context, job, agent, dir, work.edits))?,
-    )?;
-
-    let program = config.command.as_deref().unwrap_or("opencode");
-    let mut command = Command::new(program);
-    command
-        .current_dir(work.dir)
-        .env("OPENCODE_CONFIG", &config_file)
-        .args(["run", "--format", "json"]);
-    if let Some(model) = agent.model.as_ref().or(config.model.as_ref()) {
-        command.args(["--model", model]);
-    }
-    command.args(&config.args);
-    command.arg(format!("{}\n---\n\n{}", prompt.system, prompt.user));
+    let prepared = prepared(context, config, job, agent, dir, work, prompt)?;
+    let mut command = prepared.command();
+    command.current_dir(work.dir).arg(&prompt.user);
 
     let mut said = Said::default();
     let mut plain = String::new();
@@ -133,7 +91,7 @@ pub async fn run(
         anyhow::bail!("OpenCode stopped: {error}");
     }
     if !ran.status.success() {
-        return Err(failed(program, &ran));
+        return Err(failed(&prepared.program, &ran));
     }
     // Without events, its output is the answer.
     let answer = if said.events == 0 { plain } else { said.answer };

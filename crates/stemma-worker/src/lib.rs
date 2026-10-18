@@ -11,6 +11,7 @@
 pub mod config;
 pub mod connection;
 pub mod job;
+pub mod launch;
 pub mod library;
 pub mod runners;
 pub mod workshop;
