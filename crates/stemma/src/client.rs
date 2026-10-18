@@ -103,7 +103,7 @@ pub struct PostArgs {
 #[derive(Args)]
 pub struct SearchArgs {
     /// The words to find, and operators: `author:ada`, `since:7d`,
-    /// `in:chats`, `kind:message`… (see the README).
+    /// `in:chats`, `kind:message`.
     #[arg(required = true)]
     query: Vec<String>,
     #[command(flatten)]

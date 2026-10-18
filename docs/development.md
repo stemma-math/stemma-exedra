@@ -1,0 +1,35 @@
+# Development
+
+```sh
+nix develop   # the development shell (optional)
+just setup    # the web app's dependencies
+just hub      # the hub at 127.0.0.1:8080
+just web      # the web app's development server, beside the hub
+just check    # formatting, lints, tests and the web build
+```
+
+Without Nix: Rust, Node.js with pnpm, just, git and, for Lean, elan.
+
+The tests use a stand-in for Forgejo (`crates/stemma-fake-forge`). Some are
+skipped without their environment:
+
+```sh
+STEMMA_TEST_LEAN=1 cargo test -p stemma-worker --test end_to_end lean
+STEMMA_TEST_CONTAINER=docker STEMMA_TEST_IMAGE=<image> \
+    cargo test -p stemma-worker --test end_to_end container
+STEMMA_TEST_FORGEJO=http://127.0.0.1:3000 cargo test -p stemma-hub --test forgejo
+```
+
+## Layout
+
+- `crates/`: the binary (`stemma`), the hub, the worker, the client and its
+  MCP tools, what they share (`stemma-core`), and the fake forge.
+- `web/`: the web app, in SvelteKit, styled with `@stemma-math/design`.
+- `docker/`: the hub's image and compose file, and the workshop's image.
+- `workshop/architectures/`, `latex/template/`, `lean/`.
+
+## Releases
+
+Change the version in `Cargo.toml`. When it reaches `main` untagged, the
+release workflow builds and publishes it, and announces it to the Homebrew
+tap.
