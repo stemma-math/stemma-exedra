@@ -9,8 +9,9 @@ This is an early stage of Stemma. What works today:
 - the forum: groups with admins, members and guests, invitations, threads
   with numbered messages in Markdown with math, attachments and live updates,
   served by a hub with a web app and a JSON API;
-- agents in it, that answer when mentioned, and chats with a resident agent,
-  run by workers that connect to the hub;
+- agents in it, that answer when mentioned, and chats with a resident agent:
+  each person's own, run on their machines with their own sign-in, and the
+  group's, run on its workers;
 - the library: each group's Lean project on Mathlib, a repository of the
   group's organization in [Forgejo](https://forgejo.org), the forge beside
   the hub, which people sign in to with their Stemma account; built and
@@ -20,7 +21,9 @@ This is an early stage of Stemma. What works today:
   worked on in the background by an agent in the library, on the group's
   workers, checked, put in the library, and reported in the thread they came
   from;
-- Stemma's tools for any agent, over MCP and the command line.
+- your own agent, opened with Stemma's tools for a session
+  (`stemma claude`, `stemma codex`, `stemma opencode`), and Stemma's tools
+  for any agent, over MCP and the command line.
 
 ## Running the hub
 
@@ -36,9 +39,10 @@ forge, which keeps the groups' repositories:
 - People have one account, Stemma's. The hub is an OpenID Connect provider,
   and Forgejo signs people in through it; the hub makes each person's Forgejo
   account when they join a group, linked to that sign-in.
-- Workers and personal tokens reach the libraries' git through the hub,
-  under `/git`, which applies the group's roles and passes the request on to
-  Forgejo with its own credentials; no Forgejo credential leaves the hub.
+- Workers, machines and personal tokens reach the libraries' git through
+  the hub, under `/git`, which applies the group's roles and passes the
+  request on to Forgejo with its own credentials; no Forgejo credential
+  leaves the hub.
 - A webhook tells the hub of each push to a library's `main`, which it then
   builds.
 
@@ -97,7 +101,7 @@ max_upload_mb = 50                        # STEMMA_MAX_UPLOAD_MB
 Put the hub behind a reverse proxy that serves HTTPS, and set `public_url`
 to its address: session cookies are then marked secure, and it is the issuer
 of the hub's OpenID Connect tokens. The proxy must pass WebSocket upgrades on
-`/api/v1/worker`, where workers connect. Back up the data directory, which
+`/api/v1/worker`, where workers and machines connect. Back up the data directory, which
 holds the database, the attachments and the key the hub signs its tokens
 with, and Forgejo's data, which holds the repositories.
 
@@ -197,8 +201,7 @@ grants and its admins can change in the group's settings:
 - A **member** reads, posts in the forum and chats, summons agents, and asks
   the workshop for work: hands it tasks, directly or through an agent, asks
   for builds of the library, and pushes to it.
-- A **guest** reads and converses: posts, and summons their own personal
-  agents. A guest asks for no work: they cannot hand the workshop a task, an
+- A **guest** reads and converses: posts, and summons their own agents. A guest asks for no work: they cannot hand the workshop a task, an
   agent answering them is not given `create_task`, they do not summon the
   group's own agents, which run on its workers, and they cannot push to the
   library or ask for its builds. Nor do they change the group's settings.
@@ -304,6 +307,109 @@ stemma task 'Formalize the gluing lemma' --origin 't12#48' < what.md
 
 ## Agents
 
+A person represents all their agents. When Claude answers for Ada, it is
+Ada's Claude speaking: run with her own subscription, on her own machine,
+and signed "Claude, for Ada". Each person keeps their own agents, available
+in every group they are in; a group keeps only its own, the workshop's.
+
+### Your agents
+
+Everyone has one agent for each runner: `@claude` (Claude Code), `@codex`
+(Codex) and `@opencode` (OpenCode). In the web app's settings, you change
+their names, models and arguments, and add more, each with a handle of its
+own: `@claude-sonnet`, Claude Code with Sonnet; `@claude-haiku`, with Haiku.
+An agent has a handle, a name, a runner (`claude-code`, `codex` or
+`opencode`), a model (the runner's default if none) and, if you like, more
+arguments for the runner. Handles are yours, and do not take those of your
+groups' own agents, such as `@workshop`.
+
+Agents are summoned by mention: `@claude @codex what do you think?` asks
+each of yours, and each answers with its own message. A chat has a resident
+agent that answers every message: one of the group's, or a handle of its
+starter's, in which case each person who writes is answered by their own
+agent with that handle. A handle names the group's own agent if the group
+has one, and else the writer's. If Ana writes `@claude-sonnet` and only
+Mario has one, Ana's job fails at once and the thread says why.
+
+Each answer gets the thread (trimmed when long, always keeping the message
+it answers and what that refers to) and Stemma's tools, read-only, with a
+token that lasts as long as the job and reaches only its group; an agent
+answering in a thread for an admin or a member may also hand a task to the
+workshop. Its instructions are in `crates/stemma-worker/prompts/reply.md`.
+
+### Your machines
+
+Your agents run on your machines: computers of yours, with Claude Code,
+Codex or OpenCode installed and signed in. A machine connects to the hub;
+the hub never connects to it, so it can be a laptop behind any network, and
+your sign-ins never leave it. Signed in with `stemma login`, set one up:
+
+```sh
+stemma machine add laptop   # register this machine (named after it if no name is given)
+stemma machine run          # serve it: run your agents' jobs here, until stopped
+```
+
+`stemma machine add` registers the machine with your login, keeps its
+token in your configuration directory (`stemma/machine.toml`, or where
+`STEMMA_MACHINE_CONFIG` says), readable only by you, and says which runners
+it finds. When it runs, a machine offers the runners it finds installed and
+usable: `claude`, `codex` and `opencode` on its `PATH`, each answering
+`--version`. The file it writes may also say how to run them, and how many
+jobs to run at once:
+
+```toml
+concurrency = 2                     # jobs at once
+# work_dir = "…"                    # where jobs run; a folder of your data if absent
+
+[runners.claude-code]               # how to run a runner, if not as usual
+# command = "…"; args = […]; model = "…"; timeout_minutes = 15
+```
+
+A job of yours goes to one of your machines that is online and has the
+agent's runner: the one you prefer, if it does, or else any. With none, it
+waits, and the thread says why ("Waiting for a machine of Ada's with
+Codex"). It reconnects by itself when the hub or the network goes away, and
+a job it was running is queued again.
+
+```sh
+stemma machine list             # your machines, online or not, and what they run
+stemma machine prefer desktop   # your jobs go to it first (this machine if none is named)
+stemma machine remove laptop    # revoke it (this machine, which forgets its token, if none is named)
+```
+
+The web app's settings list your machines too, to prefer or revoke them.
+Before relying on a subscription for unattended work, check its provider's
+terms.
+
+### Your agent, with Stemma (the launcher)
+
+`stemma claude`, `stemma codex` and `stemma opencode` open your agent,
+interactively, in a private conversation, with everything it needs to work
+with Stemma, and install nothing into the agent's own configuration:
+
+```sh
+stemma claude                           # your @claude, in your group
+stemma codex --group geometry           # in another group
+stemma claude --agent claude-sonnet     # another of your agents with that runner
+stemma claude -- --continue             # and more arguments for the agent, after --
+```
+
+Stemma makes a token for the session, which is revoked when the agent
+exits (and expires by itself within a day); writes, in a private temporary
+folder, that token and what the agent reads Stemma's tools from, `stemma
+mcp` with that token; adds Stemma's instructions for the agent
+(`crates/stemma-worker/prompts/session.md`); and runs the agent's own
+program, with your own sign-in and your agent's model and arguments:
+
+- Claude Code with `--mcp-config` and `--append-system-prompt`, and
+  Stemma's tools that read allowed without asking;
+- Codex with `-c mcp_servers.stemma.…` and `-c developer_instructions=…`;
+- OpenCode with a configuration in `OPENCODE_CONFIG`, which it merges with
+  yours, with the tools and the instructions in a file.
+
+What the agent posts is signed with its name, for you. A machine runs your
+agents' jobs the same way, headless, from the same code.
+
 ### Stemma's tools in any agent (MCP)
 
 `stemma mcp` serves Stemma's tools over MCP, on standard input and output:
@@ -315,11 +421,11 @@ stemma task 'Formalize the gluing lemma' --origin 't12#48' < what.md
 - the workshop's: `create_task` (a title, instructions and the message that
   asks), `task_status` (`w7`) and `list_tasks`.
 
-It acts with the token `stemma login` kept, and what an agent posts through
-it is shown as written by that agent, for you ("Claude Code, for Ada"). Then "explain messages #45–#50 of t12" works from your
-harness.
-
-In Claude Code:
+The launcher uses it for you. If you would rather install Stemma into your
+agent, so that it has the tools in every conversation, add it there; it then
+acts with the token `stemma login` kept, and what an agent posts through it
+is shown as written by that agent, for you ("Claude Code, for Ada"). In
+Claude Code:
 
 ```sh
 claude mcp add stemma -- stemma mcp
@@ -337,38 +443,18 @@ args = ["mcp"]
 `--hand-over` keeps `create_task` among them), and `--agent` names the agent its
 posts are signed with, instead of the name the harness gives.
 
-### Agents in the forum
+### The group's agents and workers
 
-A group's agents are summoned by mention: `@claude @qwen what do you think?`
-asks each of them, and each answers with its own message, signed "Claude, for
-Ada". A chat has a resident agent that answers every message. A group's admins
-keep its agents in the group's settings: a handle, a name, a runner, a model,
-what it does when summoned (answer, or hand what it is asked to the workshop),
-and whose they are:
+A group's own agents run on its workers, with the logins and keys in their
+configuration. Every group starts with `@workshop`, the workshop's agent,
+which runs OpenCode; a group's admins keep its agents in the group's
+settings: a handle, a name, a runner, a model, instructions, and what it
+does when summoned (answer, or hand what it is asked to the workshop).
+Guests do not summon them.
 
-- A **personal** agent runs on the worker of whoever summons it, with their own
-  login: `@claude` is each person's own Claude Code. Every group starts with
-  `@claude` and `@codex`. If you have no worker online, the job waits, and the
-  thread says so.
-- A **group** agent runs on the group's workers, with the logins and keys in
-  their configuration. Guests do not summon group agents.
-
-The runners are `claude-code` (`claude -p`), `codex` (`codex exec`) and
-`opencode` (`opencode run`, with a model of any provider OpenCode supports,
-OpenRouter's among them). Each gets the thread (trimmed when long, always
-keeping the message it answers and what that refers to) and Stemma's tools,
-read-only, with a token that lasts as long as the job and reaches only its
-group; an agent answering in a thread for an admin or a member may also hand a
-task to the workshop. Their instructions are in `crates/stemma-worker/prompts/`.
-Every group starts with `@workshop`, the workshop's agent, which runs OpenCode
-on the group's workers.
-
-### Running a worker
-
-A worker connects to the hub; the hub never connects to it, so it can run on a
-laptop behind any network. Add one in the web app: your own in your settings,
-or, as a group admin, the group's in the group's settings. It gives a token,
-shown once, and a configuration to start from:
+A group worker connects to the hub as a machine does. A group's admin adds
+one in the group's settings, which gives a token, shown once, and a
+configuration to start from:
 
 ```toml
 hub = "https://stemma.example.org"
@@ -377,8 +463,6 @@ concurrency = 2                     # jobs at once
 # work_dir = "…"                    # where jobs run; a folder of the user's data if absent
 
 # The runners it offers: each listed one.
-[runners.claude-code]               # uses `claude`, signed in as you
-[runners.codex]                     # uses `codex`, signed in as you
 [runners.opencode]                  # uses `opencode`, with its providers' keys
 # model = "…"; command = "…"; args = […]; timeout_minutes = 15
 
@@ -401,11 +485,6 @@ user: run a worker that offers the workshop as a user of its own.
 ```sh
 stemma worker --config worker.toml
 ```
-
-It reconnects by itself when the hub or the network goes away, and a job it
-was running is queued again. Credentials never leave the worker's machine.
-Before relying on a subscription for unattended work, check its provider's
-terms.
 
 ## Development
 
@@ -464,7 +543,8 @@ The repository holds:
 - `crates/stemma-fake-forge`: a stand-in for Forgejo, for the tests.
 - `crates/stemma-client`: the hub's API over HTTP, Stemma's tools and their
   MCP server.
-- `crates/stemma-worker`: the worker, its runners, library builds, the
+- `crates/stemma-worker`: group workers and people's machines, how each
+  agent is launched (for a job, or a person's session), library builds, the
   workshop's runs and the agents' instructions, in `prompts/`.
 - `lean/`: the inspection (`Inspect.lean`), the template of a group's library
   (`template/`) and a small library without Mathlib to test them
