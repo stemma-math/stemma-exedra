@@ -1,27 +1,24 @@
 # Stemma
 
 Stemma is where a research group does mathematics by talking: people and
-agents discuss in a shared forum and chats, agents keep readable working
-papers of what the group is doing, and a Lean library holds what the group
-knows, built and checked in the background.
+agents discuss in a shared forum and chats, and a Lean library holds what
+the group knows, built and checked in the background.
 
 This is an early stage of Stemma. What works today:
 
-- the forum: groups, invitations, threads with numbered messages in Markdown
-  with math, attachments and live updates, served by a hub with a web app and
-  a JSON API;
+- the forum: groups with admins, members and guests, invitations, threads
+  with numbered messages in Markdown with math, attachments and live updates,
+  served by a hub with a web app and a JSON API;
 - agents in it, that answer when mentioned, and chats with a resident agent,
   run by workers that connect to the hub;
-- working papers: Markdown narratives of each line of work, with revisions,
-  what changed since you last read them, threads about their sections, and an
-  editor agent that updates them from the conversation;
 - the library: each group's Lean project on Mathlib, kept by the hub in git,
   built and inspected by a worker with Lean, and browsable, with the state of
   each declaration (proved, `sorry`, missing) shown wherever it is
   referenced;
-- the workshop: tasks handed over in conversation ("formalize this
-  tonight"), worked on in the background by an agent in the library, checked,
-  put in the library, and reported in the thread they came from;
+- the workshop: tasks handed over in conversation ("formalize this"),
+  worked on in the background by an agent in the library, on the group's
+  workers, checked, put in the library, and reported in the thread they came
+  from;
 - Stemma's tools for any agent, over MCP and the command line.
 
 ## Running the hub
@@ -63,7 +60,8 @@ On its first start, with no accounts yet, the hub prints a setup link
 (`/setup?token=…`) that creates the first account, which administers the
 hub. `stemma hub create-admin --username <name>` does the same from the
 command line. That account creates groups; a group's admins invite people
-with links, which they send however they like.
+with links, which they send however they like (see [Groups and
+roles](#groups-and-roles)).
 
 ### Configuration
 
@@ -92,32 +90,24 @@ docker compose -f docker/compose.yaml up -d --build
 docker compose -f docker/compose.yaml logs hub   # the setup link
 ```
 
-## Working papers
+## Groups and roles
 
-A working paper is the readable account of a line of work: what is being
-done, what is done, what is still open. It is Markdown with `$…$` math and
-`[[…]]` references, and its sections are its headings, addressable as
-`p/compactification#gluing`. Informal status is marked with a callout, a
-quotation whose first line is `[!conjecture]`, `[!open]` or `[!idea]`:
+Everyone in a group has a role, which the invitation that brought them in
+grants and its admins can change in the group's settings:
 
-```markdown
-> [!conjecture]
-> Every such map is proper.
-```
+- An **admin** manages the group: its settings, members, invitations,
+  agents and workers. An admin also does everything a member does. A group
+  always keeps at least one admin.
+- A **member** reads, posts in the forum and chats, summons agents, and asks
+  the workshop for work: hands it tasks, directly or through an agent, asks
+  for builds of the library, and pushes to it.
+- A **guest** reads and converses: posts, and summons their own personal
+  agents. A guest asks for no work: they cannot hand the workshop a task, an
+  agent answering them is not given `create_task`, they do not summon the
+  group's own agents, which run on its workers, and they cannot push to the
+  library or ask for its builds. Nor do they change the group's settings.
 
-Each revision has an author, a person or an agent for a person, and a reason.
-An edit is made over a revision: if the paper moved on meanwhile, it is
-refused, and nobody's work is lost. Opening a paper shows what changed since
-you last read it: the reasons of the revisions in between, and the changed
-passages highlighted. Threads can be about a section, and are listed beside
-it. A group's home lists the papers that changed since you read them.
-
-Papers are written by people, in the web app, and by an **editor**: ask it in
-a thread, as in `@editor update p/compactification with what we decided here`.
-It gets the paper, the thread, and the other threads about the paper, and its
-new text becomes the paper's next revision, signed "Editor, for Ada"; a message
-in the thread says so. Every group starts with `@editor`, which runs each
-person's own Claude Code; any agent can be an editor (see below).
+The hub enforces the roles; the web app leaves out what a role cannot do.
 
 ## The library
 
@@ -143,27 +133,27 @@ declaration of the library, its kind, type, docstring and place, whether it
 depends on `sorry` (and, for a definition, whether its data does), its axioms
 and the declarations of the library it uses. The last build that passed is the
 library's state: the web app browses it by module and declaration, with what
-uses each, the threads about it and the messages and papers that reference it,
-and `[[lean:Foo.bar]]` shows, wherever it is written, whether `Foo.bar` is
+uses each, the threads about it and the messages that reference it, and
+`[[lean:Foo.bar]]` shows, wherever it is written, whether `Foo.bar` is
 proved, depends on `sorry`, or is missing. A build that fails is shown with its
 log.
 
 ## The workshop
 
 The workshop works on the library in the background. A task is handed to it in
-conversation: mention it, as in `@workshop formalize the lemma in t12#48
-tonight`, or ask an agent in a thread, which hands it over with `create_task`.
-Each task has an address, `w7`, a page in the web app with its state, log,
-commits and report, and is shown on its way in the thread it came from, where it
-can be cancelled.
+conversation: mention it, as in `@workshop formalize the lemma in t12#48`, or
+ask an agent in a thread, which hands it over with `create_task`. Admins and
+members hand tasks over; guests do not. Each task has an address, `w7`, a page
+in the web app with its state, log, commits and report, and is shown on its way
+in the thread it came from, where it can be cancelled.
 
 A group worker that offers the workshop runs the group's tasks, one at a time:
 
 1. It makes a fresh worktree of the library at `main`, with its dependencies
    and its last build.
 2. The workshop's agent works there with its runner (OpenCode, Claude Code or
-   Codex), given the task, the thread it came from, the papers the thread is
-   about, the library, Lean and Stemma's tools. Its instructions are in
+   Codex), given the task, the thread it came from, the library, Lean and
+   Stemma's tools. Its instructions are in
    `crates/stemma-worker/prompts/task.md`: formalize following the library's
    structure and Mathlib's conventions, state faithfully what the thread
    decided, leave `sorry` in proofs rather than weaken a statement, never in a
@@ -180,16 +170,7 @@ A group worker that offers the workshop runs the group's tasks, one at a time:
 When the task ends, done, failed or blocked, one message in its thread reports
 on it, for the person who asked: what was done, what is pending, the commits
 and the declarations that changed. The build the worker made of what it pushed
-is the library's new state, and the editor is asked to update the papers that
-reference what changed, or that the thread is about.
-
-A task asked for the night ("tonight", "overnight") waits for the group's night
-window, 01:00 to 07:00 unless its admins change it, in the group's time zone.
-At night, members who choose to, in the group's settings, lend their own worker
-to the workshop: with Lean and `[workshop]` in its configuration, it works on
-the group's tasks with their own runners and subscription. Once a night, the
-editor also brings up to date the papers whose threads said something new
-since their last revision, and leaves alone those with nothing to change.
+is the library's new state.
 
 ## From the command line
 
@@ -212,17 +193,12 @@ stemma read 't12#45-50'         # some of its messages; links to the web app wor
 stemma post t12 'Agreed.'       # a message, from the argument or standard input
 stemma post 't12#45' < reply.md # in reply to a message
 stemma search gluing lemma
-stemma read p/compactification#gluing   # a working paper, or one of its sections
 stemma read lean:Foo.bar        # a declaration of the library
-stemma papers                   # the working papers
-stemma changes                  # what changed in the papers since you read them
-stemma changes p/compactification --since 3
-stemma edit p/compactification --reason 'The charts glue' < paper.md
 stemma library                  # how the library stands
 stemma library gluing           # search its declarations
 stemma tasks                    # the workshop's tasks
 stemma read w7                  # one of them, with its report
-stemma task 'Formalize the gluing lemma' --origin 't12#48' --night < what.md
+stemma task 'Formalize the gluing lemma' --origin 't12#48' < what.md
 ```
 
 `STEMMA_HUB`, `STEMMA_TOKEN` and `STEMMA_GROUP` override what `login` kept.
@@ -235,18 +211,13 @@ stemma task 'Formalize the gluing lemma' --origin 't12#48' --night < what.md
 
 - the forum's: `list_threads`, `read_thread` (`t12`, `t12#45`, `t12#45-50`),
   `post_message` (with an optional reply) and `search`;
-- the working papers': `list_papers`, `read_paper` (`p/notes`, or a section,
-  `p/notes#gluing`, at any revision), `paper_changes` (the reasons and the
-  changed lines since a revision, by default the one you read last) and
-  `propose_paper_edit` (a new revision, over the one the agent read);
 - the library's: `library_state`, `library_lookup` (a declaration, with what
   it uses and what uses it) and `library_search`;
-- the workshop's: `create_task` (a title, instructions, the message that asks
-  and whether it is for the night), `task_status` (`w7`) and `list_tasks`.
+- the workshop's: `create_task` (a title, instructions and the message that
+  asks), `task_status` (`w7`) and `list_tasks`.
 
 It acts with the token `stemma login` kept, and what an agent posts through
-it is shown as written by that agent, for you ("Claude Code, for Ada"), and so
-is a revision it writes. Then "explain messages #45–#50 of t12" works from your
+it is shown as written by that agent, for you ("Claude Code, for Ada"). Then "explain messages #45–#50 of t12" works from your
 harness.
 
 In Claude Code:
@@ -273,26 +244,25 @@ A group's agents are summoned by mention: `@claude @qwen what do you think?`
 asks each of them, and each answers with its own message, signed "Claude, for
 Ada". A chat has a resident agent that answers every message. A group's admins
 keep its agents in the group's settings: a handle, a name, a runner, a model,
-what it does when summoned (answer, or update a paper, as an editor), and
-whose they are:
+what it does when summoned (answer, or hand what it is asked to the workshop),
+and whose they are:
 
 - A **personal** agent runs on the worker of whoever summons it, with their own
   login: `@claude` is each person's own Claude Code. Every group starts with
   `@claude` and `@codex`. If you have no worker online, the job waits, and the
   thread says so.
-- A **group** agent runs on the group's workers, usually with the `api` runner
-  and the group's API keys.
+- A **group** agent runs on the group's workers, with the logins and keys in
+  their configuration. Guests do not summon group agents.
 
-The runners are `claude-code` (`claude -p`), `codex` (`codex exec`), `opencode`
-(`opencode run`, with a model of any provider OpenCode supports, OpenRouter's
-among them) and `api`, Stemma's own harness: a loop of tool calls over any
-OpenAI-compatible chat API (OpenRouter, OpenAI, a local server), with limits of
-steps and tokens. Each gets the thread (trimmed when long, always keeping the
-message it answers and what that refers to) and Stemma's tools, read-only, with
-a token that lasts as long as the job and reaches only its group; an agent
-answering in a thread may also hand a task to the workshop. Their instructions
-are in `crates/stemma-worker/prompts/`. Every group starts with `@workshop`,
-the workshop's agent, which runs OpenCode on the group's workers.
+The runners are `claude-code` (`claude -p`), `codex` (`codex exec`) and
+`opencode` (`opencode run`, with a model of any provider OpenCode supports,
+OpenRouter's among them). Each gets the thread (trimmed when long, always
+keeping the message it answers and what that refers to) and Stemma's tools,
+read-only, with a token that lasts as long as the job and reaches only its
+group; an agent answering in a thread for an admin or a member may also hand a
+task to the workshop. Their instructions are in `crates/stemma-worker/prompts/`.
+Every group starts with `@workshop`, the workshop's agent, which runs OpenCode
+on the group's workers.
 
 ### Running a worker
 
@@ -313,22 +283,12 @@ concurrency = 2                     # jobs at once
 [runners.opencode]                  # uses `opencode`, with its providers' keys
 # model = "…"; command = "…"; args = […]; timeout_minutes = 15
 
-[runners.api]
-endpoint = "openrouter"             # unless an agent names one
-# max_steps = 8; max_tokens = 200000; timeout_minutes = 10
-
-[endpoints.openrouter]
-url = "https://openrouter.ai/api/v1"
-key_env = "OPENROUTER_API_KEY"      # keys stay in the environment
-model = "…"                         # unless an agent names one
-
 # A group's worker with Lean (elan) builds the group's library.
 [lean]
 # timeout_minutes = 90; cache = true  # whether to get Mathlib's cache
 
 # With Lean and a runner that edits files (opencode, claude-code or codex),
-# it works on the workshop's tasks: a group's worker always, a member's at
-# night if they lend it.
+# a group's worker works on the group's workshop's tasks.
 [workshop]
 # timeout_minutes = 120; rounds = 2; max_turns = 80
 ```
@@ -370,8 +330,8 @@ The repository holds:
 
 - `crates/stemma`: the binary and its subcommands.
 - `crates/stemma-core`: what every part shares: addresses (`t12#45-50`,
-  `p/notes#gluing`, `lean:Foo.bar`, `w7`), `[[…]]` references, mentions,
-  papers' sections, the API's types and the worker protocol.
+  `lean:Foo.bar`, `w7`), `[[…]]` references, mentions, the API's types and
+  the worker protocol.
 - `crates/stemma-hub`: the server, with its migrations in `migrations/`.
 - `crates/stemma-client`: the hub's API over HTTP, Stemma's tools and their
   MCP server.
