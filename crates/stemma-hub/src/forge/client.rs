@@ -509,6 +509,125 @@ impl Forge {
             .await?;
         Ok(found.and_then(|b| b["commit"]["id"].as_str().map(str::to_owned)))
     }
+
+    pub async fn delete_branch(&self, owner: &str, name: &str, branch: &str) -> ForgeResult<()> {
+        match self
+            .send(
+                &format!("delete {branch} of {owner}/{name}"),
+                self.api(
+                    Method::DELETE,
+                    &format!("/repos/{owner}/{name}/branches/{branch}"),
+                ),
+            )
+            .await
+        {
+            Err(error) if error.status() == Some(StatusCode::NOT_FOUND) => Ok(()),
+            done => done.map(|_| ()),
+        }
+    }
+
+    // ── Pull requests ─────────────────────────────────────────────────
+
+    /// A pull request of `head` into `base`.
+    pub async fn create_pull(
+        &self,
+        owner: &str,
+        name: &str,
+        head: &str,
+        base: &str,
+        title: &str,
+        body: &str,
+    ) -> ForgeResult<Pull> {
+        self.json(
+            &format!("open a pull request of {head} in {owner}/{name}"),
+            self.api(Method::POST, &format!("/repos/{owner}/{name}/pulls"))
+                .json(&json!({"head": head, "base": base, "title": title, "body": body})),
+        )
+        .await
+    }
+
+    pub async fn pull(&self, owner: &str, name: &str, number: u32) -> ForgeResult<Pull> {
+        self.json(
+            &format!("find pull request {number} of {owner}/{name}"),
+            self.api(
+                Method::GET,
+                &format!("/repos/{owner}/{name}/pulls/{number}"),
+            ),
+        )
+        .await
+    }
+
+    /// The files a pull request changes.
+    pub async fn pull_files(
+        &self,
+        owner: &str,
+        name: &str,
+        number: u32,
+    ) -> ForgeResult<Vec<ChangedFile>> {
+        self.all(
+            &format!("list the files of pull request {number} of {owner}/{name}"),
+            &format!("/repos/{owner}/{name}/pulls/{number}/files"),
+        )
+        .await
+    }
+
+    /// Merges a pull request, with a merge commit, and deletes its branch.
+    pub async fn merge_pull(
+        &self,
+        owner: &str,
+        name: &str,
+        number: u32,
+        message: &str,
+    ) -> ForgeResult<()> {
+        self.send(
+            &format!("merge pull request {number} of {owner}/{name}"),
+            self.api(
+                Method::POST,
+                &format!("/repos/{owner}/{name}/pulls/{number}/merge"),
+            )
+            .json(&json!({
+                "Do": "merge",
+                "merge_message_field": message,
+                "delete_branch_after_merge": true,
+            })),
+        )
+        .await?;
+        Ok(())
+    }
+
+    pub async fn close_pull(&self, owner: &str, name: &str, number: u32) -> ForgeResult<()> {
+        self.send(
+            &format!("close pull request {number} of {owner}/{name}"),
+            self.api(
+                Method::PATCH,
+                &format!("/repos/{owner}/{name}/pulls/{number}"),
+            )
+            .json(&json!({"state": "closed"})),
+        )
+        .await?;
+        Ok(())
+    }
+}
+
+/// A pull request, as the hub reads it.
+#[derive(Clone, Debug, Deserialize)]
+pub struct Pull {
+    pub number: u32,
+    pub html_url: String,
+    #[serde(default)]
+    pub merged: bool,
+    #[serde(default)]
+    pub merge_commit_sha: Option<String>,
+}
+
+/// A file a pull request changes.
+#[derive(Clone, Debug, Deserialize)]
+pub struct ChangedFile {
+    pub filename: String,
+    #[serde(default)]
+    pub previous_filename: Option<String>,
+    /// `added`, `modified`, `deleted`, `renamed`…
+    pub status: String,
 }
 
 #[cfg(test)]
