@@ -178,8 +178,13 @@ pub async fn create_thread(
     };
     match &body.anchor {
         None | Some(Address::Declaration(_)) => {}
+        Some(Address::Paper(paper)) => {
+            crate::papers::find(&state, group.group_id, paper).await?;
+        }
         Some(_) => {
-            return Err(ApiError::invalid("A thread is anchored to a declaration"));
+            return Err(ApiError::invalid(
+                "A thread is anchored to a declaration or a paper",
+            ));
         }
     }
     let first = match &body.body {
@@ -726,6 +731,15 @@ pub async fn resolve(
                     entry.title = title;
                     if !exists {
                         entry.note = Some("There is no such task".into());
+                    }
+                }
+                Address::Paper(slug) => {
+                    let (exists, title) =
+                        crate::papers::resolve(&state, group.group_id, slug).await?;
+                    entry.exists = exists;
+                    entry.title = title;
+                    if !exists {
+                        entry.note = Some("There is no such paper".into());
                     }
                 }
                 _ => {}

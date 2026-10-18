@@ -50,11 +50,41 @@ pub struct ThreadsArgs {
 
 #[derive(Args)]
 pub struct ReadArgs {
-    /// What to read: t12, t12#45, t12#45-50, lean:Foo.bar, w7, or a link
-    /// to it.
-    address: String,
+    /// What to read: t12, t12#45, t12#45-50, lean:Foo.bar, w7, p/notes, or
+    /// a link to it.
+    pub address: String,
+    /// For a paper, the file of its source to read; its main file if
+    /// absent.
+    pub file: Option<String>,
     #[command(flatten)]
     group: GroupArg,
+}
+
+#[derive(Args)]
+pub struct PapersArgs {
+    #[command(flatten)]
+    group: GroupArg,
+}
+
+#[derive(Args)]
+pub struct PaperArgs {
+    #[command(subcommand)]
+    pub command: PaperCommand,
+    #[command(flatten)]
+    group: GroupArg,
+}
+
+#[derive(clap::Subcommand)]
+pub enum PaperCommand {
+    /// Create a paper: its repository, from the template, which the
+    /// workshop then compiles.
+    New {
+        /// Its short name, in its address: notes, for p/notes.
+        slug: String,
+        /// Its title.
+        #[arg(required = true)]
+        title: Vec<String>,
+    },
 }
 
 #[derive(Args)]
@@ -154,6 +184,9 @@ pub struct TaskArgs {
     /// The agent handing it over for you, such as "Claude Code".
     #[arg(long)]
     agent: Option<String>,
+    /// The paper to work on, as p/notes; the library if absent.
+    #[arg(long)]
+    pub paper: Option<String>,
     #[command(flatten)]
     group: GroupArg,
 }
@@ -297,6 +330,15 @@ pub async fn threads(args: ThreadsArgs) -> anyhow::Result<()> {
 
 pub async fn read(args: ReadArgs) -> anyhow::Result<()> {
     let toolbox = toolbox(args.group)?;
+    if let Some(file) = args.file {
+        return run(
+            &toolbox,
+            "read_paper",
+            json!({"address": args.address, "file": file}),
+            None,
+        )
+        .await;
+    }
     run(
         &toolbox,
         "read_thread",
@@ -304,6 +346,41 @@ pub async fn read(args: ReadArgs) -> anyhow::Result<()> {
         None,
     )
     .await
+}
+
+pub async fn papers(args: PapersArgs) -> anyhow::Result<()> {
+    let toolbox = toolbox(args.group)?;
+    run(&toolbox, "list_papers", json!({}), None).await
+}
+
+pub async fn paper(args: PaperArgs) -> anyhow::Result<()> {
+    let toolbox = toolbox(args.group)?;
+    let group = toolbox.group(None).await?;
+    match args.command {
+        PaperCommand::New { slug, title } => {
+            let slug = slug.strip_prefix("p/").unwrap_or(&slug);
+            let paper = toolbox
+                .hub()
+                .create_paper(&group, slug, &title.join(" "))
+                .await?;
+            println!(
+                "Created p/{}, “{}”: {}{}",
+                paper.slug,
+                paper.title,
+                toolbox.hub().base(),
+                stemma_core::Address::Paper(paper.slug.clone()).web_path(&group)
+            );
+            println!(
+                "Clone it with a personal token as the password: git clone {}{}",
+                toolbox.hub().base(),
+                paper.clone_path
+            );
+            if let Some(url) = &paper.forge_url {
+                println!("Or in the forge: {url}");
+            }
+        }
+    }
+    Ok(())
 }
 
 pub async fn post(args: PostArgs) -> anyhow::Result<()> {
@@ -369,11 +446,14 @@ pub async fn task(args: TaskArgs) -> anyhow::Result<()> {
         !instructions.trim().is_empty(),
         "the instructions are empty"
     );
-    let call = json!({
+    let mut call = json!({
         "title": args.title,
         "instructions": instructions,
         "origin": args.origin,
     });
+    if let Some(paper) = args.paper {
+        call["paper"] = json!(paper);
+    }
     run(&toolbox, "create_task", call, args.agent.as_deref()).await
 }
 

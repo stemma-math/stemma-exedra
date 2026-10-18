@@ -21,6 +21,14 @@ struct Folders;
 /// The architecture a task runs with unless it says otherwise.
 pub const DEFAULT: &str = "formalize";
 
+/// The architecture a task about a paper runs with unless it says
+/// otherwise.
+pub const PAPERS: &str = "write";
+
+/// What an architecture that works on a paper says it works on: the paper
+/// its task names.
+pub const PAPER: &str = "paper";
+
 /// A manifest, as written.
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -172,6 +180,28 @@ mod tests {
                 .starts_with("You are {agent}, the workshop")
         );
         assert!(run.instructions.contains("open_thread"));
+    }
+
+    #[test]
+    fn write_is_there_and_works_on_papers() {
+        let write = find(PAPERS).expect("write");
+        assert_eq!(write.works_on, PAPER);
+        let steps: Vec<&str> = write.steps.iter().map(|s| s.name.as_str()).collect();
+        assert_eq!(steps, ["work", "compile", "propose"]);
+        let touched = |path, status| Touched {
+            path,
+            previous: None,
+            status,
+        };
+        assert!(why_big(&write, &[touched("main.tex", "modified")]).is_empty());
+        assert_eq!(
+            why_big(&write, &[touched("latexmkrc", "added")]),
+            ["changes latexmkrc"]
+        );
+        assert_eq!(
+            why_big(&write, &[touched("sections/old.tex", "deleted")]),
+            ["deletes sections/old.tex"]
+        );
     }
 
     #[test]

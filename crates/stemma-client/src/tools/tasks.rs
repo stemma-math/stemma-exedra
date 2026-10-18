@@ -12,10 +12,12 @@ pub fn definitions() -> Vec<ToolDef> {
     vec![
         ToolDef {
             name: "create_task",
-            description: "Hand a task to the group's workshop, which works on the group's Lean \
-                          library in the background: formalize a statement or a proof, integrate \
-                          a lemma, clean up a module. Use it only when someone asks for it, as in \
-                          \"formalize this\". Give a short title, and instructions that say \
+            description: "Hand a task to the group's workshop, which works in the background \
+                          on the group's Lean library (formalize a statement or a proof, \
+                          integrate a lemma, clean up a module) or, naming it, on one of its \
+                          working papers (write a section, fix a proof, add a reference). Use \
+                          it only when someone asks for it, as in \"formalize this\" or \"write \
+                          this up in p/notes\". Give a short title, and instructions that say \
                           exactly what to do, citing by address what the thread decided \
                           ([[t12#45-48]], [[lean:Foo.bar]]). The workshop \
                           proposes its changes, which the person who asked approves, and \
@@ -31,6 +33,9 @@ pub fn definitions() -> Vec<ToolDef> {
                                "description": "The message that asks for it, as t12#48; when \
                                                you answer in a thread, the message you answer \
                                                if absent."},
+                    "paper": {"type": "string",
+                              "description": "The paper to work on, as p/notes; the library if \
+                                              absent."},
                     "group": {"type": "string", "description": GROUP}
                 },
                 "required": ["title", "instructions"]
@@ -94,6 +99,7 @@ struct Create {
     title: String,
     instructions: String,
     origin: Option<String>,
+    paper: Option<String>,
     group: Option<String>,
 }
 
@@ -122,6 +128,11 @@ async fn create(toolbox: &Toolbox, args: Value, agent: Option<&str>) -> ToolResu
                 origin,
                 agent: agent.map(str::to_owned),
                 architecture: None,
+                paper: args
+                    .paper
+                    .as_deref()
+                    .map(|p| p.trim().trim_start_matches("[[").trim_end_matches("]]"))
+                    .map(|p| p.strip_prefix("p/").unwrap_or(p).to_owned()),
             },
         )
         .await?;

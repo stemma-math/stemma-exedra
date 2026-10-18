@@ -48,6 +48,7 @@ struct MachineRow {
     display_name: String,
     runners: String,
     lean: bool,
+    latex: bool,
     isolation: Option<String>,
     preferred: bool,
     version: Option<String>,
@@ -58,7 +59,8 @@ struct MachineRow {
 macro_rules! machine_query {
     () => {
         "SELECT w.id, w.name, w.prefix, w.owner_id, u.username, u.display_name, w.runners,
-                w.lean, w.isolation, w.preferred, w.version, w.created_at, w.last_seen_at
+                w.lean, w.latex, w.isolation, w.preferred, w.version, w.created_at,
+                w.last_seen_at
          FROM workers w JOIN users u ON u.id = w.owner_id"
     };
 }
@@ -81,6 +83,7 @@ impl MachineRow {
             online,
             runners: serde_json::from_str(&self.runners).unwrap_or_default(),
             lean: self.lean,
+            latex: self.latex,
             isolation: self.isolation.as_deref().and_then(Isolation::parse),
             preferred: self.preferred,
             workshop: machines::group_slugs_of(state, self.id).await?,
@@ -305,12 +308,14 @@ async fn serve(state: AppState, machine: MachineRow, mut socket: WebSocket) -> a
         return Ok(());
     }
     sqlx::query(
-        "UPDATE workers SET last_seen_at = ?, runners = ?, lean = ?, isolation = ?, version = ?
+        "UPDATE workers SET last_seen_at = ?, runners = ?, lean = ?, latex = ?, isolation = ?,
+                            version = ?
          WHERE id = ?",
     )
     .bind(db::now())
     .bind(serde_json::to_string(&hello.runners)?)
     .bind(hello.lean)
+    .bind(hello.latex)
     .bind(hello.isolation.map(Isolation::as_str))
     .bind(&hello.version)
     .bind(machine.id)
@@ -340,6 +345,7 @@ async fn serve(state: AppState, machine: MachineRow, mut socket: WebSocket) -> a
             owner_id: machine.owner_id,
             runners: hello.runners,
             lean: hello.lean,
+            latex: hello.latex,
             isolation: hello.isolation,
             workshop,
             concurrency: hello.concurrency.clamp(1, 64),

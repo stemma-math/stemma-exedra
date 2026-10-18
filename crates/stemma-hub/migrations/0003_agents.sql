@@ -4,7 +4,8 @@
 -- A personal token acts as its owner, with everything they can do. A job
 -- token acts for a job's requester, in the job's group only, while the job
 -- lasts; it posts, if at all, only in its thread and as its agent; it
--- pushes, if at all, only to one branch, its task's; and it opens a few
+-- pushes, if at all, only to one branch of one repository, its task's; and
+-- it opens a few
 -- threads, if its job is the workshop's.
 CREATE TABLE api_tokens (
     id INTEGER PRIMARY KEY,
@@ -20,8 +21,10 @@ CREATE TABLE api_tokens (
     thread_id INTEGER REFERENCES threads (id) ON DELETE CASCADE,
     agent TEXT,
     can_post INTEGER NOT NULL DEFAULT 1,
-    -- The one branch a job's token pushes to: `refs/heads/workshop/w7`.
+    -- The one branch a job's token pushes to: `refs/heads/workshop/w7`, of
+    -- the one repository of its group named here: `library`.
     push_ref TEXT,
+    push_repository TEXT,
     -- How many threads a job's token may still open.
     threads_left INTEGER NOT NULL DEFAULT 0,
     expires_at INTEGER
@@ -59,10 +62,11 @@ CREATE TABLE workers (
     created_at INTEGER NOT NULL,
     last_seen_at INTEGER,
     -- What it announced when it last connected: a JSON array of runners,
-    -- whether it has Lean, and how it isolates the workshop's jobs
-    -- (`docker`, `podman` or `host`; none if it cannot).
+    -- whether it has Lean and LaTeX, and how it isolates the workshop's
+    -- jobs (`docker`, `podman` or `host`; none if it cannot).
     runners TEXT NOT NULL DEFAULT '[]',
     lean INTEGER NOT NULL DEFAULT 0,
+    latex INTEGER NOT NULL DEFAULT 0,
     isolation TEXT,
     version TEXT,
     -- A machine its owner's jobs go to first.
@@ -104,8 +108,10 @@ CREATE TABLE jobs (
     id INTEGER PRIMARY KEY,
     group_id INTEGER NOT NULL REFERENCES groups (id) ON DELETE CASCADE,
     -- An answer, on the requester's machines; or the workshop's: a build of
-    -- the library or a task's run, on the group's workshop machines.
-    kind TEXT NOT NULL CHECK (kind IN ('reply', 'library_build', 'task_run')),
+    -- the library or of a paper, or a task's run, on the group's workshop
+    -- machines.
+    kind TEXT NOT NULL
+        CHECK (kind IN ('reply', 'library_build', 'paper_build', 'task_run')),
     -- The thread and message that asked for it, if one did.
     thread_id INTEGER REFERENCES threads (id) ON DELETE CASCADE,
     trigger_message INTEGER,
@@ -114,7 +120,7 @@ CREATE TABLE jobs (
     -- edits do not change a job on its way. None for builds.
     agent_handle TEXT,
     agent TEXT,
-    -- The runner of an answer; `lean` for builds; `workshop` for tasks,
+    -- The runner of an answer; `lean` or `latex` for builds; `workshop` for tasks,
     -- whose runner is the workshop agent a machine runs it with.
     runner TEXT NOT NULL,
     state TEXT NOT NULL CHECK (state IN ('queued', 'running', 'done', 'failed', 'cancelled')),

@@ -54,6 +54,7 @@ fn web_link(s: &str) -> Option<Result<Located, AddressError>> {
         ("t", None) => format!("t{path}"),
         ("lib", _) => format!("lean:{path}"),
         ("w", _) => format!("w{path}"),
+        ("p", _) => format!("p/{path}"),
         _ => return None,
     };
     Some(normalize(&canonical).parse().map(|address| Located {
@@ -79,6 +80,7 @@ mod tests {
         assert_eq!(located("[[ w7 ]]"), (None, "w7".into()));
         assert_eq!(located("t12#45–50"), (None, "t12#45-50".into()));
         assert_eq!(located("lean:Foo.bar"), (None, "lean:Foo.bar".into()));
+        assert_eq!(located("[[p/notes]]"), (None, "p/notes".into()));
     }
 
     #[test]
@@ -100,7 +102,8 @@ mod tests {
             located("/g/geometry/lib/Foo.bar"),
             (group.clone(), "lean:Foo.bar".into())
         );
-        assert_eq!(located("/g/geometry/w/7"), (group, "w7".into()));
+        assert_eq!(located("/g/geometry/w/7"), (group.clone(), "w7".into()));
+        assert_eq!(located("/g/geometry/p/notes"), (group, "p/notes".into()));
     }
 
     #[test]

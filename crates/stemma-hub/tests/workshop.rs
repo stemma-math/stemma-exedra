@@ -262,6 +262,7 @@ impl TestHub {
                 owner_id,
                 runners: runners.iter().map(|r| (*r).to_owned()).collect(),
                 lean: true,
+                latex: true,
                 isolation,
                 workshop,
                 concurrency: 4,

@@ -876,8 +876,9 @@ async fn references_resolve() {
     );
     assert_eq!(resolved[0]["title"], "Gluing");
     assert_eq!(resolved[1]["path"], "/g/geometry/t/1#2");
-    // `p/gluing` is not an address.
-    assert!(resolved[5]["kind"].is_null());
+    // A paper the group does not have.
+    assert_eq!(resolved[5]["kind"], "paper");
+    assert_eq!(resolved[5]["note"], "There is no such paper");
     assert!(resolved[8]["kind"].is_null());
     assert_eq!(resolved[9]["canonical"], "t1#2");
 }
@@ -1925,6 +1926,7 @@ async fn connect_machine(
             owner_id,
             runners: runners.iter().map(|r| (*r).to_owned()).collect(),
             lean: false,
+            latex: false,
             isolation: None,
             workshop: Default::default(),
             concurrency: 4,

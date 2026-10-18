@@ -136,6 +136,12 @@ pub async fn create(
             (origin_of(&state, &group, written).await?, agent)
         }
     };
+    let paper_id = match body.paper.as_deref().map(str::trim) {
+        Some(paper) if !paper.is_empty() => {
+            Some(crate::papers::find(&state, group.group_id, paper).await?.id)
+        }
+        _ => None,
+    };
     let task = workshop::create(
         &state,
         &group,
@@ -143,6 +149,7 @@ pub async fn create(
             title: body.title,
             instructions: body.instructions,
             architecture: body.architecture,
+            paper_id,
             thread_id: origin.0,
             origin_message: origin.1,
             requester_id: viewer.id,

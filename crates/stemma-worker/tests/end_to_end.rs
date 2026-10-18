@@ -921,6 +921,238 @@ async fn a_workshop_machine_with_lean_builds_and_inspects_the_library() {
     running.abort();
 }
 
+/// How a machine compiles papers here, if it can: in a container, when
+/// `STEMMA_TEST_CONTAINER` names a runtime and `STEMMA_TEST_IMAGE` its
+/// workshop image; or else on the machine itself, with its own `latexmk`.
+/// If the tests must compile (`STEMMA_TEST_LATEX`), one of them must work.
+fn latex_here() -> Option<String> {
+    if let (Some(runtime), Some(image)) = (
+        std::env::var_os("STEMMA_TEST_CONTAINER"),
+        std::env::var_os("STEMMA_TEST_IMAGE"),
+    ) {
+        return Some(format!(
+            "[isolation]\nruntime = {:?}\nimage = {:?}\n",
+            runtime.to_string_lossy(),
+            image.to_string_lossy()
+        ));
+    }
+    if stemma_worker::papers::has_latex() {
+        return Some("[isolation]\nruntime = \"host\"\n".into());
+    }
+    if std::env::var_os("STEMMA_TEST_LATEX").is_some() {
+        panic!("STEMMA_TEST_LATEX is set, and LaTeX (latexmk) is not installed");
+    }
+    None
+}
+
+/// The paper `notes`, once its build of `commit` ends.
+async fn paper_built(hub: &TestHub, person: &Person, commit: &str) -> Value {
+    let mut paper = Value::Null;
+    for _ in 0..600 {
+        paper = person.get(hub, "/groups/geometry/papers/notes").await;
+        let latest = &paper["latest"];
+        if latest["commit"] == commit
+            && (latest["state"] == "succeeded" || latest["state"] == "failed")
+        {
+            return paper;
+        }
+        tokio::time::sleep(Duration::from_millis(500)).await;
+    }
+    panic!("the build of {commit} did not end: {paper}");
+}
+
+/// A paper made from the template compiles into a PDF with `latexmk`, which
+/// the machine uploads; one that does not compile keeps the last PDF and
+/// shows the log.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_workshop_machine_with_latex_compiles_a_paper() {
+    let Some(isolation) = latex_here() else {
+        eprintln!("LaTeX is not installed, nor a workshop image named: skipping");
+        return;
+    };
+    let hub = TestHub::start().await;
+    let (ada, _) = group(&hub).await;
+    let paper = ada
+        .post(
+            &hub,
+            "/groups/geometry/papers",
+            json!({"slug": "notes", "title": "Notes on gluing"}),
+        )
+        .await;
+    assert_eq!(paper["slug"], "notes", "{paper}");
+    let first = hub
+        .forge
+        .branch_commit("geometry", "paper-notes", "main")
+        .await
+        .unwrap();
+    let worker_dir = tempfile::tempdir().unwrap();
+    let running = workshop_machine(&hub, &ada, json!([]), worker_dir.path(), &isolation).await;
+
+    let paper = paper_built(&hub, &ada, &first).await;
+    assert_eq!(paper["latest"]["state"], "succeeded", "{paper}");
+    assert_eq!(paper["pdf"]["commit"], first.as_str());
+    let log = paper["log"].as_str().unwrap().to_owned();
+    assert!(log.contains("$ latexmk -pdf"), "{log}");
+    assert!(log.contains("bibtex"), "BibTeX ran: {log}");
+    assert!(!log.contains("stj_"), "the token is not in the log");
+    let pdf = reqwest::Client::new()
+        .get(format!(
+            "{}{}",
+            hub.url,
+            paper["pdf"]["url"].as_str().unwrap()
+        ))
+        .bearer_auth(&ada.token)
+        .send()
+        .await
+        .unwrap()
+        .bytes()
+        .await
+        .unwrap();
+    assert!(pdf.starts_with(b"%PDF-"));
+    assert_eq!(pdf.len() as u64, paper["pdf"]["size"].as_u64().unwrap());
+
+    // A commit that does not compile keeps the PDF, and shows why.
+    let work = tempfile::tempdir().unwrap();
+    let host = hub.url.trim_start_matches("http://");
+    let url = format!(
+        "http://ada:{}@{host}/git/geometry/paper-notes.git",
+        ada.token
+    );
+    assert!(
+        git(work.path(), &["clone", "-q", &url, "notes"])
+            .status
+            .success()
+    );
+    let dir = work.path().join("notes");
+    let main = std::fs::read_to_string(dir.join("main.tex")).unwrap();
+    std::fs::write(
+        dir.join("main.tex"),
+        main.replace("Start here.", "Start \\here."),
+    )
+    .unwrap();
+    git(&dir, &["commit", "-qam", "Break it"]);
+    assert!(
+        git(&dir, &["push", "-q", "origin", "main"])
+            .status
+            .success()
+    );
+    let broken = String::from_utf8(git(&dir, &["rev-parse", "HEAD"]).stdout).unwrap();
+    let paper = paper_built(&hub, &ada, broken.trim()).await;
+    assert_eq!(paper["latest"]["state"], "failed", "{paper}");
+    assert_eq!(
+        paper["latest"]["error"],
+        "latexmk did not make the PDF: see the log"
+    );
+    assert!(
+        paper["log"]
+            .as_str()
+            .unwrap()
+            .contains("Undefined control sequence"),
+        "{paper}"
+    );
+    assert_eq!(paper["pdf"]["commit"], first.as_str());
+    running.abort();
+}
+
+/// A fake OpenCode that writes in a paper: first something that does not
+/// compile, and then, told so, something that does.
+fn fake_writing_opencode(dir: &Path) -> PathBuf {
+    script(
+        dir,
+        "opencode",
+        r#"cp "$(dirname "$OPENCODE_CONFIG")/instructions.md" "$HERE/opencode.instructions"
+case "$*" in
+  *"does not pass yet"*) body='The charts glue, as t1 says.' ;;
+  *) body='The charts glue. \oops' ;;
+esac
+cat > main.tex <<TEX
+\documentclass{amsart}
+\begin{document}
+\section{Charts}
+$body
+\end{document}
+TEX
+mkdir -p .stemma
+printf 'Wrote the section on charts.\n' > .stemma/report.md
+echo '{"type":"text","part":{"text":"Done: see the report."}}'
+"#,
+    )
+}
+
+/// The workshop writes in a paper: it compiles the work, which is told
+/// why it does not, and proposes it once it does, without what compiling
+/// made.
+#[tokio::test(flavor = "multi_thread")]
+async fn with_latex_the_workshop_writes_in_a_paper() {
+    if !stemma_worker::papers::has_latex() {
+        if std::env::var_os("STEMMA_TEST_LATEX").is_some() {
+            panic!("STEMMA_TEST_LATEX is set, and LaTeX (latexmk) is not installed");
+        }
+        eprintln!("LaTeX is not installed: skipping");
+        return;
+    }
+    let hub = TestHub::start().await;
+    let (ada, _) = group(&hub).await;
+    ada.post(
+        &hub,
+        "/groups/geometry/papers",
+        json!({"slug": "notes", "title": "Notes on gluing"}),
+    )
+    .await;
+    let tools = tempfile::tempdir().unwrap();
+    let opencode = fake_writing_opencode(tools.path());
+    let worker_dir = tempfile::tempdir().unwrap();
+    let running = workshop_machine(
+        &hub,
+        &ada,
+        json!([{"runner": "opencode", "model": "fake/model"}]),
+        worker_dir.path(),
+        &format!(
+            "[runners.opencode]\ncommand = {:?}\n[isolation]\nruntime = \"host\"\n",
+            opencode.display().to_string()
+        ),
+    )
+    .await;
+    let task = ada
+        .post(
+            &hub,
+            "/groups/geometry/papers/notes/tasks",
+            json!({"title": "Write the charts", "instructions": "As t1 says."}),
+        )
+        .await;
+    assert_eq!(task["paper"], "notes", "{task}");
+    let task = task_over(&hub, &ada, 1).await;
+    let page = ada.get(&hub, "/groups/geometry/tasks/1").await;
+    let log = page["log"].as_str().unwrap_or_default().to_owned();
+    assert_eq!(task["state"], "review", "{task}\n{log}");
+    assert!(
+        log.contains("Not accepted: The paper does not compile"),
+        "{log}"
+    );
+    assert!(log.contains("Accepted: the paper compiles."), "{log}");
+    assert_eq!(page["report"], "Wrote the section on charts.");
+    let instructions = std::fs::read_to_string(tools.path().join("opencode.instructions")).unwrap();
+    assert!(
+        instructions.contains("edit the working paper p/notes"),
+        "{instructions}"
+    );
+    // The work is proposed, and nothing that compiling made.
+    let repository = hub.forge.repository_path("geometry", "paper-notes");
+    let shown = git(&repository, &["show", "workshop/w1:main.tex"]);
+    assert!(String::from_utf8_lossy(&shown.stdout).contains("The charts glue, as t1 says."));
+    let files = git(
+        &repository,
+        &["ls-tree", "-r", "--name-only", "workshop/w1"],
+    );
+    let files = String::from_utf8_lossy(&files.stdout).into_owned();
+    assert_eq!(
+        files.lines().collect::<Vec<_>>(),
+        [".gitignore", "main.tex", "references.bib"],
+        "{files}"
+    );
+    running.abort();
+}
+
 #[tokio::test]
 async fn a_revoked_worker_stops() {
     let hub = TestHub::start().await;

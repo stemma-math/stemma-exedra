@@ -12,7 +12,9 @@
     "lean:Nat.add_comm'": "lean:Nat.add_comm'",
     "lean:α.β₁": "lean:α.β₁",
     "w7": "w7",
-    "w4294967295": "w4294967295"
+    "w4294967295": "w4294967295",
+    "p/notes": "p/notes",
+    "p/number-theory-2": "p/number-theory-2"
   },
   "invalid": [
     "",
@@ -34,8 +36,12 @@
     "t12#45/",
     "t12#45/..",
     "t12#45/a/b",
-    "p/notes",
+    "p/",
+    "p/Notes",
+    "p/a--b",
+    "p/-a",
     "p/notes#gluing",
+    "p/notes/main.tex",
     "lean:",
     "lean:Foo..bar",
     "lean:.Foo",
@@ -47,6 +53,7 @@
   "references": [
     { "text": "See [[t12#45-50]] and [[lean:Foo.bar]].", "found": ["t12#45-50", "lean:Foo.bar"] },
     { "text": "[[ w7 ]]", "found": [" w7 "] },
+    { "text": "As [[p/notes]] says.", "found": ["p/notes"] },
     { "text": "[[t0]] [[]]", "found": ["t0", ""] },
     { "text": "`[[t1]]` ``a ` [[t2]]`` [[t3]]\n```\n[[t4]]\n```\n[[t5]]", "found": ["t3", "t5"] },
     { "text": "[[t1] [t2]] [[t3", "found": [] },

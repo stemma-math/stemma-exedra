@@ -3,11 +3,12 @@
 //!
 //! Each space of Stemma has a module with its tools: what each is called,
 //! what it takes (a JSON Schema) and how it runs against the hub: the
-//! forum, the library and the workshop. [`Toolbox`]
-//! offers them all.
+//! forum, the library, the papers and the workshop. [`Toolbox`] offers
+//! them all.
 
 mod forum;
 mod library;
+mod papers;
 mod tasks;
 
 use serde::de::DeserializeOwned;
@@ -22,6 +23,7 @@ const GROUP: &str = "The group's short name; the default group if absent.";
 fn all_definitions() -> Vec<ToolDef> {
     let mut tools = forum::definitions();
     tools.extend(library::definitions());
+    tools.extend(papers::definitions());
     tools.extend(tasks::definitions());
     tools
 }
@@ -151,6 +153,9 @@ impl Toolbox {
             return result;
         }
         if let Some(result) = tasks::call(self, tool.name, args.clone(), agent).await {
+            return result;
+        }
+        if let Some(result) = papers::call(self, tool.name, args.clone()).await {
             return result;
         }
         match library::call(self, tool.name, args).await {

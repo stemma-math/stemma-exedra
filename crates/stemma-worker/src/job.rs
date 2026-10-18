@@ -1,6 +1,6 @@
 //! Running one job: its folder, its prompt, and the runner that does it;
-//! for a library's build, Lean; for a task of the workshop, both (see
-//! [`crate::workshop`]).
+//! for a library's build, Lean; for a paper's, LaTeX; for a task of the
+//! workshop, the runner and one of them (see [`crate::workshop`]).
 
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -16,7 +16,7 @@ use tokio::sync::mpsc;
 use crate::config::WorkerConfig;
 use crate::isolation::{HostSandbox, Isolator};
 use crate::runners::{Answer, Work as RunnerWork};
-use crate::{library, runners, workshop};
+use crate::{library, papers, runners, workshop};
 
 /// Stemma's instructions to an agent answering in a thread.
 pub const REPLY_INSTRUCTIONS: &str = include_str!("../prompts/reply.md");
@@ -98,6 +98,11 @@ pub fn describe_call(name: &str, args: &serde_json::Value) -> String {
             None => "Looking in the library".into(),
         },
         "library_state" => "Looking at the library".into(),
+        "list_papers" => "Looking at the papers".into(),
+        "read_paper" => match arg("address") {
+            Some(address) => format!("Reading {address}"),
+            None => "Reading a paper".into(),
+        },
         "list_tasks" | "task_status" => "Looking at the workshop's tasks".into(),
         "create_task" => match arg("title") {
             Some(title) => format!("Handing “{title}” to the workshop"),
@@ -251,6 +256,7 @@ pub async fn run(context: Arc<Context>, job: JobSpec, progress: Progress) -> (Ou
                 })
         }
         Work::LibraryBuild(build) => library::build(&context, &job, build, &progress).await,
+        Work::PaperBuild(compile) => papers::build(&context, &job, compile, &progress).await,
         Work::TaskRun(run) => workshop::run(&context, &job, run, &progress, &mut usage).await,
     };
     let outcome = outcome.unwrap_or_else(|error| {

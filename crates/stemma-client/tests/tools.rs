@@ -136,7 +136,82 @@ async fn the_tools_read_post_and_search() {
         .call("read_thread", json!({"address": "p/notes"}), None)
         .await
         .unwrap_err();
-    assert!(paper.to_string().contains("is not an address"), "{paper}");
+    assert!(paper.to_string().contains("not found"), "{paper}");
+}
+
+#[tokio::test]
+async fn the_paper_tools_list_papers_and_read_their_source() {
+    let (url, token, _data) = hub_with_ada().await;
+    raw_post(
+        &url,
+        &token,
+        "/groups",
+        json!({"slug": "geometry", "name": "Geometry"}),
+    )
+    .await;
+    let hub = Hub::new(&url, Some(token.clone())).unwrap();
+    let tools = Toolbox::new(hub.clone(), Some("geometry".into())).read_only(true);
+    let none = tools.call("list_papers", json!({}), None).await.unwrap();
+    assert_eq!(none, "No papers.\n");
+    hub.create_paper("geometry", "notes", "Notes on gluing")
+        .await
+        .unwrap();
+
+    let listed = tools.call("list_papers", json!({}), None).await.unwrap();
+    assert!(
+        listed.starts_with("- p/notes · Notes on gluing · by Ada · no PDF yet"),
+        "{listed}"
+    );
+    // A paper's main file, with who writes it and its files.
+    let read = tools
+        .call("read_paper", json!({"address": "p/notes"}), None)
+        .await
+        .unwrap();
+    assert!(
+        read.starts_with("# p/notes · Notes on gluing\n\nBy Ada."),
+        "{read}"
+    );
+    assert!(
+        read.contains("Files: .gitignore, main.tex, references.bib."),
+        "{read}"
+    );
+    assert!(read.contains("## main.tex"), "{read}");
+    assert!(read.contains("\\title{Notes on gluing}"), "{read}");
+    // Read as any address is, and a file asked for.
+    let same = tools
+        .call("read_thread", json!({"address": "[[p/notes]]"}), None)
+        .await
+        .unwrap();
+    assert!(same.contains("\\title{Notes on gluing}"), "{same}");
+    let bib = tools
+        .call(
+            "read_paper",
+            json!({"address": "notes", "file": "references.bib"}),
+            None,
+        )
+        .await
+        .unwrap();
+    assert!(bib.contains("@book{example"), "{bib}");
+    let missing = tools
+        .call(
+            "read_paper",
+            json!({"address": "p/notes", "file": "intro.tex"}),
+            None,
+        )
+        .await
+        .unwrap_err();
+    assert_eq!(
+        missing.to_string(),
+        "p/notes has no file intro.tex: it has .gitignore, main.tex, references.bib"
+    );
+    let not_a_paper = tools
+        .call("read_paper", json!({"address": "[[t1]]"}), None)
+        .await
+        .unwrap_err();
+    assert!(not_a_paper.to_string().contains("is not a paper"));
+    // Only read: the toolbox an agent's job has keeps them.
+    let names: Vec<&str> = tools.definitions().iter().map(|t| t.name).collect();
+    assert!(names.contains(&"list_papers") && names.contains(&"read_paper"));
 }
 
 #[tokio::test]
@@ -208,6 +283,8 @@ async fn mcp_serves_the_tools_and_names_the_agent() {
             "library_state",
             "library_lookup",
             "library_search",
+            "list_papers",
+            "read_paper",
             "create_task",
             "task_status",
             "list_tasks"

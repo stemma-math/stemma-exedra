@@ -1,15 +1,16 @@
 //! Approving the workshop's changes. A task's changes wait, in a pull
 //! request of the forge, until those they need approve them in Stemma:
-//! the person who asked for the task always, and for a big change (as its
-//! architecture says: for the library, one that touches Lake's
-//! configuration or the toolchain, or deletes or renames a file) an admin
-//! too. One person may approve as both. Guests never approve. Approval
+//! the person who asked for the task always; for a change to a paper asked
+//! by someone who is not one of its authors, one of its authors too; and
+//! for a big change (as its architecture says: for the library, one that
+//! touches Lake's configuration or the toolchain; for a paper, its build's
+//! configuration; and any that deletes or renames a file) an admin too.
+//! One person may approve as several. Guests never approve. Approval
 //! merges the pull request, and the push to `main` then builds it;
 //! rejection, by the asker or an admin, closes it.
 //!
 //! Who approves is a list of [`Approver`]s, each a rule of who may give
-//! it, so that other kinds (a paper's author, for its paper) come as more
-//! rules.
+//! it.
 
 use stemma_core::api::{Approval, Approver, Role, TaskState, User};
 
@@ -23,20 +24,33 @@ use crate::state::AppState;
 /// The approvals a task's changes need.
 pub(crate) fn required(row: &TaskRow) -> Vec<Approver> {
     let mut needed = vec![Approver::Asker];
+    if row.paper_id.is_some() && !row.asker_is_author {
+        needed.push(Approver::Author);
+    }
     if row.big {
         needed.push(Approver::Admin);
     }
     needed
 }
 
-/// What someone with `role` in the group may approve a task's changes as.
-pub(crate) fn may_approve_as(row: &TaskRow, user_id: i64, role: Role) -> Vec<Approver> {
+/// What someone with `role` in the group may approve a task's changes as;
+/// `author` says whether they are one of the authors of the paper it
+/// changes.
+pub(crate) fn may_approve_as(
+    row: &TaskRow,
+    user_id: i64,
+    role: Role,
+    author: bool,
+) -> Vec<Approver> {
     if role == Role::Guest {
         return Vec::new();
     }
     let mut kinds = Vec::new();
     if user_id == row.user_id {
         kinds.push(Approver::Asker);
+    }
+    if author && row.paper_id.is_some() {
+        kinds.push(Approver::Author);
     }
     if role.is_admin() {
         kinds.push(Approver::Admin);
@@ -111,7 +125,11 @@ pub async fn approve(
     waits(&row)?;
     let given = approvals(state, row.id).await?;
     let needed = missing(&row, &given);
-    let mine = may_approve_as(&row, user.id, group.role);
+    let author = match row.paper_id {
+        Some(paper) => crate::papers::is_author(state, paper, user.id).await?,
+        None => false,
+    };
+    let mine = may_approve_as(&row, user.id, group.role, author);
     let giving: Vec<Approver> = mine
         .iter()
         .copied()
@@ -125,6 +143,9 @@ pub async fn approve(
             "Only {} approves these changes",
             row.requester().display_name
         );
+        if needed.contains(&Approver::Author) {
+            who.push_str(", and one of the paper's authors");
+        }
         if row.big {
             who.push_str(", and an admin, for they are big");
         }
@@ -189,8 +210,9 @@ async fn merge(state: &AppState, group: &Membership, row: &TaskRow, user: &User)
     let mut by: Vec<String> = given.iter().map(|a| a.user.display_name.clone()).collect();
     by.dedup();
     let text = format!(
-        "**Merged:** [[w{}]] is in the library, approved by {}.",
+        "**Merged:** [[w{}]] is in {}, approved by {}.",
         row.number,
+        row.what(),
         by.join(" and ")
     );
     say(state, row, &text).await?;
@@ -235,8 +257,10 @@ pub async fn reject(
         .await?;
     set_state(state, row.id, TaskState::Rejected, None).await?;
     let text = format!(
-        "**Rejected:** [[w{}]], by {}. Nothing was put in the library.",
-        row.number, user.display_name
+        "**Rejected:** [[w{}]], by {}. Nothing was put in {}.",
+        row.number,
+        user.display_name,
+        row.what()
     );
     say(state, &row, &text).await?;
     publish(state, row.id).await

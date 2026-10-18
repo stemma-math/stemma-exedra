@@ -20,7 +20,7 @@ pub use crate::api::JobKind;
 use crate::api::{AgentProfile, LibraryReport, Message, ThreadKind, User};
 
 /// The version of this protocol. A hub refuses workers that speak another.
-pub const PROTOCOL_VERSION: u32 = 7;
+pub const PROTOCOL_VERSION: u32 = 8;
 
 /// The path of the workers' WebSocket, under the API's prefix.
 pub const WORKER_PATH: &str = "/worker";
@@ -53,6 +53,10 @@ pub struct Hello {
     /// Whether it has Lean (elan or lake), for the workshop: its tasks and
     /// the library's builds.
     pub lean: bool,
+    /// Whether it has LaTeX (`latexmk`), for the workshop's papers: in the
+    /// workshop's image, or on the machine.
+    #[serde(default)]
+    pub latex: bool,
     /// How it isolates the workshop's jobs: in containers, or on the
     /// machine itself if its owner chose so; none if it cannot, and then
     /// it runs none of them.
@@ -71,6 +75,8 @@ pub enum Outcome {
     },
     /// A build of the library, whether it passed or not.
     Built(Box<Built>),
+    /// A build of a paper, whether it made a PDF or not.
+    PaperBuilt(Box<PaperBuilt>),
     /// How a task's run ended, whatever the end.
     Task(Box<TaskOutcome>),
     Failed {
@@ -89,6 +95,20 @@ pub struct Built {
     pub log: String,
     /// What the inspection found, if it ran.
     pub report: Option<LibraryReport>,
+}
+
+/// How a build of a paper went. The PDF, if it made one, was uploaded to
+/// the hub before, with the job's token, to [`PaperCompile::upload`].
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct PaperBuilt {
+    /// Whether `latexmk` made the PDF.
+    pub succeeded: bool,
+    /// Why not, in a line, if it did not.
+    pub error: Option<String>,
+    /// What the build wrote, trimmed to its end when long.
+    pub log: String,
+    /// Whether the PDF was uploaded.
+    pub pdf: bool,
 }
 
 /// What a runner said a job consumed, as far as it says: Claude Code
@@ -139,7 +159,7 @@ pub struct TaskOutcome {
     pub commit: Option<String>,
     /// What the run did, trimmed to its end when long.
     pub log: String,
-    /// The build and inspection of the commit pushed.
+    /// The build and inspection of the commit pushed, for the library.
     pub built: Option<Built>,
     /// The runner that worked on it, and its model, if known.
     pub runner: String,
@@ -209,6 +229,9 @@ pub enum Work {
     /// Build a commit of the library and inspect it, with
     /// [`Outcome::Built`].
     LibraryBuild(LibraryBuild),
+    /// Compile a commit of a paper, upload its PDF, and say how it went,
+    /// with [`Outcome::PaperBuilt`].
+    PaperBuild(PaperCompile),
     /// Work on a task of the workshop in the library, with
     /// [`Outcome::Task`].
     TaskRun(Box<TaskRun>),
@@ -219,6 +242,7 @@ impl JobSpec {
         match self.work {
             Work::Reply(_) => JobKind::Reply,
             Work::LibraryBuild(_) => JobKind::LibraryBuild,
+            Work::PaperBuild(_) => JobKind::PaperBuild,
             Work::TaskRun(_) => JobKind::TaskRun,
         }
     }
@@ -228,7 +252,7 @@ impl JobSpec {
         match &self.work {
             Work::Reply(conversation) => Some(conversation),
             Work::TaskRun(run) => Some(&run.conversation),
-            Work::LibraryBuild(_) => None,
+            Work::LibraryBuild(_) | Work::PaperBuild(_) => None,
         }
     }
 }
@@ -258,12 +282,33 @@ pub struct LibraryBuild {
     pub commit: String,
 }
 
+/// A commit of a paper to compile.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct PaperCompile {
+    /// The build's number on the hub.
+    pub build: i64,
+    /// The paper, by slug.
+    pub paper: String,
+    /// Where to fetch the paper from, relative to the hub:
+    /// `/git/geometry/paper-notes.git`, with the job's token.
+    pub repository: String,
+    /// The commit, in full.
+    pub commit: String,
+    /// The file to compile: `main.tex`.
+    pub main: String,
+    /// Where to upload the PDF, relative to the hub, with a `PUT` and the
+    /// job's token.
+    pub upload: String,
+}
+
 /// A task of the workshop, as its workshop machine gets it.
 ///
 /// The machine runs the steps of the task's architecture: for
 /// `formalize`, it works on a fresh worktree of the library at `main`
 /// with the chosen agent (`work`); checks that the build passes and that
-/// no definition's data newly depends on `sorry` (`check`); and commits,
+/// no definition's data newly depends on `sorry` (`check`); for `write`,
+/// it works on the paper's, and checks that it compiles (`compile`); and
+/// commits,
 /// with the task's provenance in trailers, and pushes to the task's
 /// branch with the job's token, which pushes only there (`propose`). The
 /// hub then opens a pull request, which people approve.
@@ -287,6 +332,10 @@ pub struct TaskRun {
     /// The definitions whose data already depends on `sorry`, in the
     /// library's state: only new ones fail the task.
     pub data_sorry: Vec<String>,
+    /// The paper it works on, by slug, if it works on one: the repository
+    /// is then the paper's.
+    #[serde(default)]
+    pub paper: Option<String>,
 }
 
 /// An architecture, as a workshop machine runs it.
@@ -297,7 +346,8 @@ pub struct ArchitectureRun {
     /// step it does not know.
     pub steps: Vec<String>,
     /// The instructions its agent is given, in Markdown, with `{agent}`,
-    /// `{requester}`, `{group}`, `{task}` and `{report}` to fill in.
+    /// `{requester}`, `{group}`, `{task}`, `{paper}` and `{report}` to fill
+    /// in.
     pub instructions: String,
 }
 

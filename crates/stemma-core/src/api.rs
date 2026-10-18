@@ -600,6 +600,113 @@ pub struct DeclarationPage {
     pub references: Vec<ReferenceSite>,
 }
 
+// ── Working papers ────────────────────────────────────────────────────
+
+/// The file a paper's build compiles, at the root of its repository.
+pub const PAPER_MAIN: &str = "main.tex";
+
+/// A build of a commit of a paper: compiled into a PDF with `latexmk`.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct PaperBuild {
+    pub id: i64,
+    /// The commit, in full.
+    pub commit: String,
+    pub state: BuildState,
+    /// What it is doing, while it runs; why it waits, while it waits.
+    pub progress: Option<String>,
+    /// Why it failed, in a line.
+    pub error: Option<String>,
+    #[serde(with = "time::serde::rfc3339")]
+    pub created_at: OffsetDateTime,
+    #[serde(with = "time::serde::rfc3339::option")]
+    pub finished_at: Option<OffsetDateTime>,
+}
+
+/// A paper's PDF: that of its last build that made one.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct PaperPdf {
+    /// The build that made it.
+    pub build: i64,
+    pub commit: String,
+    /// In bytes.
+    pub size: u64,
+    /// Where to read it, relative to the hub.
+    pub url: String,
+    #[serde(with = "time::serde::rfc3339")]
+    pub built_at: OffsetDateTime,
+}
+
+/// A working paper: a LaTeX repository of the group, its authors, and its
+/// PDF, compiled by the workshop after each push to its `main`.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct Paper {
+    /// Its address is `p/<slug>`.
+    pub slug: String,
+    pub title: String,
+    /// Its repository in the group's organization: `paper-<slug>`.
+    pub repository: String,
+    /// Where to clone it from with a personal token, relative to the hub.
+    pub clone_path: String,
+    /// Where it is in the forge, for people signed in there.
+    pub forge_url: Option<String>,
+    /// Who writes it: its creator first.
+    pub authors: Vec<User>,
+    pub created_by: User,
+    #[serde(with = "time::serde::rfc3339")]
+    pub created_at: OffsetDateTime,
+    /// The newest build, whatever its state.
+    pub latest: Option<PaperBuild>,
+    /// The last PDF made, which a failed build leaves as it is.
+    pub pdf: Option<PaperPdf>,
+}
+
+/// A paper, with what its newest build wrote.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct PaperPage {
+    #[serde(flatten)]
+    pub paper: Paper,
+    /// The newest build's log, trimmed to its end when long.
+    pub log: String,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct CreatePaper {
+    /// Lowercase letters, digits and inner dashes.
+    pub slug: String,
+    pub title: String,
+}
+
+/// A file of a paper's source, at its `main`.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PaperFile {
+    pub path: String,
+    pub size: u64,
+}
+
+/// A paper's source files, at the commit its `main` is at.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct PaperSource {
+    pub commit: String,
+    pub files: Vec<PaperFile>,
+}
+
+/// One file of a paper's source, as text.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct PaperFileText {
+    pub path: String,
+    pub commit: String,
+    pub text: String,
+}
+
+/// Asks the workshop to edit a paper: a thread about it is opened with the
+/// request, and the task is handed over from its first message.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct EditPaper {
+    /// What to do, in a line; the thread's and the task's title.
+    pub title: String,
+    pub instructions: String,
+}
+
 // ── Agents ────────────────────────────────────────────────────────────
 
 /// The runners an agent runs with: the harnesses Stemma launches.
@@ -824,8 +931,7 @@ impl TaskState {
     }
 }
 
-/// Whose approval a change needs. More kinds come with more repositories
-/// (a paper's author, for its paper).
+/// Whose approval a change needs: the rules, each a kind of approver.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Approver {
@@ -833,6 +939,8 @@ pub enum Approver {
     Asker,
     /// One of the group's admins: for big changes.
     Admin,
+    /// One of the authors of the paper it changes, when the asker is not.
+    Author,
 }
 
 impl Approver {
@@ -840,6 +948,7 @@ impl Approver {
         match self {
             Approver::Asker => "asker",
             Approver::Admin => "admin",
+            Approver::Author => "author",
         }
     }
 
@@ -847,6 +956,7 @@ impl Approver {
         match s {
             "asker" => Some(Approver::Asker),
             "admin" => Some(Approver::Admin),
+            "author" => Some(Approver::Author),
             _ => None,
         }
     }
@@ -866,7 +976,7 @@ pub struct Approval {
 /// request of the forge, which approval merges.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Changes {
-    /// The repository: `library`.
+    /// The repository: `library`, `paper-notes`.
     pub repository: String,
     /// The branch: `workshop/w12`.
     pub branch: String,
@@ -904,8 +1014,11 @@ pub struct Task {
     pub title: String,
     /// What to do, as asked.
     pub instructions: String,
-    /// The architecture it runs with: `formalize`.
+    /// The architecture it runs with: `formalize`, `write`.
     pub architecture: String,
+    /// The paper it changes, by slug, if it changes one.
+    #[serde(default)]
+    pub paper: Option<String>,
     /// The message that asked for it: `t12#48`. The report goes to its
     /// thread.
     pub origin: Address,
@@ -958,9 +1071,13 @@ pub struct CreateTask {
     /// The agent handing it over for the person whose token asks.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub agent: Option<String>,
-    /// The architecture to run it with; `formalize` if absent.
+    /// The architecture to run it with, if absent: `write` for a paper,
+    /// `formalize` otherwise.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub architecture: Option<String>,
+    /// The paper it is to change, by slug (`notes`, or `p/notes`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub paper: Option<String>,
 }
 
 /// A kind of work the workshop knows: a folder of the repository, with a
@@ -971,7 +1088,8 @@ pub struct Architecture {
     pub name: String,
     /// What it does, in a line.
     pub description: String,
-    /// The repository of the group it changes: `library`.
+    /// What of the group it changes: `library`, or `paper`, the paper the
+    /// task names.
     pub works_on: String,
     /// What it does, in order.
     pub steps: Vec<ArchitectureStep>,
@@ -1029,6 +1147,9 @@ pub struct WorkshopMachine {
     pub owner: User,
     pub online: bool,
     pub lean: bool,
+    /// Whether it has LaTeX, for papers.
+    #[serde(default)]
+    pub latex: bool,
     /// How it isolates the workshop's jobs, as it said when it last
     /// connected; none if it cannot, and then it runs none.
     #[serde(default)]
@@ -1101,6 +1222,9 @@ pub struct Machine {
     /// Whether it has Lean, for the workshop.
     #[serde(default)]
     pub lean: bool,
+    /// Whether it has LaTeX (`latexmk`), for the workshop's papers.
+    #[serde(default)]
+    pub latex: bool,
     /// How it isolates the workshop's jobs, as it said when it last
     /// connected; none if it cannot, and then it may not work for a
     /// workshop.
@@ -1195,6 +1319,8 @@ pub enum JobKind {
     Reply,
     /// Build a commit of the library, and inspect it.
     LibraryBuild,
+    /// Compile a commit of a paper into its PDF.
+    PaperBuild,
     /// Work on a task of the workshop.
     TaskRun,
 }
@@ -1204,6 +1330,7 @@ impl JobKind {
         match self {
             JobKind::Reply => "reply",
             JobKind::LibraryBuild => "library_build",
+            JobKind::PaperBuild => "paper_build",
             JobKind::TaskRun => "task_run",
         }
     }
@@ -1212,6 +1339,7 @@ impl JobKind {
         match s {
             "reply" => Some(JobKind::Reply),
             "library_build" => Some(JobKind::LibraryBuild),
+            "paper_build" => Some(JobKind::PaperBuild),
             "task_run" => Some(JobKind::TaskRun),
             _ => None,
         }
@@ -1230,7 +1358,8 @@ pub struct Job {
     /// For a task's run, the task's number: the `7` of `w7`.
     #[serde(default)]
     pub task: Option<u32>,
-    /// The agent's handle and name; for a build, `lean` and `Lean`.
+    /// The agent's handle and name; for a build, `lean` and `Lean`, or
+    /// `latex` and `LaTeX`.
     pub agent: String,
     pub agent_name: String,
     pub requester: User,
@@ -1279,5 +1408,9 @@ pub enum Event {
     /// A task of the workshop is new, or changed.
     TaskUpdated {
         task: Box<Task>,
+    },
+    /// A paper is new, or changed: its authors, or a build of it.
+    PaperUpdated {
+        paper: Box<Paper>,
     },
 }

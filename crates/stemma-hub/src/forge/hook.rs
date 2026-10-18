@@ -1,5 +1,6 @@
-//! Forgejo's webhooks: a push to the `main` of a group's library tells the
-//! hub to look at where `main` is, and build its new commit.
+//! Forgejo's webhooks: a push to the `main` of a group's library, or of one
+//! of its papers, tells the hub to look at where `main` is, and build its
+//! new commit.
 //!
 //! Each delivery is signed with the shared secret (an HMAC-SHA256 of its
 //! body); one that is not is refused. What it says is only taken as a
@@ -14,8 +15,8 @@ use serde::Deserialize;
 use sha2::Sha256;
 
 use super::{LIBRARY, MAIN};
-use crate::library;
 use crate::state::AppState;
+use crate::{library, papers};
 
 /// Whether `signature`, in hex, is the HMAC-SHA256 of `body` with `secret`.
 /// Compared in constant time.
@@ -89,7 +90,7 @@ pub async fn receive(State(state): State<AppState>, headers: HeaderMap, body: By
     let Ok(push) = serde_json::from_slice::<Push>(&body) else {
         return StatusCode::BAD_REQUEST;
     };
-    if push.reference != format!("refs/heads/{MAIN}") || push.repository.name != LIBRARY {
+    if push.reference != format!("refs/heads/{MAIN}") {
         return StatusCode::NO_CONTENT;
     }
     match pushed(&state, &push).await {
@@ -101,8 +102,8 @@ pub async fn receive(State(state): State<AppState>, headers: HeaderMap, body: By
     }
 }
 
-/// Looks at the library's `main`, for whoever pushed if they are in the
-/// group, or else for its first admin.
+/// Looks at the `main` of the library or the paper pushed to, for whoever
+/// pushed if they are in the group, or else for its first admin.
 async fn pushed(state: &AppState, push: &Push) -> anyhow::Result<()> {
     let Some(group_id): Option<i64> = sqlx::query_scalar("SELECT id FROM groups WHERE slug = ?")
         .bind(&push.repository.owner.login)
@@ -139,9 +140,18 @@ async fn pushed(state: &AppState, push: &Push) -> anyhow::Result<()> {
     let Some(requester) = requester else {
         return Ok(());
     };
-    library::refresh(state, group_id, requester)
-        .await
-        .map_err(|e| anyhow::anyhow!(e.message))
+    let refreshed = if push.repository.name == LIBRARY {
+        library::refresh(state, group_id, requester).await
+    } else {
+        match papers::by_repository(state, group_id, &push.repository.name)
+            .await
+            .map_err(|e| anyhow::anyhow!(e.message))?
+        {
+            Some(paper) => papers::refresh(state, paper.id, requester).await,
+            None => Ok(()),
+        }
+    };
+    refreshed.map_err(|e| anyhow::anyhow!(e.message))
 }
 
 #[cfg(test)]

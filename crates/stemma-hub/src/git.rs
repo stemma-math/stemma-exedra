@@ -139,6 +139,16 @@ async fn serve(
     if let Err(why) = allowed(&viewer.scope, membership.role, service) {
         return refused(StatusCode::FORBIDDEN, why);
     }
+    // A task's token pushes only to its task's repository.
+    if service == Service::Push
+        && let Some(only) = viewer.job().and_then(|job| job.push_repository.as_deref())
+        && only != name
+    {
+        return refused(
+            StatusCode::FORBIDDEN,
+            "A task's token pushes only to its task's repository",
+        );
+    }
     // A task's token pushes only to its branch.
     let request = match viewer.job().and_then(|job| job.push_ref.as_deref()) {
         Some(only) if service == Service::Push && request.method() == Method::POST => {
@@ -292,6 +302,7 @@ mod tests {
             agent: "Lean".into(),
             can_post: false,
             push_ref: can_push.then(|| "refs/heads/workshop/w1".into()),
+            push_repository: can_push.then(|| "library".into()),
         })
     }
 

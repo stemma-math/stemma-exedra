@@ -290,9 +290,15 @@ async fn libraries_are_made_cloned_pushed_and_built() {
     git(&checkout, &["commit", "-qm", "Notes"]);
     let pushed = git(&checkout, &["push", "-q", "origin", "main"]);
     assert!(!pushed.status.success());
-    stemma_hub::auth::grant_task(&hub.state.db, token_id, "refs/heads/workshop/w1", 0)
-        .await
-        .unwrap();
+    stemma_hub::auth::grant_task(
+        &hub.state.db,
+        token_id,
+        "library",
+        "refs/heads/workshop/w1",
+        0,
+    )
+    .await
+    .unwrap();
     let pushed = git(&checkout, &["push", "-q", "origin", "main"]);
     assert!(!pushed.status.success(), "{pushed:?}");
     let both = git(

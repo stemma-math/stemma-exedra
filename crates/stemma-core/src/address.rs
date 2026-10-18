@@ -6,6 +6,7 @@
 //! | Message                 | `t12#45`                              |
 //! | Messages                | `t12#45-50`                           |
 //! | Attachment              | `t12#45/photo.jpg`                    |
+//! | Working paper           | `p/compactification`                  |
 //! | Library declaration     | `lean:Foo.bar`                        |
 //! | Task                    | `w7`                                  |
 //!
@@ -32,6 +33,8 @@ pub enum Address {
         message: u32,
         name: String,
     },
+    /// A working paper: `p/compactification`.
+    Paper(String),
     /// A declaration of the library: `lean:Foo.bar`.
     Declaration(String),
     /// A workshop task: `w7`.
@@ -51,6 +54,8 @@ pub enum AddressError {
     BackwardRange { from: u32, to: u32 },
     #[error("invalid attachment name: {0:?}")]
     InvalidAttachmentName(String),
+    #[error("invalid slug (lowercase letters, digits and inner dashes): {0:?}")]
+    InvalidSlug(String),
     #[error("invalid Lean name: {0:?}")]
     InvalidLeanName(String),
 }
@@ -63,6 +68,7 @@ pub enum AddressKind {
     Message,
     Messages,
     Attachment,
+    Paper,
     Declaration,
     Task,
 }
@@ -75,6 +81,7 @@ impl Address {
             Address::Message { .. } => AddressKind::Message,
             Address::Messages { .. } => AddressKind::Messages,
             Address::Attachment { .. } => AddressKind::Attachment,
+            Address::Paper(_) => AddressKind::Paper,
             Address::Declaration(_) => AddressKind::Declaration,
             Address::Task(_) => AddressKind::Task,
         }
@@ -101,6 +108,7 @@ impl Address {
                 thread, message, ..
             } => format!("/g/{group}/t/{thread}#{message}"),
             Address::Messages { thread, from, .. } => format!("/g/{group}/t/{thread}#{from}"),
+            Address::Paper(slug) => format!("/g/{group}/p/{slug}"),
             Address::Declaration(name) => format!("/g/{group}/lib/{name}"),
             Address::Task(n) => format!("/g/{group}/w/{n}"),
         }
@@ -118,6 +126,7 @@ impl fmt::Display for Address {
                 message,
                 name,
             } => write!(f, "t{thread}#{message}/{name}"),
+            Address::Paper(slug) => write!(f, "p/{slug}"),
             Address::Declaration(name) => write!(f, "lean:{name}"),
             Address::Task(n) => write!(f, "w{n}"),
         }
@@ -133,6 +142,13 @@ impl FromStr for Address {
         }
         if let Some(name) = s.strip_prefix("lean:") {
             return parse_lean_name(name).map(Address::Declaration);
+        }
+        if let Some(slug) = s.strip_prefix("p/") {
+            return if is_slug(slug) {
+                Ok(Address::Paper(slug.to_owned()))
+            } else {
+                Err(AddressError::InvalidSlug(slug.to_owned()))
+            };
         }
         if let Some(rest) = s.strip_prefix('w') {
             return parse_number(rest).map(Address::Task);
@@ -287,6 +303,10 @@ mod tests {
         );
         assert_eq!(parse("lean:α.β₁"), Address::Declaration("α.β₁".into()));
         assert_eq!(parse("w7"), Address::Task(7));
+        assert_eq!(
+            parse("p/compactification"),
+            Address::Paper("compactification".into())
+        );
     }
 
     #[test]
@@ -324,7 +344,10 @@ mod tests {
             ("t12#45/", InvalidAttachmentName("".into())),
             ("t12#45/..", InvalidAttachmentName("..".into())),
             ("t12#45/a/b", InvalidAttachmentName("a/b".into())),
-            ("p/notes", UnknownKind),
+            ("p/", InvalidSlug("".into())),
+            ("p/Notes", InvalidSlug("Notes".into())),
+            ("p/a--b", InvalidSlug("a--b".into())),
+            ("p/notes#gluing", InvalidSlug("notes#gluing".into())),
             ("lean:", InvalidLeanName("".into())),
             ("lean:Foo..bar", InvalidLeanName("Foo..bar".into())),
             ("lean:.Foo", InvalidLeanName(".Foo".into())),
@@ -348,6 +371,7 @@ mod tests {
             "t12#45",
             "t12#45-50",
             "t12#45/notes.tex",
+            "p/a-b-1",
             "lean:Nat.add_comm",
             "w4294967295",
         ] {
@@ -372,6 +396,7 @@ mod tests {
         assert_eq!(parse("t12#45/x.pdf").web_path("g"), "/g/g/t/12#45");
         assert_eq!(parse("lean:A.b").web_path("g"), "/g/g/lib/A.b");
         assert_eq!(parse("w7").web_path("g"), "/g/g/w/7");
+        assert_eq!(parse("p/notes").web_path("g"), "/g/g/p/notes");
     }
 
     #[test]

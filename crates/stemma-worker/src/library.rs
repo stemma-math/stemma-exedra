@@ -451,7 +451,7 @@ pub async fn fetch(dir: &Path, url: &str, token: &str, log: &Log) -> anyhow::Res
     ]);
     anyhow::ensure!(
         quietly(fetch, log).await?,
-        "Could not fetch the library from the hub"
+        "Could not fetch the repository from the hub"
     );
     Ok(())
 }

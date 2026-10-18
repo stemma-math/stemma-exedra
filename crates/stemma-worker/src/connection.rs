@@ -121,6 +121,7 @@ async fn session(context: &Arc<Context>, token: &str) -> Ended {
         version: env!("CARGO_PKG_VERSION").into(),
         runners: context.config.runner_names(),
         lean: lean(context),
+        latex: latex(context),
         isolation: context.isolator.as_ref().map(|i| i.isolation()),
         concurrency: context.config.concurrency,
     });
@@ -130,12 +131,13 @@ async fn session(context: &Arc<Context>, token: &str) -> Ended {
     match welcome(&mut socket).await {
         Ok(Ok(welcome)) => {
             tracing::info!(
-                "connected to {} as {}, one of {}'s machines; runners: {}; Lean: {}",
+                "connected to {} as {}, one of {}'s machines; runners: {}; Lean: {}; LaTeX: {}",
                 context.hub,
                 welcome.name,
                 welcome.owner.display_name,
                 context.config.runner_names().join(", "),
-                if lean(context) { "yes" } else { "no" }
+                if lean(context) { "yes" } else { "no" },
+                if latex(context) { "yes" } else { "no" }
             );
         }
         Ok(Err(reason)) => return Ended::Refused(anyhow::anyhow!("the hub refused: {reason}")),
@@ -245,6 +247,15 @@ fn lean(context: &Context) -> bool {
     match &context.isolator {
         Some(crate::isolation::Isolator::Containers(_)) => true,
         _ => has_lean(),
+    }
+}
+
+/// Whether the workshop's jobs have LaTeX: in the image of their
+/// containers, or else on the machine.
+fn latex(context: &Context) -> bool {
+    match &context.isolator {
+        Some(crate::isolation::Isolator::Containers(_)) => true,
+        _ => crate::papers::has_latex(),
     }
 }
 

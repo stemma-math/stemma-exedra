@@ -4,20 +4,23 @@
 //! A message that mentions an agent (`@claude`), or any message in a chat
 //! with a resident agent, creates a job per agent: an answer by the
 //! writer's own agent (see [`crate::agents`]); or for the workshop, a task
-//! (see [`crate::workshop`]). A new commit of a group's library creates a
-//! build. A job waits until a machine that can run it is connected and
-//! free:
+//! (see [`crate::workshop`]). A new commit of a group's library, or of one
+//! of its papers, creates a build. A job waits until a machine that can
+//! run it is connected and free:
 //!
 //! - a person's own agent runs on one of their machines with its runner,
 //!   the one they prefer if it can;
-//! - a build, on one of the group's workshop machines with Lean, one at a
-//!   time per group;
-//! - a task, on one of the group's workshop machines with Lean, with the
-//!   first of the machine's agents for the workshop that it can run and
-//!   that is under its daily limit; one at a time per group.
+//! - a build of the library, on one of the group's workshop machines with
+//!   Lean, one at a time per group; of a paper, on one with LaTeX, one at
+//!   a time per group;
+//! - a task, on one of the group's workshop machines with Lean (with
+//!   LaTeX, for a paper's), with the first of the machine's agents for the
+//!   workshop that it can run and that is under its daily limit; one at a
+//!   time per group.
 //!
 //! An answer is posted in the thread as a message by the agent, for the
-//! person who asked; a build's report becomes the library's state; a
+//! person who asked; a build's report becomes the library's state, and a
+//! paper's build makes its PDF; a
 //! task's run is proposed and reported in its thread. Each run is kept,
 //! with what it consumed (see [`crate::consumption`]).
 //!
@@ -44,6 +47,7 @@ use crate::consumption;
 use crate::db;
 use crate::error::{ApiError, ApiResult};
 use crate::library;
+use crate::papers;
 use crate::state::AppState;
 use crate::workshop::{self, machines::AgentRow};
 
@@ -84,6 +88,8 @@ pub struct Connected {
     pub owner_id: i64,
     pub runners: Vec<String>,
     pub lean: bool,
+    /// Whether it has LaTeX, for the papers.
+    pub latex: bool,
     /// How it isolates the workshop's jobs; none if it cannot, and then it
     /// runs none.
     pub isolation: Option<Isolation>,
@@ -106,6 +112,12 @@ impl Connected {
     fn for_workshop(&self, group_id: i64) -> bool {
         self.lean && self.isolation.is_some() && self.workshop.contains(&group_id)
     }
+
+    /// Whether it may run the jobs of a group's workshop on its papers: it
+    /// works for it, has LaTeX, and isolates them.
+    fn for_papers(&self, group_id: i64) -> bool {
+        self.latex && self.isolation.is_some() && self.workshop.contains(&group_id)
+    }
 }
 
 impl Workers {
@@ -119,12 +131,16 @@ impl Workers {
                 worker.owner_id == job.requester_id && worker.runners.contains(&job.runner)
             }
             JobKind::LibraryBuild => worker.for_workshop(job.group_id),
+            JobKind::PaperBuild => worker.for_papers(job.group_id),
             JobKind::TaskRun => {
-                worker.for_workshop(job.group_id)
-                    && worker
-                        .runners
-                        .iter()
-                        .any(|r| runners::WORKSHOP.contains(&r.as_str()))
+                (if job.task_paper.is_some() {
+                    worker.for_papers(job.group_id)
+                } else {
+                    worker.for_workshop(job.group_id)
+                }) && worker
+                    .runners
+                    .iter()
+                    .any(|r| runners::WORKSHOP.contains(&r.as_str()))
             }
         }
     }
@@ -153,14 +169,26 @@ impl Workers {
     /// Why a queued job waits.
     fn note(&self, job: &JobRow) -> String {
         let any = self.connected.values().any(|w| self.can_run(w, job));
+        let with = if job.task_paper.is_some() || job.kind() == JobKind::PaperBuild {
+            "LaTeX"
+        } else {
+            "Lean"
+        };
         match job.kind() {
             JobKind::TaskRun => self.waiting.get(&job.id).cloned().unwrap_or_else(|| {
                 if any {
                     "Waiting for the workshop to be free".into()
                 } else {
-                    "Waiting for a workshop machine with Lean to come online".into()
+                    format!("Waiting for a workshop machine with {with} to come online")
                 }
             }),
+            JobKind::PaperBuild => {
+                if any {
+                    "Waiting for a free workshop machine".into()
+                } else {
+                    format!("Waiting for a workshop machine with {with} to come online")
+                }
+            }
             JobKind::LibraryBuild => {
                 if any {
                     "Waiting for a free workshop machine".into()
@@ -210,6 +238,8 @@ struct JobRow {
     updated_at: i64,
     /// For a task's run, the task's number.
     task_number: Option<i64>,
+    /// For a task's run on a paper, the paper.
+    task_paper: Option<i64>,
     /// The requester's role in the group, if they are still in it.
     requester_role: Option<String>,
 }
@@ -219,7 +249,7 @@ macro_rules! job_query {
         "SELECT j.id, j.group_id, j.kind, j.thread_id, t.number AS thread_number,
         j.trigger_message, j.requester_id, u.username, u.display_name, j.agent_handle, j.agent,
         j.runner, j.state, j.worker_id, j.token_id, j.attempts, j.progress, j.error,
-        j.answer, j.created_at, j.updated_at, k.number AS task_number,
+        j.answer, j.created_at, j.updated_at, k.number AS task_number, k.paper_id AS task_paper,
         m.role AS requester_role
          FROM jobs j LEFT JOIN threads t ON t.id = j.thread_id
               JOIN users u ON u.id = j.requester_id
@@ -268,6 +298,7 @@ impl JobRow {
         let state = self.state();
         let (agent, agent_name) = match self.kind() {
             JobKind::LibraryBuild => (LEAN.to_owned(), "Lean".to_owned()),
+            JobKind::PaperBuild => (papers::LATEX.to_owned(), "LaTeX".to_owned()),
             _ => {
                 let handle = self.agent_handle.clone().unwrap_or_default();
                 let name = self
@@ -315,6 +346,9 @@ async fn publish(state: &AppState, workers: &Workers, job_id: i64) -> ApiResult<
         && let Some(build) = library::build_of_job(state, job_id, job.note.clone()).await?
     {
         state.publish(row.group_id, Event::BuildUpdated { build });
+    }
+    if row.kind() == JobKind::PaperBuild {
+        papers::publish_of_job(state, job_id, job.note.clone()).await?;
     }
     if row.kind() == JobKind::TaskRun {
         workshop::publish_of_job(state, job_id, job.note.clone()).await?;
@@ -374,6 +408,17 @@ pub async fn summon(
     for handle in handles {
         let profile = match agents::resolve(state, group.group_id, author.id, &handle).await? {
             Summoned::Workshop => {
+                // In a thread about a paper, the workshop works on it.
+                let paper_id = match &thread.anchor {
+                    Some(stemma_core::Address::Paper(slug)) => {
+                        match papers::find(state, group.group_id, slug).await {
+                            Ok(paper) => Some(paper.id),
+                            Err(error) if error.status.is_client_error() => None,
+                            Err(error) => return Err(error),
+                        }
+                    }
+                    _ => None,
+                };
                 if !group.role.can_ask_for_work() {
                     let error = format!("Guests cannot ask @{handle} for work");
                     refuse(
@@ -391,6 +436,7 @@ pub async fn summon(
                     title: workshop::title_of(&message.body, &handle),
                     instructions: message.body.clone(),
                     architecture: None,
+                    paper_id,
                     thread_id,
                     origin_message: message.number,
                     requester_id: author.id,
@@ -533,6 +579,14 @@ pub async fn dispatch(state: &AppState) -> ApiResult<()> {
     .await?
     .into_iter()
     .collect();
+    // A group's papers, too.
+    let mut compiling: HashSet<i64> = sqlx::query_scalar(
+        "SELECT group_id FROM jobs WHERE kind = 'paper_build' AND state = 'running'",
+    )
+    .fetch_all(&state.db)
+    .await?
+    .into_iter()
+    .collect();
     // And a group's tasks, one at a time.
     let mut tasking: HashSet<i64> = sqlx::query_scalar(
         "SELECT group_id FROM jobs WHERE kind = 'task_run' AND state = 'running'",
@@ -544,8 +598,10 @@ pub async fn dispatch(state: &AppState) -> ApiResult<()> {
     workers.waiting.clear();
     for job in queued {
         let is_build = job.kind() == JobKind::LibraryBuild;
+        let is_compile = job.kind() == JobKind::PaperBuild;
         let is_task = job.kind() == JobKind::TaskRun;
         let busy = (is_build && building.contains(&job.group_id))
+            || (is_compile && compiling.contains(&job.group_id))
             || (is_task && tasking.contains(&job.group_id));
         let free = if busy {
             Vec::new()
@@ -587,6 +643,9 @@ pub async fn dispatch(state: &AppState) -> ApiResult<()> {
                 if is_build {
                     building.insert(job.group_id);
                 }
+                if is_compile {
+                    compiling.insert(job.group_id);
+                }
                 if is_task {
                     tasking.insert(job.group_id);
                 }
@@ -618,11 +677,13 @@ async fn start(
     let now = db::now();
     let mut task_profile = None;
     let mut branch = None;
+    let mut repository = None;
     let work = match job.kind() {
         JobKind::Reply => Work::Reply(Box::new(conversation(state, &group, job).await?)),
         JobKind::LibraryBuild => {
             Work::LibraryBuild(library::work_for(state, &group, job.id).await?)
         }
+        JobKind::PaperBuild => Work::PaperBuild(papers::work_for(state, job.id).await?),
         JobKind::TaskRun => {
             let agent = agent
                 .as_ref()
@@ -637,12 +698,18 @@ async fn start(
             conversation.agent = profile.clone();
             let run = workshop::work_for(state, &group, job.id, conversation).await?;
             branch = Some(run.branch.clone());
+            repository = run
+                .repository
+                .rsplit('/')
+                .next()
+                .map(|name| name.trim_end_matches(".git").to_owned());
             task_profile = Some(profile);
             Work::TaskRun(Box::new(run))
         }
     };
     let (name, lasts) = match job.kind() {
         JobKind::LibraryBuild => ("Lean".to_owned(), BUILD_TOKEN_MILLIS),
+        JobKind::PaperBuild => ("LaTeX".to_owned(), BUILD_TOKEN_MILLIS),
         JobKind::TaskRun => (job.profile()?.display_name, BUILD_TOKEN_MILLIS),
         _ => (job.profile()?.display_name, JOB_TOKEN_MILLIS),
     };
@@ -655,10 +722,11 @@ async fn start(
         now + lasts,
     )
     .await?;
-    if let Some(branch) = &branch {
+    if let (Some(branch), Some(repository)) = (&branch, &repository) {
         auth::grant_task(
             &state.db,
             token_id,
+            repository,
             &format!("refs/heads/{branch}"),
             TASK_THREADS,
         )
@@ -678,6 +746,7 @@ async fn start(
     let (runner, model) = match (&task_profile, job.kind()) {
         (Some(profile), _) => (profile.runner.clone(), profile.model.clone()),
         (None, JobKind::LibraryBuild) => (LEAN.to_owned(), None),
+        (None, JobKind::PaperBuild) => (papers::LATEX.to_owned(), None),
         (None, _) => {
             let profile = job.profile()?;
             (profile.runner, profile.model)
@@ -830,6 +899,11 @@ pub async fn finished(
             (JobKind::Reply, Outcome::Answer { body }) => answered(state, &job, &body).await?,
             (JobKind::LibraryBuild, Outcome::Built(built)) => {
                 library::build_finished(state, job.group_id, job_id, *built).await?;
+                done(state, &job, None).await?;
+                None
+            }
+            (JobKind::PaperBuild, Outcome::PaperBuilt(built)) => {
+                papers::build_finished(state, job_id, *built).await?;
                 done(state, &job, None).await?;
                 None
             }

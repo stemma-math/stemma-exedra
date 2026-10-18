@@ -7,7 +7,7 @@ use std::fmt::Write;
 use stemma_core::Address;
 use stemma_core::api::{
     Build, BuildState, DeclarationPage, DeclarationState, DeclarationSummary, LibraryState,
-    Message, SearchHit, Task, TaskPage, Thread, ThreadKind,
+    Message, Paper, PaperPage, PaperSource, SearchHit, Task, TaskPage, Thread, ThreadKind,
 };
 use time::OffsetDateTime;
 use time::format_description::well_known::Rfc3339;
@@ -312,6 +312,102 @@ pub fn task_list(tasks: &[Task]) -> String {
     out
 }
 
+/// How a paper's PDF stands, in a line.
+fn paper_state(paper: &Paper) -> String {
+    let mut out = match &paper.pdf {
+        Some(pdf) => format!("PDF of {}", short(&pdf.commit)),
+        None => "no PDF yet".into(),
+    };
+    if let Some(latest) = &paper.latest
+        && paper.pdf.as_ref().is_none_or(|pdf| pdf.build != latest.id)
+    {
+        let _ = write!(
+            out,
+            "; its build of {} {}",
+            short(&latest.commit),
+            match latest.state {
+                BuildState::Queued => "waits",
+                BuildState::Running => "runs",
+                BuildState::Succeeded => "passed",
+                BuildState::Failed => "failed",
+                BuildState::Cancelled => "was cancelled",
+            }
+        );
+    }
+    out
+}
+
+fn authors(paper: &Paper) -> String {
+    paper
+        .authors
+        .iter()
+        .map(|a| a.display_name.as_str())
+        .collect::<Vec<_>>()
+        .join(", ")
+}
+
+/// The group's papers, one per line.
+pub fn paper_list(papers: &[Paper]) -> String {
+    if papers.is_empty() {
+        return "No papers.\n".into();
+    }
+    let mut out = String::new();
+    for paper in papers {
+        let _ = writeln!(
+            out,
+            "- p/{} · {} · by {} · {}",
+            paper.slug,
+            paper.title,
+            authors(paper),
+            paper_state(paper)
+        );
+    }
+    out
+}
+
+/// A paper: who writes it, how its PDF stands, its files, and one of them.
+pub fn paper(
+    hub: &str,
+    group: &str,
+    page: &PaperPage,
+    source: &PaperSource,
+    file: &str,
+    text: &str,
+) -> String {
+    let paper = &page.paper;
+    let mut out = format!(
+        "# p/{} · {}\n\nBy {}. {}{}\n",
+        paper.slug,
+        paper.title,
+        authors(paper),
+        hub,
+        Address::Paper(paper.slug.clone()).web_path(group)
+    );
+    let _ = writeln!(
+        out,
+        "{}, at main {}. Its repository: {}{}",
+        capitalize(&paper_state(paper)),
+        short(&source.commit),
+        hub,
+        paper.clone_path
+    );
+    if let Some(error) = paper.latest.as_ref().and_then(|b| b.error.as_deref()) {
+        let _ = writeln!(out, "The newest build failed: {error}");
+    }
+    let files: Vec<&str> = source.files.iter().map(|f| f.path.as_str()).collect();
+    let _ = writeln!(out, "\nFiles: {}.", files.join(", "));
+    let _ = writeln!(out, "\n## {file}\n\n```latex\n{}\n```", text.trim_end());
+    out
+}
+
+fn capitalize(text: &str) -> String {
+    let mut chars = text.chars();
+    match chars.next() {
+        Some(first) => first.to_uppercase().chain(chars).collect(),
+        None => String::new(),
+    }
+}
+
 /// A task, with its report and the end of its log.
 pub fn task(hub: &str, group: &str, page: &TaskPage) -> String {
     let task = &page.task;
@@ -323,6 +419,9 @@ pub fn task(hub: &str, group: &str, page: &TaskPage) -> String {
         task.origin,
         task.requester.display_name
     );
+    if let Some(paper) = &task.paper {
+        let _ = write!(out, ", on p/{paper}");
+    }
     if let Some(agent) = &task.agent {
         let _ = write!(out, ", through {agent}");
     }

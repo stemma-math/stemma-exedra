@@ -510,6 +510,65 @@ impl Forge {
         Ok(found.and_then(|b| b["commit"]["id"].as_str().map(str::to_owned)))
     }
 
+    /// The files of a repository at `commit`, with their sizes, in order;
+    /// none if the repository or the commit is not there.
+    pub async fn tree(
+        &self,
+        owner: &str,
+        name: &str,
+        commit: &str,
+    ) -> ForgeResult<Option<Vec<TreeEntry>>> {
+        let mut files = Vec::new();
+        for page in 1.. {
+            let found: Option<Tree> = self
+                .optional(
+                    &format!("list the files of {owner}/{name}"),
+                    self.api(
+                        Method::GET,
+                        &format!("/repos/{owner}/{name}/git/trees/{commit}"),
+                    )
+                    .query(&[("recursive", "true")])
+                    .query(&[("page", page), ("per_page", 1000)]),
+                )
+                .await?;
+            let Some(tree) = found else {
+                return Ok(None);
+            };
+            let last = !tree.truncated || tree.tree.is_empty();
+            files.extend(tree.tree.into_iter().filter(|e| e.kind == "blob"));
+            if last {
+                break;
+            }
+        }
+        files.sort_by(|a, b| a.path.cmp(&b.path));
+        Ok(Some(files))
+    }
+
+    /// A file of a repository at `commit`, if it is there.
+    pub async fn raw_file(
+        &self,
+        owner: &str,
+        name: &str,
+        commit: &str,
+        path: &str,
+    ) -> ForgeResult<Option<Vec<u8>>> {
+        let encoded: Vec<String> = path.split('/').map(encode_segment).collect();
+        let request = self
+            .api(
+                Method::GET,
+                &format!("/repos/{owner}/{name}/raw/{}", encoded.join("/")),
+            )
+            .query(&[("ref", commit)]);
+        match self
+            .send(&format!("read {path} of {owner}/{name}"), request)
+            .await
+        {
+            Ok(response) => Ok(Some(response.bytes().await?.to_vec())),
+            Err(error) if error.status() == Some(StatusCode::NOT_FOUND) => Ok(None),
+            Err(error) => Err(error),
+        }
+    }
+
     pub async fn delete_branch(&self, owner: &str, name: &str, branch: &str) -> ForgeResult<()> {
         match self
             .send(
@@ -607,6 +666,39 @@ impl Forge {
         .await?;
         Ok(())
     }
+}
+
+/// A page of a repository's tree, as Forgejo lists it.
+#[derive(Clone, Debug, Deserialize)]
+struct Tree {
+    #[serde(default)]
+    tree: Vec<TreeEntry>,
+    #[serde(default)]
+    truncated: bool,
+}
+
+/// A file, or a folder, of a repository's tree.
+#[derive(Clone, Debug, Deserialize)]
+pub struct TreeEntry {
+    pub path: String,
+    /// `blob` for a file, `tree` for a folder.
+    #[serde(rename = "type")]
+    pub kind: String,
+    #[serde(default)]
+    pub size: u64,
+}
+
+/// Percent-encodes a segment of a URL's path.
+fn encode_segment(segment: &str) -> String {
+    segment
+        .bytes()
+        .map(|b| match b {
+            b'a'..=b'z' | b'A'..=b'Z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' => {
+                (b as char).to_string()
+            }
+            _ => format!("%{b:02X}"),
+        })
+        .collect()
 }
 
 /// A pull request, as the hub reads it.

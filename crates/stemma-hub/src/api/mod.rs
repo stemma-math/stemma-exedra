@@ -9,6 +9,7 @@ pub(crate) mod forum;
 mod groups;
 mod jobs;
 mod library;
+mod papers;
 mod tasks;
 pub mod workers;
 mod workshop;
@@ -94,6 +95,30 @@ pub fn router(state: AppState) -> Router {
             "/groups/{group}/library/declarations/{name}",
             get(library::declaration),
         )
+        .route(
+            "/groups/{group}/papers",
+            get(papers::list).post(papers::create),
+        )
+        .route("/groups/{group}/papers/{paper}", get(papers::get))
+        .route(
+            "/groups/{group}/papers/{paper}/authors/{username}",
+            put(papers::add_author).delete(papers::remove_author),
+        )
+        .route(
+            "/groups/{group}/papers/{paper}/builds",
+            post(papers::rebuild),
+        )
+        .route(
+            "/groups/{group}/papers/{paper}/builds/{build}/pdf",
+            put(papers::upload_pdf).layer(DefaultBodyLimit::max(upload_limit)),
+        )
+        .route("/groups/{group}/papers/{paper}/pdf", get(papers::pdf))
+        .route("/groups/{group}/papers/{paper}/files", get(papers::files))
+        .route(
+            "/groups/{group}/papers/{paper}/files/{*path}",
+            get(papers::file),
+        )
+        .route("/groups/{group}/papers/{paper}/tasks", post(papers::edit))
         .route("/groups/{group}/resolve", post(forum::resolve))
         .route("/groups/{group}/search", get(forum::search))
         .route("/workshop/architectures", get(workshop::architectures))

@@ -215,6 +215,10 @@ async fn read_thread(toolbox: &Toolbox, args: Value) -> ToolResult {
             let args = json!({"address": format!("w{number}"), "group": group});
             return super::tasks::status(toolbox, args).await;
         }
+        Address::Paper(slug) => {
+            let args = json!({"address": format!("p/{slug}"), "group": group});
+            return super::papers::read(toolbox, args).await;
+        }
     };
     let messages = hub.messages(&group, thread, from, to).await?;
     if messages.is_empty() {

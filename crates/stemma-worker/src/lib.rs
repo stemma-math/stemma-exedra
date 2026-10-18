@@ -7,8 +7,9 @@
 //! `codex`, `opencode`), with its owner's own sign-in to each; and if its
 //! owner made it work for a group's workshop, and it has Lean, the
 //! workshop's tasks ([`workshop`]), with the agents its owner offers it,
-//! and the builds of the group's library ([`library`]). Credentials never
-//! leave the machine they are on.
+//! the builds of the group's library ([`library`]), and, with LaTeX, those
+//! of its papers ([`papers`]). Credentials never leave the machine they
+//! are on.
 
 pub mod config;
 pub mod connection;
@@ -19,6 +20,7 @@ pub mod job;
 pub mod launch;
 pub mod library;
 pub mod machine;
+pub mod papers;
 pub mod runners;
 pub mod session;
 pub mod workshop;

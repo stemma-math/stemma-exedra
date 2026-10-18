@@ -365,6 +365,8 @@ fn router(inner: Arc<Inner>) -> Router {
             "/api/v1/repos/{owner}/{name}/pulls/{number}/merge",
             post(merge_pull),
         )
+        .route("/api/v1/repos/{owner}/{name}/git/trees/{commit}", get(tree))
+        .route("/api/v1/repos/{owner}/{name}/raw/{*path}", get(raw))
         .route("/{owner}/{repo}/{*path}", any(git))
         .layer(axum::middleware::from_fn(authenticate))
         .with_state(inner)
@@ -770,6 +772,58 @@ async fn protect(
         return message(StatusCode::INTERNAL_SERVER_ERROR, &error.to_string());
     }
     (StatusCode::CREATED, axum::Json(json!({}))).into_response()
+}
+
+/// The files of a commit, all on one page.
+async fn tree(
+    State(inner): State<Arc<Inner>>,
+    UrlPath((owner, name, commit)): UrlPath<(String, String, String)>,
+) -> Response {
+    if !repo_exists(&inner, &owner, &name) {
+        return message(StatusCode::NOT_FOUND, "not found");
+    }
+    let bare = inner.root.join(&owner).join(format!("{name}.git"));
+    let Ok(listed) = run_git(&bare, &["ls-tree", "-r", "-l", &commit]).await else {
+        return message(StatusCode::NOT_FOUND, "commit not found");
+    };
+    let entries: Vec<Value> = listed
+        .lines()
+        .filter_map(|line| {
+            let (meta, path) = line.split_once('\t')?;
+            let mut meta = meta.split_whitespace();
+            let (_, kind, _, size) = (meta.next()?, meta.next()?, meta.next()?, meta.next()?);
+            Some(json!({"path": path, "type": kind, "size": size.parse::<u64>().unwrap_or(0)}))
+        })
+        .collect();
+    axum::Json(json!({"sha": commit, "tree": entries, "truncated": false})).into_response()
+}
+
+#[derive(Deserialize)]
+struct Ref {
+    #[serde(rename = "ref")]
+    reference: Option<String>,
+}
+
+/// A file at a commit, as it is.
+async fn raw(
+    State(inner): State<Arc<Inner>>,
+    UrlPath((owner, name, path)): UrlPath<(String, String, String)>,
+    Query(at): Query<Ref>,
+) -> Response {
+    if !repo_exists(&inner, &owner, &name) {
+        return message(StatusCode::NOT_FOUND, "not found");
+    }
+    let bare = inner.root.join(&owner).join(format!("{name}.git"));
+    let reference = at.reference.unwrap_or_else(|| "main".into());
+    let output = Command::new("git")
+        .current_dir(&bare)
+        .args(["show", &format!("{reference}:{path}")])
+        .output()
+        .await;
+    match output {
+        Ok(output) if output.status.success() => output.stdout.into_response(),
+        _ => message(StatusCode::NOT_FOUND, "file not found"),
+    }
 }
 
 async fn add_hook(

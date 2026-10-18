@@ -27,6 +27,8 @@
 //! # For the workshop, with Lean (elan) installed:
 //! # [lean]
 //! # timeout_minutes = 90; cache = true   # whether to get Mathlib's cache
+//! # [latex]                              # the papers' builds
+//! # timeout_minutes = 15
 //! # [workshop]
 //! # timeout_minutes = 120; rounds = 2; max_turns = 80
 //!
@@ -48,7 +50,7 @@ use anyhow::Context as _;
 use serde::{Deserialize, Serialize};
 use stemma_core::api::runners;
 
-use crate::config::{LeanConfig, Runners, WorkerConfig, WorkshopConfig};
+use crate::config::{LatexConfig, LeanConfig, Runners, WorkerConfig, WorkshopConfig};
 use crate::isolation::IsolationConfig;
 use crate::{Context, connection, detect};
 
@@ -74,6 +76,9 @@ pub struct MachineConfig {
     /// How it builds libraries for the workshop, with Lean.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub lean: Option<LeanConfig>,
+    /// How it compiles papers for the workshop, with LaTeX.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub latex: Option<LatexConfig>,
     /// How it works on the workshop's tasks.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub workshop: Option<WorkshopConfig>,
@@ -136,6 +141,7 @@ impl MachineConfig {
             concurrency: self.concurrency.unwrap_or(2).max(1),
             runners: offered,
             lean: self.lean.clone().unwrap_or_default(),
+            latex: self.latex.clone().unwrap_or_default(),
             workshop: self.workshop.clone().unwrap_or_default(),
             isolation: self.isolation.clone().unwrap_or_default(),
         }
@@ -207,6 +213,7 @@ mod tests {
             work_dir: None,
             runners: toml::from_str("[codex]\nmodel = \"gpt-5\"\n").unwrap(),
             lean: None,
+            latex: None,
             workshop: None,
             isolation: None,
         };

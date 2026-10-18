@@ -6,7 +6,9 @@
 //! to ("formalize this"), or a message mentions the workshop
 //! (`@workshop formalize the lemma in t12#48`). Only admins and members
 //! ask for work: guests cannot. Each task runs with an architecture (see
-//! [`crate::architectures`]): a kind of work the workshop knows.
+//! [`crate::architectures`]): a kind of work the workshop knows. A task
+//! about a paper (handed over from a thread about it, or naming it) runs
+//! with `write`, on the paper's repository.
 //!
 //! A task is a job, `task_run`, for one of the group's workshop machines
 //! (see [`machines`]), with Lean, run with the first of the machine's
@@ -101,6 +103,12 @@ pub(crate) struct TaskRow {
     started_at: Option<i64>,
     finished_at: Option<i64>,
     job_progress: Option<String>,
+    /// The paper it changes, if it changes one.
+    pub paper_id: Option<i64>,
+    pub paper_slug: Option<String>,
+    paper_repository: Option<String>,
+    /// Whether its asker is one of the paper's authors.
+    pub asker_is_author: bool,
 }
 
 macro_rules! task_query {
@@ -111,11 +119,16 @@ macro_rules! task_query {
                 k.repository, k.branch, k.commit_sha, k.pull, k.pull_url, k.big, k.why_big,
                 k.merged_commit, k.rejected_by, r.username AS rejected_username,
                 r.display_name AS rejected_display_name, k.report_message, k.created_at,
-                k.updated_at, k.started_at, k.finished_at, j.progress AS job_progress
+                k.updated_at, k.started_at, k.finished_at, j.progress AS job_progress,
+                k.paper_id, pp.slug AS paper_slug, pp.repository AS paper_repository,
+                EXISTS (SELECT 1 FROM paper_authors pa
+                        WHERE pa.paper_id = k.paper_id AND pa.user_id = k.requester_id)
+                    AS asker_is_author
          FROM tasks k JOIN threads t ON t.id = k.thread_id
               JOIN users u ON u.id = k.requester_id
               LEFT JOIN users r ON r.id = k.rejected_by
-              LEFT JOIN jobs j ON j.id = k.job_id"
+              LEFT JOIN jobs j ON j.id = k.job_id
+              LEFT JOIN papers pp ON pp.id = k.paper_id"
     };
 }
 
@@ -128,6 +141,22 @@ impl TaskRow {
         Address::Message {
             thread: self.thread_number as u32,
             message: self.origin_message as u32,
+        }
+    }
+
+    /// The repository of the group it changes: the paper's, or its
+    /// architecture's.
+    pub fn repository_name(&self, architecture: &stemma_core::api::Architecture) -> String {
+        self.paper_repository
+            .clone()
+            .unwrap_or_else(|| architecture.works_on.clone())
+    }
+
+    /// What it changes, as a report says it: the library, or a paper.
+    pub fn what(&self) -> String {
+        match &self.paper_slug {
+            Some(slug) => format!("[[p/{slug}]]"),
+            None => "the library".into(),
         }
     }
 
@@ -178,6 +207,7 @@ impl TaskRow {
             title: self.title.clone(),
             instructions: self.instructions.clone(),
             architecture: self.architecture.clone(),
+            paper: self.paper_slug.clone(),
             origin: self.origin(),
             requester: self.requester(),
             agent: self.agent.clone(),
@@ -327,8 +357,11 @@ pub async fn resolve(
 pub struct NewTask {
     pub title: String,
     pub instructions: String,
-    /// The architecture to run it with; the default if none.
+    /// The architecture to run it with; the default if none: `write` for a
+    /// paper.
     pub architecture: Option<String>,
+    /// The paper it changes, if it changes one.
+    pub paper_id: Option<i64>,
     /// The thread and the number of the message that asks.
     pub thread_id: i64,
     pub origin_message: u32,
@@ -351,7 +384,10 @@ pub async fn create(state: &AppState, group: &Membership, new: NewTask) -> ApiRe
         .as_deref()
         .map(str::trim)
         .filter(|a| !a.is_empty())
-        .unwrap_or(architectures::DEFAULT);
+        .unwrap_or(match new.paper_id {
+            Some(_) => architectures::PAPERS,
+            None => architectures::DEFAULT,
+        });
     let Some(architecture) = architectures::find(architecture) else {
         let known: Vec<String> = architectures::all().into_iter().map(|a| a.name).collect();
         return Err(ApiError::invalid(format!(
@@ -359,6 +395,21 @@ pub async fn create(state: &AppState, group: &Membership, new: NewTask) -> ApiRe
             known.join(", ")
         )));
     };
+    match (architecture.works_on == architectures::PAPER, new.paper_id) {
+        (true, None) => {
+            return Err(ApiError::invalid(format!(
+                "The architecture {} works on a paper: name it",
+                architecture.name
+            )));
+        }
+        (false, Some(_)) => {
+            return Err(ApiError::invalid(format!(
+                "The architecture {} works on the {}, not on a paper",
+                architecture.name, architecture.works_on
+            )));
+        }
+        _ => {}
+    }
     let title = crate::api::required_text(&new.title, "The title", 200)?;
     let instructions = crate::api::required_text(&new.instructions, "The instructions", 20_000)?;
     let agent = new
@@ -393,16 +444,17 @@ pub async fn create(state: &AppState, group: &Membership, new: NewTask) -> ApiRe
     .await?
     .last_insert_rowid();
     let task_id = sqlx::query(
-        "INSERT INTO tasks (group_id, number, title, instructions, architecture, thread_id,
-                            origin_message, requester_id, agent, state, job_id, created_at,
-                            updated_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'open', ?, ?, ?)",
+        "INSERT INTO tasks (group_id, number, title, instructions, architecture, paper_id,
+                            thread_id, origin_message, requester_id, agent, state, job_id,
+                            created_at, updated_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'open', ?, ?, ?)",
     )
     .bind(group.group_id)
     .bind(number)
     .bind(&title)
     .bind(&instructions)
     .bind(&architecture.name)
+    .bind(new.paper_id)
     .bind(new.thread_id)
     .bind(new.origin_message)
     .bind(new.requester_id)
@@ -542,7 +594,7 @@ pub async fn work_for(
         ))
     })?;
     let data_sorry = match library::current_build_id(state, group.group_id).await? {
-        Some(build) => {
+        Some(build) if row.paper_id.is_none() => {
             sqlx::query_scalar(
                 "SELECT name FROM library_declarations WHERE build_id = ? AND data_sorry = 1
                  ORDER BY name",
@@ -551,7 +603,7 @@ pub async fn work_for(
             .fetch_all(&state.db)
             .await?
         }
-        None => Vec::new(),
+        _ => Vec::new(),
     };
     Ok(TaskRun {
         task: row.number as u32,
@@ -559,9 +611,14 @@ pub async fn work_for(
         instructions: row.instructions.clone(),
         architecture: architectures::run_of(&architecture).map_err(ApiError::internal)?,
         conversation,
-        repository: format!("/git/{}/{}.git", group.slug, architecture.works_on),
+        repository: format!(
+            "/git/{}/{}.git",
+            group.slug,
+            row.repository_name(&architecture)
+        ),
         branch: branch_of(row.number as u32),
         data_sorry,
+        paper: row.paper_slug.clone(),
     })
 }
 
@@ -684,7 +741,7 @@ async fn propose(state: &AppState, row: &TaskRow, report: &str) -> ApiResult<Pro
     let architecture = architectures::find(&row.architecture)
         .ok_or_else(|| ApiError::internal("a task without its architecture"))?;
     let group = Membership::of_group(state, row.group_id).await?;
-    let repository = &architecture.works_on;
+    let repository = &row.repository_name(&architecture);
     let branch = branch_of(row.number as u32);
     let body = format!(
         "Task w{} of Stemma, asked by {} in {}.\n\n{}\n\nIt is approved, or rejected, in Stemma.",
@@ -767,7 +824,7 @@ pub async fn finished(state: &AppState, job_id: i64, outcome: TaskOutcome) -> Ap
     .bind(tail(&outcome.log))
     .bind(&outcome.runner)
     .bind(&outcome.model)
-    .bind(architecture.as_ref().map(|a| a.works_on.clone()))
+    .bind(architecture.as_ref().map(|a| row.repository_name(a)))
     .bind(proposed.as_ref().map(|_| branch_of(row.number as u32)))
     .bind(proposed.as_ref().and(outcome.commit.as_deref()))
     .bind(proposed.as_ref().map(|p| p.pull))
@@ -817,7 +874,7 @@ fn report_message(
     };
     let mut text = match end {
         TaskState::Review => format!("**Ready for review:** {task}."),
-        TaskState::Done => format!("**Done:** {task}. Nothing in the library changed."),
+        TaskState::Done => format!("**Done:** {task}. Nothing in {} changed.", row.what()),
         _ => format!("**Failed:** {task}. {}.", reason("The run failed")),
     };
     if !report.is_empty() {
@@ -849,6 +906,9 @@ fn report_message(
                 ".\n\nThey go in once {} approves them",
                 row.display_name
             ));
+            if review::required(row).contains(&stemma_core::api::Approver::Author) {
+                text.push_str(&format!(", and one of the authors of {} too", row.what()));
+            }
             let why: Vec<String> = serde_json::from_str(&row.why_big).unwrap_or_default();
             if row.big {
                 text.push_str(&format!(

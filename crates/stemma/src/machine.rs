@@ -425,6 +425,7 @@ async fn add(name: Option<String>, preferred: bool) -> anyhow::Result<()> {
         work_dir: None,
         runners: Default::default(),
         lean: None,
+        latex: None,
         workshop: None,
         isolation: None,
     };

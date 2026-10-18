@@ -331,6 +331,7 @@ struct MachineRow {
     username: String,
     display_name: String,
     lean: bool,
+    latex: bool,
     isolation: Option<String>,
     runners: String,
     added_at: i64,
@@ -339,8 +340,8 @@ struct MachineRow {
 /// The machines of a group's workshop, with their agents.
 pub async fn of_group(state: &AppState, group_id: i64) -> ApiResult<Vec<WorkshopMachine>> {
     let rows: Vec<MachineRow> = sqlx::query_as(
-        "SELECT k.id, k.name, k.owner_id, u.username, u.display_name, k.lean, k.isolation,
-                k.runners, w.added_at
+        "SELECT k.id, k.name, k.owner_id, u.username, u.display_name, k.lean, k.latex,
+                k.isolation, k.runners, w.added_at
          FROM workshop_machines w JOIN workers k ON k.id = w.worker_id
               JOIN users u ON u.id = k.owner_id
          WHERE w.group_id = ? AND k.revoked_at IS NULL ORDER BY w.added_at",
@@ -361,6 +362,7 @@ pub async fn of_group(state: &AppState, group_id: i64) -> ApiResult<Vec<Workshop
             },
             online,
             lean: row.lean,
+            latex: row.latex,
             isolation: row.isolation.as_deref().and_then(Isolation::parse),
             runners: serde_json::from_str(&row.runners).unwrap_or_default(),
             agents: agents(state, row.id).await?,

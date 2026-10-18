@@ -6,11 +6,12 @@ use reqwest::{Method, StatusCode};
 use serde::Serialize;
 use serde::de::DeserializeOwned;
 use stemma_core::api::{
-    AddWorkshopMachine, ApiToken, Architecture, ConsumptionDay, CreateMachine, CreateTask,
-    CreateThread, CreateToken, CreatedMachine, CreatedToken, DeclarationPage, DeclarationSummary,
-    ErrorBody, LibraryState, Machine, Me, Message, PREFIX, PersonalAgent, PostMessage, SearchHit,
-    SignIn, Task, TaskPage, TaskState, Thread, ThreadKind, ThreadPage, UpdateMachine,
-    WorkshopAgent, WorkshopMachine,
+    AddWorkshopMachine, ApiToken, Architecture, ConsumptionDay, CreateMachine, CreatePaper,
+    CreateTask, CreateThread, CreateToken, CreatedMachine, CreatedToken, DeclarationPage,
+    DeclarationSummary, ErrorBody, LibraryState, Machine, Me, Message, PREFIX, Paper,
+    PaperFileText, PaperPage, PaperSource, PersonalAgent, PostMessage, SearchHit, SignIn, Task,
+    TaskPage, TaskState, Thread, ThreadKind, ThreadPage, UpdateMachine, WorkshopAgent,
+    WorkshopMachine,
 };
 
 /// An error the hub answered with, or not reaching it.
@@ -136,6 +137,38 @@ impl Hub {
         body: &(impl Serialize + ?Sized),
     ) -> Result<T> {
         Ok(self.send(Method::POST, path, &[], Some(body)).await?.0)
+    }
+
+    /// Uploads a build's PDF, with a job's token, to `path` (relative to
+    /// the hub, as the job says).
+    pub async fn put_pdf(&self, path: &str, pdf: Vec<u8>) -> Result<()> {
+        let mut request = self
+            .http
+            .put(format!("{}{path}", self.base))
+            .header(reqwest::header::CONTENT_TYPE, "application/pdf")
+            .timeout(Duration::from_secs(600))
+            .body(pdf);
+        if let Some(token) = &self.token {
+            request = request.bearer_auth(token);
+        }
+        let response = request.send().await?;
+        let status = response.status();
+        if status.is_success() {
+            return Ok(());
+        }
+        let text = response.text().await.unwrap_or_default();
+        Err(match serde_json::from_str::<ErrorBody>(&text) {
+            Ok(body) => ApiError::Hub {
+                status,
+                code: body.error.code,
+                message: body.error.message,
+            },
+            Err(_) => ApiError::Hub {
+                status,
+                code: "unknown".into(),
+                message: format!("The hub answered {status}"),
+            },
+        })
     }
 
     async fn delete(&self, path: &str) -> Result<()> {
@@ -393,6 +426,48 @@ impl Hub {
     ) -> Result<Vec<DeclarationSummary>> {
         self.get(&format!("{}/library/declarations", g(group)), query)
             .await
+    }
+}
+
+impl Hub {
+    // ── Papers ────────────────────────────────────────────────────────
+
+    pub async fn papers(&self, group: &str) -> Result<Vec<Paper>> {
+        self.get(&format!("{}/papers", g(group)), &[]).await
+    }
+
+    pub async fn paper(&self, group: &str, slug: &str) -> Result<PaperPage> {
+        self.get(&format!("{}/papers/{}", g(group), encode(slug)), &[])
+            .await
+    }
+
+    pub async fn create_paper(&self, group: &str, slug: &str, title: &str) -> Result<Paper> {
+        let body = CreatePaper {
+            slug: slug.into(),
+            title: title.into(),
+        };
+        self.post(&format!("{}/papers", g(group)), &body).await
+    }
+
+    /// A paper's source files, at its `main`.
+    pub async fn paper_files(&self, group: &str, slug: &str) -> Result<PaperSource> {
+        self.get(&format!("{}/papers/{}/files", g(group), encode(slug)), &[])
+            .await
+    }
+
+    /// One of a paper's source files, at its `main`.
+    pub async fn paper_file(&self, group: &str, slug: &str, path: &str) -> Result<PaperFileText> {
+        let path: Vec<String> = path.split('/').map(encode).collect();
+        self.get(
+            &format!(
+                "{}/papers/{}/files/{}",
+                g(group),
+                encode(slug),
+                path.join("/")
+            ),
+            &[],
+        )
+        .await
     }
 }
 

@@ -55,6 +55,8 @@ pub struct JobScope {
     /// The one ref it pushes to, as a task's token does:
     /// `refs/heads/workshop/w7`.
     pub push_ref: Option<String>,
+    /// The one repository of its group it pushes to: `library`.
+    pub push_repository: Option<String>,
 }
 
 impl Viewer {
@@ -114,6 +116,7 @@ struct TokenRow {
     agent: Option<String>,
     can_post: bool,
     push_ref: Option<String>,
+    push_repository: Option<String>,
 }
 
 impl FromRequestParts<AppState> for Viewer {
@@ -144,7 +147,8 @@ async fn authenticate(headers: &HeaderMap, state: &AppState) -> Result<Option<Vi
         let hash = secret::token_hash(&token);
         let row = sqlx::query_as::<_, TokenRow>(
             "SELECT u.id, u.username, u.display_name, u.hub_admin, t.id AS token_id,
-                    t.kind, t.group_id, t.thread_id, t.agent, t.can_post, t.push_ref
+                    t.kind, t.group_id, t.thread_id, t.agent, t.can_post, t.push_ref,
+                    t.push_repository
              FROM api_tokens t JOIN users u ON u.id = t.user_id
              WHERE t.token_hash = ? AND t.revoked_at IS NULL
                AND (t.expires_at IS NULL OR t.expires_at > ?)",
@@ -178,6 +182,7 @@ async fn authenticate(headers: &HeaderMap, state: &AppState) -> Result<Option<Vi
                 agent: row.agent.unwrap_or_else(|| "Agent".into()),
                 can_post: row.can_post,
                 push_ref: row.push_ref,
+                push_repository: row.push_repository,
             }),
             ("job", None) => return Err(ApiError::internal("a job token without a group")),
             _ => Scope::Full,
@@ -262,17 +267,20 @@ pub async fn create_job_token(
     Ok((id, secret))
 }
 
-/// Lets a job's token push to one ref of its group's repositories, as a
-/// task's does to its branch, and open up to `threads` threads.
+/// Lets a job's token push to one ref of one of its group's repositories,
+/// as a task's does to its branch, and open up to `threads` threads.
 pub async fn grant_task(
     db: &sqlx::SqlitePool,
     token_id: i64,
+    repository: &str,
     push_ref: &str,
     threads: u32,
 ) -> Result<(), ApiError> {
     sqlx::query(
-        "UPDATE api_tokens SET push_ref = ?, threads_left = ? WHERE id = ? AND kind = 'job'",
+        "UPDATE api_tokens SET push_repository = ?, push_ref = ?, threads_left = ?
+         WHERE id = ? AND kind = 'job'",
     )
+    .bind(repository)
     .bind(push_ref)
     .bind(threads)
     .bind(token_id)

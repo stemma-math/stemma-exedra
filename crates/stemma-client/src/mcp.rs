@@ -19,10 +19,11 @@ use crate::tools::Toolbox;
 
 const INSTRUCTIONS: &str = "Stemma is where a research group does mathematics by talking. \
 These tools reach the group's forum, threads of numbered messages in Markdown with $…$ math; its \
-Lean library; and its workshop, which works on the library in the background. Everything has an \
-address: t12 is thread 12, t12#45 its message 45, t12#45-50 messages 45 to 50; lean:Foo.bar is a \
-declaration of the library; w7 is a task of the workshop. Cite what you use by address, written \
-as a reference: [[t12#45]], [[lean:Foo.bar]], [[w7]].";
+Lean library; its working papers, in LaTeX; and its workshop, which works on the library and the \
+papers in the background. Everything has an address: t12 is thread 12, t12#45 its message 45, \
+t12#45-50 messages 45 to 50; lean:Foo.bar is a declaration of the library; p/notes is a paper; w7 \
+is a task of the workshop. Cite what you use by address, written as a reference: [[t12#45]], \
+[[lean:Foo.bar]], [[p/notes]], [[w7]].";
 
 /// The MCP server.
 #[derive(Clone)]

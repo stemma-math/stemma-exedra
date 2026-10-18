@@ -23,6 +23,9 @@ pub struct WorkerConfig {
     /// How the workshop builds the library, with Lean.
     #[serde(default)]
     pub lean: LeanConfig,
+    /// How the workshop compiles papers, with LaTeX.
+    #[serde(default)]
+    pub latex: LatexConfig,
     /// How it works on the workshop's tasks.
     #[serde(default)]
     pub workshop: WorkshopConfig,
@@ -59,6 +62,16 @@ pub struct LeanConfig {
     /// Whether to get Mathlib's cache before building; yes if absent.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub cache: Option<bool>,
+}
+
+/// How a workshop machine compiles papers, with LaTeX (`latexmk` on its
+/// path, or in the workshop's image).
+#[derive(Clone, Debug, Default, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct LatexConfig {
+    /// How long a build may take; 15 minutes if absent.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub timeout_minutes: Option<u64>,
 }
 
 fn one() -> u32 {

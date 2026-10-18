@@ -33,8 +33,8 @@ enum Command {
     Logout,
     /// List a group's threads.
     Threads(client::ThreadsArgs),
-    /// Read a thread, some of its messages, a declaration or a task: t12,
-    /// t12#45-50, lean:Foo.bar, w7.
+    /// Read a thread, some of its messages, a declaration, a task or a
+    /// paper's source: t12, t12#45-50, lean:Foo.bar, w7, p/notes.
     Read(client::ReadArgs),
     /// Post a message in a thread, or in reply to a message.
     Post(client::PostArgs),
@@ -42,6 +42,10 @@ enum Command {
     Search(client::SearchArgs),
     /// How the group's library stands, or search it.
     Library(client::LibraryArgs),
+    /// List the group's working papers; read one with `stemma read p/notes`.
+    Papers(client::PapersArgs),
+    /// Create a working paper, from the template.
+    Paper(client::PaperArgs),
     /// List the workshop's tasks; read one with `stemma read w7`.
     Tasks(client::TasksArgs),
     /// Hand a task to the workshop, with its instructions on standard input.
@@ -118,6 +122,8 @@ async fn main() -> anyhow::Result<()> {
         Command::Post(args) => client::post(args).await,
         Command::Search(args) => client::search(args).await,
         Command::Library(args) => client::library(args).await,
+        Command::Papers(args) => client::papers(args).await,
+        Command::Paper(args) => client::paper(args).await,
         Command::Tasks(args) => client::tasks(args).await,
         Command::Task(args) => client::task(args).await,
         Command::Approve(args) => client::approve(args).await,
@@ -167,4 +173,64 @@ fn read_password(from_stdin: bool) -> anyhow::Result<String> {
     let again = rpassword::prompt_password("Again: ")?;
     anyhow::ensure!(password == again, "the passwords differ");
     Ok(password)
+}
+
+#[cfg(test)]
+mod tests {
+    use clap::Parser;
+
+    use super::{Cli, Command};
+
+    fn parse(args: &[&str]) -> Cli {
+        Cli::try_parse_from(args).unwrap_or_else(|e| panic!("{args:?}: {e}"))
+    }
+
+    #[test]
+    fn papers_are_listed_created_and_read() {
+        assert!(matches!(
+            parse(&["stemma", "papers", "--group", "geometry"]).command,
+            Command::Papers(_)
+        ));
+        match parse(&["stemma", "paper", "new", "notes", "Notes on gluing"]).command {
+            Command::Paper(args) => {
+                let crate::client::PaperCommand::New { slug, title } = args.command;
+                assert_eq!(slug, "notes");
+                assert_eq!(title, ["Notes on gluing"]);
+            }
+            _ => panic!("not a paper"),
+        }
+        match parse(&["stemma", "paper", "new", "notes", "Notes", "on", "gluing"]).command {
+            Command::Paper(args) => {
+                let crate::client::PaperCommand::New { title, .. } = args.command;
+                assert_eq!(title.join(" "), "Notes on gluing");
+            }
+            _ => panic!("not a paper"),
+        }
+        assert!(Cli::try_parse_from(["stemma", "paper", "new", "notes"]).is_err());
+        match parse(&["stemma", "read", "p/notes", "sections/intro.tex"]).command {
+            Command::Read(args) => {
+                assert_eq!(args.address, "p/notes");
+                assert_eq!(args.file.as_deref(), Some("sections/intro.tex"));
+            }
+            _ => panic!("not a read"),
+        }
+        match parse(&["stemma", "read", "p/notes"]).command {
+            Command::Read(args) => assert_eq!(args.file, None),
+            _ => panic!("not a read"),
+        }
+        match parse(&[
+            "stemma",
+            "task",
+            "Write it up",
+            "--origin",
+            "t1#2",
+            "--paper",
+            "p/notes",
+        ])
+        .command
+        {
+            Command::Task(args) => assert_eq!(args.paper.as_deref(), Some("p/notes")),
+            _ => panic!("not a task"),
+        }
+    }
 }

@@ -17,6 +17,7 @@ pub mod git;
 pub mod jobs;
 pub mod library;
 pub mod oidc;
+pub mod papers;
 pub mod secret;
 pub mod state;
 pub mod web;

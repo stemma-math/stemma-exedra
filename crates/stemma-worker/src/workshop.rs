@@ -12,10 +12,16 @@
 //! - `check`: the build must pass, and no definition's data may newly
 //!   depend on `sorry`, as the inspection says. If not, the agent is told
 //!   why and works again, as many rounds as configured.
+//! - `compile`: for a paper, `latexmk` must make its PDF; if not, the agent
+//!   is told why and works again, as many rounds as configured. What
+//!   compiling made is then cleaned away.
 //! - `propose`: the work is committed, with the task's provenance in
 //!   trailers, and pushed to the task's branch with the job's token, which
 //!   pushes nowhere else. The hub then opens a pull request, which people
 //!   approve.
+//!
+//! A task on a paper works the same way on the paper's repository, from
+//! its checkout (`papers/<group>/<paper>`), with no Lean in it.
 //!
 //! A machine refuses a task with a step it does not know. Whatever the
 //! end, the outcome has the agent's report and the log, and the run adds
@@ -39,10 +45,11 @@ use stemma_core::protocol::{Built, JobSpec, Outcome, TaskEnd, TaskOutcome, TaskR
 use crate::isolation::{self, Isolator, Mount, Sandbox};
 use crate::job::{self, Context, JobDir, Progress, Prompt, within};
 use crate::library::{self, Log, git, git_output, quietly};
+use crate::papers;
 use crate::runners::Work;
 
 /// The steps a machine knows, by name.
-pub const STEPS: &[&str] = &["work", "check", "propose"];
+pub const STEPS: &[&str] = &["work", "check", "compile", "propose"];
 
 /// Where, in the worktree, the runner writes its report.
 const REPORT: &str = ".stemma/report.md";
@@ -148,12 +155,10 @@ impl Ended {
 
 /// What checking the work found.
 enum Checked {
-    Passed(Built),
+    /// It passes; for the library, with its build and inspection.
+    Passed(Option<Built>),
     /// It does not pass: why, in a line, and what to tell the runner.
-    Refused {
-        reason: String,
-        feedback: String,
-    },
+    Refused { reason: String, feedback: String },
 }
 
 /// A task's run on this machine: its steps, in a worktree of the warm
@@ -215,7 +220,18 @@ impl Drop for Worktree {
 
 impl Run<'_> {
     fn warm(&self) -> PathBuf {
-        library::checkout_dir(self.context, &self.job.group.slug)
+        match &self.task.paper {
+            Some(paper) => papers::checkout_dir(self.context, &self.job.group.slug, paper),
+            None => library::checkout_dir(self.context, &self.job.group.slug),
+        }
+    }
+
+    /// The key of the lock on the warm checkout.
+    fn lock_key(&self) -> String {
+        match &self.task.paper {
+            Some(paper) => papers::lock_key(&self.job.group.slug, paper),
+            None => self.job.group.slug.clone(),
+        }
     }
 
     fn token(&self) -> &str {
@@ -230,7 +246,7 @@ impl Run<'_> {
         let base = self.prepare().await?;
         let worktree = self.worktree.as_ref().expect("prepared").path.clone();
         let config = self.context.config.workshop.clone();
-        let rounds = if self.has("check") {
+        let rounds = if self.has("check") || self.has("compile") {
             config.rounds.unwrap_or(2).max(1)
         } else {
             1
@@ -295,12 +311,16 @@ impl Run<'_> {
                     built: None,
                 });
             }
-            if !self.has("check") {
+            let checked = if self.has("compile") && self.task.paper.is_some() {
+                self.compile(&worktree).await?
+            } else if self.has("check") && self.task.paper.is_none() {
+                self.check(&worktree).await?
+            } else {
                 break;
-            }
-            match self.check(&worktree).await? {
+            };
+            match checked {
                 Checked::Passed(passed) => {
-                    built = Some(passed);
+                    built = passed;
                     break;
                 }
                 Checked::Refused {
@@ -335,16 +355,21 @@ impl Run<'_> {
     /// `main`, with the checkout's dependencies and build. Returns the
     /// commit it is at.
     async fn prepare(&mut self) -> anyhow::Result<String> {
-        self.progress.say("Preparing the library");
+        let paper = self.task.paper.is_some();
+        self.progress.say(if paper {
+            "Preparing the paper"
+        } else {
+            "Preparing the library"
+        });
         let warm = self.warm();
-        let lock = self.context.checkout_lock(&self.job.group.slug);
+        let lock = self.context.checkout_lock(&self.lock_key());
         let _held = lock.lock().await;
         let url = format!("{}{}", self.context.hub, self.task.repository);
         library::fetch(&warm, &url, self.token(), self.log).await?;
         let base = git_output(&warm, self.token(), &["rev-parse", "origin/main"]).await?;
         self.log.line(&format!("main is at {base}."));
         // The dependencies, as `main` needs them.
-        if library::checkout(&warm, &base, self.token(), self.log).await? {
+        if library::checkout(&warm, &base, self.token(), self.log).await? && !paper {
             let cache = self.context.config.lean.cache.unwrap_or(true);
             if cache {
                 // As a build of `main` does, in a container of its own.
@@ -353,7 +378,7 @@ impl Run<'_> {
                 library::get_cache(sandbox.as_ref(), &warm, self.log, self.progress).await?;
             }
         }
-        // What is made in the worktree is not the library's.
+        // What is made in the worktree is not the repository's.
         let exclude = warm.join(".git/info/exclude");
         let excluded = std::fs::read_to_string(&exclude).unwrap_or_default();
         if !excluded.lines().any(|l| l == ".stemma/") {
@@ -361,7 +386,11 @@ impl Run<'_> {
             std::fs::write(&exclude, format!("{excluded}\n.lake/\n.stemma/\n"))?;
         }
 
-        let worktree = self.context.work_dir.join("tasks").join(format!(
+        let worktree = self
+            .context
+            .work_dir
+            .join(if paper { "paper-tasks" } else { "tasks" });
+        let worktree = worktree.join(format!(
             "{}-w{}-{:08x}",
             self.job.group.slug,
             self.task.task,
@@ -384,6 +413,10 @@ impl Run<'_> {
             warm: warm.clone(),
             link: std::fs::read(worktree.join(".git"))?,
         });
+        if paper {
+            std::fs::create_dir_all(worktree.join(".stemma"))?;
+            return Ok(base);
+        }
         let lake = worktree.join(".lake");
         std::fs::create_dir_all(&lake)?;
         if warm.join(".lake/packages").is_dir() {
@@ -431,7 +464,8 @@ impl Run<'_> {
             },
         ];
         let packages = self.warm().join(".lake/packages");
-        if packages.is_dir() {
+        let library = self.task.paper.is_none();
+        if library && packages.is_dir() {
             mounts.push(Mount::Bind {
                 source: packages.clone(),
                 target: seen(&packages),
@@ -439,7 +473,7 @@ impl Run<'_> {
             });
         }
         let inspections = library::inspection_root(self.context, true);
-        if inspections.is_dir() {
+        if library && inspections.is_dir() {
             mounts.push(Mount::Bind {
                 source: inspections.clone(),
                 target: seen(&inspections),
@@ -489,6 +523,14 @@ impl Run<'_> {
             .replace("{requester}", &conversation.requester.display_name)
             .replace("{group}", &self.job.group.name)
             .replace("{task}", &task.task.to_string())
+            .replace(
+                "{paper}",
+                &task
+                    .paper
+                    .as_deref()
+                    .map(|p| format!("p/{p}"))
+                    .unwrap_or_default(),
+            )
             .replace("{report}", REPORT);
         let mut user = job::conversation_text(&self.job.group, conversation);
         user.push_str("---\n\n");
@@ -499,8 +541,12 @@ impl Run<'_> {
                 task.data_sorry.join(", ")
             ));
         }
+        let on = match &task.paper {
+            Some(paper) => format!(" on the paper p/{paper}"),
+            None => String::new(),
+        };
         user.push_str(&format!(
-            "Task w{}, asked in message t{}#{} by {} (@{}): {}\n\n{}\n",
+            "Task w{}{on}, asked in message t{}#{} by {} (@{}): {}\n\n{}\n",
             task.task,
             conversation.thread.number,
             conversation.trigger,
@@ -591,12 +637,44 @@ impl Run<'_> {
              declarations, {sorry} depending on sorry).",
             report.declarations.len()
         ));
-        Ok(Checked::Passed(Built {
+        Ok(Checked::Passed(Some(Built {
             succeeded: true,
             error: None,
             log: String::new(),
             report: Some(report),
-        }))
+        })))
+    }
+
+    /// Compiles the paper in the worktree: `latexmk` must make its PDF.
+    /// Then what compiling made is cleaned away, not to be committed.
+    async fn compile(&self, worktree: &Path) -> anyhow::Result<Checked> {
+        let started = self.log.len();
+        let main = stemma_core::api::PAPER_MAIN;
+        let made = papers::latexmk(self.sandbox(), worktree, main, self.log, self.progress).await?;
+        let compiled = self.log.since(started);
+        // What latexmk made, the bibliography included.
+        let clean = ["-e", "$bibtex_use = 2", "-C", main];
+        library::run_in(
+            self.sandbox(),
+            "latexmk",
+            &clean,
+            worktree,
+            self.log,
+            |_| {},
+        )
+        .await?;
+        if !made {
+            return Ok(Checked::Refused {
+                reason: "The paper does not compile".into(),
+                feedback: format!(
+                    "`latexmk -pdf {main}` does not make the PDF. What it says is wrong:\n\n\
+                     ```\n{}\n```",
+                    tail_chars(&papers::errors_of(&compiled), FEEDBACK_CHARS)
+                ),
+            });
+        }
+        self.log.line("Accepted: the paper compiles.");
+        Ok(Checked::Passed(None))
     }
 
     /// Commits the work over `base`, as one commit, with the task's

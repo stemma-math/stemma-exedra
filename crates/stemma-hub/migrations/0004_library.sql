@@ -69,7 +69,7 @@ CREATE TABLE tasks (
     number INTEGER NOT NULL,
     title TEXT NOT NULL,
     instructions TEXT NOT NULL,
-    -- The architecture it runs with: `formalize`.
+    -- The architecture it runs with: `formalize`, `write`.
     architecture TEXT NOT NULL,
     -- The message that asked for it.
     thread_id INTEGER NOT NULL REFERENCES threads (id) ON DELETE CASCADE,
@@ -112,11 +112,12 @@ CREATE INDEX tasks_group ON tasks (group_id, number DESC);
 CREATE INDEX tasks_job ON tasks (job_id);
 
 -- The approvals a task's changes were given: by whom, and as what (the
--- asker, an admin). One person may approve as several.
+-- asker, an admin, an author of the paper it changes). One person may
+-- approve as several.
 CREATE TABLE task_approvals (
     task_id INTEGER NOT NULL REFERENCES tasks (id) ON DELETE CASCADE,
     user_id INTEGER NOT NULL REFERENCES users (id) ON DELETE CASCADE,
-    approver TEXT NOT NULL CHECK (approver IN ('asker', 'admin')),
+    approver TEXT NOT NULL CHECK (approver IN ('asker', 'admin', 'author')),
     created_at INTEGER NOT NULL,
     PRIMARY KEY (task_id, approver)
 );
