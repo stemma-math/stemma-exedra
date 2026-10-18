@@ -6,9 +6,10 @@
   const STATES: Record<Task["state"], { tone: string; text: string }> = {
     open: { tone: "neutral", text: "Waiting" },
     running: { tone: "info", text: "Running" },
+    review: { tone: "warning", text: "Waiting for approval" },
     done: { tone: "success", text: "Done" },
     failed: { tone: "danger", text: "Failed" },
-    blocked: { tone: "warning", text: "Blocked" },
+    rejected: { tone: "neutral", text: "Rejected" },
     cancelled: { tone: "neutral", text: "Cancelled" },
   };
 

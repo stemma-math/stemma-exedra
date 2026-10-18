@@ -129,19 +129,6 @@ export const RUNNER_NAMES: Record<string, string> = {
   opencode: "OpenCode",
 };
 
-export type AgentRole = "answer" | "workshop";
-
-/** One of a group's own agents, which run on its workers. */
-export interface AgentProfile {
-  handle: string;
-  display_name: string;
-  runner: string;
-  model: string | null;
-  args: string[];
-  instructions: string | null;
-  role: AgentRole;
-}
-
 /** One of a person's own agents, which answer for them in all their groups. */
 export interface PersonalAgent {
   handle: string;
@@ -153,36 +140,76 @@ export interface PersonalAgent {
   default: boolean;
 }
 
-/** A group's worker. */
-export interface Worker {
-  id: number;
-  name: string;
-  group: string;
-  prefix: string;
-  online: boolean;
-  runners: string[];
-  lean: boolean;
-  workshop: boolean;
-  version: string | null;
-  created_at: string;
-  last_seen_at: string | null;
+/** How much a workshop agent did today. */
+export interface AgentToday {
+  jobs: number;
+  minutes: number;
 }
 
-export interface CreatedWorker extends Worker {
-  secret: string;
+/** One of the agents a machine offers the workshop, in its owner's order. */
+export interface WorkshopAgent {
+  id?: number | null;
+  runner: string;
+  model: string | null;
+  args: string[];
+  daily_jobs: number | null;
+  daily_minutes: number | null;
+  today?: AgentToday | null;
 }
 
-/** One of a person's machines, where their own agents run. */
+/** One of a person's machines, where their own agents run, and the
+ * workshops it works for. */
 export interface Machine {
   id: number;
   name: string;
   prefix: string;
   online: boolean;
   runners: string[];
+  lean: boolean;
   preferred: boolean;
+  workshop: string[];
+  workshop_agents: WorkshopAgent[];
   version: string | null;
   created_at: string;
   last_seen_at: string | null;
+}
+
+/** A machine working for a group's workshop. */
+export interface WorkshopMachine {
+  id: number;
+  name: string;
+  owner: User;
+  online: boolean;
+  lean: boolean;
+  runners: string[];
+  agents: WorkshopAgent[];
+  added_at: string;
+}
+
+/** A kind of work the workshop knows. */
+export interface Architecture {
+  name: string;
+  description: string;
+  works_on: string;
+  steps: { name: string; description: string }[];
+  big: string[];
+  instructions: string[];
+}
+
+/** What the workshop's jobs consumed. */
+export interface Consumption {
+  jobs: number;
+  seconds: number;
+  input_tokens: number | null;
+  output_tokens: number | null;
+  cache_read_tokens: number | null;
+  cache_write_tokens: number | null;
+  cost_usd: number | null;
+}
+
+export interface ConsumptionDay extends Consumption {
+  day: string;
+  rows: (Consumption & { machine: string; runner: string; model: string | null })[];
 }
 
 export type JobState = "queued" | "running" | "done" | "failed" | "cancelled";
@@ -284,12 +311,38 @@ export interface DeclarationPage extends DeclarationSummary {
   references: { address: string; title: string }[];
 }
 
-export type TaskState = "open" | "running" | "done" | "failed" | "blocked" | "cancelled";
+export type TaskState =
+  | "open"
+  | "running"
+  | "review"
+  | "done"
+  | "failed"
+  | "rejected"
+  | "cancelled";
+
+/** Whose approval a change needs. */
+export type Approver = "asker" | "admin";
+
+/** What a task proposes: a branch, in a pull request of the forge. */
+export interface Changes {
+  repository: string;
+  branch: string;
+  commit: string;
+  pull: number;
+  url: string;
+  big: boolean;
+  why_big: string[];
+  needs: Approver[];
+  approvals: { user: User; approver: Approver; at: string }[];
+  rejected_by: User | null;
+  merged: string | null;
+}
 
 export interface Task {
   number: number;
   title: string;
   instructions: string;
+  architecture: string;
   origin: string;
   requester: User;
   agent: string | null;
@@ -298,7 +351,7 @@ export interface Task {
   model: string | null;
   progress: string | null;
   reason: string | null;
-  commits: string[];
+  changes: Changes | null;
   report_message: string | null;
   created_at: string;
   updated_at: string;
@@ -432,18 +485,14 @@ export const api = {
   search: (group: string, q: string) =>
     get<SearchHit[]>(`${g(group)}/search?${new URLSearchParams({ q })}`),
 
-  agents: (group: string) => get<AgentProfile[]>(`${g(group)}/agents`),
-  createAgent: (group: string, agent: AgentProfile) =>
-    post<AgentProfile>(`${g(group)}/agents`, agent),
-  updateAgent: (group: string, agent: AgentProfile) =>
-    put<AgentProfile>(`${g(group)}/agents/${encodeURIComponent(agent.handle)}`, agent),
-  deleteAgent: (group: string, handle: string) =>
-    del<void>(`${g(group)}/agents/${encodeURIComponent(handle)}`),
-
-  groupWorkers: (group: string) => get<Worker[]>(`${g(group)}/workers`),
-  createGroupWorker: (group: string, name: string) =>
-    post<CreatedWorker>(`${g(group)}/workers`, { name }),
-  revokeGroupWorker: (group: string, id: number) => del<void>(`${g(group)}/workers/${id}`),
+  architectures: () => get<Architecture[]>("/workshop/architectures"),
+  workshopMachines: (group: string) => get<WorkshopMachine[]>(`${g(group)}/workshop/machines`),
+  addWorkshopMachine: (group: string, machine: number) =>
+    post<void>(`${g(group)}/workshop/machines`, { machine }),
+  removeWorkshopMachine: (group: string, machine: number) =>
+    del<void>(`${g(group)}/workshop/machines/${machine}`),
+  consumption: (group: string, days = 14) =>
+    get<ConsumptionDay[]>(`${g(group)}/workshop/consumption?days=${days}`),
 
   myAgents: () => get<PersonalAgent[]>("/me/agents"),
   createMyAgent: (agent: PersonalAgent) => post<PersonalAgent>("/me/agents", agent),
@@ -455,6 +504,8 @@ export const api = {
   preferMachine: (id: number, preferred: boolean) =>
     patch<Machine>(`/me/machines/${id}`, { preferred }),
   revokeMachine: (id: number) => del<void>(`/me/machines/${id}`),
+  setWorkshopAgents: (id: number, agents: WorkshopAgent[]) =>
+    put<WorkshopAgent[]>(`/me/machines/${id}/workshop-agents`, agents),
 
   library: (group: string) => get<LibraryState>(`${g(group)}/library`),
   declarations: (
@@ -477,6 +528,8 @@ export const api = {
     get<Task[]>(`${g(group)}/tasks${state ? `?state=${state}` : ""}`),
   task: (group: string, n: number) => get<TaskPage>(`${g(group)}/tasks/${n}`),
   cancelTask: (group: string, n: number) => del<void>(`${g(group)}/tasks/${n}`),
+  approveTask: (group: string, n: number) => post<void>(`${g(group)}/tasks/${n}/approve`, {}),
+  rejectTask: (group: string, n: number) => post<void>(`${g(group)}/tasks/${n}/reject`, {}),
 
   threadJobs: (group: string, n: number) => get<Job[]>(`${g(group)}/threads/${n}/jobs`),
   cancelJob: (group: string, id: number) => del<void>(`${g(group)}/jobs/${id}`),

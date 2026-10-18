@@ -6,9 +6,8 @@
   import { ROLE_NAMES, ROLES } from "#lib/roles.ts";
   import { loadSession, session } from "#lib/session.svelte.ts";
   import { toastError } from "#lib/toast.ts";
-  import AgentSettings from "#lib/components/AgentSettings.svelte";
   import Avatar from "#lib/components/Avatar.svelte";
-  import WorkerSettings from "#lib/components/WorkerSettings.svelte";
+  import WorkshopMachines from "#lib/components/WorkshopMachines.svelte";
 
   const context = groupContext();
   const group = $derived(context.group);
@@ -207,25 +206,14 @@
   {/if}
 
   <section class="stack">
-    <h2>The group's agents</h2>
+    <h2>Workshop machines</h2>
     <p>
-      Agents answer when someone mentions them, as in <code>@claude what do you think?</code>, and in
-      a chat, their resident agent answers every message. Everyone's own agents, such as
-      <code>@claude</code>, are in their <a href="/settings">settings</a>, and answer for them, on
-      their machines. The group's own agents run on its workers; the workshop's hands what it is
-      asked to the workshop, as a task. A handle the group has names its agent.
+      The workshop, <code>@workshop</code>, works on the group's library in the background, on machines
+      its admins add: their own, from their <a href="/settings">settings</a> or with
+      <code>stemma machine workshop add {group.slug}</code>. Each machine's owner chooses the agents it
+      offers the workshop, in order, with what each may do in a day, and their sign-ins stay on it. With
+      Lean, the machines also build the library. Everyone's own agents run on their own machines.
     </p>
-    <AgentSettings group={group.slug} {admin} />
-  </section>
-
-  <section class="stack">
-    <h2>Group workers</h2>
-    <p>
-      A group worker runs the group's own agents and, with Lean, builds its library and works on the
-      workshop's tasks, with the logins and keys in its own configuration: the hub never holds them.
-      It connects to the hub from wherever it runs. Each person's machines, for their own agents,
-      are in their <a href="/settings">settings</a>.
-    </p>
-    <WorkerSettings group={group.slug} manage={admin} />
+    <WorkshopMachines group={group.slug} {admin} />
   </section>
 </main>

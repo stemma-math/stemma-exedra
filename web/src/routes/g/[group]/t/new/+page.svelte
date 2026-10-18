@@ -5,7 +5,7 @@
   import { addressPath, parseAddress } from "#lib/address.ts";
   import Composer from "#lib/components/Composer.svelte";
   import { groupContext } from "#lib/group.svelte.ts";
-  import { type Summonable, summonable } from "#lib/roles.ts";
+  import type { Summonable } from "#lib/roles.ts";
 
   const context = groupContext();
   const group = $derived(context.group);
@@ -17,9 +17,10 @@
   const anchor = page.url.searchParams.get("anchor") ?? undefined;
 
   $effect(() => {
-    Promise.all([api.myAgents(), api.agents(group.slug)])
-      .then(([own, groups]) => {
-        agents = summonable(own, groups, group.role);
+    api
+      .myAgents()
+      .then((own) => {
+        agents = own;
         if (!agent && agents.length) agent = agents[0].handle;
       })
       .catch(() => {});
@@ -73,8 +74,8 @@
         {/each}
       </select>
       <span class="field__hint">
-        In a chat, this agent answers every message. If it is one of yours, each person who writes is
-        answered by their own agent with that handle. Anyone can mention other agents too.
+        In a chat, this agent answers every message: each person who writes is answered by their own
+        agent with that handle. Anyone can mention other agents too.
       </span>
     </div>
   {/if}

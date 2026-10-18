@@ -2,6 +2,7 @@
   import { api, type Machine, RUNNER_NAMES } from "#lib/api.ts";
   import { exactly, when } from "#lib/format.ts";
   import { toastError } from "#lib/toast.ts";
+  import WorkshopAgents from "./WorkshopAgents.svelte";
 
   let machines = $state<Machine[]>([]);
 
@@ -22,7 +23,9 @@
 
   /** The runners a machine found, as it said when it last connected. */
   function runs(machine: Machine): string {
-    if (machine.runners.length) return machine.runners.map((r) => RUNNER_NAMES[r] ?? r).join(", ");
+    const runners = machine.runners.map((r) => RUNNER_NAMES[r] ?? r);
+    if (machine.lean) runners.push("Lean");
+    if (runners.length) return runners.join(", ");
     return machine.last_seen_at ? "No runners found" : "Not connected yet";
   }
 
@@ -69,6 +72,7 @@
               </span>
             {/if}
             {#if machine.preferred}<span class="chip">Preferred</span>{/if}
+            {#if machine.workshop.length}<span class="chip chip--info">Workshop</span>{/if}
           </span>
           <span class="row" data-density="compact">
             {#if machine.preferred}
@@ -88,6 +92,12 @@
       {/each}
     </div>
   </div>
+  {#each machines.filter((m) => m.workshop.length) as machine (machine.id)}
+    <section class="stack stack--tight">
+      <h3>“{machine.name}”, for the workshop</h3>
+      <WorkshopAgents {machine} />
+    </section>
+  {/each}
 {:else}
   <p class="empty">No machines yet.</p>
 {/if}

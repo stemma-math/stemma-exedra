@@ -341,22 +341,29 @@ stemma-toast-region {
   }
 }
 
+.consumption-table {
+  --columns: auto auto auto auto auto;
+}
+
+.consumption-table .numeric {
+  justify-self: end;
+}
+
 /* Tables of settings: their columns fit what they hold, across rows. */
-.agents-table {
-  --columns: minmax(0, 1fr) auto fit-content(14rem);
-}
-
-.agents-table.is-managed {
-  --columns: minmax(0, 1fr) auto fit-content(14rem) auto;
-}
-
-.workers-table {
-  --columns: minmax(0, 1fr) auto auto;
-}
-
-.workers-table.is-managed,
 .machines-table {
   --columns: minmax(0, 1fr) auto auto auto;
+}
+
+.workshop-machines-table {
+  --columns: minmax(0, 1fr) minmax(0, 1fr) auto;
+}
+
+.workshop-machines-table.is-managed {
+  --columns: minmax(0, 1fr) minmax(0, 1fr) auto auto;
+}
+
+.workshop-agents-table {
+  --columns: auto minmax(0, 1fr) auto auto auto auto;
 }
 
 .my-agents-table {

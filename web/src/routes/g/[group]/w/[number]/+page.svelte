@@ -54,6 +54,37 @@
       (group.role === "admin" || task.requester.id === session.me?.id),
   );
 
+  const me = $derived(session.me?.id);
+  const canApprove = $derived(
+    task !== null &&
+      task.state === "review" &&
+      group.role !== "guest" &&
+      (task.changes?.needs ?? []).some(
+        (n) => (n === "asker" && task?.requester.id === me) || (n === "admin" && group.role === "admin"),
+      ),
+  );
+  const canReject = $derived(
+    task !== null &&
+      task.state === "review" &&
+      group.role !== "guest" &&
+      (group.role === "admin" || task.requester.id === me),
+  );
+
+  async function review(approve: boolean) {
+    if (!task) return;
+    const question = approve
+      ? `Approve the changes of w${task.number}?`
+      : `Reject the changes of w${task.number}? Nothing goes in the library.`;
+    if (!confirm(question)) return;
+    try {
+      if (approve) await api.approveTask(group.slug, task.number);
+      else await api.rejectTask(group.slug, task.number);
+      await load();
+    } catch (error) {
+      toastError(error);
+    }
+  }
+
   async function cancel() {
     if (!task || !confirm(`Cancel w${task.number}? Nothing it did is kept.`)) return;
     try {
@@ -109,7 +140,7 @@
       </p>
     {/if}
     {#if task.reason}
-      <div class={["message", task.state === "blocked" ? "message--warning" : "message--danger"]}>
+      <div class="message message--danger">
         <span class="message__text">{task.reason}</span>
       </div>
     {/if}
@@ -126,14 +157,51 @@
       </section>
     {/if}
 
-    {#if task.commits.length}
+    {#if task.changes}
+      {@const changes = task.changes}
       <section class="stack stack--tight">
-        <h2>In the library</h2>
+        <h2>Changes</h2>
+        <p>
+          <span class="identifier">{changes.commit.slice(0, 10)}</span> on the branch
+          <code>{changes.branch}</code> of the {changes.repository}:
+          <a class="link" href={changes.url} target="_blank" rel="noreferrer">see them in the forge</a>.
+        </p>
+        {#if changes.big}
+          <div class="message message--warning">
+            <span class="message__text">A big change, which an admin approves too: {changes.why_big.join("; ")}.</span>
+          </div>
+        {/if}
         <ul class="plain-list">
-          {#each task.commits as commit (commit)}
-            <li><span class="identifier">{commit.slice(0, 10)}</span> on <code>main</code></li>
+          {#each changes.approvals as approval (approval.approver)}
+            <li>
+              Approved by {approval.user.display_name}, as {approval.approver === "asker" ? "who asked" : "an admin"},
+              <time datetime={approval.at}>{exactly(approval.at)}</time>.
+            </li>
           {/each}
+          {#if task.state === "review" && changes.needs.length}
+            <li class="quiet">
+              Waiting for {changes.needs
+                .map((n) => (n === "asker" ? task?.requester.display_name : "an admin"))
+                .join(" and ")}.
+            </li>
+          {/if}
+          {#if changes.rejected_by}
+            <li>Rejected by {changes.rejected_by.display_name}.</li>
+          {/if}
+          {#if changes.merged}
+            <li>Merged into <code>main</code> as <span class="identifier">{changes.merged.slice(0, 10)}</span>.</li>
+          {/if}
         </ul>
+        {#if canApprove || canReject}
+          <div class="row">
+            {#if canApprove}
+              <button type="button" class="button button--primary" onclick={() => review(true)}>Approve</button>
+            {/if}
+            {#if canReject}
+              <button type="button" class="button button--danger" onclick={() => review(false)}>Reject</button>
+            {/if}
+          </div>
+        {/if}
       </section>
     {/if}
 

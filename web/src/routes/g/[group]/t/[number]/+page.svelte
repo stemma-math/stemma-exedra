@@ -61,9 +61,10 @@
   }
 
   $effect(() => {
-    Promise.all([api.myAgents(), api.agents(group.slug)])
-      .then(([own, groups]) => {
-        agents = summonable(own, groups, group.role).map((a) => a.handle);
+    api
+      .myAgents()
+      .then((own) => {
+        agents = summonable(own, group.role).map((a) => a.handle);
       })
       .catch(() => {});
   });

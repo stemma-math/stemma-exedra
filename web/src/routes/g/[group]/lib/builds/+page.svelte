@@ -51,7 +51,7 @@
     {/if}
   </div>
   <p class="quiet">
-    A group worker with Lean builds each new commit of <code>main</code>, and inspects it. The library's
+    A workshop machine with Lean builds each new commit of <code>main</code>, and inspects it. The library's
     state is its last build that passed.
   </p>
   {#if builds === null}
