@@ -1,18 +1,25 @@
-//! The Stemma worker: it connects outbound to a hub with a worker token,
-//! says what it can run, and runs the jobs the hub hands it: agents'
-//! answers, with the runners it offers (`claude-code`, `codex`,
-//! `opencode`); if it is a group's and has Lean, builds of the group's
-//! library; and with Lean and a runner that edits files, the group's
-//! workshop's tasks.
+//! Running agents: a group's workers and people's machines, and how
+//! Stemma launches each agent ([`launch`]).
 //!
-//! A group's worker runs the group's agents and its workshop; a member's
-//! worker runs only that member's jobs, with their own logins. Credentials never leave the worker's machine.
+//! A worker or a machine connects outbound to a hub with its token, says
+//! what it can run, and runs the jobs the hub hands it: agents' answers,
+//! with the runners it offers (`claude-code`, `codex`, `opencode`); if it
+//! is a group's and has Lean, builds of the group's library; and with Lean
+//! and a runner that edits files, the group's workshop's tasks.
+//!
+//! A group's worker runs the group's own agents and its workshop, with the
+//! sign-ins and keys of its configuration. A person's machine
+//! ([`machine`]) runs only that person's own agents, with their own
+//! sign-in to each runner. Credentials never leave the machine they are
+//! on.
 
 pub mod config;
 pub mod connection;
+pub mod detect;
 pub mod job;
 pub mod launch;
 pub mod library;
+pub mod machine;
 pub mod runners;
 pub mod workshop;
 

@@ -340,7 +340,7 @@ async fn a_members_claude_answers_a_mention() {
 }
 
 #[tokio::test]
-async fn a_personal_agent_waits_for_its_requesters_worker() {
+async fn a_persons_agent_waits_for_one_of_their_machines() {
     let hub = TestHub::start().await;
     let (ada, bob) = group(&hub).await;
     let tools = tempfile::tempdir().unwrap();
@@ -382,6 +382,63 @@ async fn a_personal_agent_waits_for_its_requesters_worker() {
     assert_eq!(message["agent"], "Claude");
     adas.abort();
     bobs.abort();
+}
+
+#[tokio::test]
+async fn a_persons_own_agent_runs_as_they_defined_it() {
+    let hub = TestHub::start().await;
+    let (ada, _) = group(&hub).await;
+    ada.post(
+        &hub,
+        "/me/agents",
+        json!({"handle": "claude-sonnet", "display_name": "Claude Sonnet",
+               "runner": "claude-code", "model": "sonnet", "args": ["--effort", "high"]}),
+    )
+    .await;
+    let tools = tempfile::tempdir().unwrap();
+    let work = tempfile::tempdir().unwrap();
+    let claude = fake_claude(tools.path(), 0);
+    // A machine, as `stemma machine add` configures it, offering what it
+    // found installed.
+    let created = ada
+        .post(&hub, "/me/machines", json!({"name": "laptop"}))
+        .await;
+    let machine: stemma_worker::machine::MachineConfig = toml::from_str(&format!(
+        "hub = {:?}\ntoken = {:?}\nid = {}\nname = \"laptop\"\nwork_dir = {:?}\n\
+         [runners.claude-code]\ncommand = {:?}\n",
+        hub.url,
+        created["secret"].as_str().unwrap(),
+        created["id"],
+        work.path().display().to_string(),
+        claude.display().to_string()
+    ))
+    .unwrap();
+    let found = stemma_worker::detect::installed(
+        &machine.runners,
+        Some(std::ffi::OsStr::new("/nonexistent")),
+    )
+    .await;
+    assert_eq!(found, ["claude-code"]);
+    let context = Context::new(machine.worker_config(&found), "stemma".into()).unwrap();
+    let running = tokio::spawn(connection::serve(Arc::new(context), machine.token.clone()));
+    wait_online(&hub, &ada, "/me/machines").await;
+    assert_eq!(
+        ada.get(&hub, "/me/machines").await[0]["runners"],
+        json!(["claude-code"])
+    );
+
+    ada.post(
+        &hub,
+        "/groups/geometry/threads",
+        json!({"title": "Gluing", "body": "@claude-sonnet is it proper?"}),
+    )
+    .await;
+    let message = answer(&hub, &ada, 1, 2).await;
+    assert_eq!(message["agent"], "Claude Sonnet");
+    assert_eq!(message["author"]["username"], "ada");
+    let args = std::fs::read_to_string(tools.path().join("claude.args")).unwrap();
+    assert!(args.contains("--model\nsonnet\n--effort\nhigh\n"), "{args}");
+    running.abort();
 }
 
 #[tokio::test]

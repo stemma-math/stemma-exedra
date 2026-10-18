@@ -282,14 +282,12 @@ async fn ask(
 
 /// The configuration of one of the worker's command-line runners.
 pub fn cli_runner(context: &Context, runner: &str) -> anyhow::Result<crate::config::CliRunner> {
-    let configured = &context.config.runners;
-    let config = match runner {
-        names::CLAUDE_CODE => configured.claude_code.clone(),
-        names::CODEX => configured.codex.clone(),
-        names::OPENCODE => configured.opencode.clone(),
-        _ => None,
-    };
-    config.ok_or_else(|| anyhow::anyhow!("this worker has no runner {runner}"))
+    context
+        .config
+        .runners
+        .get(runner)
+        .cloned()
+        .ok_or_else(|| anyhow::anyhow!("this worker has no runner {runner}"))
 }
 
 /// Runs one of the command-line runners: Claude Code, Codex or OpenCode.

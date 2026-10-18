@@ -1,4 +1,5 @@
-//! A worker's configuration: a TOML file.
+//! A group worker's configuration: a TOML file. (A person's machine has
+//! its own, which `stemma machine add` writes: see [`crate::machine`].)
 //!
 //! ```toml
 //! hub = "https://stemma.example.org"
@@ -24,7 +25,7 @@
 use std::path::{Path, PathBuf};
 
 use anyhow::Context;
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use stemma_core::api::runners;
 
 #[derive(Clone, Debug, Deserialize)]
@@ -83,28 +84,56 @@ fn one() -> u32 {
     1
 }
 
-/// The runners this worker offers: those listed.
-#[derive(Clone, Debug, Default, Deserialize)]
+/// The runners this worker offers: those listed. For a person's machine,
+/// how to run those it finds installed.
+#[derive(Clone, Debug, Default, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct Runners {
-    #[serde(rename = "claude-code")]
+    #[serde(rename = "claude-code", skip_serializing_if = "Option::is_none")]
     pub claude_code: Option<CliRunner>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub codex: Option<CliRunner>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub opencode: Option<CliRunner>,
 }
 
+impl Runners {
+    /// How to run `runner`, if it is listed.
+    pub fn get(&self, runner: &str) -> Option<&CliRunner> {
+        match runner {
+            runners::CLAUDE_CODE => self.claude_code.as_ref(),
+            runners::CODEX => self.codex.as_ref(),
+            runners::OPENCODE => self.opencode.as_ref(),
+            _ => None,
+        }
+    }
+
+    /// Lists `runner`, as `config` says to run it.
+    pub fn set(&mut self, runner: &str, config: CliRunner) {
+        match runner {
+            runners::CLAUDE_CODE => self.claude_code = Some(config),
+            runners::CODEX => self.codex = Some(config),
+            runners::OPENCODE => self.opencode = Some(config),
+            _ => {}
+        }
+    }
+}
+
 /// A runner that is a command-line harness.
-#[derive(Clone, Debug, Default, Deserialize)]
+#[derive(Clone, Debug, Default, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct CliRunner {
     /// The command; the harness's usual name if absent.
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub command: Option<String>,
     /// More arguments to give it.
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub args: Vec<String>,
     /// The model, unless an agent's profile names one.
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub model: Option<String>,
     /// How long a job may take; 15 minutes if absent.
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub timeout_minutes: Option<u64>,
 }
 
@@ -153,16 +182,11 @@ impl WorkerConfig {
 
     /// The runners offered, by name.
     pub fn runner_names(&self) -> Vec<String> {
-        let r = &self.runners;
-        [
-            (r.claude_code.is_some(), runners::CLAUDE_CODE),
-            (r.codex.is_some(), runners::CODEX),
-            (r.opencode.is_some(), runners::OPENCODE),
-        ]
-        .into_iter()
-        .filter(|(offered, _)| *offered)
-        .map(|(_, name)| name.to_owned())
-        .collect()
+        runners::ALL
+            .iter()
+            .filter(|name| self.runners.get(name).is_some())
+            .map(|name| (*name).to_owned())
+            .collect()
     }
 
     /// The runners offered that can work on the workshop's tasks.

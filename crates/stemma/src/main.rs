@@ -1,6 +1,7 @@
 //! `stemma`: the hub, the worker and the client, in one binary.
 
 mod client;
+mod machine;
 
 use std::io::{BufRead, IsTerminal};
 use std::path::PathBuf;
@@ -22,8 +23,11 @@ struct Cli {
 enum Command {
     /// Run the hub: accounts, groups, the forum and the web app.
     Hub(HubArgs),
-    /// Run a worker: connect to a hub and run the jobs of its agents.
+    /// Run a group's worker: connect to a hub and run the group's agents,
+    /// builds and tasks.
     Worker(WorkerArgs),
+    /// Set up and serve this machine, where your own agents run.
+    Machine(machine::MachineArgs),
     /// Sign in to a hub from this machine.
     Login(client::LoginArgs),
     /// Sign out of the hub, revoking this machine's token.
@@ -88,6 +92,7 @@ async fn main() -> anyhow::Result<()> {
     // logs go to standard error, and the client commands log only problems.
     let default = match cli.command {
         Command::Hub(_) | Command::Worker(_) => "info,sqlx=warn,tower_http=info",
+        Command::Machine(_) => "info",
         _ => "warn",
     };
     tracing_subscriber::fmt()
@@ -100,6 +105,7 @@ async fn main() -> anyhow::Result<()> {
     match cli.command {
         Command::Hub(args) => hub(args).await,
         Command::Worker(args) => stemma_worker::run(&args.config).await,
+        Command::Machine(args) => machine::machine(args).await,
         Command::Login(args) => client::login(args).await,
         Command::Logout => client::logout().await,
         Command::Threads(args) => client::threads(args).await,

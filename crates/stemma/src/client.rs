@@ -353,7 +353,7 @@ fn prompt(question: &str) -> anyhow::Result<String> {
     Ok(line.trim().to_owned())
 }
 
-fn hostname() -> String {
+pub fn hostname() -> String {
     std::env::var("HOSTNAME")
         .ok()
         .or_else(|| {
