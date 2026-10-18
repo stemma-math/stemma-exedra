@@ -19,9 +19,16 @@
 //!
 //! A machine refuses a task with a step it does not know. Whatever the
 //! end, the outcome has the agent's report and the log, and the run adds
-//! up what the agent consumed. How the steps are run (here, in a worktree
-//! on the machine itself) is behind [`Run`], so that another way, such as
-//! a container, can take its place.
+//! up what the agent consumed.
+//!
+//! The steps' commands, the agent's and Lake's, run in a [`Sandbox`]: a
+//! container of the task's own, given only the worktree, the library's
+//! shared packages read-only, the job's folder, and how the agent signs
+//! in; or the machine itself, if its owner chose so (see
+//! [`crate::isolation`]). Git runs on the machine, with the job's token,
+//! which pushes only to the task's branch; before it does, the worktree's
+//! link to the checkout's repository is put back as it was, whatever the
+//! agent made of it, and no hook runs.
 
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -29,6 +36,7 @@ use std::sync::Arc;
 use stemma_core::api::LibraryReport;
 use stemma_core::protocol::{Built, JobSpec, Outcome, TaskEnd, TaskOutcome, TaskRun, Usage};
 
+use crate::isolation::{self, Isolator, Mount, Sandbox};
 use crate::job::{self, Context, JobDir, Progress, Prompt, within};
 use crate::library::{self, Log, git, git_output, quietly};
 use crate::runners::Work;
@@ -41,6 +49,9 @@ const REPORT: &str = ".stemma/report.md";
 
 /// How much of a failed build's log the runner is shown, in characters.
 const FEEDBACK_CHARS: usize = 12_000;
+
+/// The most of a report read, in bytes.
+const MAX_REPORT: u64 = 200_000;
 
 /// Runs a task to its outcome, done or failed, with its log; adds what the
 /// agent consumed to `usage`.
@@ -76,6 +87,7 @@ pub async fn run(
             .and_then(|c| c.model)
     });
     let log = Log::default();
+    let minutes = config.timeout_minutes.unwrap_or(120);
     let mut run = Run {
         context,
         job,
@@ -83,12 +95,15 @@ pub async fn run(
         progress,
         log: &log,
         model: model.clone(),
+        lifetime: std::time::Duration::from_secs(minutes * 60 + 300),
+        sandbox: None,
         worktree: None,
         usage: Usage::default(),
     };
-    let minutes = config.timeout_minutes.unwrap_or(120);
     let ended = within(minutes, "The task", run.work()).await;
-    // The worktree goes, even if the run is cancelled and dropped.
+    // The container and the worktree go, even if the run is cancelled and
+    // dropped, or took too long.
+    run.sandbox = None;
     run.worktree = None;
     usage.add(&run.usage);
     let outcome = match ended {
@@ -142,8 +157,7 @@ enum Checked {
 }
 
 /// A task's run on this machine: its steps, in a worktree of the warm
-/// checkout. The seam where another way of running them (in a container)
-/// fits.
+/// checkout, their commands in its sandbox.
 struct Run<'a> {
     context: &'a Arc<Context>,
     job: &'a JobSpec,
@@ -151,6 +165,10 @@ struct Run<'a> {
     progress: &'a Progress,
     log: &'a Log,
     model: Option<String>,
+    /// How long its container lives at most.
+    lifetime: std::time::Duration,
+    /// Where its commands run, once the worktree is made.
+    sandbox: Option<Box<dyn Sandbox>>,
     /// The worktree, once made.
     worktree: Option<Worktree>,
     /// What the agent consumed, round after round.
@@ -161,6 +179,25 @@ struct Run<'a> {
 struct Worktree {
     path: PathBuf,
     warm: PathBuf,
+    /// Its `.git` file, which links it to the checkout's repository.
+    link: Vec<u8>,
+}
+
+impl Worktree {
+    /// Puts its link to the checkout's repository back as it was, for git
+    /// on the machine to use that, whatever the agent made of it.
+    fn restore_link(&self) -> anyhow::Result<()> {
+        let link = self.path.join(".git");
+        if let Ok(metadata) = std::fs::symlink_metadata(&link) {
+            if metadata.is_dir() {
+                std::fs::remove_dir_all(&link)?;
+            } else {
+                std::fs::remove_file(&link)?;
+            }
+        }
+        std::fs::write(&link, &self.link)?;
+        Ok(())
+    }
 }
 
 impl Drop for Worktree {
@@ -199,6 +236,13 @@ impl Run<'_> {
             1
         };
         let dir = JobDir::create(&self.context.work_dir, self.job)?;
+        self.sandbox = Some(self.sandbox_for(&worktree, &dir).await?);
+        let contained_program = match &self.context.isolator {
+            Some(Isolator::Containers(containers)) => {
+                containers.program(&self.task.conversation.agent.runner)
+            }
+            _ => None,
+        };
 
         let mut feedback: Option<String> = None;
         let mut said = String::new();
@@ -216,6 +260,8 @@ impl Run<'_> {
             let prompt = self.prompt(feedback.as_deref());
             let work = Work {
                 dir: &worktree,
+                sandbox: self.sandbox.as_deref().expect("made"),
+                contained_program: contained_program.clone(),
                 edits: true,
                 max_turns: Some(config.max_turns.unwrap_or(80)),
             };
@@ -301,7 +347,10 @@ impl Run<'_> {
         if library::checkout(&warm, &base, self.token(), self.log).await? {
             let cache = self.context.config.lean.cache.unwrap_or(true);
             if cache {
-                library::get_cache(&warm, self.log, self.progress).await?;
+                // As a build of `main` does, in a container of its own.
+                let sandbox =
+                    library::checkout_sandbox(self.context, self.job, &warm, self.lifetime).await?;
+                library::get_cache(sandbox.as_ref(), &warm, self.log, self.progress).await?;
             }
         }
         // What is made in the worktree is not the library's.
@@ -333,11 +382,18 @@ impl Run<'_> {
         self.worktree = Some(Worktree {
             path: worktree.clone(),
             warm: warm.clone(),
+            link: std::fs::read(worktree.join(".git"))?,
         });
         let lake = worktree.join(".lake");
         std::fs::create_dir_all(&lake)?;
         if warm.join(".lake/packages").is_dir() {
-            symlink_dir(&warm.join(".lake/packages"), &lake.join("packages"))?;
+            // Relative, from `tasks/<task>/.lake` to
+            // `libraries/<group>/.lake/packages`: the same on the machine
+            // and in a container, which sees the work folder as `/stemma`.
+            let packages = Path::new("../../../libraries")
+                .join(&self.job.group.slug)
+                .join(".lake/packages");
+            symlink_dir(&packages, &lake.join("packages"))?;
         }
         for kept in ["build", "stemma"] {
             let from = warm.join(".lake").join(kept);
@@ -347,6 +403,78 @@ impl Run<'_> {
         }
         std::fs::create_dir_all(worktree.join(".stemma"))?;
         Ok(base)
+    }
+
+    /// Where the task's commands run: on the machine, if its owner chose
+    /// so, or in a container of the task's own, given the worktree, the
+    /// checkout's packages read-only, the job's folder `dir`, the compiled
+    /// inspections read-only, and how the agent signs in.
+    async fn sandbox_for(&self, worktree: &Path, dir: &JobDir) -> anyhow::Result<Box<dyn Sandbox>> {
+        let containers = match &self.context.isolator {
+            None => anyhow::bail!("This machine does not isolate the workshop's jobs"),
+            Some(Isolator::Host) => return Ok(Box::new(self.context.host())),
+            Some(Isolator::Containers(containers)) => containers,
+        };
+        self.progress.say("Starting the task's container");
+        let work_dir = &self.context.work_dir;
+        let seen = |path: &Path| isolation::container_path(work_dir, path);
+        let mut mounts = vec![
+            Mount::Bind {
+                source: worktree.to_owned(),
+                target: seen(worktree),
+                read_only: false,
+            },
+            Mount::Bind {
+                source: dir.path.clone(),
+                target: seen(&dir.path),
+                read_only: false,
+            },
+        ];
+        let packages = self.warm().join(".lake/packages");
+        if packages.is_dir() {
+            mounts.push(Mount::Bind {
+                source: packages.clone(),
+                target: seen(&packages),
+                read_only: true,
+            });
+        }
+        let inspections = library::inspection_root(self.context, true);
+        if inspections.is_dir() {
+            mounts.push(Mount::Bind {
+                source: inspections.clone(),
+                target: seen(&inspections),
+                read_only: true,
+            });
+        }
+        let runner = &self.task.conversation.agent.runner;
+        let (pass_env, files) = containers.sign_in(runner, dirs::home_dir().as_deref())?;
+        mounts.extend(files);
+        let spec = containers.spec(
+            self.job.id,
+            isolation::owner_of(work_dir),
+            mounts,
+            pass_env,
+            self.lifetime,
+        );
+        let container = containers.start(&spec, work_dir).await?;
+        self.log.line(&format!(
+            "The task runs in the container {}, with {}.",
+            container.name(),
+            containers.image
+        ));
+        Ok(Box::new(container))
+    }
+
+    fn sandbox(&self) -> &dyn Sandbox {
+        self.sandbox.as_deref().expect("made")
+    }
+
+    /// The worktree's link to the checkout's repository, as it was.
+    fn restore_link(&self) -> anyhow::Result<()> {
+        match &self.worktree {
+            Some(worktree) => worktree.restore_link(),
+            None => Ok(()),
+        }
     }
 
     /// The runner's prompt: the task and its conversation, and in later
@@ -397,13 +525,14 @@ impl Run<'_> {
         let written = self
             .worktree
             .as_ref()
-            .and_then(|w| std::fs::read_to_string(w.path.join(REPORT)).ok())
+            .and_then(|w| read_report(&w.path))
             .filter(|r| !r.trim().is_empty());
         written.unwrap_or_else(|| said.to_owned()).trim().to_owned()
     }
 
     /// Whether the worktree differs from `base`, committed or not.
     async fn changed(&self, worktree: &Path, base: &str) -> anyhow::Result<bool> {
+        self.restore_link()?;
         let head = git_output(worktree, self.token(), &["rev-parse", "HEAD"]).await?;
         let status = git_output(worktree, self.token(), &["status", "--porcelain"]).await?;
         Ok(head != base || !status.is_empty())
@@ -413,7 +542,7 @@ impl Run<'_> {
     /// data newly depends on `sorry`.
     async fn check(&self, worktree: &Path) -> anyhow::Result<Checked> {
         let started = self.log.len();
-        if !library::lake_build(worktree, self.log, self.progress).await? {
+        if !library::lake_build(self.sandbox(), worktree, self.log, self.progress).await? {
             let build_log = self.log.since(started);
             return Ok(Checked::Refused {
                 reason: "The build does not pass".into(),
@@ -423,18 +552,28 @@ impl Run<'_> {
                 ),
             });
         }
-        let report =
-            match library::inspect(&self.context.work_dir, worktree, self.log, self.progress)
-                .await?
-            {
-                Ok(report) => report,
-                Err(error) => {
-                    return Ok(Checked::Refused {
-                        reason: error.clone(),
-                        feedback: format!("The library could not be inspected: {error}"),
-                    });
-                }
-            };
+        // A task's container compiles no inspection for others to run: it
+        // uses the one its builds compiled, or interprets it.
+        let contained = self.sandbox().isolation().contained();
+        let inspections = library::inspection_root(self.context, contained);
+        let report = match library::inspect(
+            self.sandbox(),
+            &inspections,
+            !contained,
+            worktree,
+            self.log,
+            self.progress,
+        )
+        .await?
+        {
+            Ok(report) => report,
+            Err(error) => {
+                return Ok(Checked::Refused {
+                    reason: error.clone(),
+                    feedback: format!("The library could not be inspected: {error}"),
+                });
+            }
+        };
         let new_data_sorry = new_data_sorry(&report, &self.task.data_sorry);
         if !new_data_sorry.is_empty() {
             let names = new_data_sorry.join(", ");
@@ -464,6 +603,7 @@ impl Run<'_> {
     /// provenance.
     async fn commit(&self, worktree: &Path, base: &str) -> anyhow::Result<()> {
         self.progress.say("Committing");
+        self.restore_link()?;
         let task = self.task;
         let conversation = &task.conversation;
         // The runner's own commits, if it made any, become one.
@@ -516,6 +656,7 @@ impl Run<'_> {
         built: Option<Built>,
     ) -> anyhow::Result<Ended> {
         self.progress.say("Proposing the change");
+        self.restore_link()?;
         let branch = &self.task.branch;
         let mut push = git(worktree, self.token());
         push.args([
@@ -539,6 +680,33 @@ impl Run<'_> {
             built,
         })
     }
+}
+
+/// The report the agent wrote in `worktree`, if it is a file there (not a
+/// link to one elsewhere), read up to a limit.
+fn read_report(worktree: &Path) -> Option<String> {
+    use std::io::Read as _;
+    let mut path = worktree.to_owned();
+    for part in Path::new(REPORT).components() {
+        path.push(part);
+        if std::fs::symlink_metadata(&path)
+            .ok()?
+            .file_type()
+            .is_symlink()
+        {
+            return None;
+        }
+    }
+    if !std::fs::symlink_metadata(&path).ok()?.is_file() {
+        return None;
+    }
+    let mut text = String::new();
+    std::fs::File::open(&path)
+        .ok()?
+        .take(MAX_REPORT)
+        .read_to_string(&mut text)
+        .ok()?;
+    Some(text)
 }
 
 /// The definitions whose data depends on `sorry` and did not before.
@@ -630,6 +798,52 @@ mod tests {
             ],
         };
         assert_eq!(new_data_sorry(&report, &["old".into()]), ["new"]);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn reads_no_report_through_a_link() {
+        let worktree = tempfile::tempdir().unwrap();
+        let outside = tempfile::tempdir().unwrap();
+        std::fs::write(outside.path().join("secret"), "the machine's").unwrap();
+        assert_eq!(read_report(worktree.path()), None);
+        std::fs::create_dir(worktree.path().join(".stemma")).unwrap();
+        std::fs::write(worktree.path().join(REPORT), "Done.").unwrap();
+        assert_eq!(read_report(worktree.path()).as_deref(), Some("Done."));
+        std::fs::remove_file(worktree.path().join(REPORT)).unwrap();
+        std::os::unix::fs::symlink(outside.path().join("secret"), worktree.path().join(REPORT))
+            .unwrap();
+        assert_eq!(read_report(worktree.path()), None);
+        std::fs::remove_dir_all(worktree.path().join(".stemma")).unwrap();
+        std::os::unix::fs::symlink(outside.path(), worktree.path().join(".stemma")).unwrap();
+        std::fs::rename(
+            outside.path().join("secret"),
+            outside.path().join("report.md"),
+        )
+        .unwrap();
+        assert_eq!(read_report(worktree.path()), None);
+    }
+
+    #[test]
+    fn puts_the_worktrees_link_back() {
+        let dir = tempfile::tempdir().unwrap();
+        let worktree = Worktree {
+            path: dir.path().join("w"),
+            warm: dir.path().join("warm"),
+            link: b"gitdir: /w/libraries/g/.git/worktrees/w\n".to_vec(),
+        };
+        std::fs::create_dir_all(worktree.path.join(".git/hooks")).unwrap();
+        worktree.restore_link().unwrap();
+        assert_eq!(
+            std::fs::read(worktree.path.join(".git")).unwrap(),
+            worktree.link
+        );
+        std::fs::write(worktree.path.join(".git"), "gitdir: elsewhere").unwrap();
+        worktree.restore_link().unwrap();
+        assert_eq!(
+            std::fs::read(worktree.path.join(".git")).unwrap(),
+            worktree.link
+        );
     }
 
     #[test]

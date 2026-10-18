@@ -5,7 +5,9 @@
 use anyhow::Context as _;
 use clap::{Args, Subcommand};
 use stemma_client::config::ClientConfig;
-use stemma_core::api::{Machine, WorkshopAgent, runners};
+use stemma_core::api::{Isolation, Machine, WorkshopAgent, runners};
+use stemma_worker::image;
+use stemma_worker::isolation::{self, Isolator, Runtime};
 use stemma_worker::machine::{self, MachineConfig};
 
 use crate::client::hostname;
@@ -102,6 +104,36 @@ enum WorkshopCommand {
         #[arg(long)]
         machine: Option<String>,
     },
+    /// How this machine isolates the workshop's jobs: each in a container
+    /// of its own, with Docker or Podman (the default), or, where
+    /// containers are not available, on the machine itself, unisolated.
+    /// Without arguments, says how it would now.
+    Isolation {
+        /// The runtime: auto (Docker, or else Podman), docker or podman.
+        #[arg(conflicts_with = "unisolated")]
+        runtime: Option<String>,
+        /// Run the workshop's jobs on this machine itself, as its user,
+        /// with no container: agents that others ask for then run
+        /// commands here. Only on a machine, or as a user, kept for it.
+        #[arg(long)]
+        unisolated: bool,
+    },
+    /// Build the image the workshop's containers run, with Lean, the
+    /// agents' programs and this version of stemma, with Docker or Podman.
+    Image {
+        /// Its tag; the one this machine's configuration names, or
+        /// stemma-workshop:<version>.
+        #[arg(long)]
+        tag: Option<String>,
+        /// The Lean toolchain it has; a new library's if absent.
+        #[arg(long)]
+        toolchain: Option<String>,
+        /// Where its stemma comes from: release (the release's Linux
+        /// binary, for x86_64) or git (built from the release's tag); the
+        /// release on x86_64, else git.
+        #[arg(long)]
+        source: Option<String>,
+    },
 }
 
 pub async fn machine(args: MachineArgs) -> anyhow::Result<()> {
@@ -116,8 +148,22 @@ pub async fn machine(args: MachineArgs) -> anyhow::Result<()> {
 }
 
 async fn workshop(command: WorkshopCommand) -> anyhow::Result<()> {
+    // These two are of this machine alone, and ask the hub nothing.
+    match command {
+        WorkshopCommand::Isolation {
+            runtime,
+            unisolated,
+        } => return isolation(runtime, unisolated).await,
+        WorkshopCommand::Image {
+            tag,
+            toolchain,
+            source,
+        } => return build_image(tag, toolchain, source).await,
+        _ => {}
+    }
     let hub = ClientConfig::load()?.with_env().hub()?;
     match command {
+        WorkshopCommand::Isolation { .. } | WorkshopCommand::Image { .. } => {}
         WorkshopCommand::Add { group, machine } => {
             let found = find(&hub, machine.as_deref()).await?;
             hub.add_workshop_machine(&group, found.id).await?;
@@ -126,6 +172,16 @@ async fn workshop(command: WorkshopCommand) -> anyhow::Result<()> {
                  `stemma machine workshop offer`.",
                 found.name
             );
+            match found.isolation {
+                Some(Isolation::Host) => println!(
+                    "WARNING: it runs the workshop's jobs on itself, unisolated, as its owner \
+                     chose: the group sees so."
+                ),
+                Some(isolation) => {
+                    println!("It runs the workshop's jobs {}.", isolation.describe())
+                }
+                None => {}
+            }
             if !found.lean && found.last_seen_at.is_some() {
                 println!("It has no Lean: install elan for it to run the workshop's tasks.");
             }
@@ -203,6 +259,14 @@ fn show(machine: &Machine) {
             machine.workshop.join(", ")
         );
     }
+    match machine.isolation {
+        Some(isolation) => println!("It runs the workshop's jobs {}.", isolation.describe()),
+        None if machine.last_seen_at.is_some() => println!(
+            "It cannot isolate the workshop's jobs, and runs none: see `stemma machine workshop \
+             isolation` on it."
+        ),
+        None => {}
+    }
     if machine.workshop_agents.is_empty() {
         println!("It offers the workshop no agents.");
         return;
@@ -227,6 +291,114 @@ fn show(machine: &Machine) {
         };
         println!("{line} · today: {jobs}, {minutes}");
     }
+}
+
+/// The warning of a machine that runs the workshop's jobs unisolated.
+const UNISOLATED: &str = "WARNING: the workshop's jobs will run on this machine itself, with no \
+container, as the user that serves it. Their agents, asked by others in the group, run commands \
+here: they can read and change whatever that user can. Serve the machine as a dedicated system \
+user, with nothing else of yours, and only where containers are not available. The group's \
+workshop panel shows the machine as unisolated.";
+
+/// Shows, or sets, how this machine isolates the workshop's jobs.
+async fn isolation(runtime: Option<String>, unisolated: bool) -> anyhow::Result<()> {
+    let path = machine::path()?;
+    let mut config = MachineConfig::load_from(&path)?
+        .context("this machine is not set up: `stemma machine add` first")?;
+    let mut settings = config.isolation.clone().unwrap_or_default();
+    let chosen = match (runtime, unisolated) {
+        (_, true) => Some(Runtime::Host),
+        (Some(text), false) => Some(Runtime::parse(&text).with_context(|| {
+            format!("there is no runtime {text}: auto, docker or podman (or --unisolated)")
+        })?),
+        (None, false) => None,
+    };
+    if let Some(chosen) = chosen {
+        settings.runtime = Some(chosen);
+        config.isolation = Some(settings.clone());
+        config.save_to(&path)?;
+        if chosen == Runtime::Host {
+            eprintln!("{UNISOLATED}");
+        }
+        println!(
+            "Saved in {}. Serve the machine again (`stemma machine run`) for it to apply.",
+            path.display()
+        );
+    }
+    let search = std::env::var_os("PATH");
+    match isolation::resolve(&settings, &config.hub, search.as_deref()).await {
+        Ok(Isolator::Host) => {
+            if chosen.is_none() {
+                eprintln!("{UNISOLATED}");
+            }
+            println!("This machine runs the workshop's jobs on itself, unisolated.");
+        }
+        Ok(Isolator::Containers(containers)) => println!(
+            "This machine runs the workshop's jobs {}, from the image {}.",
+            containers.engine.isolation().describe(),
+            containers.image
+        ),
+        Err(reason) => println!(
+            "This machine runs none of the workshop's jobs: {reason}. Install Docker or Podman \
+             and build the image (`stemma machine workshop image`), or, only where containers \
+             are not available, `stemma machine workshop isolation --unisolated`."
+        ),
+    }
+    Ok(())
+}
+
+/// Builds the workshop's image with this machine's runtime.
+async fn build_image(
+    tag: Option<String>,
+    toolchain: Option<String>,
+    source: Option<String>,
+) -> anyhow::Result<()> {
+    let settings = MachineConfig::load_from(&machine::path()?)?
+        .and_then(|config| config.isolation)
+        .unwrap_or_default();
+    let mut runtime = settings.clone();
+    if runtime.runtime() == Runtime::Host {
+        runtime.runtime = Some(Runtime::Auto);
+    }
+    let search = std::env::var_os("PATH");
+    let engine = isolation::find_engine(&runtime, search.as_deref())
+        .await
+        .context("neither Docker nor Podman is installed and working here")?;
+    let source = match source {
+        Some(text) => image::Source::parse(&text)
+            .with_context(|| format!("there is no source {text}: release or git"))?,
+        None => image::Source::for_this_machine(),
+    };
+    let build = image::Build {
+        tag: tag.unwrap_or_else(|| settings.image()),
+        source,
+        toolchain: toolchain.unwrap_or_else(|| image::TOOLCHAIN.trim().to_owned()),
+        version: env!("CARGO_PKG_VERSION").to_owned(),
+    };
+    println!(
+        "Building {} with {}, with {} and stemma {} ({}).",
+        build.tag,
+        engine.program().display(),
+        build.toolchain,
+        build.version,
+        if source == image::Source::Release {
+            "its release's Linux binary"
+        } else {
+            "built from its release's tag"
+        }
+    );
+    image::build(engine.as_ref(), &build).await?;
+    println!(
+        "Built {}. Serve the machine again (`stemma machine run`) for it to use it.",
+        build.tag
+    );
+    if settings.runtime() == Runtime::Host {
+        println!(
+            "This machine runs the workshop's jobs unisolated, as chosen: \
+             `stemma machine workshop isolation auto` to run them in containers."
+        );
+    }
+    Ok(())
 }
 
 async fn add(name: Option<String>, preferred: bool) -> anyhow::Result<()> {
@@ -254,6 +426,7 @@ async fn add(name: Option<String>, preferred: bool) -> anyhow::Result<()> {
         runners: Default::default(),
         lean: None,
         workshop: None,
+        isolation: None,
     };
     config.save_to(&path)?;
     let found = machine::installed(&config.runners).await;

@@ -20,7 +20,7 @@ pub use crate::api::JobKind;
 use crate::api::{AgentProfile, LibraryReport, Message, ThreadKind, User};
 
 /// The version of this protocol. A hub refuses workers that speak another.
-pub const PROTOCOL_VERSION: u32 = 6;
+pub const PROTOCOL_VERSION: u32 = 7;
 
 /// The path of the workers' WebSocket, under the API's prefix.
 pub const WORKER_PATH: &str = "/worker";
@@ -53,6 +53,11 @@ pub struct Hello {
     /// Whether it has Lean (elan or lake), for the workshop: its tasks and
     /// the library's builds.
     pub lean: bool,
+    /// How it isolates the workshop's jobs: in containers, or on the
+    /// machine itself if its owner chose so; none if it cannot, and then
+    /// it runs none of them.
+    #[serde(default)]
+    pub isolation: Option<crate::api::Isolation>,
     /// How many jobs it runs at once.
     pub concurrency: u32,
 }

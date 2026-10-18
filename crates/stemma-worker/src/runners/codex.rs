@@ -32,8 +32,7 @@ pub async fn run(
         .answer
         .clone()
         .ok_or_else(|| anyhow::anyhow!("Codex was launched without an answer's file"))?;
-    let mut command = prepared.command();
-    command.current_dir(work.dir);
+    let command = super::command(&prepared, work);
 
     let ran = run_command(command, &prompt.user, |line| {
         let Ok(event) = serde_json::from_str::<Value>(line) else {

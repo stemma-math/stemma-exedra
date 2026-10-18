@@ -24,14 +24,19 @@ use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader};
 use tokio::process::Command;
 
 use crate::config::CliRunner;
+use crate::isolation::Sandbox;
 use crate::job::{Context, JobDir, Prompt};
 use crate::launch::{self, Launch, Mcp, Mode, Prepared};
 
 /// Where and how a runner works.
 pub struct Work<'a> {
-    /// The folder it works in: the job's own, or for a task, the worktree
-    /// of the library.
+    /// The folder it works in, on the machine: the job's own, or for a
+    /// task, the worktree of the library.
     pub dir: &'a Path,
+    /// Where it runs: on the machine, or in the job's container.
+    pub sandbox: &'a dyn Sandbox,
+    /// Its program in the container, if not its usual name.
+    pub contained_program: Option<String>,
     /// Whether it edits files and runs commands there, as for a task.
     pub edits: bool,
     /// The most steps it may take, for runners that count them.
@@ -70,9 +75,10 @@ pub fn allowed_tools(job: &JobSpec) -> Vec<&'static str> {
 
 /// The arguments of `stemma mcp` for a job: its hub, its group, its token
 /// and its agent, offering only the tools that read, and what hands a
-/// task over if the job's agent may.
+/// task over if the job's agent may; as the job's commands see them, in
+/// `sandbox`.
 pub fn mcp_args(
-    context: &Context,
+    sandbox: &dyn Sandbox,
     job: &JobSpec,
     agent: &AgentProfile,
     dir: &JobDir,
@@ -80,11 +86,11 @@ pub fn mcp_args(
     let mut args: Vec<String> = vec![
         "mcp".into(),
         "--hub".into(),
-        context.hub.clone(),
+        sandbox.hub().to_owned(),
         "--group".into(),
         job.group.slug.clone(),
         "--token-file".into(),
-        dir.token_file.display().to_string(),
+        sandbox.path(&dir.token_file).display().to_string(),
         "--agent".into(),
         agent.display_name.clone(),
         "--read-only".into(),
@@ -100,9 +106,10 @@ pub fn mcp_args(
 
 /// Prepares a runner's launch for a job: its own and the agent's
 /// arguments, the agent's model or else its own, Stemma's instructions,
-/// and Stemma's tools with the job's token.
+/// and Stemma's tools with the job's token; where it runs, as it sees its
+/// files there.
 pub fn prepared(
-    context: &Context,
+    _context: &Context,
     config: &CliRunner,
     job: &JobSpec,
     agent: &AgentProfile,
@@ -110,23 +117,35 @@ pub fn prepared(
     work: &Work<'_>,
     prompt: &Prompt,
 ) -> anyhow::Result<Prepared> {
+    let sandbox = work.sandbox;
+    let contained = sandbox.isolation().contained();
     let mcp = Mcp {
-        command: context.stemma.clone(),
-        args: mcp_args(context, job, agent, dir),
+        command: sandbox.stemma(),
+        args: mcp_args(sandbox, job, agent, dir),
     };
     let mut args = config.args.clone();
     args.extend(agent.args.iter().cloned());
+    // The machine's own program for it is not the container's.
+    let program = if contained {
+        work.contained_program.as_deref()
+    } else {
+        config.command.as_deref()
+    };
+    let files_seen = sandbox.path(&dir.path);
+    let dir_seen = sandbox.path(work.dir);
     launch::prepare(&Launch {
         runner: &agent.runner,
-        program: config.command.as_deref(),
+        program,
         model: agent.model.as_deref().or(config.model.as_deref()),
         args: &args,
         instructions: &prompt.system,
         mcp: &mcp,
         files: &dir.path,
+        files_seen: &files_seen,
         mode: Mode::Job {
-            dir: work.dir,
+            dir: &dir_seen,
             edits: work.edits,
+            contained,
             max_turns: work.max_turns,
             allowed: allowed_tools(job).into_iter().map(str::to_owned).collect(),
         },
@@ -138,6 +157,12 @@ pub struct Ran {
     pub status: ExitStatus,
     /// The end of what it wrote to standard error.
     pub stderr: String,
+}
+
+/// The command that runs a prepared launch, where `work` says.
+pub fn command(prepared: &Prepared, work: &Work<'_>) -> Command {
+    work.sandbox
+        .command(&prepared.program, &prepared.args, &prepared.env, work.dir)
 }
 
 /// Runs a command with `stdin` as its input, handing each line of its

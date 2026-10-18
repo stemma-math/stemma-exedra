@@ -14,6 +14,7 @@ use stemma_core::protocol::{
 use tokio::sync::mpsc;
 
 use crate::config::WorkerConfig;
+use crate::isolation::{HostSandbox, Isolator};
 use crate::runners::{Answer, Work as RunnerWork};
 use crate::{library, runners, workshop};
 
@@ -31,9 +32,20 @@ pub struct Context {
     /// A lock per group on its warm checkout of the library, which builds
     /// and tasks share.
     pub checkouts: std::sync::Mutex<std::collections::HashMap<String, Arc<tokio::sync::Mutex<()>>>>,
+    /// How it isolates the workshop's jobs; none if it cannot, and then it
+    /// runs none.
+    pub isolator: Option<Isolator>,
 }
 
 impl Context {
+    /// The machine itself, where people's own jobs run.
+    pub fn host(&self) -> HostSandbox {
+        HostSandbox {
+            hub: self.hub.clone(),
+            stemma: self.stemma.clone(),
+        }
+    }
+
     /// The lock on a group's warm checkout of the library.
     pub fn checkout_lock(&self, group: &str) -> Arc<tokio::sync::Mutex<()>> {
         self.checkouts
@@ -260,8 +272,12 @@ async fn ask(
 ) -> anyhow::Result<Answer> {
     let dir = JobDir::create(&context.work_dir, job)?;
     progress.say("Thinking");
+    // A person's own agent, answering them, runs on their machine.
+    let host = context.host();
     let work = RunnerWork {
         dir: &dir.path,
+        sandbox: &host,
+        contained_program: None,
         edits: false,
         max_turns: None,
     };

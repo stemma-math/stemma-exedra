@@ -242,8 +242,11 @@ fn worker(hub: &TestHub, token: &str, work: &Path, config: &str) -> JoinHandle<a
         work.display().to_string()
     ))
     .unwrap();
-    let context = Context::new(config, "stemma".into()).unwrap();
-    tokio::spawn(connection::serve(Arc::new(context), token.to_owned()))
+    let token = token.to_owned();
+    tokio::spawn(async move {
+        let context = Context::start(config, "stemma".into()).await?;
+        connection::serve(Arc::new(context), token).await
+    })
 }
 
 async fn worker_token(hub: &TestHub, person: &Person, path: &str) -> String {
@@ -253,13 +256,23 @@ async fn worker_token(hub: &TestHub, person: &Person, path: &str) -> String {
         .to_owned()
 }
 
-/// One of Ada's machines, which works for the workshop of `geometry` with
-/// `agents`: its token.
-async fn workshop_machine(hub: &TestHub, ada: &Person, agents: Value) -> String {
+/// One of Ada's machines, with `config` (TOML, without its hub), which,
+/// once it connects and says how it isolates the workshop's jobs, works
+/// for the workshop of `geometry` with `agents`; running until the handle
+/// is aborted.
+async fn workshop_machine(
+    hub: &TestHub,
+    ada: &Person,
+    agents: Value,
+    work: &Path,
+    config: &str,
+) -> JoinHandle<anyhow::Result<()>> {
     let created = ada
         .post(hub, "/me/machines", json!({"name": "workshop"}))
         .await;
     let id = created["id"].as_i64().unwrap();
+    let running = worker(hub, created["secret"].as_str().unwrap(), work, config);
+    wait_online(hub, ada, "/me/machines").await;
     ada.post(
         hub,
         "/groups/geometry/workshop/machines",
@@ -273,7 +286,7 @@ async fn workshop_machine(hub: &TestHub, ada: &Person, agents: Value) -> String 
         Some(agents),
     )
     .await;
-    created["secret"].as_str().unwrap().to_owned()
+    running
 }
 
 async fn wait_online(hub: &TestHub, person: &Person, path: &str) {
@@ -822,12 +835,14 @@ async fn a_workshop_machine_with_lean_builds_and_inspects_the_library() {
     let (_clone, dir, commit) = fixture_library(&hub, &ada).await;
 
     let worker_dir = tempfile::tempdir().unwrap();
-    let running = worker(
+    let running = workshop_machine(
         &hub,
-        &workshop_machine(&hub, &ada, json!([])).await,
+        &ada,
+        json!([]),
         worker_dir.path(),
-        "[lean]\ncache = false\n",
-    );
+        "[lean]\ncache = false\n[isolation]\nruntime = \"host\"\n",
+    )
+    .await;
     let built = build_of(&hub, &ada, &commit).await;
     assert_eq!(built["state"], "succeeded", "{built}");
     assert_eq!(built["lean"], "4.35.0");
@@ -1070,21 +1085,18 @@ async fn workshop_worker(
     work: &Path,
     opencode: &Path,
 ) -> JoinHandle<anyhow::Result<()>> {
-    let token = workshop_machine(
+    workshop_machine(
         hub,
         ada,
         json!([{"runner": "opencode", "model": "fake/model", "daily_jobs": 5}]),
-    )
-    .await;
-    worker(
-        hub,
-        &token,
         work,
         &format!(
-            "[runners.opencode]\ncommand = {:?}\n[lean]\ncache = false\n",
+            "[runners.opencode]\ncommand = {:?}\n[lean]\ncache = false\n[isolation]\n\
+             runtime = \"host\"\n",
             opencode.display().to_string()
         ),
     )
+    .await
 }
 
 #[tokio::test(flavor = "multi_thread")]

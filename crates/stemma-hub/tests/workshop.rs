@@ -198,13 +198,31 @@ impl TestHub {
         .await
     }
 
-    /// A machine of `owner`'s.
+    /// A machine of `owner`'s, which connected once and said it isolates
+    /// the workshop's jobs in containers.
     async fn machine(&self, owner: &Client, name: &str) -> i64 {
+        let id = self.unseen_machine(owner, name).await;
+        self.reported(id, Some("docker")).await;
+        id
+    }
+
+    /// A machine of `owner`'s, which never connected.
+    async fn unseen_machine(&self, owner: &Client, name: &str) -> i64 {
         let reply = self
             .post(owner, "/me/machines", json!({"name": name}))
             .await;
         assert_eq!(reply.status, StatusCode::CREATED);
         reply.json()["id"].as_i64().unwrap()
+    }
+
+    /// What a machine said, as if it connected: Lean, and `isolation`.
+    async fn reported(&self, id: i64, isolation: Option<&str>) {
+        sqlx::query("UPDATE workers SET last_seen_at = 1, lean = 1, isolation = ? WHERE id = ?")
+            .bind(isolation)
+            .bind(id)
+            .execute(&self.state.db)
+            .await
+            .unwrap();
     }
 
     /// Connects a machine, as if over its WebSocket, with Lean and
@@ -214,6 +232,23 @@ impl TestHub {
         id: i64,
         owner_id: i64,
         runners: &[&str],
+    ) -> UnboundedReceiver<HubMessage> {
+        self.connect_isolated(
+            id,
+            owner_id,
+            runners,
+            Some(stemma_core::api::Isolation::Docker),
+        )
+        .await
+    }
+
+    /// Connects a machine, as [`TestHub::connect`], isolating as said.
+    async fn connect_isolated(
+        &self,
+        id: i64,
+        owner_id: i64,
+        runners: &[&str],
+        isolation: Option<stemma_core::api::Isolation>,
     ) -> UnboundedReceiver<HubMessage> {
         let (sender, receiver) = tokio::sync::mpsc::unbounded_channel();
         let workshop = stemma_hub::workshop::machines::groups_of(&self.state, id)
@@ -227,6 +262,7 @@ impl TestHub {
                 owner_id,
                 runners: runners.iter().map(|r| (*r).to_owned()).collect(),
                 lean: true,
+                isolation,
                 workshop,
                 concurrency: 4,
                 preferred: false,
@@ -350,6 +386,7 @@ async fn admins_add_their_own_machines_to_the_workshop() {
     assert_eq!(machines[0]["name"], "server");
     assert_eq!(machines[0]["owner"]["username"], "ada");
     assert_eq!(machines[0]["online"], false);
+    assert_eq!(machines[0]["isolation"], "docker");
     let mine = hub.get(&ada, "/me/machines").await;
     assert_eq!(mine[0]["workshop"], json!(["geometry"]));
 
@@ -395,6 +432,77 @@ async fn admins_add_their_own_machines_to_the_workshop() {
     assert_eq!(reply.status, StatusCode::NO_CONTENT);
     let machines = hub.get(&bob, "/groups/geometry/workshop/machines").await;
     assert!(machines.as_array().unwrap().is_empty());
+}
+
+#[tokio::test]
+async fn machines_that_do_not_isolate_are_not_lent_unless_their_owner_chose_so() {
+    let hub = TestHub::new().await;
+    let ada = hub.ada().await;
+    let lend = |id: i64| {
+        let hub = &hub;
+        let ada = &ada;
+        async move {
+            hub.post(
+                ada,
+                "/groups/geometry/workshop/machines",
+                json!({"machine": id}),
+            )
+            .await
+        }
+    };
+
+    // Never connected: how it isolates is not known.
+    let server = hub.unseen_machine(&ada, "server").await;
+    let reply = lend(server).await;
+    assert_eq!(reply.status, StatusCode::CONFLICT);
+    assert!(
+        reply.json()["error"]["message"]
+            .as_str()
+            .unwrap()
+            .contains("has not connected yet"),
+        "{:?}",
+        reply.json()
+    );
+
+    // Connected without a container runtime, and no choice of its owner's.
+    hub.reported(server, None).await;
+    let reply = lend(server).await;
+    assert_eq!(reply.status, StatusCode::CONFLICT);
+    assert!(
+        reply.json()["error"]["message"]
+            .as_str()
+            .unwrap()
+            .contains("cannot isolate"),
+        "{:?}",
+        reply.json()
+    );
+
+    // Its owner chose to run them on it, unisolated: the group sees so.
+    hub.reported(server, Some("host")).await;
+    assert_eq!(lend(server).await.status, StatusCode::CREATED);
+    let machines = hub.get(&ada, "/groups/geometry/workshop/machines").await;
+    assert_eq!(machines[0]["isolation"], "host");
+
+    // A machine that stops isolating, lent already, gets no task.
+    hub.reported(server, None).await;
+    let mut sent = hub
+        .connect_isolated(server, ada.id, &["claude-code"], None)
+        .await;
+    hub.call(
+        &ada,
+        Method::PUT,
+        &format!("/me/machines/{server}/workshop-agents"),
+        Some(json!([{"runner": "claude-code"}])),
+    )
+    .await;
+    hub.post(
+        &ada,
+        "/groups/geometry/threads",
+        json!({"title": "Gluing", "body": "The charts glue."}),
+    )
+    .await;
+    ask(&hub, &ada, "First").await;
+    assert!(tasks_sent(&mut sent).is_empty());
 }
 
 #[tokio::test]

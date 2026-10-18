@@ -28,7 +28,8 @@ use std::collections::{HashMap, HashSet};
 
 use sqlx::FromRow;
 use stemma_core::api::{
-    AgentProfile, Event, Job, JobKind, JobState, Message, Role, Thread, ThreadKind, User, runners,
+    AgentProfile, Event, Isolation, Job, JobKind, JobState, Message, Role, Thread, ThreadKind,
+    User, runners,
 };
 use stemma_core::protocol::{
     Conversation, GroupRef, HubMessage, JobSpec, Outcome, ThreadRef, Usage, Work,
@@ -83,6 +84,9 @@ pub struct Connected {
     pub owner_id: i64,
     pub runners: Vec<String>,
     pub lean: bool,
+    /// How it isolates the workshop's jobs; none if it cannot, and then it
+    /// runs none.
+    pub isolation: Option<Isolation>,
     /// The groups whose workshop it works for.
     pub workshop: HashSet<i64>,
     pub concurrency: u32,
@@ -96,6 +100,12 @@ impl Connected {
     fn has_room(&self) -> bool {
         (self.running.len() as u32) < self.concurrency
     }
+
+    /// Whether it may run the jobs of a group's workshop: it works for
+    /// it, has Lean, and isolates them.
+    fn for_workshop(&self, group_id: i64) -> bool {
+        self.lean && self.isolation.is_some() && self.workshop.contains(&group_id)
+    }
 }
 
 impl Workers {
@@ -108,10 +118,9 @@ impl Workers {
             JobKind::Reply => {
                 worker.owner_id == job.requester_id && worker.runners.contains(&job.runner)
             }
-            JobKind::LibraryBuild => worker.lean && worker.workshop.contains(&job.group_id),
+            JobKind::LibraryBuild => worker.for_workshop(job.group_id),
             JobKind::TaskRun => {
-                worker.lean
-                    && worker.workshop.contains(&job.group_id)
+                worker.for_workshop(job.group_id)
                     && worker
                         .runners
                         .iter()

@@ -59,9 +59,11 @@ CREATE TABLE workers (
     created_at INTEGER NOT NULL,
     last_seen_at INTEGER,
     -- What it announced when it last connected: a JSON array of runners,
-    -- and whether it has Lean.
+    -- whether it has Lean, and how it isolates the workshop's jobs
+    -- (`docker`, `podman` or `host`; none if it cannot).
     runners TEXT NOT NULL DEFAULT '[]',
     lean INTEGER NOT NULL DEFAULT 0,
+    isolation TEXT,
     version TEXT,
     -- A machine its owner's jobs go to first.
     preferred INTEGER NOT NULL DEFAULT 0,

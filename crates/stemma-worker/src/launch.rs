@@ -51,10 +51,13 @@ pub enum Mode<'a> {
     Session { allowed: Vec<String> },
     /// Headless, for a job.
     Job {
-        /// The folder it works in.
+        /// The folder it works in, as it sees it.
         dir: &'a Path,
         /// Whether it edits files and runs commands there, as for a task.
         edits: bool,
+        /// Whether it runs in a container of its own, which is then its
+        /// sandbox, rather than the runner's own.
+        contained: bool,
         /// The most steps it may take, for runners that count them.
         max_turns: Option<u32>,
         /// The Stemma tools it may use, by name.
@@ -79,6 +82,9 @@ pub struct Launch<'a> {
     pub mcp: &'a Mcp,
     /// A folder of its own, private, where its files are written.
     pub files: &'a Path,
+    /// Where the agent sees that folder: the same, unless it runs in a
+    /// container.
+    pub files_seen: &'a Path,
     pub mode: Mode<'a>,
 }
 
@@ -162,13 +168,12 @@ fn claude_code(launch: &Launch, prepared: &mut Prepared) -> anyhow::Result<()> {
             }
         }
     });
-    let mcp_file = launch.files.join("mcp.json");
     write(
         prepared,
-        mcp_file.clone(),
+        launch.files.join("mcp.json"),
         &serde_json::to_vec_pretty(&mcp)?,
     )?;
-    let mcp_file = mcp_file.display().to_string();
+    let mcp_file = launch.files_seen.join("mcp.json").display().to_string();
     let stemma_tools = |allowed: &[String]| -> Vec<String> {
         allowed
             .iter()
@@ -242,13 +247,21 @@ fn codex(launch: &Launch, prepared: &mut Prepared) {
     ];
     let mut answer = None;
     let args = &mut prepared.args;
-    if let Mode::Job { dir, edits, .. } = &launch.mode {
-        let sandbox = if *edits {
-            "workspace-write"
-        } else {
-            "read-only"
+    if let Mode::Job {
+        dir,
+        edits,
+        contained,
+        ..
+    } = &launch.mode
+    {
+        // In a container of its own, the container is its sandbox: Codex's
+        // own needs what a container does not allow.
+        let sandbox = match (*edits, *contained) {
+            (true, true) => "danger-full-access",
+            (true, false) => "workspace-write",
+            (false, _) => "read-only",
         };
-        let file = launch.files.join("answer.md");
+        let file = launch.files_seen.join("answer.md");
         push(
             args,
             &["exec", "--skip-git-repo-check", "--ephemeral", "--json"],
@@ -260,7 +273,7 @@ fn codex(launch: &Launch, prepared: &mut Prepared) {
             &["--output-last-message", &file.display().to_string()],
         );
         push(args, &["-c", "approval_policy=\"never\""]);
-        answer = Some(file);
+        answer = Some(launch.files.join("answer.md"));
     }
     for value in configuration {
         push(args, &["-c", &value]);
@@ -277,12 +290,12 @@ fn codex(launch: &Launch, prepared: &mut Prepared) {
 }
 
 fn opencode(launch: &Launch, prepared: &mut Prepared) -> anyhow::Result<()> {
-    let instructions = launch.files.join("instructions.md");
     write(
         prepared,
-        instructions.clone(),
+        launch.files.join("instructions.md"),
         launch.instructions.as_bytes(),
     )?;
+    let instructions = launch.files_seen.join("instructions.md");
     let mut command = vec![launch.mcp.command.display().to_string()];
     command.extend(launch.mcp.args.iter().cloned());
     let mut config = json!({
@@ -301,12 +314,12 @@ fn opencode(launch: &Launch, prepared: &mut Prepared) -> anyhow::Result<()> {
             config["tools"] = json!({"write": false, "edit": false, "patch": false, "bash": false});
         }
     }
-    let config_file = launch.files.join("opencode.json");
     write(
         prepared,
-        config_file.clone(),
+        launch.files.join("opencode.json"),
         &serde_json::to_vec_pretty(&config)?,
     )?;
+    let config_file = launch.files_seen.join("opencode.json");
     prepared
         .env
         .push(("OPENCODE_CONFIG".into(), config_file.display().to_string()));
@@ -346,6 +359,7 @@ mod tests {
             instructions: "Be precise.",
             mcp,
             files,
+            files_seen: files,
             mode,
         }
     }
@@ -397,6 +411,7 @@ mod tests {
         let mode = Mode::Job {
             dir: files.path(),
             edits: false,
+            contained: false,
             max_turns: None,
             allowed: vec!["read_thread".into()],
         };
@@ -436,6 +451,7 @@ mod tests {
         let mode = Mode::Job {
             dir: files.path(),
             edits: true,
+            contained: false,
             max_turns: None,
             allowed: vec![],
         };
@@ -444,6 +460,58 @@ mod tests {
         assert!(prepared.args.contains(&"workspace-write".to_owned()));
         assert_eq!(prepared.args.last().unwrap(), "-");
         assert_eq!(prepared.answer, Some(files.path().join("answer.md")));
+
+        // In a container, the files are where it sees them, and the
+        // container is its sandbox.
+        let seen = Path::new("/stemma/jobs/7");
+        let mode = Mode::Job {
+            dir: Path::new("/stemma/tasks/w3"),
+            edits: true,
+            contained: true,
+            max_turns: None,
+            allowed: vec![],
+        };
+        let prepared = prepare(&Launch {
+            files_seen: seen,
+            ..launch(runners::CODEX, files.path(), &mcp, mode)
+        })
+        .unwrap();
+        assert!(prepared.args.contains(&"danger-full-access".to_owned()));
+        assert!(
+            prepared
+                .args
+                .contains(&"/stemma/jobs/7/answer.md".to_owned())
+        );
+        assert!(prepared.args.contains(&"/stemma/tasks/w3".to_owned()));
+        assert_eq!(prepared.answer, Some(files.path().join("answer.md")));
+    }
+
+    #[test]
+    fn opencode_in_a_container_reads_its_files_where_it_sees_them() {
+        let files = tempfile::tempdir().unwrap();
+        let mcp = mcp();
+        let mode = Mode::Job {
+            dir: Path::new("/stemma/tasks/w3"),
+            edits: true,
+            contained: true,
+            max_turns: None,
+            allowed: vec![],
+        };
+        let prepared = prepare(&Launch {
+            files_seen: Path::new("/stemma/jobs/7"),
+            ..launch(runners::OPENCODE, files.path(), &mcp, mode)
+        })
+        .unwrap();
+        assert_eq!(
+            prepared.env,
+            [(
+                "OPENCODE_CONFIG".to_owned(),
+                "/stemma/jobs/7/opencode.json".to_owned()
+            )]
+        );
+        let config = read_json(&files.path().join("opencode.json")).unwrap();
+        assert_eq!(config["instructions"][0], "/stemma/jobs/7/instructions.md");
+        assert!(files.path().join("instructions.md").is_file());
     }
 
     #[test]

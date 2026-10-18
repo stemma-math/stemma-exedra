@@ -28,8 +28,7 @@ pub async fn run(
     progress: &Progress,
 ) -> anyhow::Result<Answer> {
     let prepared = prepared(context, config, job, agent, dir, work, prompt)?;
-    let mut command = prepared.command();
-    command.current_dir(work.dir);
+    let command = super::command(&prepared, work);
 
     let mut result: Option<(String, bool)> = None;
     let mut usage = Usage::default();

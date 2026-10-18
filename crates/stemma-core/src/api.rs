@@ -637,6 +637,52 @@ pub mod runners {
     }
 }
 
+/// How a machine isolates the workshop's jobs: each in a container of its
+/// own, with Docker or Podman, or, if its owner chose so explicitly, on
+/// the machine itself, unisolated. A machine that can do neither runs no
+/// job of the workshop.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Isolation {
+    Docker,
+    Podman,
+    /// On the machine itself, as its user: its owner's explicit choice.
+    Host,
+}
+
+impl Isolation {
+    /// Whether the jobs run in containers.
+    pub fn contained(self) -> bool {
+        !matches!(self, Isolation::Host)
+    }
+
+    /// As people read it.
+    pub fn describe(self) -> &'static str {
+        match self {
+            Isolation::Docker => "in containers, with Docker",
+            Isolation::Podman => "in containers, with Podman",
+            Isolation::Host => "on the machine itself, unisolated",
+        }
+    }
+
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Isolation::Docker => "docker",
+            Isolation::Podman => "podman",
+            Isolation::Host => "host",
+        }
+    }
+
+    pub fn parse(text: &str) -> Option<Isolation> {
+        match text {
+            "docker" => Some(Isolation::Docker),
+            "podman" => Some(Isolation::Podman),
+            "host" => Some(Isolation::Host),
+            _ => None,
+        }
+    }
+}
+
 /// The handle of the group's workshop, which every group has: a message
 /// that mentions it hands the workshop a task. Nobody's own agent has it.
 pub const WORKSHOP: &str = "workshop";
@@ -983,6 +1029,10 @@ pub struct WorkshopMachine {
     pub owner: User,
     pub online: bool,
     pub lean: bool,
+    /// How it isolates the workshop's jobs, as it said when it last
+    /// connected; none if it cannot, and then it runs none.
+    #[serde(default)]
+    pub isolation: Option<Isolation>,
     pub runners: Vec<String>,
     /// Its agents for the workshop, in order of preference.
     pub agents: Vec<WorkshopAgent>,
@@ -1051,6 +1101,11 @@ pub struct Machine {
     /// Whether it has Lean, for the workshop.
     #[serde(default)]
     pub lean: bool,
+    /// How it isolates the workshop's jobs, as it said when it last
+    /// connected; none if it cannot, and then it may not work for a
+    /// workshop.
+    #[serde(default)]
+    pub isolation: Option<Isolation>,
     /// Whether their jobs go to it first, when it has the runner.
     pub preferred: bool,
     /// The groups whose workshop it works for, by slug.

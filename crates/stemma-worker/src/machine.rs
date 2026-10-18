@@ -29,6 +29,16 @@
 //! # timeout_minutes = 90; cache = true   # whether to get Mathlib's cache
 //! # [workshop]
 //! # timeout_minutes = 120; rounds = 2; max_turns = 80
+//!
+//! # How the workshop's jobs are isolated (see `crate::isolation`):
+//! # [isolation]
+//! # runtime = "auto"          # docker, podman, or host: unisolated
+//! # image = "stemma-workshop:<version>"
+//! # memory = "8g"; cpus = 4; pids = 4096; network = "…"; hub_url = "…"
+//! # [isolation.agents.claude-code]
+//! # env = ["CLAUDE_CODE_OAUTH_TOKEN"]   # passed by name
+//! # [isolation.agents.codex]
+//! # files = [{ from = "~/.codex/auth.json" }]   # mounted read-only
 //! ```
 
 use std::path::{Path, PathBuf};
@@ -39,6 +49,7 @@ use serde::{Deserialize, Serialize};
 use stemma_core::api::runners;
 
 use crate::config::{LeanConfig, Runners, WorkerConfig, WorkshopConfig};
+use crate::isolation::IsolationConfig;
 use crate::{Context, connection, detect};
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -66,6 +77,9 @@ pub struct MachineConfig {
     /// How it works on the workshop's tasks.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub workshop: Option<WorkshopConfig>,
+    /// How it isolates the workshop's jobs.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub isolation: Option<IsolationConfig>,
 }
 
 /// Where a machine's configuration is.
@@ -123,6 +137,7 @@ impl MachineConfig {
             runners: offered,
             lean: self.lean.clone().unwrap_or_default(),
             workshop: self.workshop.clone().unwrap_or_default(),
+            isolation: self.isolation.clone().unwrap_or_default(),
         }
     }
 }
@@ -164,7 +179,7 @@ pub async fn run(path: &Path) -> anyhow::Result<()> {
     }
     let worker = config.worker_config(&found);
     let stemma = std::env::current_exe().context("finding the stemma binary")?;
-    let context = Context::new(worker, stemma)?;
+    let context = Context::start(worker, stemma).await?;
     tokio::select! {
         served = connection::serve(Arc::new(context), config.token.clone()) => served,
         _ = tokio::signal::ctrl_c() => {
@@ -193,6 +208,7 @@ mod tests {
             runners: toml::from_str("[codex]\nmodel = \"gpt-5\"\n").unwrap(),
             lean: None,
             workshop: None,
+            isolation: None,
         };
         config.save_to(&path).unwrap();
         let read = MachineConfig::load_from(&path).unwrap().unwrap();

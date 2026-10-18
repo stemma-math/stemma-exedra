@@ -7,7 +7,7 @@
 use std::collections::HashSet;
 
 use sqlx::FromRow;
-use stemma_core::api::{User, WorkshopAgent, WorkshopMachine, runners};
+use stemma_core::api::{Isolation, User, WorkshopAgent, WorkshopMachine, runners};
 
 use crate::api::Membership;
 use crate::api::agents::{args_of, optional, runner_of};
@@ -237,20 +237,22 @@ pub async fn add(
     worker_id: i64,
 ) -> ApiResult<()> {
     group.require_admin()?;
-    let owner: Option<i64> =
-        sqlx::query_scalar("SELECT owner_id FROM workers WHERE id = ? AND revoked_at IS NULL")
-            .bind(worker_id)
-            .fetch_optional(&state.db)
-            .await?;
-    match owner {
-        None => return Err(ApiError::not_found("Machine")),
-        Some(owner) if owner != viewer_id => {
-            return Err(ApiError::forbidden(
-                "An admin adds only their own machines to the workshop",
-            ));
-        }
-        Some(_) => {}
+    let found: Option<(i64, String, Option<i64>, Option<String>)> = sqlx::query_as(
+        "SELECT owner_id, name, last_seen_at, isolation FROM workers
+         WHERE id = ? AND revoked_at IS NULL",
+    )
+    .bind(worker_id)
+    .fetch_optional(&state.db)
+    .await?;
+    let Some((owner, name, seen, isolation)) = found else {
+        return Err(ApiError::not_found("Machine"));
+    };
+    if owner != viewer_id {
+        return Err(ApiError::forbidden(
+            "An admin adds only their own machines to the workshop",
+        ));
     }
+    refuse_unisolated(&name, seen.is_some(), isolation.as_deref())?;
     let done = sqlx::query(
         "INSERT INTO workshop_machines (group_id, worker_id, added_by, added_at)
          VALUES (?, ?, ?, ?) ON CONFLICT DO NOTHING",
@@ -267,6 +269,28 @@ pub async fn add(
         ));
     }
     jobs::workshop_changed(state, worker_id).await
+}
+
+/// Refuses a machine that cannot isolate the workshop's jobs, as it said
+/// when it last connected: the workshop runs work others ask for, with
+/// agents that run commands, each in a container of its own, unless the
+/// machine's owner chose explicitly to run them on it.
+fn refuse_unisolated(name: &str, seen: bool, isolation: Option<&str>) -> ApiResult<()> {
+    if isolation.and_then(Isolation::parse).is_some() {
+        return Ok(());
+    }
+    if !seen {
+        return Err(ApiError::conflict(format!(
+            "“{name}” has not connected yet, so it is not known how it would isolate the \
+             workshop's jobs: serve it (`stemma machine run`) first"
+        )));
+    }
+    Err(ApiError::conflict(format!(
+        "“{name}” cannot isolate the workshop's jobs: it has no working container runtime \
+         (Docker or Podman) with the workshop's image (`stemma machine workshop image`), and its \
+         owner has not chosen to run them on it unisolated (`stemma machine workshop isolation \
+         --unisolated`)"
+    )))
 }
 
 /// Takes a machine from the group's workshop: an admin of the group, or
@@ -307,6 +331,7 @@ struct MachineRow {
     username: String,
     display_name: String,
     lean: bool,
+    isolation: Option<String>,
     runners: String,
     added_at: i64,
 }
@@ -314,8 +339,8 @@ struct MachineRow {
 /// The machines of a group's workshop, with their agents.
 pub async fn of_group(state: &AppState, group_id: i64) -> ApiResult<Vec<WorkshopMachine>> {
     let rows: Vec<MachineRow> = sqlx::query_as(
-        "SELECT k.id, k.name, k.owner_id, u.username, u.display_name, k.lean, k.runners,
-                w.added_at
+        "SELECT k.id, k.name, k.owner_id, u.username, u.display_name, k.lean, k.isolation,
+                k.runners, w.added_at
          FROM workshop_machines w JOIN workers k ON k.id = w.worker_id
               JOIN users u ON u.id = k.owner_id
          WHERE w.group_id = ? AND k.revoked_at IS NULL ORDER BY w.added_at",
@@ -336,10 +361,33 @@ pub async fn of_group(state: &AppState, group_id: i64) -> ApiResult<Vec<Workshop
             },
             online,
             lean: row.lean,
+            isolation: row.isolation.as_deref().and_then(Isolation::parse),
             runners: serde_json::from_str(&row.runners).unwrap_or_default(),
             agents: agents(state, row.id).await?,
             added_at: db::from_millis(row.added_at),
         });
     }
     Ok(machines)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn refuses_machines_that_do_not_isolate() {
+        assert!(refuse_unisolated("server", true, Some("docker")).is_ok());
+        assert!(refuse_unisolated("server", true, Some("podman")).is_ok());
+        // The owner's explicit choice.
+        assert!(refuse_unisolated("server", true, Some("host")).is_ok());
+        let error = refuse_unisolated("server", true, None).unwrap_err();
+        assert!(error.message.contains("--unisolated"), "{}", error.message);
+        let error = refuse_unisolated("server", false, None).unwrap_err();
+        assert!(
+            error.message.contains("stemma machine run"),
+            "{}",
+            error.message
+        );
+        assert!(refuse_unisolated("server", true, Some("chroot")).is_err());
+    }
 }

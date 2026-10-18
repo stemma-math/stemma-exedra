@@ -6,6 +6,8 @@ use std::path::PathBuf;
 use serde::{Deserialize, Serialize};
 use stemma_core::api::runners;
 
+use crate::isolation::IsolationConfig;
+
 #[derive(Clone, Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct WorkerConfig {
@@ -24,6 +26,9 @@ pub struct WorkerConfig {
     /// How it works on the workshop's tasks.
     #[serde(default)]
     pub workshop: WorkshopConfig,
+    /// How it isolates the workshop's jobs.
+    #[serde(default)]
+    pub isolation: IsolationConfig,
 }
 
 /// How a workshop machine works on the workshop's tasks.

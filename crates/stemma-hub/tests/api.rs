@@ -1925,6 +1925,7 @@ async fn connect_machine(
             owner_id,
             runners: runners.iter().map(|r| (*r).to_owned()).collect(),
             lean: false,
+            isolation: None,
             workshop: Default::default(),
             concurrency: 4,
             preferred,

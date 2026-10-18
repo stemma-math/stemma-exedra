@@ -120,7 +120,8 @@ async fn session(context: &Arc<Context>, token: &str) -> Ended {
         protocol: PROTOCOL_VERSION,
         version: env!("CARGO_PKG_VERSION").into(),
         runners: context.config.runner_names(),
-        lean: has_lean(),
+        lean: lean(context),
+        isolation: context.isolator.as_ref().map(|i| i.isolation()),
         concurrency: context.config.concurrency,
     });
     if let Err(error) = send(&mut socket, &hello).await {
@@ -134,7 +135,7 @@ async fn session(context: &Arc<Context>, token: &str) -> Ended {
                 welcome.name,
                 welcome.owner.display_name,
                 context.config.runner_names().join(", "),
-                if has_lean() { "yes" } else { "no" }
+                if lean(context) { "yes" } else { "no" }
             );
         }
         Ok(Err(reason)) => return Ended::Refused(anyhow::anyhow!("the hub refused: {reason}")),
@@ -236,6 +237,15 @@ async fn work(context: &Arc<Context>, socket: &mut Socket) -> anyhow::Error {
         task.abort();
     }
     error
+}
+
+/// Whether the workshop's jobs have Lean: in the image of their
+/// containers, or else on the machine.
+fn lean(context: &Context) -> bool {
+    match &context.isolator {
+        Some(crate::isolation::Isolator::Containers(_)) => true,
+        _ => has_lean(),
+    }
 }
 
 /// Whether Lean is installed: `elan` or `lake` on the path.

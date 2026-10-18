@@ -217,6 +217,18 @@ test-forgejo port="3000":
 build-web:
     pnpm --dir web build
 
+# Build the workshop's image, with stemma built from the repository, with Docker or Podman.
+[group('build')]
+workshop-image runtime="docker" tag="":
+    #!/usr/bin/env sh
+    set -eu
+    version=$(sed -n 's/^version = "\(.*\)"$/\1/p' Cargo.toml | head -1)
+    tag="{{ tag }}"
+    {{ runtime }} build -f docker/workshop/Dockerfile \
+        --build-arg STEMMA_SOURCE=local --build-arg "STEMMA_VERSION=$version" \
+        --build-arg "LEAN_TOOLCHAIN=$(cat lean/template/lean-toolchain)" \
+        -t "${tag:-stemma-workshop:$version}" .
+
 # Build the release binary, with the web app embedded.
 [group('build')]
 release: build-web

@@ -105,9 +105,10 @@ pub async fn run(
     prompt: &Prompt,
     progress: &Progress,
 ) -> anyhow::Result<Answer> {
-    let prepared = prepared(context, config, job, agent, dir, work, prompt)?;
-    let mut command = prepared.command();
-    command.current_dir(work.dir).arg(&prompt.user);
+    let mut prepared = prepared(context, config, job, agent, dir, work, prompt)?;
+    // The request is its message, last.
+    prepared.args.push(prompt.user.clone());
+    let command = super::command(&prepared, work);
 
     let mut said = Said::default();
     let mut plain = String::new();

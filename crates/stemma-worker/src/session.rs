@@ -189,6 +189,7 @@ fn prepare(
             instructions: &instructions,
             mcp: &mcp,
             files: &dir,
+            files_seen: &dir,
             mode: Mode::Session {
                 allowed: stemma_client::tools::read_only_names()
                     .into_iter()
