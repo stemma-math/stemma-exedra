@@ -279,71 +279,9 @@ stemma-toast-region {
   margin: 0;
 }
 
-/* ── Working papers ─────────────────────────────────────────────────── */
-
-.papers {
-  --columns: minmax(0, 1fr) auto;
-}
-
-.paper-layout {
-  display: grid;
-  grid-template-columns: minmax(0, var(--measure)) minmax(12rem, 18rem);
-  gap: var(--space-8);
-  justify-content: center;
-}
-
-.paper-layout .document :is(h1, h2, h3, h4, h5, h6) {
-  scroll-margin-top: 5rem;
-}
-
-.paper-aside {
-  position: sticky;
-  top: 5rem;
-  align-self: start;
-  max-height: calc(100vh - 6rem);
-  overflow-y: auto;
-}
-
-.paper-aside__section {
-  display: flex;
-  flex-direction: column;
-  gap: var(--space-1);
-  padding-left: calc(var(--depth, 0) * var(--space-3));
-}
-
-.paper-aside__thread {
-  padding-left: var(--space-3);
-}
-
-.paper-editor__text {
-  min-height: 28rem;
-  resize: vertical;
-}
-
-.paper-editor__preview {
-  min-height: 28rem;
-}
-
-/* A callout that changed keeps its tone, and is outlined in the accent. */
-.document .highlight.is-changed[data-callout] {
-  outline: 2px solid color-mix(in srgb, var(--accent) 45%, transparent);
-  outline-offset: 2px;
-}
-
 /* A declaration's state, beside its reference. */
 .ref-state {
   margin-left: 0.3em;
-}
-
-@media (max-width: 60rem) {
-  .paper-layout {
-    grid-template-columns: minmax(0, 1fr);
-  }
-
-  .paper-aside {
-    position: static;
-    max-height: none;
-  }
 }
 
 /* ── The library ────────────────────────────────────────────────────── */
@@ -391,11 +329,6 @@ stemma-toast-region {
 
 .tasks {
   --columns: auto minmax(0, 1fr) auto;
-}
-
-/* The night window's fields wrap rather than squeeze. */
-.night-window > .field {
-  min-width: 8rem;
 }
 
 @media (max-width: 40rem) {

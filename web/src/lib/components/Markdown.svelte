@@ -5,16 +5,12 @@
   interface Props {
     text: string;
     group: string;
-    /** Whether headings are a paper's sections, with their slugs as ids. */
-    sections?: boolean;
-    /** Lines whose blocks are shown as changed. */
-    changed?: Set<number>;
   }
 
-  let { text, group, sections = false, changed }: Props = $props();
+  let { text, group }: Props = $props();
 
   let element: HTMLElement | undefined = $state();
-  const html = $derived(renderMarkdown(text, { group, sections, changed }));
+  const html = $derived(renderMarkdown(text, { group }));
 
   $effect(() => {
     // Again whenever the text changes.

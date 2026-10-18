@@ -37,8 +37,8 @@
 
   const runners = $derived(
     group
-      ? `[runners.api]\n\n[endpoints.openrouter]\nurl = "https://openrouter.ai/api/v1"\nkey_env = "OPENROUTER_API_KEY"\nmodel = "…"\n\n# With Lean, it builds the library; with a runner that edits files, it works\n# on the workshop's tasks too.\n# [lean]\n# [runners.opencode]\n# model = "openrouter/…"\n# [workshop]`
-      : "[runners.claude-code]\n[runners.codex]\n\n# To lend it to the workshop at night, with Lean:\n# [lean]\n# [workshop]",
+      ? `[runners.opencode]\n# model = "openrouter/…"\n\n# With Lean, it builds the library; with a runner that edits files, it works\n# on the workshop's tasks too.\n# [lean]\n# [workshop]`
+      : "[runners.claude-code]\n[runners.codex]",
   );
   const config = $derived(
     created

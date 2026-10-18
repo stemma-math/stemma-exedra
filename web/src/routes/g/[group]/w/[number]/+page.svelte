@@ -93,8 +93,7 @@
       <p class="quiet">
         Asked in <a class="identifier link" href={origin ? addressPath(origin, group.slug) : "#"}>{task.origin}</a>
         by {task.requester.display_name}{#if task.agent}, through {task.agent}{/if},
-        <time datetime={task.created_at}>{exactly(task.created_at)}</time>{#if task.schedule === "night"},
-          for the night{/if}.
+        <time datetime={task.created_at}>{exactly(task.created_at)}</time>.
         {#if task.runner}
           Worked on with {RUNNER_NAMES[task.runner] ?? task.runner}{#if task.model}{" "}(<span
               class="identifier">{task.model}</span>){/if}{#if task.finished_at},

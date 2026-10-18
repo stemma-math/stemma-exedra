@@ -6,7 +6,6 @@ function job(id: number, state: Job["state"]): Job {
   return {
     id,
     kind: "reply",
-    paper: null,
     thread: 1,
     trigger: 1,
     agent: "claude",
@@ -48,17 +47,5 @@ describe("jobs", () => {
   it("says what the agent is doing", () => {
     expect(jobStatus(job(1, "running"))).toBe("Claude is answering…");
     expect(jobStatus(job(1, "queued"))).toBe("Claude will answer");
-  });
-});
-
-describe("an editor's job", () => {
-  it("says which paper it updates", () => {
-    const editing: Job = {
-      ...job(9, "running"),
-      kind: "paper_update",
-      paper: "notes",
-      agent_name: "Editor",
-    };
-    expect(jobStatus(editing)).toBe("Editor is updating p/notes…");
   });
 });

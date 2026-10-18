@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { api, type Task, type WorkshopSettings } from "#lib/api.ts";
+  import { api, type Task } from "#lib/api.ts";
   import TaskChip from "#lib/components/TaskChip.svelte";
   import { listen } from "#lib/events.ts";
   import { exactly, when } from "#lib/format.ts";
@@ -9,7 +9,6 @@
   const context = groupContext();
   const group = $derived(context.group);
   let tasks = $state<Task[] | null>(null);
-  let settings = $state<WorkshopSettings | null>(null);
 
   async function load() {
     tasks = await api.tasks(group.slug).catch((error) => {
@@ -20,12 +19,6 @@
 
   $effect(() => {
     load();
-    api
-      .workshop(group.slug)
-      .then((found) => {
-        settings = found;
-      })
-      .catch(() => {});
     return listen(group.slug, (event) => {
       if (event.type === "resync") return load();
       if (event.type !== "task_updated" || tasks === null) return;
@@ -48,13 +41,9 @@
     <h1>Workshop</h1>
   </div>
   <p class="quiet">
-    The workshop works on the library in the background, one task at a time. Hand it a task in a
-    thread, as in <code>@workshop formalize the lemma in t12#48 tonight</code>, or ask an agent to.
-    It reports once, in the thread the task came from.
-    {#if settings}
-      Tasks for the night wait for {settings.night_from}–{settings.night_to}
-      ({settings.time_zone}); <a href="/g/{group.slug}/settings#workshop">change it</a>.
-    {/if}
+    The workshop works on the library in the background, one task at a time, on the group's
+    workers. Hand it a task in a thread, as in <code>@workshop formalize the lemma in t12#48</code>,
+    or ask an agent to. It reports once, in the thread the task came from.
   </p>
   {#if tasks === null}
     <span class="spinner" role="status" aria-label="Loading"></span>

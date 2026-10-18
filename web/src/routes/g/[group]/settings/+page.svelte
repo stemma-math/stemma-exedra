@@ -8,7 +8,6 @@
   import AgentSettings from "#lib/components/AgentSettings.svelte";
   import Avatar from "#lib/components/Avatar.svelte";
   import WorkerSettings from "#lib/components/WorkerSettings.svelte";
-  import WorkshopSettings from "#lib/components/WorkshopSettings.svelte";
 
   const context = groupContext();
   const group = $derived(context.group);
@@ -208,29 +207,19 @@
     <p>
       Agents answer when someone mentions them, as in <code>@claude what do you think?</code>, and in
       a chat, their resident agent answers every message. Each answer is signed by the agent, for the
-      person who asked. An editor updates a working paper instead, as in
-      <code>@editor update p/compactification with what we decided</code>. The workshop's agent hands
-      what it is asked to the workshop, as a task. A personal agent runs on the worker of whoever
-      asks, with their own login; a group agent runs on the group's workers.
+      person who asked. The workshop's agent hands what it is asked to the workshop, as a task. A
+      personal agent runs on the worker of whoever asks, with their own login; a group agent runs on
+      the group's workers.
     </p>
     <AgentSettings group={group.slug} {admin} />
-  </section>
-
-  <section class="stack" id="workshop">
-    <h2>Workshop</h2>
-    <p>
-      The workshop works on the library in the background, on the group's workers that offer it.
-      Tasks asked for the night, as in <code>@workshop formalize this tonight</code>, wait for the
-      night window; members who lend their own worker add it to the workshop then.
-    </p>
-    <WorkshopSettings group={group.slug} {admin} />
   </section>
 
   <section class="stack">
     <h2>Group workers</h2>
     <p>
-      A group worker runs the group's agents, with the API keys in its own configuration: the hub
-      never holds them. It connects to the hub from wherever it runs. Each person's own worker, for
+      A group worker runs the group's agents and, with Lean, builds its library and works on the
+      workshop's tasks, with the logins and keys in its own configuration: the hub never holds them.
+      It connects to the hub from wherever it runs. Each person's own worker, for
       their personal agents, is in their <a href="/settings">settings</a>.
     </p>
     <WorkerSettings group={group.slug} manage={admin} />

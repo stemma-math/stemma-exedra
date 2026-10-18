@@ -117,18 +117,17 @@ export interface SearchHit {
 }
 
 /** The runners a worker can run an agent with. */
-export const RUNNERS = ["claude-code", "codex", "opencode", "api"] as const;
+export const RUNNERS = ["claude-code", "codex", "opencode"] as const;
 export type Runner = (typeof RUNNERS)[number];
 
 export type AgentScope = "personal" | "group";
-export type AgentRole = "answer" | "editor" | "workshop";
+export type AgentRole = "answer" | "workshop";
 
 export interface AgentProfile {
   handle: string;
   display_name: string;
   runner: string;
   model: string | null;
-  endpoint: string | null;
   instructions: string | null;
   scope: AgentScope;
   role: AgentRole;
@@ -158,14 +157,13 @@ export interface CreatedWorker extends Worker {
 
 export type JobState = "queued" | "running" | "done" | "failed" | "cancelled";
 
-export type JobKind = "reply" | "paper_update" | "library_build" | "task_run";
+export type JobKind = "reply" | "library_build" | "task_run";
 
 export interface Job {
   id: number;
   kind: JobKind;
   thread: number | null;
   trigger: number | null;
-  paper: string | null;
   task?: number | null;
   agent: string;
   agent_name: string;
@@ -185,49 +183,8 @@ export type GroupEvent =
   | { type: "message_created"; thread: number; message: Message }
   | { type: "message_updated"; thread: number; message: Message }
   | { type: "job_updated"; job: Job }
-  | { type: "paper_updated"; paper: Paper }
   | { type: "build_updated"; build: Build }
   | { type: "task_updated"; task: Task };
-
-export interface Paper {
-  slug: string;
-  title: string;
-  revision: number;
-  created_by: User;
-  created_at: string;
-  updated_by: User;
-  updated_agent: string | null;
-  updated_at: string;
-  last_read: number | null;
-}
-
-export interface Revision {
-  number: number;
-  title: string;
-  author: User;
-  agent: string | null;
-  reason: string;
-  created_at: string;
-}
-
-export interface RevisionText extends Revision {
-  body: string;
-}
-
-export interface SectionInfo {
-  slug: string;
-  title: string;
-  level: number;
-}
-
-export interface PaperPage {
-  paper: Paper;
-  body: string;
-  sections: SectionInfo[];
-  since_read: Revision[];
-  read_body: string | null;
-  threads: Thread[];
-}
 
 export type DeclarationState = "proved" | "sorry" | "missing";
 export type BuildState = "queued" | "running" | "succeeded" | "failed" | "cancelled";
@@ -292,7 +249,6 @@ export interface DeclarationPage extends DeclarationSummary {
 }
 
 export type TaskState = "open" | "running" | "done" | "failed" | "blocked" | "cancelled";
-export type TaskSchedule = "now" | "night";
 
 export interface Task {
   number: number;
@@ -302,7 +258,6 @@ export interface Task {
   requester: User;
   agent: string | null;
   state: TaskState;
-  schedule: TaskSchedule;
   runner: string | null;
   model: string | null;
   progress: string | null;
@@ -318,15 +273,6 @@ export interface Task {
 export interface TaskPage extends Task {
   report: string | null;
   log: string;
-}
-
-export interface WorkshopSettings {
-  night_from: string;
-  night_to: string;
-  time_zone: string;
-  night_now: boolean;
-  lend: boolean;
-  lenders: User[];
 }
 
 /** An error the hub returned, with its code and words. */
@@ -466,25 +412,6 @@ export const api = {
   createMyWorker: (name: string) => post<CreatedWorker>("/me/workers", { name }),
   revokeMyWorker: (id: number) => del<void>(`/me/workers/${id}`),
 
-  papers: (group: string) => get<Paper[]>(`${g(group)}/papers`),
-  paper: (group: string, slug: string) =>
-    get<PaperPage>(`${g(group)}/papers/${encodeURIComponent(slug)}`),
-  createPaper: (
-    group: string,
-    body: { slug: string; title: string; body: string; reason?: string },
-  ) => post<Paper>(`${g(group)}/papers`, body),
-  editPaper: (
-    group: string,
-    slug: string,
-    body: { title?: string; body: string; reason: string; base_revision: number },
-  ) => put<Paper>(`${g(group)}/papers/${encodeURIComponent(slug)}`, body),
-  revisions: (group: string, slug: string) =>
-    get<Revision[]>(`${g(group)}/papers/${encodeURIComponent(slug)}/revisions`),
-  revision: (group: string, slug: string, n: number) =>
-    get<RevisionText>(`${g(group)}/papers/${encodeURIComponent(slug)}/revisions/${n}`),
-  markRead: (group: string, slug: string, revision: number) =>
-    post<void>(`${g(group)}/papers/${encodeURIComponent(slug)}/read`, { revision }),
-
   library: (group: string) => get<LibraryState>(`${g(group)}/library`),
   declarations: (
     group: string,
@@ -506,11 +433,6 @@ export const api = {
     get<Task[]>(`${g(group)}/tasks${state ? `?state=${state}` : ""}`),
   task: (group: string, n: number) => get<TaskPage>(`${g(group)}/tasks/${n}`),
   cancelTask: (group: string, n: number) => del<void>(`${g(group)}/tasks/${n}`),
-  workshop: (group: string) => get<WorkshopSettings>(`${g(group)}/workshop`),
-  updateWorkshop: (
-    group: string,
-    body: { night_from?: string; night_to?: string; time_zone?: string; lend?: boolean },
-  ) => put<WorkshopSettings>(`${g(group)}/workshop`, body),
 
   threadJobs: (group: string, n: number) => get<Job[]>(`${g(group)}/threads/${n}/jobs`),
   cancelJob: (group: string, id: number) => del<void>(`${g(group)}/jobs/${id}`),

@@ -28,19 +28,6 @@ export function jobStatus(job: Job): string {
         return "";
     }
   }
-  if (job.kind === "paper_update") {
-    const paper = job.paper ? `p/${job.paper}` : "the paper";
-    switch (job.state) {
-      case "running":
-        return `${job.agent_name} is updating ${paper}…`;
-      case "queued":
-        return `${job.agent_name} will update ${paper}`;
-      case "failed":
-        return `${job.agent_name} could not update ${paper}`;
-      default:
-        return "";
-    }
-  }
   switch (job.state) {
     case "running":
       return `${job.agent_name} is answering…`;

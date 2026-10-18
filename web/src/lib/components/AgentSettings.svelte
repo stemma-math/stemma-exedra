@@ -8,12 +8,10 @@
     "claude-code": "Claude Code",
     codex: "Codex",
     opencode: "OpenCode",
-    api: "An API model",
   };
 
   const ROLES: Record<string, string> = {
     answer: "",
-    editor: "Updates papers. ",
     workshop: "Works on the library. ",
   };
 
@@ -35,9 +33,8 @@
     draft = {
       handle: "",
       display_name: "",
-      runner: "api",
+      runner: "opencode",
       model: "",
-      endpoint: "",
       instructions: "",
       scope: "group",
       role: "answer",
@@ -46,7 +43,7 @@
   }
 
   function edit(agent: AgentProfile) {
-    draft = { ...agent, model: agent.model ?? "", endpoint: agent.endpoint ?? "", instructions: agent.instructions ?? "" };
+    draft = { ...agent, model: agent.model ?? "", instructions: agent.instructions ?? "" };
     adding = false;
   }
 
@@ -145,22 +142,12 @@
       <label class="field__label" for="agent-role">When summoned</label>
       <select id="agent-role" class="input" bind:value={draft.role}>
         <option value="answer">It answers, with a message</option>
-        <option value="editor">It updates the working paper the message names</option>
         <option value="workshop">It hands what the message asks to the workshop, as a task</option>
       </select>
     </div>
-    <div class="row">
-      <div class="field grow">
-        <label class="field__label" for="agent-model">Model</label>
-        <input id="agent-model" class="input input--mono" bind:value={draft.model} placeholder="The runner's default" maxlength="200" />
-      </div>
-      {#if draft.runner === "api"}
-        <div class="field grow">
-          <label class="field__label" for="agent-endpoint">Endpoint</label>
-          <input id="agent-endpoint" class="input input--mono" bind:value={draft.endpoint} placeholder="openrouter" maxlength="60" />
-          <span class="field__hint">As the workers' configuration names it.</span>
-        </div>
-      {/if}
+    <div class="field">
+      <label class="field__label" for="agent-model">Model</label>
+      <input id="agent-model" class="input input--mono" bind:value={draft.model} placeholder="The runner's default" maxlength="200" />
     </div>
     <div class="field">
       <label class="field__label" for="agent-instructions">Instructions</label>
