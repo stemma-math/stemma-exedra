@@ -11,6 +11,7 @@ use serde_json::{Value, json};
 use stemma_core::api::NewAccount;
 use stemma_fake_forge::FakeForge;
 use stemma_hub::config::{ForgeConfig, ForgeSecrets};
+use stemma_worker::session::Session;
 use stemma_worker::{Context, WorkerConfig, connection};
 use tokio::task::JoinHandle;
 
@@ -439,6 +440,125 @@ async fn a_persons_own_agent_runs_as_they_defined_it() {
     let args = std::fs::read_to_string(tools.path().join("claude.args")).unwrap();
     assert!(args.contains("--model\nsonnet\n--effort\nhigh\n"), "{args}");
     running.abort();
+}
+
+/// What `stemma claude` and the others prepare, without launching an
+/// agent: a token for the session, revoked when it ends, and a private
+/// folder with what the agent reads.
+#[tokio::test]
+async fn a_session_prepares_the_agent_and_revokes_its_token() {
+    let hub = TestHub::start().await;
+    let (ada, _) = group(&hub).await;
+    ada.post(
+        &hub,
+        "/me/agents",
+        json!({"handle": "codex-high", "display_name": "Codex High", "runner": "codex",
+               "model": "gpt-5", "args": ["-c", "model_reasoning_effort=\"high\""]}),
+    )
+    .await;
+    let client = stemma_client::Hub::new(&hub.url, Some(ada.token.clone())).unwrap();
+    let temp = tempfile::tempdir().unwrap();
+    let options = |runner: &str, agent: Option<&str>| stemma_worker::session::Options {
+        runner: runner.into(),
+        agent: agent.map(str::to_owned),
+        group: None,
+        args: vec!["--search".into()],
+        stemma: "/opt/stemma".into(),
+        program: None,
+        temp_dir: Some(temp.path().to_owned()),
+        host: "laptop".into(),
+    };
+
+    // Ada's Claude Code, in her only group.
+    let session = Session::open(&client, options("claude-code", None))
+        .await
+        .unwrap();
+    assert_eq!(session.agent.handle, "claude");
+    assert_eq!(session.group.slug, "geometry");
+    let prepared = &session.prepared;
+    assert_eq!(prepared.program, "claude");
+    let args = &prepared.args;
+    assert_eq!(args[0], "--mcp-config");
+    assert_eq!(args.last().unwrap(), "--search");
+    assert!(!args.contains(&"-p".to_owned()), "{args:?}");
+    let instructions = &args[args
+        .iter()
+        .position(|a| a == "--append-system-prompt")
+        .unwrap()
+        + 1];
+    assert!(
+        instructions.starts_with("You are Claude, Ada's agent in Stemma"),
+        "{instructions}"
+    );
+    assert!(instructions.contains("the group Geometry"));
+    let mcp: Value = serde_json::from_str(&std::fs::read_to_string(&args[1]).unwrap()).unwrap();
+    let server = &mcp["mcpServers"]["stemma"];
+    assert_eq!(server["command"], "/opt/stemma");
+    let mcp_args: Vec<String> = serde_json::from_value(server["args"].clone()).unwrap();
+    assert_eq!(
+        &mcp_args[..5],
+        ["mcp", "--hub", &hub.url, "--group", "geometry"]
+    );
+    assert!(!mcp_args.contains(&"--read-only".to_owned()));
+    let token_file = &mcp_args[mcp_args.iter().position(|a| a == "--token-file").unwrap() + 1];
+    assert!(token_file.starts_with(&session.dir.display().to_string()));
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let mode = std::fs::metadata(&session.dir)
+            .unwrap()
+            .permissions()
+            .mode();
+        assert_eq!(mode & 0o777, 0o700);
+    }
+
+    // The session's token acts as Ada, until the session ends.
+    let token = std::fs::read_to_string(token_file).unwrap();
+    let as_session = Person { token };
+    assert_eq!(as_session.get(&hub, "/me").await["username"], "ada");
+    let tokens = ada.get(&hub, "/me/tokens").await;
+    assert!(
+        tokens.as_array().unwrap().iter().any(|t| t["name"]
+            == "Claude Code, a session on laptop"
+            && t["expires_at"].is_string()),
+        "{tokens}"
+    );
+    let dir = session.dir.clone();
+    session.close(&client).await.unwrap();
+    assert!(!dir.exists());
+    let refused = reqwest::Client::new()
+        .get(format!("{}/api/v1/me", hub.url))
+        .bearer_auth(&as_session.token)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(refused.status(), reqwest::StatusCode::UNAUTHORIZED);
+
+    // Another of her agents, with its model and arguments, then the
+    // person's.
+    let session = Session::open(&client, options("codex", Some("@codex-high")))
+        .await
+        .unwrap();
+    assert_eq!(session.prepared.program, "codex");
+    let args = session.prepared.args.join(" ");
+    assert!(
+        args.ends_with("--model gpt-5 -c model_reasoning_effort=\"high\" --search"),
+        "{args}"
+    );
+    assert!(args.contains("developer_instructions="), "{args}");
+    session.close(&client).await.unwrap();
+
+    // An agent of another runner, or none, is refused, and leaves no token.
+    for (runner, agent) in [("claude-code", Some("codex-high")), ("codex", Some("nope"))] {
+        assert!(
+            Session::open(&client, options(runner, agent))
+                .await
+                .is_err()
+        );
+    }
+    let tokens = ada.get(&hub, "/me/tokens").await;
+    assert_eq!(tokens.as_array().unwrap().len(), 1, "{tokens}");
+    assert_eq!(std::fs::read_dir(temp.path()).unwrap().count(), 0);
 }
 
 #[tokio::test]

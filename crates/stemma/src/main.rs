@@ -1,13 +1,14 @@
 //! `stemma`: the hub, the worker and the client, in one binary.
 
 mod client;
+mod launcher;
 mod machine;
 
 use std::io::{BufRead, IsTerminal};
 use std::path::PathBuf;
 
 use clap::{Args, Parser, Subcommand};
-use stemma_core::api::NewAccount;
+use stemma_core::api::{NewAccount, runners};
 use stemma_hub::Config;
 use tracing_subscriber::EnvFilter;
 
@@ -47,7 +48,17 @@ enum Command {
     Tasks(client::TasksArgs),
     /// Hand a task to the workshop, with its instructions on standard input.
     Task(client::TaskArgs),
-    /// Serve Stemma's tools to an agent over MCP, on standard input and output.
+    /// Open your Claude Code, with Stemma's tools and instructions for the
+    /// session.
+    Claude(launcher::LaunchArgs),
+    /// Open your Codex, with Stemma's tools and instructions for the
+    /// session.
+    Codex(launcher::LaunchArgs),
+    /// Open your OpenCode, with Stemma's tools and instructions for the
+    /// session.
+    Opencode(launcher::LaunchArgs),
+    /// Serve Stemma's tools to an agent over MCP, on standard input and
+    /// output, for agents you install Stemma into.
     Mcp(client::McpArgs),
 }
 
@@ -116,7 +127,18 @@ async fn main() -> anyhow::Result<()> {
         Command::Tasks(args) => client::tasks(args).await,
         Command::Task(args) => client::task(args).await,
         Command::Mcp(args) => client::mcp(args).await,
+        Command::Claude(args) => exit(launcher::launch(runners::CLAUDE_CODE, args).await?),
+        Command::Codex(args) => exit(launcher::launch(runners::CODEX, args).await?),
+        Command::Opencode(args) => exit(launcher::launch(runners::OPENCODE, args).await?),
     }
+}
+
+/// Exits as the agent did.
+fn exit(code: i32) -> anyhow::Result<()> {
+    if code != 0 {
+        std::process::exit(code);
+    }
+    Ok(())
 }
 
 async fn hub(args: HubArgs) -> anyhow::Result<()> {

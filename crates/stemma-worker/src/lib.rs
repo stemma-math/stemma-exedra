@@ -21,6 +21,7 @@ pub mod launch;
 pub mod library;
 pub mod machine;
 pub mod runners;
+pub mod session;
 pub mod workshop;
 
 use std::path::Path;
