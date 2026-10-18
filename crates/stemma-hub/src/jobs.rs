@@ -600,7 +600,7 @@ async fn start(
     let now = db::now();
     let mut task_profile = None;
     let work = match job.kind() {
-        JobKind::Reply => Work::Reply(conversation(state, &group, job).await?),
+        JobKind::Reply => Work::Reply(Box::new(conversation(state, &group, job).await?)),
         JobKind::LibraryBuild => {
             Work::LibraryBuild(library::work_for(state, &group, job.id).await?)
         }

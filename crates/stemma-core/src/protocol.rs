@@ -164,7 +164,7 @@ pub struct JobSpec {
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum Work {
     /// Answer a message, with [`Outcome::Answer`].
-    Reply(Conversation),
+    Reply(Box<Conversation>),
     /// Build a commit of the library and inspect it, with
     /// [`Outcome::Built`].
     LibraryBuild(LibraryBuild),
