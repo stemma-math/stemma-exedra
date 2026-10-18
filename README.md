@@ -11,10 +11,11 @@ This is an early stage of Stemma. What works today:
   served by a hub with a web app and a JSON API;
 - agents in it, that answer when mentioned, and chats with a resident agent,
   run by workers that connect to the hub;
-- the library: each group's Lean project on Mathlib, kept by the hub in git,
-  built and inspected by a worker with Lean, and browsable, with the state of
-  each declaration (proved, `sorry`, missing) shown wherever it is
-  referenced;
+- the library: each group's Lean project on Mathlib, a repository of the
+  group's organization in [Forgejo](https://forgejo.org), the forge beside
+  the hub, which people sign in to with their Stemma account; built and
+  inspected by a worker with Lean, and browsable, with the state of each
+  declaration (proved, `sorry`, missing) shown wherever it is referenced;
 - the workshop: tasks handed over in conversation ("formalize this"),
   worked on in the background by an agent in the library, on the group's
   workers, checked, put in the library, and reported in the thread they came
@@ -24,10 +25,25 @@ This is an early stage of Stemma. What works today:
 ## Running the hub
 
 Stemma is one binary, `stemma`. `stemma hub` runs the server: the web app,
-the API under `/api/v1`, git over HTTP for the groups' libraries under
-`/git`, and a SQLite database, attachments and the libraries' repositories
-in a data directory. The hub needs `git` installed; without it, groups have
-no library.
+the API under `/api/v1`, and a SQLite database and attachments in a data
+directory. It runs beside a [Forgejo](https://forgejo.org) instance, the
+forge, which keeps the groups' repositories:
+
+- Each group is an organization in Forgejo, with a team per role (its admins
+  are its owners, its members write, its guests read), and its library is the
+  organization's repository `library`. The hub makes them through Forgejo's
+  API, as a Forgejo admin, and keeps the teams as the group's roles are.
+- People have one account, Stemma's. The hub is an OpenID Connect provider,
+  and Forgejo signs people in through it; the hub makes each person's Forgejo
+  account when they join a group, linked to that sign-in.
+- Workers and personal tokens reach the libraries' git through the hub,
+  under `/git`, which applies the group's roles and passes the request on to
+  Forgejo with its own credentials; no Forgejo credential leaves the hub.
+- A webhook tells the hub of each push to a library's `main`, which it then
+  builds.
+
+Without a forge, the hub runs the forum and its agents, and refuses to create
+groups.
 
 With [Homebrew](https://brew.sh), on macOS (ARM) or Linux (x86_64):
 
@@ -56,6 +72,9 @@ just release   # build the web app, then the binary with it embedded
 ./target/release/stemma hub
 ```
 
+Then set up Forgejo beside it (see [The forge](#the-forge)), or run both
+[with Docker](#with-docker).
+
 On its first start, with no accounts yet, the hub prints a setup link
 (`/setup?token=…`) that creates the first account, which administers the
 hub. `stemma hub create-admin --username <name>` does the same from the
@@ -76,19 +95,96 @@ max_upload_mb = 50                        # STEMMA_MAX_UPLOAD_MB
 ```
 
 Put the hub behind a reverse proxy that serves HTTPS, and set `public_url`
-to its address: session cookies are then marked secure. The proxy must pass
-WebSocket upgrades on `/api/v1/worker`, where workers connect. Back up the
-data directory; it holds everything.
+to its address: session cookies are then marked secure, and it is the issuer
+of the hub's OpenID Connect tokens. The proxy must pass WebSocket upgrades on
+`/api/v1/worker`, where workers connect. Back up the data directory, which
+holds the database, the attachments and the key the hub signs its tokens
+with, and Forgejo's data, which holds the repositories.
+
+### The forge
+
+The hub's `[forge]` section says where Forgejo is and how the two reach each
+other:
+
+```toml
+[forge]
+url = "http://127.0.0.1:3000"                # STEMMA_FORGE_URL: where the hub reaches Forgejo
+public_url = "https://forge.example.org"     # STEMMA_FORGE_PUBLIC_URL: where people do
+hub_url = "http://127.0.0.1:8080"            # STEMMA_FORGE_HUB_URL: where Forgejo reaches the hub
+auth_source_id = 1                           # Forgejo's id for the source below
+token_env = "STEMMA_FORGE_TOKEN"             # a Forgejo admin's token, with every scope
+webhook_secret_env = "STEMMA_FORGE_WEBHOOK_SECRET"
+
+[forge.oidc]
+client_id = "forgejo"
+client_secret_env = "STEMMA_FORGE_CLIENT_SECRET"
+redirect_uris = ["https://forge.example.org/user/oauth2/stemma/callback"]
+# require_pkce = true
+```
+
+Only `url` is needed; the rest are the defaults shown, or derived from it
+(`public_url` is `url`, `hub_url` is the hub's `public_url`, and the redirect
+URI is that of a source named `stemma`). The three secrets are read from the
+environment, from the variables named, and the webhook's and the client's are
+at least 16 characters. `STEMMA_FORGE_URL` alone, with the secrets, sets a
+forge up.
+
+Forgejo, in turn (in its `app.ini`, or as `FORGEJO__section__KEY` variables):
+
+- signs people in only through the hub, making their account if the hub has
+  not yet: in `[service]`, `ALLOW_ONLY_EXTERNAL_REGISTRATION = true`, and in
+  `[oauth2_client]`, `ENABLE_AUTO_REGISTRATION = true`,
+  `USERNAME = nickname` and `ACCOUNT_LINKING = disabled`;
+- sends webhooks to the hub: `[webhook] ALLOWED_HOST_LIST` includes the
+  hub's address (`private`, or `loopback` on one machine);
+- has an admin, whose token the hub acts with:
+
+  ```sh
+  forgejo admin user create --admin --username forge-admin --random-password \
+      --email forge-admin@stemma.invalid --must-change-password=false
+  forgejo admin user generate-access-token --username forge-admin \
+      --token-name stemma --scopes all --raw   # STEMMA_FORGE_TOKEN
+  ```
+
+- and, once the hub runs, the source that signs people in through it, whose
+  id is `auth_source_id` (`forgejo admin auth list` shows it):
+
+  ```sh
+  forgejo admin auth add-oauth --name stemma --provider openidConnect \
+      --key forgejo --secret "$STEMMA_FORGE_CLIENT_SECRET" \
+      --scopes openid --scopes profile --scopes email \
+      --auto-discover-url http://127.0.0.1:8080/.well-known/openid-configuration
+  ```
+
+  Forgejo reads the discovery document from where it reaches the hub; people's
+  browsers go to the hub's public address to sign in, and Forgejo to
+  `hub_url` for the rest.
+
+People sign in to Forgejo with "Sign in with stemma": the hub asks them to sign
+in to Stemma if they have not, and sends them back signed in to their Forgejo
+account. In Forgejo they see their groups' organizations, and use the
+repositories as their role allows, with Forgejo's own tools. Usernames and
+group names are Forgejo's too, so names Forgejo keeps for itself (`admin`,
+`explore`, …) are refused.
 
 ### With Docker
 
 `docker/Dockerfile` builds an image with the web app embedded, and
-`docker/compose.yaml` runs it with its data in a volume:
+`docker/compose.yaml` runs it beside Forgejo, wired up, with their data in
+volumes. `docker/setup.sh` sets both up once: it writes the secrets they share
+to `docker/.env`, makes Forgejo's admin and its token, and adds the source
+that signs people in through the hub.
 
 ```sh
-docker compose -f docker/compose.yaml up -d --build
+docker/setup.sh
+docker compose -f docker/compose.yaml up -d
 docker compose -f docker/compose.yaml logs hub   # the setup link
 ```
+
+As it is, both answer on the machine they run on only, the hub on port 8080
+and Forgejo on 3000. To serve them to others, put each behind a reverse proxy
+that serves HTTPS, and set `STEMMA_PUBLIC_URL` and `FORGEJO_PUBLIC_URL` to
+their addresses before setting them up.
 
 ## Groups and roles
 
@@ -115,15 +211,18 @@ Each group has a library: a plain Lean project depending on Mathlib, made when
 the group is, from the template in `lean/template` (Lean and Mathlib
 v4.35.0). Its modules are built each on its own, with no root module
 importing them all, and import only the parts of Mathlib they use, so that a
-change builds again only what it touches. The hub keeps it as a git
-repository, served over HTTP to the group's members:
+change builds again only what it touches. It is the repository `library` of
+the group's organization in Forgejo, reached in two ways:
 
 ```sh
-git clone https://stemma.example.org/git/geometry.git   # a personal token as the password
+git clone https://stemma.example.org/git/geometry/library.git   # through the hub, a personal token as the password
+git clone https://forge.example.org/geometry/library.git        # in Forgejo, signed in there
 ```
 
-Each new commit of `main` (pushes that rewrite its history are refused) is
-built by a group worker with Lean: it gets Mathlib's cache, runs `lake build`,
+Through the hub, everyone in the group clones it, admins and members push to
+it, and guests do not; in Forgejo, the group's teams say the same. Each new
+commit of `main` (pushes that rewrite its history are refused) is built by a
+group worker with Lean: it gets Mathlib's cache, runs `lake build`,
 and then the inspection, `lean/Inspect.lean`, with the library's own
 toolchain. The worker keeps a checkout of the library, so that Mathlib is
 fetched once and Lake builds again only the modules that changed; it compiles
@@ -323,8 +422,35 @@ just check    # formatting, lints, types, tests and the web build
 Nix is not required. Without it, install what the development shell
 provides: a Rust toolchain ([rustup](https://rustup.rs)),
 [Node.js](https://nodejs.org) with [pnpm](https://pnpm.io),
-[just](https://just.systems) and, for Lean,
-[elan](https://github.com/leanprover/elan).
+[just](https://just.systems), `git` and `curl`, for Lean,
+[elan](https://github.com/leanprover/elan), and
+[Forgejo](https://forgejo.org/download/). The development shell has Forgejo
+where nixpkgs builds it (Linux); elsewhere, put a `forgejo` binary on the
+`PATH`: Forgejo publishes them for Linux, and builds from its source
+elsewhere, macOS among them.
+
+The tests need no Forgejo: they run the hub beside a stand-in for it,
+`crates/stemma-fake-forge`, with the part of its API the hub uses and git
+over HTTP. To run Stemma itself, or test it with a real Forgejo, run one
+locally:
+
+```sh
+just forge          # Forgejo at 127.0.0.1:3000, its data in data/forgejo
+just hub            # the hub at 127.0.0.1:8080, with that Forgejo
+just test-forgejo   # with Forgejo running and no hub: the hub's tests with it
+```
+
+The first `just forge` sets Forgejo up for the local hub, as [The
+forge](#the-forge) says: it writes its configuration, makes its admin (the
+password is in `data/forgejo/admin-password`) and its token, adds the source
+that signs people in through the hub (running the hub for a moment if none
+answers, since Forgejo reads its discovery document then), and writes the
+hub's settings to `data/stemma.toml` and its secrets to `data/forge.env`,
+which `just hub` reads. Remove `data/` to start again. `just test-forgejo`
+runs the test in `crates/stemma-hub/tests/forgejo.rs`, which is skipped unless
+`STEMMA_TEST_FORGEJO` is Forgejo's address (with the secrets in the hub's
+variables); it runs a hub of its own at `127.0.0.1:8080`
+(`STEMMA_TEST_HUB`), where the source expects it.
 
 The repository holds:
 
@@ -332,7 +458,10 @@ The repository holds:
 - `crates/stemma-core`: what every part shares: addresses (`t12#45-50`,
   `lean:Foo.bar`, `w7`), `[[…]]` references, mentions, the API's types and
   the worker protocol.
-- `crates/stemma-hub`: the server, with its migrations in `migrations/`.
+- `crates/stemma-hub`: the server, with its migrations in `migrations/`: the
+  API, the forge's provisioning and webhooks, the OpenID Connect provider and
+  git's passage to the forge.
+- `crates/stemma-fake-forge`: a stand-in for Forgejo, for the tests.
 - `crates/stemma-client`: the hub's API over HTTP, Stemma's tools and their
   MCP server.
 - `crates/stemma-worker`: the worker, its runners, library builds, the
