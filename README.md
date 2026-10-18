@@ -1,7 +1,8 @@
 # Stemma
 
 Stemma is where a research group does mathematics by talking: people and
-agents discuss in a shared forum and chats, and a Lean library holds what
+agents discuss in a shared forum and chats, working papers give the
+readable account of what the group is doing, and a Lean library holds what
 the group knows, built and checked in the background.
 
 This is an early stage of Stemma. What works today:
@@ -17,12 +18,16 @@ This is an early stage of Stemma. What works today:
   inspected by a workshop machine with Lean, and browsable, with the state
   of each declaration (proved, `sorry`, missing) shown wherever it is
   referenced;
+- working papers: each a LaTeX repository of the group in the forge, made
+  from a template, written by its authors and by the workshop, compiled
+  into a PDF after each push, and shown in the web app with its build's
+  log;
 - the workshop, the only place where agents change the group's
   repositories: tasks handed over in conversation ("formalize this"), worked
   on in the background on machines the group's admins lend it, each job in
   a container of its own, checked, proposed as a pull request, put in the
-  library once approved, and reported in the thread they came from; what
-  each job consumed is measured;
+  library or the paper once approved, and reported in the thread they came
+  from; what each job consumed is measured;
 - your own agent, opened with Stemma's tools for a session
   (`stemma claude`, `stemma codex`, `stemma opencode`), and Stemma's tools
   for any agent, over MCP and the command line.
@@ -35,18 +40,19 @@ directory. It runs beside a [Forgejo](https://forgejo.org) instance, the
 forge, which keeps the groups' repositories:
 
 - Each group is an organization in Forgejo, with a team per role (its admins
-  are its owners, its members write, its guests read), and its library is the
-  organization's repository `library`. The hub makes them through Forgejo's
-  API, as a Forgejo admin, and keeps the teams as the group's roles are.
+  are its owners, its members write, its guests read); its library is the
+  organization's repository `library`, and each of its papers the repository
+  `paper-<slug>`. The hub makes them through Forgejo's API, as a Forgejo
+  admin, and keeps the teams as the group's roles are.
 - People have one account, Stemma's. The hub is an OpenID Connect provider,
   and Forgejo signs people in through it; the hub makes each person's Forgejo
   account when they join a group, linked to that sign-in.
-- Machines and personal tokens reach the libraries' git through
-  the hub, under `/git`, which applies the group's roles and passes the
-  request on to Forgejo with its own credentials; no Forgejo credential
-  leaves the hub.
-- A webhook tells the hub of each push to a library's `main`, which it then
-  builds.
+- Machines and personal tokens reach the repositories' git through the
+  hub, under `/git`, which applies the group's roles and passes the request
+  on to Forgejo with its own credentials; no Forgejo credential leaves the
+  hub.
+- A webhook tells the hub of each push to the `main` of a library or a
+  paper, which it then builds.
 - The workshop's changes are pull requests, which the hub opens, merges or
   closes through Forgejo's API as people approve or reject them in Stemma.
 
@@ -201,17 +207,19 @@ grants and its admins can change in the group's settings:
 
 - An **admin** manages the group: its settings, members, invitations and
   workshop machines (their own machines, lent to the workshop). An admin
-  also approves the workshop's big changes, and does everything a member
-  does. A group always keeps at least one admin.
+  also approves the workshop's big changes, changes any paper's authors, and
+  does everything a member does. A group always keeps at least one admin.
 - A **member** reads, posts in the forum and chats, summons agents, and asks
   the workshop for work: hands it tasks, directly or through an agent,
   approves the changes of the tasks they asked for, asks for builds of the
-  library, and pushes to it.
+  library and the papers, and pushes to them. A member creates papers, and
+  is an author of those they create or are added to.
 - A **guest** reads and converses: posts, and summons their own agents. A
   guest asks for no work: they cannot hand the workshop a task, an agent
   answering them is not given `create_task`, they never approve changes, and
-  they cannot push to the library or ask for its builds. Nor do they change
-  the group's settings.
+  they cannot push to the library or the papers or ask for their builds.
+  Nor do they create papers, write them as authors, or change the group's
+  settings.
 
 The hub enforces the roles; the web app leaves out what a role cannot do.
 
@@ -247,6 +255,40 @@ uses each, the threads about it and the messages that reference it, and
 proved, depends on `sorry`, or is missing. A build that fails is shown with its
 log.
 
+## Working papers
+
+Working papers are the readable account of what the group is doing:
+mathematics written up as it settles, in LaTeX. Each is a repository of the
+group's organization in Forgejo, `paper-<slug>`, with the address
+`p/<slug>`; `[[p/notes]]` links to it wherever it is written.
+
+Admins and members create papers, with a title and a short name (in the web
+app's papers, or `stemma paper new notes 'Notes on gluing'`); guests do not.
+A paper starts from the template in `latex/template`: `main.tex`, an
+`amsart` article with the usual packages and theorem environments, its
+title and its creator filled in; `references.bib`, for BibTeX; and a
+`.gitignore` for what compiling makes. Its creator is its first author, and
+its authors (or an admin) add others, admins or members.
+
+It is written like the library is: cloned through the hub with a personal
+token, or in Forgejo, and pushed to (`main` is never rewritten), by its
+authors and by anyone who may push; and by the workshop, asked in
+conversation (below).
+
+```sh
+git clone https://stemma.example.org/git/geometry/paper-notes.git   # through the hub, a personal token as the password
+```
+
+Each new commit of `main` is compiled by a workshop machine with LaTeX, in a
+container of the build's own: the machine keeps a checkout of the paper,
+checks the commit out, and runs `latexmk -pdf` on `main.tex`, that is,
+pdfLaTeX and BibTeX (not Biber), with the image's TeX Live (see [The
+image](#the-image)). If it makes the PDF, the machine uploads it to the hub
+with the job's token, which keeps the last PDF made; a build that fails
+leaves the paper's PDF as it was, and the paper's page shows why, with the
+log. The web app shows each paper's PDF in the browser's own viewer, with
+its build, its log, its authors, and where it is in Forgejo.
+
 ## The workshop
 
 The workshop is where agents work in the background, and the only place
@@ -254,7 +296,10 @@ where they change the group's repositories. Conversations ask it for work:
 the forum, chats, and each person's own sessions with their agents. A task
 is handed to it in conversation: mention it, as in `@workshop formalize the
 lemma in t12#48`, or ask an agent in a thread, which hands it over with
-`create_task`. Admins and members hand tasks over; guests do not. Each task
+`create_task`. Admins and members hand tasks over; guests do not. A task
+about a paper names it: handed over from its page in the web app (which
+opens a thread about it with the request), from a thread about it, or by
+an agent with `create_task` and the paper. Each task
 has an address, `w7`, a page in the web app with its state, log, changes and
 report, and is shown on its way in the thread it came from, where it can be
 cancelled. The web app's workshop panel shows the tasks (queued, running,
@@ -271,7 +316,7 @@ manifest, `architecture.toml`, and its agent's instructions, in Markdown:
 ```toml
 name = "formalize"
 description = "Formalize in the library what a conversation decided, …"
-works_on = "library"                  # the group's repository it changes
+works_on = "library"                  # the group's repository it changes; `paper`, the task's paper
 instructions = ["instructions.md"]    # in this folder, in order
 big = ["lakefile.toml", "lakefile.lean", "lean-toolchain", "lake-manifest.json"]
 
@@ -280,7 +325,8 @@ name = "work"                         # each step, by a name machines know
 description = "…"
 ```
 
-Adding an architecture is adding a folder. There is one now, `formalize`:
+Adding an architecture is adding a folder. There are two now: `formalize`,
+for the library, and `write`, for papers. `formalize` runs:
 
 1. **work**: a fresh worktree of the library at `main`, with its
    dependencies and last build, where the agent works, given the task, the
@@ -300,18 +346,35 @@ Adding an architecture is adding a folder. There is one now, `formalize`:
    nowhere else (the hub reads the refs a push updates). The hub opens a
    pull request in Forgejo.
 
+`write`, a task on a paper, runs the same way on the paper's repository,
+with LaTeX instead of Lean:
+
+1. **work**: a fresh worktree of the paper at `main`, where the agent edits
+   its source as asked, given the task, the thread, the paper's files, LaTeX,
+   Stemma's tools and the instructions in
+   `workshop/architectures/write/instructions.md`: follow the paper's
+   structure and notation, write what the conversation decided faithfully,
+   mark what is unclear, never invent references, and report honestly.
+2. **compile**: `latexmk -pdf main.tex` must make the PDF. If not, the agent
+   is told the errors and works again, a limited number of rounds. What
+   compiling made is then cleaned away.
+3. **propose**: as for the library, to the branch `workshop/w7` of the
+   paper's repository, which the job's token alone pushes to.
+
 ### Approval
 
 The changes go in only once approved, in Stemma (the task's page, or
-`stemma approve w7`): by the person who asked for the task, and for a big
-change by an admin too. A change is big when it deletes or renames a file,
-or touches one of its architecture's `big` files: for the library, Lake's
-configuration and manifest and the toolchain. One person may approve as
-both. Guests never approve. Approval merges the pull request through
-Forgejo's API, and the push to `main` is then built; the asker or an admin
-may reject the changes instead (`stemma reject w7`), which closes the pull
-request and deletes its branch. A change that no longer merges is rejected,
-and asked for again.
+`stemma approve w7`). Who approves is a list of rules: the person who asked
+for the task, always; for a paper, one of its authors too, when the person
+who asked is not one; and for a big change, an admin too. A change is big
+when it deletes or renames a file, or touches one of its architecture's
+`big` files: for the library, Lake's configuration and manifest and the
+toolchain; for a paper, its build's configuration (`latexmkrc`). One person
+may approve as several. Guests never approve. Approval merges the pull
+request through Forgejo's API, and the push to `main` is then built; the
+asker or an admin may reject the changes instead (`stemma reject w7`),
+which closes the pull request and deletes its branch. A change that no
+longer merges is rejected, and asked for again.
 
 When a task's run ends, one message in its thread reports on it, for the
 person who asked: what was done, what is pending, the changes and the
@@ -324,7 +387,7 @@ The workshop runs on machines its group's admins lend it: their own
 machines (see [Your machines](#your-machines)), which run each of the
 workshop's jobs in a container of its own (see
 [Isolation](#isolation)), with Docker or Podman and the workshop's image,
-which has Lean. An admin adds one of theirs, in the group's settings or
+which has Lean and LaTeX. An admin adds one of theirs, in the group's settings or
 from it, once it has connected and said how it isolates the workshop's
 jobs; a machine that cannot is refused:
 
@@ -350,7 +413,8 @@ stemma machine workshop show             # its groups, and its agents with what 
 stemma machine workshop unoffer 2
 ```
 
-A group's tasks run one at a time, and so do its builds. A machine keeps
+A group's tasks run one at a time, and so do its library's builds and its
+papers'. A machine keeps
 the group's checkout of the library, with its `.lake`, in its work folder,
 so that Mathlib is fetched once; it takes several gigabytes. On a task, the
 agent edits files and runs commands in a worktree of that checkout, in the
@@ -364,7 +428,8 @@ shows them by day.
 
 The workshop runs work that other people ask for, with agents that run
 commands, so a workshop machine runs each of its jobs, a task or a build of
-the library, in a container of its own, which is removed when the job ends.
+the library or of a paper, in a container of its own, which is removed when
+the job ends.
 People's own jobs, an agent of theirs answering them, and their sessions
 (`stemma claude`, …) run on their machine, as before: they are their own.
 
@@ -377,7 +442,8 @@ machine's work folder:
   Stemma's tools from; and how the agent signs in (below). Nothing else of
   the machine, its home included;
 - for a build, the group's checkout, read-write, with its `.git` hidden, and
-  where the inspection is compiled.
+  where the inspection is compiled; for a paper's, the paper's checkout,
+  with its `.git` hidden.
 
 Lake's builds, the check of a task's work and the agent all run in it; git
 runs on the machine, with the job's token, which pushes only to the task's
@@ -421,10 +487,27 @@ cgroup controllers delegated to the user, as on most systemd systems.
 `docker/workshop/Dockerfile` describes the image: Debian with Node.js
 (`node:24-bookworm-slim`), git and curl; elan with Lean's toolchain of a
 new library (`leanprover/lean4:v4.35.0`; other toolchains are fetched in
-the container, for the job only); Claude Code, Codex and OpenCode, from
-npm; and `stemma` of the machine's own version, which the agents run as
-Stemma's tools (`stemma mcp`). Each version is an argument of the build,
-written in the file and on the image's labels. `stemma machine workshop
+the container, for the job only); a selection of TeX Live, for the papers;
+Claude Code, Codex and OpenCode, from npm; and `stemma` of the machine's
+own version, which the agents run as Stemma's tools (`stemma mcp`). Each
+version is an argument of the build, written in the file and on the image's
+labels.
+
+The TeX Live is Debian's (2022, for bookworm), installed without its
+documentation, with `latexmk`, pdfLaTeX and BibTeX, and these packages:
+
+| Debian package              | What it brings                                                    |
+|-----------------------------|-------------------------------------------------------------------|
+| `texlive-latex-base`        | LaTeX, amsmath and amsthm, the AMS classes (`amsart`), hyperref   |
+| `texlive-latex-recommended` | mathtools, microtype, csquotes, babel's languages, beamer         |
+| `texlive-latex-extra`       | enumitem, thmtools, cleveref, and most of CTAN's other packages   |
+| `texlive-fonts-recommended`, `lmodern` | the standard fonts, and Latin Modern                   |
+| `texlive-pictures`          | TikZ, tikz-cd, pgfplots                                           |
+| `latexmk`                   | what runs LaTeX and BibTeX as many times as needed                |
+
+They add about 560 MB to the image. A paper that needs another package
+says so in its build's log; add it to the Dockerfile, as a machine's owner,
+and build the image again. `stemma machine workshop
 image` builds it with the machine's runtime, tagged
 `stemma-workshop:<version>`:
 
@@ -536,9 +619,14 @@ stemma search gluing lemma
 stemma read lean:Foo.bar        # a declaration of the library
 stemma library                  # how the library stands
 stemma library gluing           # search its declarations
+stemma papers                   # the working papers
+stemma paper new notes 'Notes on gluing'   # a new one, p/notes, from the template
+stemma read p/notes             # its main file, with its authors, PDF and files
+stemma read p/notes sections/charts.tex    # another of its files
 stemma tasks                    # the workshop's tasks
 stemma read w7                  # one of them, with its report and changes
 stemma task 'Formalize the gluing lemma' --origin 't12#48' < what.md
+stemma task 'Write up the gluing' --origin 't12#48' --paper p/notes < what.md
 stemma approve w7               # approve its changes: as who asked, or as an admin
 stemma reject w7
 ```
@@ -596,7 +684,8 @@ token in your configuration directory (`stemma/machine.toml`, or where
 it finds. When it runs, a machine offers the runners it finds installed and
 usable: `claude`, `codex` and `opencode` on its `PATH`, each answering
 `--version`; whether it has Lean (`elan` or `lake` on its `PATH`, or in the
-workshop's image); and how it isolates the workshop's jobs. The
+workshop's image) and LaTeX (`latexmk`, likewise); and how it isolates the
+workshop's jobs. The
 file it writes may also say how to run them, how many jobs to run at once,
 and how to work for a workshop:
 
@@ -609,6 +698,8 @@ concurrency = 2                     # jobs at once
 
 [lean]                              # the workshop's builds of the library
 # timeout_minutes = 90; cache = true  # whether to get Mathlib's cache
+[latex]                             # the workshop's builds of the papers
+# timeout_minutes = 15
 [workshop]                          # the workshop's tasks
 # timeout_minutes = 120; rounds = 2; max_turns = 80
 [isolation]                         # the workshop's containers: see Isolation
@@ -669,8 +760,10 @@ agents' jobs the same way, headless, from the same code.
   `post_message` (with an optional reply), `open_thread` and `search`;
 - the library's: `library_state`, `library_lookup` (a declaration, with what
   it uses and what uses it) and `library_search`;
-- the workshop's: `create_task` (a title, instructions and the message that
-  asks), `task_status` (`w7`) and `list_tasks`.
+- the papers', which only read: `list_papers` and `read_paper` (`p/notes`,
+  its main file or another);
+- the workshop's: `create_task` (a title, instructions, the message that
+  asks and, for a paper, the paper), `task_status` (`w7`) and `list_tasks`.
 
 The launcher uses it for you. If you would rather install Stemma into your
 agent, so that it has the tools in every conversation, add it there; it then
@@ -749,31 +842,36 @@ just workshop-image          # the image, with stemma built from the repository
 just test-container          # a build and a task in containers (`podman` as an argument for Podman)
 ```
 
-`just test-container` runs the test in `crates/stemma-worker/tests/end_to_end.rs`
-that is skipped unless `STEMMA_TEST_CONTAINER` names the runtime and
-`STEMMA_TEST_IMAGE` the image.
+`just test-container` runs the tests in `crates/stemma-worker/tests/end_to_end.rs`
+that are skipped unless `STEMMA_TEST_CONTAINER` names the runtime and
+`STEMMA_TEST_IMAGE` the image: a build and a task of the library, and the
+compilation of a paper made from the template. That compilation runs with
+`cargo test` too, on the machine itself, where `latexmk` is installed, and
+is skipped where it is not (unless `STEMMA_TEST_LATEX` is set, which makes
+its absence fail).
 
 The repository holds:
 
 - `crates/stemma`: the binary and its subcommands.
 - `crates/stemma-core`: what every part shares: addresses (`t12#45-50`,
-  `lean:Foo.bar`, `w7`), `[[…]]` references, mentions, the API's types and
-  the machines' protocol.
+  `lean:Foo.bar`, `p/notes`, `w7`), `[[…]]` references, mentions, the API's
+  types and the machines' protocol.
 - `crates/stemma-hub`: the server, with its migrations in `migrations/`: the
   API, the forge's provisioning, pull requests and webhooks, the OpenID
-  Connect provider, git's passage to the forge, and the workshop: its
-  machines, routing, consumption and approvals.
+  Connect provider, git's passage to the forge, the papers and their PDFs,
+  and the workshop: its machines, routing, consumption and approvals.
 - `crates/stemma-fake-forge`: a stand-in for Forgejo, for the tests.
 - `crates/stemma-client`: the hub's API over HTTP, Stemma's tools and their
   MCP server.
 - `crates/stemma-worker`: people's machines, how each agent is launched (for
   a job, or a person's session), what each runner reports it consumed,
-  library builds, the workshop's runs and their containers, and the agents'
-  instructions, in `prompts/`.
+  the builds of libraries and papers, the workshop's runs and their
+  containers, and the agents' instructions, in `prompts/`.
 - `docker/`: the hub's image, beside Forgejo, and the workshop's image
   (`docker/workshop/`).
 - `workshop/architectures/`: the workshop's architectures, each a folder
   with its manifest and instructions.
+- `latex/`: the template of a paper (`template/`).
 - `lean/`: the inspection (`Inspect.lean`), the template of a group's library
   (`template/`) and a small library without Mathlib to test them
   (`fixture/`; `just test-lean` builds and inspects it).
