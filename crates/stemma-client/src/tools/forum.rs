@@ -90,12 +90,16 @@ pub fn definitions() -> Vec<ToolDef> {
         },
         ToolDef {
             name: "search",
-            description: "Search a group's threads and messages for words, regardless of case. \
-                          Results come with their addresses, to read them with read_thread.",
+            description: "Search a group's thread titles and messages, regardless of case and \
+                          accents: every word (or prefix), and \"phrases\" in quotes, narrowed by \
+                          author:<username>, since:/until: (2026-03-01, 7d, 2w), \
+                          in:forum|chats|papers|library|p/<slug>|t<n> and \
+                          kind:thread|message|agent|person. Results come with their addresses, \
+                          to read them with read_thread.",
             input_schema: json!({
                 "type": "object",
                 "properties": {
-                    "query": {"type": "string", "description": "The words to find, all of them."},
+                    "query": {"type": "string", "description": "The words to find, all of them, and operators."},
                     "group": {"type": "string", "description": GROUP},
                     "limit": {"type": "integer", "minimum": 1, "maximum": 100,
                               "description": "How many results; 20 if absent."}
@@ -142,6 +146,8 @@ async fn open_thread(toolbox: &Toolbox, args: Value) -> ToolResult {
                 title: args.title,
                 kind: ThreadKind::Discussion,
                 resident_agent: None,
+                model: None,
+                effort: None,
                 anchor: None,
                 body: Some(args.body),
                 attachments: Vec::new(),

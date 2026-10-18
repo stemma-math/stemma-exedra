@@ -18,6 +18,7 @@ pub mod jobs;
 pub mod library;
 pub mod oidc;
 pub mod papers;
+pub mod search;
 pub mod secret;
 pub mod state;
 pub mod web;

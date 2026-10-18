@@ -451,7 +451,9 @@ pub async fn summon(
                 }
                 continue;
             }
-            Summoned::Personal(profile) => profile,
+            Summoned::Personal(profile) => {
+                in_chat(state, thread_id, thread, &handle, profile).await?
+            }
             Summoned::Missing => {
                 let profile = AgentProfile {
                     handle: handle.clone(),
@@ -485,6 +487,39 @@ pub async fn summon(
         dispatch(state).await?;
     }
     Ok(())
+}
+
+/// A chat's resident agent, as the chat asks it to answer: with the model
+/// and the effort chosen when it started, if the writer's agent runs with
+/// the runner they were chosen for.
+async fn in_chat(
+    state: &AppState,
+    thread_id: i64,
+    thread: &Thread,
+    handle: &str,
+    mut profile: AgentProfile,
+) -> ApiResult<AgentProfile> {
+    if thread.kind != ThreadKind::Chat || thread.resident_agent.as_deref() != Some(handle) {
+        return Ok(profile);
+    }
+    if thread.resident_model.is_none() && thread.resident_effort.is_none() {
+        return Ok(profile);
+    }
+    let runner: Option<String> =
+        sqlx::query_scalar("SELECT resident_runner FROM threads WHERE id = ?")
+            .bind(thread_id)
+            .fetch_one(&state.db)
+            .await?;
+    if runner.as_deref() != Some(profile.runner.as_str()) {
+        return Ok(profile);
+    }
+    if let Some(model) = &thread.resident_model {
+        profile.model = Some(model.clone());
+    }
+    if let Some(args) = thread.resident_effort.and_then(|e| e.args(&profile.runner)) {
+        profile.args.extend(args);
+    }
+    Ok(profile)
 }
 
 /// Says in the thread why an agent does not answer, as a job that failed.

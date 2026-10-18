@@ -280,6 +280,12 @@ pub struct Thread {
     pub kind: ThreadKind,
     /// The agent profile that answers every message of a chat.
     pub resident_agent: Option<String>,
+    /// The model it answers with, if chosen when the chat started.
+    #[serde(default)]
+    pub resident_model: Option<String>,
+    /// How hard it thinks, if chosen when the chat started.
+    #[serde(default)]
+    pub resident_effort: Option<Effort>,
     /// What the thread is about: a declaration of the library.
     pub anchor: Option<Address>,
     pub created_by: User,
@@ -297,11 +303,60 @@ pub struct CreateThread {
     #[serde(default = "default_kind")]
     pub kind: ThreadKind,
     pub resident_agent: Option<String>,
+    /// For a chat, the model its resident agent answers with, instead of
+    /// the one in each writer's profile.
+    #[serde(default)]
+    pub model: Option<String>,
+    /// For a chat, how hard its resident agent thinks.
+    #[serde(default)]
+    pub effort: Option<Effort>,
     pub anchor: Option<Address>,
     /// The first message, if any.
     pub body: Option<String>,
     #[serde(default)]
     pub attachments: Vec<i64>,
+}
+
+/// How hard an agent thinks before it answers, as its runner takes it:
+/// Claude Code's `--effort`, Codex's `model_reasoning_effort`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Effort {
+    Low,
+    Medium,
+    High,
+}
+
+impl Effort {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Effort::Low => "low",
+            Effort::Medium => "medium",
+            Effort::High => "high",
+        }
+    }
+
+    pub fn parse(s: &str) -> Option<Effort> {
+        match s {
+            "low" => Some(Effort::Low),
+            "medium" => Some(Effort::Medium),
+            "high" => Some(Effort::High),
+            _ => None,
+        }
+    }
+
+    /// The arguments that ask a runner for this effort, or none if the
+    /// runner takes no effort from its command line.
+    pub fn args(self, runner: &str) -> Option<Vec<String>> {
+        match runner {
+            runners::CLAUDE_CODE => Some(vec!["--effort".into(), self.as_str().into()]),
+            runners::CODEX => Some(vec![
+                "-c".into(),
+                format!("model_reasoning_effort={}", self.as_str()),
+            ]),
+            _ => None,
+        }
+    }
 }
 
 fn default_kind() -> ThreadKind {
@@ -403,6 +458,8 @@ pub struct SearchHit {
     /// The message (`t12#45`), or the thread when its title matched.
     pub address: Address,
     pub thread_title: String,
+    /// The kind of the thread it is in.
+    pub thread_kind: ThreadKind,
     pub author: Option<User>,
     pub agent: Option<String>,
     /// A piece of the text around what matched.

@@ -199,6 +199,8 @@ pub async fn edit(
             title: title.clone(),
             kind: ThreadKind::Discussion,
             resident_agent: None,
+            model: None,
+            effort: None,
             anchor: Some(Address::Paper(row.slug.clone())),
             body: Some(instructions.clone()),
             attachments: Vec::new(),

@@ -1131,6 +1131,172 @@ async fn search_finds_titles_and_messages() {
     assert_eq!(reply.status, StatusCode::UNPROCESSABLE_ENTITY);
 }
 
+/// The hits of a search in `geometry`, by address.
+async fn search(hub: &TestHub, client: &Client, query: &str) -> Vec<String> {
+    let path = format!(
+        "/groups/geometry/search?q={}",
+        query
+            .replace(' ', "%20")
+            .replace(':', "%3A")
+            .replace('"', "%22")
+    );
+    let reply = hub.get(client, &path).await;
+    assert_eq!(reply.status, StatusCode::OK, "{query}: {:?}", reply.json());
+    reply
+        .json()
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|hit| hit["address"].as_str().unwrap().to_owned())
+        .collect()
+}
+
+fn sorted(hits: &[String]) -> Vec<String> {
+    let mut hits = hits.to_vec();
+    hits.sort();
+    hits
+}
+
+#[tokio::test]
+async fn search_takes_operators() {
+    let hub = TestHub::new().await;
+    let ada = hub.admin_with_group().await;
+    let bob = hub.member(&ada, "bob").await;
+    hub.post(
+        &ada,
+        "/groups/geometry/threads",
+        json!({"title": "Compact fibres", "body": "Are the fibres compact?"}),
+    )
+    .await;
+    hub.post(
+        &bob,
+        "/groups/geometry/threads/1/messages",
+        json!({"body": "The fibres are compact, by \"Tychonoff's theorem\"."}),
+    )
+    .await;
+    hub.post(
+        &bob,
+        "/groups/geometry/threads",
+        json!({"title": "Notation", "kind": "chat", "resident_agent": "claude",
+               "body": "Which letter for the fibres?"}),
+    )
+    .await;
+
+    // Words are prefixes, regardless of case and accents.
+    let hits = search(&hub, &ada, "FIBR").await;
+    assert_eq!(hits[0], "t1", "titles first");
+    assert_eq!(sorted(&hits[1..]), ["t1#1", "t1#2", "t2#1"]);
+    assert_eq!(search(&hub, &ada, "tychonoff").await, ["t1#2"]);
+    assert_eq!(
+        search(&hub, &ada, "\"theorem tychonoff\"").await,
+        Vec::<String>::new()
+    );
+    assert_eq!(
+        sorted(&search(&hub, &ada, "fibres author:bob").await),
+        ["t1#2", "t2#1"]
+    );
+    assert_eq!(search(&hub, &ada, "fibres in:chats").await, ["t2#1"]);
+    assert_eq!(
+        sorted(&search(&hub, &ada, "fibres in:forum kind:message").await),
+        ["t1#1", "t1#2"]
+    );
+    assert_eq!(search(&hub, &ada, "fibres kind:thread").await, ["t1"]);
+    assert_eq!(search(&hub, &ada, "fibres in:t2").await, ["t2#1"]);
+    assert_eq!(
+        search(&hub, &ada, "fibres kind:agent").await,
+        Vec::<String>::new()
+    );
+    assert_eq!(search(&hub, &ada, "fibres since:1d").await.len(), 4);
+    assert!(
+        search(&hub, &ada, "fibres until:2000-01-01")
+            .await
+            .is_empty()
+    );
+
+    // Without words, what the operators allow, newest first.
+    assert_eq!(search(&hub, &ada, "in:chats").await, ["t2"]);
+    assert_eq!(search(&hub, &ada, "author:ada").await, ["t1#1"]);
+
+    // The index follows what changes: a new title, an edit, a deletion.
+    hub.call(
+        &ada,
+        Method::PATCH,
+        "/groups/geometry/threads/1",
+        Some(json!({"title": "Proper maps"})),
+    )
+    .await;
+    assert_eq!(search(&hub, &ada, "proper").await, ["t1"]);
+    assert_eq!(
+        search(&hub, &ada, "fibres kind:thread").await,
+        Vec::<String>::new()
+    );
+    hub.call(
+        &bob,
+        Method::PATCH,
+        "/groups/geometry/threads/1/messages/2",
+        Some(json!({"body": "By Tikhonov."})),
+    )
+    .await;
+    assert_eq!(search(&hub, &ada, "tychonoff").await, Vec::<String>::new());
+    assert_eq!(search(&hub, &ada, "tikhonov").await, ["t1#2"]);
+    hub.call(
+        &bob,
+        Method::DELETE,
+        "/groups/geometry/threads/1/messages/2",
+        None,
+    )
+    .await;
+    assert_eq!(search(&hub, &ada, "tikhonov").await, Vec::<String>::new());
+
+    // A wrong operator is said so.
+    for wrong in ["in:nowhere", "since:soon", "kind:poem", "%20"] {
+        let reply = hub
+            .get(&ada, &format!("/groups/geometry/search?q={wrong}"))
+            .await;
+        assert_eq!(reply.status, StatusCode::UNPROCESSABLE_ENTITY, "{wrong}");
+    }
+}
+
+#[tokio::test]
+async fn search_stays_in_the_viewers_groups() {
+    let hub = TestHub::new().await;
+    let ada = hub.admin_with_group().await;
+    hub.post(
+        &ada,
+        "/groups/geometry/threads",
+        json!({"title": "A secret", "body": "Nobody else reads this"}),
+    )
+    .await;
+    // Someone in another group only.
+    hub.post(
+        &ada,
+        "/groups",
+        json!({"slug": "algebra", "name": "Algebra"}),
+    )
+    .await;
+    let reply = hub
+        .post(&ada, "/groups/algebra/invitations", json!({"max_uses": 1}))
+        .await;
+    let token = reply.json()["token"].as_str().unwrap().to_owned();
+    let reply = hub
+        .post(
+            &Client::default(),
+            &format!("/invitations/{token}/accept"),
+            json!({"account": {"username": "eve", "display_name": "Eve", "password": "password1"}}),
+        )
+        .await;
+    let eve = signed_in(&reply);
+
+    let reply = hub.get(&eve, "/groups/geometry/search?q=secret").await;
+    assert_eq!(reply.status, StatusCode::NOT_FOUND);
+    let reply = hub.get(&eve, "/groups/algebra/search?q=secret").await;
+    assert_eq!(reply.json(), json!([]));
+    let reply = hub
+        .get(&Client::default(), "/groups/geometry/search?q=secret")
+        .await;
+    assert_eq!(reply.status, StatusCode::UNAUTHORIZED);
+}
+
 #[tokio::test]
 async fn mentions_and_chats_queue_jobs() {
     let hub = TestHub::new().await;
@@ -1216,6 +1382,86 @@ async fn mentions_and_chats_queue_jobs() {
         )
         .await;
     assert_eq!(reply.status, StatusCode::UNPROCESSABLE_ENTITY);
+}
+
+/// The agent a job runs, as the hub stored it when it queued the job.
+async fn job_agent(hub: &TestHub, job: &Value) -> Value {
+    let agent: String = sqlx::query_scalar("SELECT agent FROM jobs WHERE id = ?")
+        .bind(job["id"].as_i64().unwrap())
+        .fetch_one(&hub.state.db)
+        .await
+        .unwrap();
+    serde_json::from_str(&agent).unwrap()
+}
+
+#[tokio::test]
+async fn a_chat_chooses_its_model_and_effort() {
+    let hub = TestHub::new().await;
+    let ada = hub.admin_with_group().await;
+    let bob = hub.member(&ada, "bob").await;
+    let reply = hub
+        .post(
+            &ada,
+            "/groups/geometry/threads",
+            json!({"title": "Is every compact group profinite?", "kind": "chat",
+                   "resident_agent": "claude", "model": "opus", "effort": "high",
+                   "body": "Is every compact group profinite?"}),
+        )
+        .await;
+    assert_eq!(reply.status, StatusCode::CREATED, "{:?}", reply.json());
+    let thread = &reply.json()["thread"];
+    assert_eq!(thread["resident_model"], "opus");
+    assert_eq!(thread["resident_effort"], "high");
+
+    // Everyone who writes is answered by their own @claude, as the chat chose.
+    hub.post(
+        &bob,
+        "/groups/geometry/threads/1/messages",
+        json!({"body": "Not the circle, surely"}),
+    )
+    .await;
+    let jobs = hub
+        .get(&ada, "/groups/geometry/threads/1/jobs")
+        .await
+        .json();
+    assert_eq!(jobs.as_array().unwrap().len(), 2);
+    for (job, who) in jobs.as_array().unwrap().iter().zip(["ada", "bob"]) {
+        assert_eq!(job["requester"]["username"], who);
+        let agent = job_agent(&hub, job).await;
+        assert_eq!(agent["model"], "opus");
+        assert_eq!(agent["args"], json!(["--effort", "high"]));
+    }
+
+    // Codex takes it as its reasoning effort.
+    let reply = hub
+        .post(
+            &ada,
+            "/groups/geometry/threads",
+            json!({"title": "Quick", "kind": "chat", "resident_agent": "codex",
+                   "effort": "low", "body": "Hi"}),
+        )
+        .await;
+    assert_eq!(reply.status, StatusCode::CREATED);
+    let jobs = hub
+        .get(&ada, "/groups/geometry/threads/2/jobs")
+        .await
+        .json();
+    let agent = job_agent(&hub, &jobs[0]).await;
+    assert_eq!(agent["model"], Value::Null);
+    assert_eq!(agent["args"], json!(["-c", "model_reasoning_effort=low"]));
+
+    // Only chats choose, and OpenCode takes no effort from them.
+    for body in [
+        json!({"title": "x", "model": "opus"}),
+        json!({"title": "x", "kind": "chat", "effort": "high"}),
+        json!({"title": "x", "kind": "chat", "resident_agent": "opencode", "effort": "high"}),
+        json!({"title": "x", "kind": "chat", "resident_agent": "claude", "effort": "extreme"}),
+    ] {
+        let reply = hub
+            .post(&ada, "/groups/geometry/threads", body.clone())
+            .await;
+        assert!(reply.status.is_client_error(), "{body}: {:?}", reply.json());
+    }
 }
 
 #[tokio::test]

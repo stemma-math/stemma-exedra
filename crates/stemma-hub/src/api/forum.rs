@@ -9,8 +9,8 @@ use serde::Deserialize;
 use sqlx::{AssertSqlSafe, Sqlite, Transaction};
 use stemma_core::Address;
 use stemma_core::api::{
-    CreateThread, EditMessage, Event, Message, PostMessage, Resolve, Resolved, SearchHit, Thread,
-    ThreadKind, ThreadPage, UpdateThread,
+    CreateThread, EditMessage, Effort, Event, Message, PostMessage, Resolve, Resolved, SearchHit,
+    Thread, ThreadKind, ThreadPage, UpdateThread,
 };
 
 use super::attachments::{self, attachments_of};
@@ -22,6 +22,13 @@ use crate::state::AppState;
 
 const MAX_BODY_CHARS: usize = 100_000;
 
+/// What [`ThreadRow`] reads, from `threads t` and its creator.
+const THREAD_COLUMNS: &str =
+    "SELECT t.id, t.number, t.title, t.kind, t.resident_agent, t.resident_model,
+            t.resident_effort, t.anchor, t.created_at, t.last_activity_at,
+            t.last_message, u.id AS user_id, u.username, u.display_name
+     FROM threads t JOIN users u ON u.id = t.created_by";
+
 #[derive(sqlx::FromRow)]
 pub(crate) struct ThreadRow {
     pub id: i64,
@@ -29,6 +36,8 @@ pub(crate) struct ThreadRow {
     title: String,
     kind: String,
     resident_agent: Option<String>,
+    resident_model: Option<String>,
+    resident_effort: Option<String>,
     anchor: Option<String>,
     created_at: i64,
     last_activity_at: i64,
@@ -44,6 +53,8 @@ impl From<ThreadRow> for Thread {
             title: row.title,
             kind: ThreadKind::parse(&row.kind).unwrap_or(ThreadKind::Discussion),
             resident_agent: row.resident_agent,
+            resident_model: row.resident_model,
+            resident_effort: row.resident_effort.as_deref().and_then(Effort::parse),
             anchor: row.anchor.and_then(|a| a.parse().ok()),
             created_by: row.creator.into(),
             created_at: db::from_millis(row.created_at),
@@ -54,17 +65,11 @@ impl From<ThreadRow> for Thread {
 }
 
 pub(crate) async fn find_thread_by_id(state: &AppState, thread_id: i64) -> ApiResult<ThreadRow> {
-    sqlx::query_as(
-        "SELECT t.id, t.number, t.title, t.kind, t.resident_agent, t.anchor, t.created_at,
-                t.last_activity_at, t.last_message,
-                u.id AS user_id, u.username, u.display_name
-         FROM threads t JOIN users u ON u.id = t.created_by
-         WHERE t.id = ?",
-    )
-    .bind(thread_id)
-    .fetch_optional(&state.db)
-    .await?
-    .ok_or_else(|| ApiError::not_found("Thread"))
+    sqlx::query_as(AssertSqlSafe(format!("{THREAD_COLUMNS} WHERE t.id = ?")))
+        .bind(thread_id)
+        .fetch_optional(&state.db)
+        .await?
+        .ok_or_else(|| ApiError::not_found("Thread"))
 }
 
 pub(crate) async fn find_thread(
@@ -72,13 +77,9 @@ pub(crate) async fn find_thread(
     group_id: i64,
     number: u32,
 ) -> ApiResult<ThreadRow> {
-    sqlx::query_as(
-        "SELECT t.id, t.number, t.title, t.kind, t.resident_agent, t.anchor, t.created_at,
-                t.last_activity_at, t.last_message,
-                u.id AS user_id, u.username, u.display_name
-         FROM threads t JOIN users u ON u.id = t.created_by
-         WHERE t.group_id = ? AND t.number = ?",
-    )
+    sqlx::query_as(AssertSqlSafe(format!(
+        "{THREAD_COLUMNS} WHERE t.group_id = ? AND t.number = ?"
+    )))
     .bind(group_id)
     .bind(number)
     .fetch_optional(&state.db)
@@ -103,14 +104,11 @@ pub async fn list_threads(
     Query(query): Query<ThreadQuery>,
 ) -> ApiResult<Json<Vec<Thread>>> {
     let group = Membership::of(&state, &viewer, &slug).await?;
-    let rows: Vec<ThreadRow> = sqlx::query_as(
-        "SELECT t.id, t.number, t.title, t.kind, t.resident_agent, t.anchor, t.created_at,
-                t.last_activity_at, t.last_message,
-                u.id AS user_id, u.username, u.display_name
-         FROM threads t JOIN users u ON u.id = t.created_by
+    let rows: Vec<ThreadRow> = sqlx::query_as(AssertSqlSafe(format!(
+        "{THREAD_COLUMNS}
          WHERE t.group_id = ?1 AND (?2 IS NULL OR t.kind = ?2) AND t.last_activity_at < ?3
-         ORDER BY t.last_activity_at DESC LIMIT ?4",
-    )
+         ORDER BY t.last_activity_at DESC LIMIT ?4"
+    )))
     .bind(group.group_id)
     .bind(query.kind.map(ThreadKind::as_str))
     .bind(query.before.unwrap_or(i64::MAX))
@@ -150,8 +148,8 @@ pub async fn create_thread(
             Some(job.agent.clone())
         }
     };
-    let resident_agent = match (body.kind, body.resident_agent) {
-        (_, None) => None,
+    let (resident_agent, resident_runner) = match (body.kind, body.resident_agent) {
+        (_, None) => (None, None),
         (ThreadKind::Chat, Some(agent)) => {
             let agent = agent.trim().trim_start_matches('@').to_lowercase();
             if !stemma_core::mention::is_handle(&agent) {
@@ -159,23 +157,38 @@ pub async fn create_thread(
             }
             // One of the writer's: each person writing in the chat is then
             // answered by theirs.
-            match crate::agents::resolve(&state, group.group_id, viewer.id, &agent).await? {
-                crate::agents::Summoned::Personal(_) => {}
-                crate::agents::Summoned::Workshop => {
-                    return Err(ApiError::invalid(
-                        "The workshop works on tasks, and is no chat's resident agent",
-                    ));
-                }
-                _ => {
-                    return Err(ApiError::invalid(format!("You have no agent @{agent}")));
-                }
-            }
-            Some(agent)
+            let profile =
+                match crate::agents::resolve(&state, group.group_id, viewer.id, &agent).await? {
+                    crate::agents::Summoned::Personal(profile) => profile,
+                    crate::agents::Summoned::Workshop => {
+                        return Err(ApiError::invalid(
+                            "The workshop works on tasks, and is no chat's resident agent",
+                        ));
+                    }
+                    _ => {
+                        return Err(ApiError::invalid(format!("You have no agent @{agent}")));
+                    }
+                };
+            (Some(agent), Some(profile.runner))
         }
         (ThreadKind::Discussion, Some(_)) => {
             return Err(ApiError::invalid("Only chats have a resident agent"));
         }
     };
+    let resident_model = super::agents::optional(body.model, "The model", 200)?;
+    if (resident_model.is_some() || body.effort.is_some()) && resident_agent.is_none() {
+        return Err(ApiError::invalid(
+            "Only a chat's resident agent is given a model or an effort",
+        ));
+    }
+    if let (Some(effort), Some(runner)) = (body.effort, &resident_runner)
+        && effort.args(runner).is_none()
+    {
+        return Err(ApiError::invalid(format!(
+            "{} takes no effort here: give its agent the arguments it takes",
+            stemma_core::api::runners::name(runner)
+        )));
+    }
     match &body.anchor {
         None | Some(Address::Declaration(_)) => {}
         Some(Address::Paper(paper)) => {
@@ -204,15 +217,19 @@ pub async fn create_thread(
     .fetch_one(&mut *tx)
     .await?;
     let thread_id = sqlx::query(
-        "INSERT INTO threads (group_id, number, title, kind, resident_agent, anchor, created_by,
+        "INSERT INTO threads (group_id, number, title, kind, resident_agent, resident_runner,
+                              resident_model, resident_effort, anchor, created_by,
                               created_at, last_activity_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
     )
     .bind(group.group_id)
     .bind(number)
     .bind(&title)
     .bind(body.kind.as_str())
     .bind(&resident_agent)
+    .bind(&resident_runner)
+    .bind(&resident_model)
+    .bind(body.effort.map(Effort::as_str))
     .bind(body.anchor.as_ref().map(ToString::to_string))
     .bind(viewer.id)
     .bind(now)
@@ -756,8 +773,8 @@ pub struct SearchQuery {
     limit: Option<u32>,
 }
 
-/// Threads whose title, and messages whose text, contain every word of the
-/// query, regardless of case: titles first, then messages, newest first.
+/// Threads whose title, and messages whose text, match a query, with its
+/// operators: see [`crate::search`].
 pub async fn search(
     State(state): State<AppState>,
     viewer: Viewer,
@@ -765,135 +782,7 @@ pub async fn search(
     Query(query): Query<SearchQuery>,
 ) -> ApiResult<Json<Vec<SearchHit>>> {
     let group = Membership::of(&state, &viewer, &slug).await?;
-    let words: Vec<String> = query
-        .q
-        .split_whitespace()
-        .take(8)
-        .map(str::to_lowercase)
-        .collect();
-    if words.is_empty() {
-        return Err(ApiError::invalid("Search for at least a word"));
-    }
     let limit = query.limit.unwrap_or(20).clamp(1, 100);
-    // Only placeholders are added to the queries: the words are bound.
-    let all_in = |column: &str| {
-        words
-            .iter()
-            .map(|_| format!("instr(lower({column}), ?) > 0"))
-            .collect::<Vec<_>>()
-            .join(" AND ")
-    };
-
-    let sql = format!(
-        "SELECT t.number, t.title, t.created_at FROM threads t
-         WHERE t.group_id = ? AND {}
-         ORDER BY t.last_activity_at DESC LIMIT ?",
-        all_in("t.title")
-    );
-    let mut threads =
-        sqlx::query_as::<_, (i64, String, i64)>(AssertSqlSafe(sql)).bind(group.group_id);
-    for word in &words {
-        threads = threads.bind(word);
-    }
-    let mut hits: Vec<SearchHit> = threads
-        .bind(limit)
-        .fetch_all(&state.db)
-        .await?
-        .into_iter()
-        .map(|(number, title, created_at)| SearchHit {
-            address: Address::Thread(number as u32),
-            snippet: title.clone(),
-            thread_title: title,
-            author: None,
-            agent: None,
-            created_at: db::from_millis(created_at),
-        })
-        .collect();
-
-    let sql = format!(
-        "SELECT t.number, t.title, m.number, m.body, m.agent, m.created_at,
-                u.id, u.username, u.display_name
-         FROM messages m JOIN threads t ON t.id = m.thread_id JOIN users u ON u.id = m.author_id
-         WHERE t.group_id = ? AND m.deleted_at IS NULL AND {}
-         ORDER BY m.created_at DESC LIMIT ?",
-        all_in("m.body")
-    );
-    type Row = (
-        i64,
-        String,
-        i64,
-        String,
-        Option<String>,
-        i64,
-        i64,
-        String,
-        String,
-    );
-    let mut messages = sqlx::query_as::<_, Row>(AssertSqlSafe(sql)).bind(group.group_id);
-    for word in &words {
-        messages = messages.bind(word);
-    }
-    let rows = messages.bind(limit).fetch_all(&state.db).await?;
-    for (thread, title, number, body, agent, created_at, id, username, display_name) in rows {
-        hits.push(SearchHit {
-            address: Address::Message {
-                thread: thread as u32,
-                message: number as u32,
-            },
-            thread_title: title,
-            author: Some(stemma_core::api::User {
-                id,
-                username,
-                display_name,
-            }),
-            agent,
-            snippet: snippet(&body, &words[0]),
-            created_at: db::from_millis(created_at),
-        });
-    }
-    hits.truncate(limit as usize);
+    let hits = crate::search::run(&state, group.group_id, &query.q, limit).await?;
     Ok(Json(hits))
-}
-
-/// A line's worth of `text` around the first place `word` is in it.
-fn snippet(text: &str, word: &str) -> String {
-    const BEFORE: usize = 60;
-    const AFTER: usize = 140;
-    let chars: Vec<char> = text.chars().collect();
-    let lower: Vec<char> = text.chars().flat_map(char::to_lowercase).collect();
-    let word: Vec<char> = word.chars().collect();
-    // Lowercasing can change the number of characters; then start at the top.
-    let at = if lower.len() == chars.len() {
-        lower
-            .windows(word.len().max(1))
-            .position(|w| w == word.as_slice())
-            .unwrap_or(0)
-    } else {
-        0
-    };
-    let start = at.saturating_sub(BEFORE);
-    let end = (at + AFTER).min(chars.len());
-    let mut piece: String = chars[start..end].iter().collect();
-    piece = piece.split_whitespace().collect::<Vec<_>>().join(" ");
-    if start > 0 {
-        piece.insert(0, '…');
-    }
-    if end < chars.len() {
-        piece.push('…');
-    }
-    piece
-}
-
-#[cfg(test)]
-mod tests {
-    use super::snippet;
-
-    #[test]
-    fn snippets_show_the_match() {
-        assert_eq!(snippet("The Gluing\nlemma", "gluing"), "The Gluing lemma");
-        let long = format!("{} needle {}", "a ".repeat(100), "b ".repeat(100));
-        let piece = snippet(&long, "needle");
-        assert!(piece.starts_with('…') && piece.ends_with('…'));
-        assert!(piece.contains("needle"));
-    }
 }
