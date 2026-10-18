@@ -30,8 +30,8 @@
       });
   });
 
-  // What references point to changes with the group: its threads, library
-  // and tasks. They are asked again where they are shown next.
+  // What references point to changes with the group: its threads, library,
+  // papers and tasks. They are asked again where they are shown next.
   $effect(() => {
     if (!group || group.slug !== slug) return;
     const current = group.slug;
@@ -51,6 +51,11 @@
       href: `/g/${slug}/lib`,
       label: "Library",
       current: page.url.pathname.startsWith(`/g/${slug}/lib`),
+    },
+    {
+      href: `/g/${slug}/p`,
+      label: "Papers",
+      current: page.url.pathname.startsWith(`/g/${slug}/p`),
     },
     {
       href: `/g/${slug}/w`,

@@ -6,6 +6,7 @@ export type Address =
   | { kind: "message"; thread: number; message: number }
   | { kind: "messages"; thread: number; from: number; to: number }
   | { kind: "attachment"; thread: number; message: number; name: string }
+  | { kind: "paper"; slug: string }
   | { kind: "declaration"; name: string }
   | { kind: "task"; task: number };
 
@@ -40,6 +41,10 @@ export function parseAddress(s: string): Address | null {
   if (s.startsWith("lean:")) {
     const name = s.slice(5);
     return leanName(name) ? { kind: "declaration", name } : null;
+  }
+  if (s.startsWith("p/")) {
+    const slug = s.slice(2);
+    return isSlug(slug) ? { kind: "paper", slug } : null;
   }
   if (s.startsWith("w")) {
     const task = number(s.slice(1));
@@ -88,6 +93,8 @@ export function formatAddress(a: Address): string {
       return `t${a.thread}#${a.from}-${a.to}`;
     case "attachment":
       return `t${a.thread}#${a.message}/${a.name}`;
+    case "paper":
+      return `p/${a.slug}`;
     case "declaration":
       return `lean:${a.name}`;
     case "task":
@@ -105,6 +112,8 @@ export function addressPath(a: Address, group: string): string {
       return `/g/${group}/t/${a.thread}#${a.message}`;
     case "messages":
       return `/g/${group}/t/${a.thread}#${a.from}`;
+    case "paper":
+      return `/g/${group}/p/${a.slug}`;
     case "declaration":
       return `/g/${group}/lib/${a.name}`;
     case "task":

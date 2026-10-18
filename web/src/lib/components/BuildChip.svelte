@@ -1,9 +1,10 @@
 <script lang="ts">
-  import type { Build } from "#lib/api.ts";
+  import type { BuildState } from "#lib/api.ts";
 
-  let { build }: { build: Build } = $props();
+  // A build of the library, or of a paper.
+  let { build }: { build: { state: BuildState } } = $props();
 
-  const STATES: Record<Build["state"], { tone: string; text: string }> = {
+  const STATES: Record<BuildState, { tone: string; text: string }> = {
     queued: { tone: "neutral", text: "Waiting" },
     running: { tone: "info", text: "Building" },
     succeeded: { tone: "success", text: "Passed" },

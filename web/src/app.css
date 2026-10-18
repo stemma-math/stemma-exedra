@@ -325,6 +325,32 @@ stemma-toast-region {
   }
 }
 
+/* ── Papers ─────────────────────────────────────────────────────────── */
+
+.papers {
+  --columns: minmax(0, 1fr) auto auto;
+}
+
+.paper-layout {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(16rem, 22rem);
+  gap: var(--space-8);
+  align-items: start;
+}
+
+/* The browser's own viewer, as tall as the window allows. */
+.paper-pdf {
+  width: 100%;
+  height: 80vh;
+  padding: 0;
+}
+
+@media (max-width: 60rem) {
+  .paper-layout {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}
+
 /* ── The workshop ───────────────────────────────────────────────────── */
 
 .tasks {

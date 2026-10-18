@@ -1,7 +1,7 @@
 <script lang="ts">
   import { page } from "$app/state";
   import { addressPath, parseAddress } from "#lib/address.ts";
-  import { ApiError, api, type TaskPage } from "#lib/api.ts";
+  import { ApiError, api, approverName, type TaskPage } from "#lib/api.ts";
   import Markdown from "#lib/components/Markdown.svelte";
   import TaskChip from "#lib/components/TaskChip.svelte";
   import { listen } from "#lib/events.ts";
@@ -55,12 +55,29 @@
   );
 
   const me = $derived(session.me?.id);
+  // The authors of the paper a task changes, who approve what others ask.
+  let authors = $state<number[]>([]);
+  $effect(() => {
+    const paper = task?.paper;
+    authors = [];
+    if (!paper) return;
+    api
+      .paper(group.slug, paper)
+      .then((found) => {
+        authors = found.authors.map((a) => a.id);
+      })
+      .catch(() => {});
+  });
+
   const canApprove = $derived(
     task !== null &&
       task.state === "review" &&
       group.role !== "guest" &&
       (task.changes?.needs ?? []).some(
-        (n) => (n === "asker" && task?.requester.id === me) || (n === "admin" && group.role === "admin"),
+        (n) =>
+          (n === "asker" && task?.requester.id === me) ||
+          (n === "admin" && group.role === "admin") ||
+          (n === "author" && me !== undefined && authors.includes(me)),
       ),
   );
   const canReject = $derived(
@@ -123,7 +140,8 @@
       </div>
       <p class="quiet">
         Asked in <a class="identifier link" href={origin ? addressPath(origin, group.slug) : "#"}>{task.origin}</a>
-        by {task.requester.display_name}{#if task.agent}, through {task.agent}{/if},
+        by {task.requester.display_name}{#if task.agent}, through {task.agent}{/if}{#if task.paper},
+          to change <a class="identifier link" href="/g/{group.slug}/p/{task.paper}">p/{task.paper}</a>{/if},
         <time datetime={task.created_at}>{exactly(task.created_at)}</time>.
         {#if task.runner}
           Worked on with {RUNNER_NAMES[task.runner] ?? task.runner}{#if task.model}{" "}(<span
@@ -174,14 +192,18 @@
         <ul class="plain-list">
           {#each changes.approvals as approval (approval.approver)}
             <li>
-              Approved by {approval.user.display_name}, as {approval.approver === "asker" ? "who asked" : "an admin"},
+              Approved by {approval.user.display_name}, as {approval.approver === "asker"
+                ? "who asked"
+                : approval.approver === "author"
+                  ? "an author"
+                  : "an admin"},
               <time datetime={approval.at}>{exactly(approval.at)}</time>.
             </li>
           {/each}
           {#if task.state === "review" && changes.needs.length}
             <li class="quiet">
               Waiting for {changes.needs
-                .map((n) => (n === "asker" ? task?.requester.display_name : "an admin"))
+                .map((n) => approverName(n, task?.requester.display_name ?? ""))
                 .join(" and ")}.
             </li>
           {/if}

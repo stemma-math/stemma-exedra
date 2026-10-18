@@ -1,5 +1,13 @@
 <script lang="ts">
-  import { api, type Architecture, type ConsumptionDay, RUNNER_NAMES, type Task, type TaskState } from "#lib/api.ts";
+  import {
+    api,
+    type Architecture,
+    approverName,
+    type ConsumptionDay,
+    RUNNER_NAMES,
+    type Task,
+    type TaskState,
+  } from "#lib/api.ts";
   import TaskChip from "#lib/components/TaskChip.svelte";
   import WorkshopMachines from "#lib/components/WorkshopMachines.svelte";
   import { listen } from "#lib/events.ts";
@@ -55,7 +63,7 @@
   /** Where the task stands, in a line. */
   function line(task: Task): string {
     if (task.state === "review" && task.changes) {
-      const needs = task.changes.needs.map((n) => (n === "asker" ? task.requester.display_name : "an admin"));
+      const needs = task.changes.needs.map((n) => approverName(n, task.requester.display_name));
       return needs.length ? `Needs ${needs.join(" and ")}` : "";
     }
     return task.reason ?? task.progress ?? "";

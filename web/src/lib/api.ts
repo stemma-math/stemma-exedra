@@ -185,6 +185,7 @@ export interface Machine {
   online: boolean;
   runners: string[];
   lean: boolean;
+  latex?: boolean;
   isolation: Isolation | null;
   preferred: boolean;
   workshop: string[];
@@ -201,6 +202,7 @@ export interface WorkshopMachine {
   owner: User;
   online: boolean;
   lean: boolean;
+  latex?: boolean;
   isolation: Isolation | null;
   runners: string[];
   agents: WorkshopAgent[];
@@ -262,7 +264,8 @@ export type GroupEvent =
   | { type: "message_updated"; thread: number; message: Message }
   | { type: "job_updated"; job: Job }
   | { type: "build_updated"; build: Build }
-  | { type: "task_updated"; task: Task };
+  | { type: "task_updated"; task: Task }
+  | { type: "paper_updated"; paper: Paper };
 
 export type DeclarationState = "proved" | "sorry" | "missing";
 export type BuildState = "queued" | "running" | "succeeded" | "failed" | "cancelled";
@@ -342,7 +345,19 @@ export type TaskState =
   | "cancelled";
 
 /** Whose approval a change needs. */
-export type Approver = "asker" | "admin";
+export type Approver = "asker" | "admin" | "author";
+
+/** Who an approver is, in words, for a task asked by `asker`. */
+export function approverName(approver: Approver, asker: string): string {
+  switch (approver) {
+    case "asker":
+      return asker;
+    case "admin":
+      return "an admin";
+    case "author":
+      return "one of the paper's authors";
+  }
+}
 
 /** What a task proposes: a branch, in a pull request of the forge. */
 export interface Changes {
@@ -364,6 +379,8 @@ export interface Task {
   title: string;
   instructions: string;
   architecture: string;
+  /** The paper it changes, by slug, if it changes one. */
+  paper?: string | null;
   origin: string;
   requester: User;
   agent: string | null;
@@ -382,6 +399,35 @@ export interface Task {
 
 export interface TaskPage extends Task {
   report: string | null;
+  log: string;
+}
+
+/** A build of a commit of a paper, compiled with latexmk. */
+export interface PaperBuild {
+  id: number;
+  commit: string;
+  state: BuildState;
+  progress: string | null;
+  error: string | null;
+  created_at: string;
+  finished_at: string | null;
+}
+
+/** A working paper: a LaTeX repository of the group, and its PDF. */
+export interface Paper {
+  slug: string;
+  title: string;
+  repository: string;
+  clone_path: string;
+  forge_url: string | null;
+  authors: User[];
+  created_by: User;
+  created_at: string;
+  latest: PaperBuild | null;
+  pdf: { build: number; commit: string; size: number; url: string; built_at: string } | null;
+}
+
+export interface PaperPage extends Paper {
   log: string;
 }
 
@@ -544,6 +590,25 @@ export const api = {
   builds: (group: string) => get<Build[]>(`${g(group)}/library/builds`),
   build: (group: string, id: number) => get<BuildLog>(`${g(group)}/library/builds/${id}`),
   rebuild: (group: string) => post<Build>(`${g(group)}/library/builds`, {}),
+
+  papers: (group: string) => get<Paper[]>(`${g(group)}/papers`),
+  paper: (group: string, slug: string) =>
+    get<PaperPage>(`${g(group)}/papers/${encodeURIComponent(slug)}`),
+  createPaper: (group: string, slug: string, title: string) =>
+    post<Paper>(`${g(group)}/papers`, { slug, title }),
+  addAuthor: (group: string, slug: string, username: string) =>
+    put<Paper>(
+      `${g(group)}/papers/${encodeURIComponent(slug)}/authors/${encodeURIComponent(username)}`,
+      undefined,
+    ),
+  removeAuthor: (group: string, slug: string, username: string) =>
+    del<Paper>(
+      `${g(group)}/papers/${encodeURIComponent(slug)}/authors/${encodeURIComponent(username)}`,
+    ),
+  rebuildPaper: (group: string, slug: string) =>
+    post<Paper>(`${g(group)}/papers/${encodeURIComponent(slug)}/builds`, {}),
+  editPaper: (group: string, slug: string, title: string, instructions: string) =>
+    post<Task>(`${g(group)}/papers/${encodeURIComponent(slug)}/tasks`, { title, instructions }),
 
   tasks: (group: string, state?: TaskState) =>
     get<Task[]>(`${g(group)}/tasks${state ? `?state=${state}` : ""}`),
