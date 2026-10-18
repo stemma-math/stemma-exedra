@@ -229,6 +229,17 @@ workshop-image runtime="docker" tag="":
         --build-arg "LEAN_TOOLCHAIN=$(cat lean/template/lean-toolchain)" \
         -t "${tag:-stemma-workshop:$version}" .
 
+# Test a real workshop job in a real container, with the image built (`just workshop-image`).
+[group('checks')]
+test-container runtime="docker" image="":
+    #!/usr/bin/env sh
+    set -eu
+    version=$(sed -n 's/^version = "\(.*\)"$/\1/p' Cargo.toml | head -1)
+    image="{{ image }}"
+    STEMMA_TEST_CONTAINER={{ runtime }} STEMMA_TEST_IMAGE="${image:-stemma-workshop:$version}" \
+        STEMMA_TEST_SIGN_IN=passed-by-name \
+        cargo test -p stemma-worker --test end_to_end container -- --nocapture
+
 # Build the release binary, with the web app embedded.
 [group('build')]
 release: build-web

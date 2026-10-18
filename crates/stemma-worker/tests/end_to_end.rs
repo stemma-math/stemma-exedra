@@ -1316,3 +1316,142 @@ async fn with_lean_changes_that_no_longer_apply_are_not_merged() {
     assert_eq!(task["state"], "rejected");
     running.abort();
 }
+
+/// A fake `opencode run` for a container: it formalizes a theorem in its
+/// worktree, and reports where it ran: as whom, what of the machine's home
+/// it sees, whether it reads the job's token, how it signed in, and its
+/// Lean.
+fn fake_contained_opencode(dir: &Path, home: &Path) -> PathBuf {
+    script(
+        dir,
+        "opencode",
+        &format!(
+            r#"case "$1" in --version) echo 1.0; exit 0;; esac
+cat >> Fixture/More.lean <<'LEAN'
+
+namespace Fixture
+
+/-- Twice two is four, in a container. -/
+theorem double_two_in_a_container : 2 * 2 = 4 := rfl
+
+end Fixture
+LEAN
+mkdir -p .stemma
+{{
+  echo "Added [[lean:Fixture.double_two_in_a_container]]."
+  echo "uid: $(id -u)"
+  if [ -e {home:?} ]; then echo "home: visible"; else echo "home: hidden"; fi
+  if [ -r "$(dirname "$OPENCODE_CONFIG")/token" ]; then echo "token: readable"; fi
+  echo "sign-in: ${{STEMMA_TEST_SIGN_IN:-none}}"
+  echo "lean: $(lean --version | head -1)"
+}} > .stemma/report.md
+echo '{{"type":"text","part":{{"text":"Done, in a container."}}}}'
+"#,
+            home = home.display().to_string()
+        ),
+    )
+}
+
+/// The containers of jobs `runtime` has, running or not.
+fn job_containers(runtime: &str) -> String {
+    let output = std::process::Command::new(runtime)
+        .args(["ps", "--all", "--quiet", "--filter", "label=org.stemma.job"])
+        .output()
+        .unwrap();
+    String::from_utf8_lossy(&output.stdout).trim().to_owned()
+}
+
+/// A real job in a real container: the library's build and a task, whose
+/// agent is a fake given to the container. Skipped unless
+/// `STEMMA_TEST_CONTAINER` names a runtime (`docker` or `podman`) and
+/// `STEMMA_TEST_IMAGE` its workshop image (`just test-container`).
+#[tokio::test(flavor = "multi_thread")]
+async fn in_a_container_the_workshop_builds_and_works_on_the_library() {
+    let (Some(runtime), Some(image)) = (
+        std::env::var_os("STEMMA_TEST_CONTAINER"),
+        std::env::var_os("STEMMA_TEST_IMAGE"),
+    ) else {
+        eprintln!("No container runtime and image are named: skipping");
+        return;
+    };
+    let runtime = runtime.to_string_lossy().into_owned();
+    let image = image.to_string_lossy().into_owned();
+    let hub = TestHub::start().await;
+    let (ada, _) = group(&hub).await;
+    let (_clone, _dir, commit) = fixture_library(&hub, &ada).await;
+    let tools = tempfile::tempdir().unwrap();
+    let home = std::env::var_os("HOME").map_or_else(|| PathBuf::from("/root"), PathBuf::from);
+    let opencode = fake_contained_opencode(tools.path(), &home);
+    let worker_dir = tempfile::tempdir().unwrap();
+    let opencode = opencode.display().to_string();
+    let running = workshop_machine(
+        &hub,
+        &ada,
+        json!([{"runner": "opencode", "model": "fake/model"}]),
+        worker_dir.path(),
+        &format!(
+            r#"[runners.opencode]
+command = {opencode:?}
+[lean]
+cache = false
+[isolation]
+runtime = {runtime:?}
+image = {image:?}
+[isolation.agents.opencode]
+command = "/opt/fake/opencode"
+env = ["STEMMA_TEST_SIGN_IN"]
+files = [{{ from = {opencode:?}, to = "/opt/fake/opencode" }}]
+"#
+        ),
+    )
+    .await;
+    let machines = ada.get(&hub, "/groups/geometry/workshop/machines").await;
+    assert_eq!(machines[0]["isolation"], runtime.as_str());
+
+    // The library's build, in a container.
+    let built = build_of(&hub, &ada, &commit).await;
+    assert_eq!(built["state"], "succeeded", "{built}");
+
+    // A task, in a container of its own.
+    ada.post(
+        &hub,
+        "/groups/geometry/threads",
+        json!({"title": "Doubling", "body": "Twice two is four."}),
+    )
+    .await;
+    ada.post(
+        &hub,
+        "/groups/geometry/tasks",
+        json!({"title": "Formalize t1#1", "instructions": "As t1#1 says.", "origin": "t1#1"}),
+    )
+    .await;
+    let task = task_over(&hub, &ada, 1).await;
+    let page = ada.get(&hub, "/groups/geometry/tasks/1").await;
+    let log = page["log"].as_str().unwrap_or_default().to_owned();
+    assert_eq!(task["state"], "review", "{task}\n{log}");
+    assert!(log.contains("The task runs in the container"), "{log}");
+    assert!(log.contains("Accepted: the build passes"), "{log}");
+    assert!(!log.contains("stj_"), "the token is not in the log");
+    let report = page["report"].as_str().unwrap_or_default().to_owned();
+    assert!(report.contains("home: hidden"), "{report}");
+    assert!(report.contains("token: readable"), "{report}");
+    assert!(report.contains("lean: Lean (version 4.35.0"), "{report}");
+    assert!(!report.contains("uid: 0\n"), "never root: {report}");
+    let sign_in = std::env::var("STEMMA_TEST_SIGN_IN").unwrap_or_else(|_| "none".into());
+    assert!(report.contains(&format!("sign-in: {sign_in}")), "{report}");
+    let repository = hub.forge.repository_path("geometry", "library");
+    let shown = git(&repository, &["show", "workshop/w1:Fixture/More.lean"]);
+    assert!(
+        String::from_utf8_lossy(&shown.stdout).contains("double_two_in_a_container"),
+        "the work is proposed"
+    );
+    // Its container and worktree are gone.
+    assert_eq!(job_containers(&runtime), "");
+    assert_eq!(
+        std::fs::read_dir(worker_dir.path().join("tasks"))
+            .unwrap()
+            .count(),
+        0
+    );
+    running.abort();
+}
