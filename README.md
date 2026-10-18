@@ -521,8 +521,9 @@ A container runs Linux, where the machine's own `stemma` (on macOS, say)
 does not run: the image takes `stemma` from the release's Linux binary,
 checked against its `SHA256SUMS`, where there is one (x86_64), and
 elsewhere (ARM, as on Apple silicon) builds it from the release's tag in a
-stage of the build. From the repository, `just workshop-image` builds it
-with `stemma` built from the repository itself. Build it again for each new
+stage of the build. From the repository, `docker build -f docker/workshop/Dockerfile
+--build-arg STEMMA_SOURCE=local .` builds it with `stemma` built from the
+repository itself. Build it again for each new
 version of Stemma, or of the agents.
 
 #### How agents sign in inside
@@ -800,55 +801,29 @@ just          # list the repository's recipes
 just check    # formatting, lints, types, tests and the web build
 ```
 
-Nix is not required. Without it, install what the development shell
-provides: a Rust toolchain ([rustup](https://rustup.rs)),
-[Node.js](https://nodejs.org) with [pnpm](https://pnpm.io),
-[just](https://just.systems), `git` and `curl`, for Lean,
-[elan](https://github.com/leanprover/elan), and
-[Forgejo](https://forgejo.org/download/). The development shell has Forgejo
-where nixpkgs builds it (Linux); elsewhere, put a `forgejo` binary on the
-`PATH`: Forgejo publishes them for Linux, and builds from its source
-elsewhere, macOS among them.
+Nix is not required. Without it, install a Rust toolchain
+([rustup](https://rustup.rs)), [Node.js](https://nodejs.org) with
+[pnpm](https://pnpm.io), [just](https://just.systems), `git`, `curl` and,
+for Lean, [elan](https://github.com/leanprover/elan).
 
 The tests need no Forgejo: they run the hub beside a stand-in for it,
-`crates/stemma-fake-forge`, with the part of its API the hub uses and git
-over HTTP. To run Stemma itself, or test it with a real Forgejo, run one
-locally:
+`crates/stemma-fake-forge`. To run Stemma with a real Forgejo, use the
+compose file in `docker/` ([With Docker](#with-docker)).
+
+Some tests are skipped unless their environment is there:
 
 ```sh
-just forge          # Forgejo at 127.0.0.1:3000, its data in data/forgejo
-just hub            # the hub at 127.0.0.1:8080, with that Forgejo
-just test-forgejo   # with Forgejo running and no hub: the hub's tests with it
+# Build and inspect the test library with Lean.
+STEMMA_TEST_LEAN=1 cargo test -p stemma-worker --test end_to_end lean
+# A real workshop job in a real container, with the workshop's image built.
+STEMMA_TEST_CONTAINER=docker STEMMA_TEST_IMAGE=stemma-workshop:<version> \
+    cargo test -p stemma-worker --test end_to_end container
+# The hub against a running Forgejo, with the forge's secrets in the hub's variables.
+STEMMA_TEST_FORGEJO=http://127.0.0.1:3000 cargo test -p stemma-hub --test forgejo
 ```
 
-The first `just forge` sets Forgejo up for the local hub, as [The
-forge](#the-forge) says: it writes its configuration, makes its admin (the
-password is in `data/forgejo/admin-password`) and its token, adds the source
-that signs people in through the hub (running the hub for a moment if none
-answers, since Forgejo reads its discovery document then), and writes the
-hub's settings to `data/stemma.toml` and its secrets to `data/forge.env`,
-which `just hub` reads. Remove `data/` to start again. `just test-forgejo`
-runs the test in `crates/stemma-hub/tests/forgejo.rs`, which is skipped unless
-`STEMMA_TEST_FORGEJO` is Forgejo's address (with the secrets in the hub's
-variables); it runs a hub of its own at `127.0.0.1:8080`
-(`STEMMA_TEST_HUB`), where the source expects it.
-
-The workshop's containers are tested, without a runtime, by the command
-lines each runtime is given. To run a real job in a real container, with
-Docker or Podman:
-
-```sh
-just workshop-image          # the image, with stemma built from the repository
-just test-container          # a build and a task in containers (`podman` as an argument for Podman)
-```
-
-`just test-container` runs the tests in `crates/stemma-worker/tests/end_to_end.rs`
-that are skipped unless `STEMMA_TEST_CONTAINER` names the runtime and
-`STEMMA_TEST_IMAGE` the image: a build and a task of the library, and the
-compilation of a paper made from the template. That compilation runs with
-`cargo test` too, on the machine itself, where `latexmk` is installed, and
-is skipped where it is not (unless `STEMMA_TEST_LATEX` is set, which makes
-its absence fail).
+Papers compile in the tests where `latexmk` is installed
+(`STEMMA_TEST_LATEX=1` makes its absence fail).
 
 The repository holds:
 
@@ -874,7 +849,7 @@ The repository holds:
 - `latex/`: the template of a paper (`template/`).
 - `lean/`: the inspection (`Inspect.lean`), the template of a group's library
   (`template/`) and a small library without Mathlib to test them
-  (`fixture/`; `just test-lean` builds and inspects it).
+  (`fixture/`).
 - `web/`: the web app, in SvelteKit, styled with
   [`@stemma-math/design`](https://github.com/stemma-math/design).
 

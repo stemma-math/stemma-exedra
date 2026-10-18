@@ -1596,7 +1596,7 @@ fn job_containers(runtime: &str) -> String {
 /// A real job in a real container: the library's build and a task, whose
 /// agent is a fake given to the container. Skipped unless
 /// `STEMMA_TEST_CONTAINER` names a runtime (`docker` or `podman`) and
-/// `STEMMA_TEST_IMAGE` its workshop image (`just test-container`).
+/// `STEMMA_TEST_IMAGE` its workshop image.
 #[tokio::test(flavor = "multi_thread")]
 async fn in_a_container_the_workshop_builds_and_works_on_the_library() {
     let (Some(runtime), Some(image)) = (

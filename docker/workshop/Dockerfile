@@ -7,7 +7,7 @@
 #
 # `stemma machine workshop image` builds it, tagged
 # `stemma-workshop:<version>`. From the repository's root,
-# `just workshop-image` builds it with `stemma` built from the repository:
+# this builds it with `stemma` built from the repository:
 #
 #     docker build -f docker/workshop/Dockerfile --build-arg STEMMA_SOURCE=local \
 #         --build-arg STEMMA_VERSION=<version> -t stemma-workshop:<version> .

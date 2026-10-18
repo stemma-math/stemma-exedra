@@ -3,7 +3,7 @@
 //! people signing in to Forgejo through the hub.
 //!
 //! Skipped unless `STEMMA_TEST_FORGEJO` is Forgejo's address, set up as
-//! `just forge` sets it up (`just test-forgejo` runs it so): its secrets in
+//! `docker/setup.sh` sets it up: its secrets in
 //! the hub's variables (`STEMMA_FORGE_TOKEN`, `STEMMA_FORGE_WEBHOOK_SECRET`,
 //! `STEMMA_FORGE_CLIENT_SECRET`), its source `stemma` (of id
 //! `STEMMA_TEST_FORGEJO_SOURCE`, 1 if unset) discovering the hub at

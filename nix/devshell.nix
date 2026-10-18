@@ -40,46 +40,38 @@ in
         }
       ];
 
-    commands =
-      [
-        {
-          package = pkgs.git;
-          help = "Version control";
-        }
-        {
-          package = pkgs.just;
-          help = "Run the repository's recipes; type 'just' to list them";
-        }
-        {
-          package = pkgs.cargo;
-          help = "Build, test and run Stemma";
-        }
-        {
-          package = pkgs.rust-analyzer;
-          help = "Rust language server";
-        }
-        {
-          package = pkgs.nodejs;
-          help = "JavaScript runtime, for the web app";
-        }
-        {
-          package = pkgs.pnpm;
-          help = "Package manager for the web app";
-        }
-        {
-          package = pkgs.biome;
-          help = "Formatter and linter for the web app";
-        }
-        {
-          package = pkgs.elan;
-          help = "Lean toolchain manager";
-        }
-      ]
-      # The forge, where nixpkgs builds it (not on macOS, for now).
-      ++ lib.optionals (!pkgs.forgejo.meta.broken) [
-        {
-          package = pkgs.forgejo;
-          help = "The forge beside the hub; type 'just forge' to run it";
-        }
-      ];
+    commands = [
+      {
+        package = pkgs.git;
+        help = "Version control";
+      }
+      {
+        package = pkgs.just;
+        help = "Run the repository's recipes; type 'just' to list them";
+      }
+      {
+        package = pkgs.cargo;
+        help = "Build, test and run Stemma";
+      }
+      {
+        package = pkgs.rust-analyzer;
+        help = "Rust language server";
+      }
+      {
+        package = pkgs.nodejs;
+        help = "JavaScript runtime, for the web app";
+      }
+      {
+        package = pkgs.pnpm;
+        help = "Package manager for the web app";
+      }
+      {
+        package = pkgs.biome;
+        help = "Formatter and linter for the web app";
+      }
+      {
+        package = pkgs.elan;
+        help = "Lean toolchain manager";
+      }
+    ];
   }
