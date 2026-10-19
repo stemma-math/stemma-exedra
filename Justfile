@@ -40,6 +40,7 @@ check-format:
         nix fmt -- --ci
     else
         cargo fmt --all --check
+        cargo fmt --manifest-path desktop/src-tauri/Cargo.toml --all --check
         pnpm --dir web format:check
         pnpm --dir desktop format:check
     fi
@@ -48,6 +49,7 @@ check-format:
 [group('checks')]
 lint:
     cargo clippy --all-targets -- --deny warnings
+    cargo clippy --manifest-path desktop/src-tauri/Cargo.toml --all-targets -- --deny warnings
     pnpm --dir web lint
     pnpm --dir web check
     pnpm --dir desktop lint
@@ -57,6 +59,7 @@ lint:
 [group('checks')]
 test:
     cargo test
+    cargo test --manifest-path desktop/src-tauri/Cargo.toml
     pnpm --dir web test
 
 # Build the web app into web/build.

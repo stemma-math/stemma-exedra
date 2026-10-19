@@ -20,5 +20,6 @@ node_modules/
 /docker/.env
 
 # The desktop app.
+/desktop/src-tauri/target/
 /desktop/dist/
 /desktop/src-tauri/gen/

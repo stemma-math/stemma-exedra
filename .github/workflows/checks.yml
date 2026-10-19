@@ -42,6 +42,44 @@ jobs:
       - name: Test
         run: cargo test
 
+  desktop-rust:
+    name: Desktop Rust
+    runs-on: ubuntu-24.04
+    defaults:
+      run:
+        working-directory: desktop/src-tauri
+    steps:
+      - uses: actions/checkout@v5
+      # https://v2.tauri.app/start/prerequisites/#linux
+      - name: Install Tauri system libraries
+        run: |
+          sudo apt-get update
+          sudo apt-get install --yes --no-install-recommends \
+            libwebkit2gtk-4.1-dev build-essential curl wget file libxdo-dev \
+            libssl-dev libayatana-appindicator3-dev librsvg2-dev
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy, rustfmt
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: desktop/src-tauri -> target
+      - uses: pnpm/action-setup@v4
+        with:
+          package_json_file: desktop/package.json
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 24
+          cache: pnpm
+          cache-dependency-path: desktop/pnpm-lock.yaml
+      - name: Install the design assets used by Tauri
+        run: pnpm --dir .. install --frozen-lockfile
+      - name: Check formatting
+        run: cargo fmt --all --check
+      - name: Lint
+        run: cargo clippy --all-targets -- --deny warnings
+      - name: Test
+        run: cargo test
+
   lean:
     name: Library builds, with Lean
     runs-on: ubuntu-latest

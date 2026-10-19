@@ -24,9 +24,10 @@ STEMMA_TEST_FORGEJO=http://127.0.0.1:3000 cargo test -p stemma-hub --test forgej
 
 With the CLI installed, `pnpm --dir desktop tauri dev` starts the desktop app;
 `pnpm --dir desktop tauri build` builds it on macOS (Xcode command line tools).
-Its Rust crate is a workspace member with shared dependencies, excluded from
-Cargo's default members so server builds need no desktop system libraries.
-`just check` includes its frontend lint and types; native builds stay separate.
+Its Rust crate is a separate Cargo project with its own lockfile. `just check`
+includes its native clippy and tests, and its frontend lint and types. On Linux,
+install [Tauri v2's prerequisites](https://v2.tauri.app/start/prerequisites/#linux)
+first; CI checks the native crate separately on Ubuntu.
 The hub window uses the hub's own browser session. No release packaging yet.
 
 ## Layout

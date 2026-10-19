@@ -1,24 +1,30 @@
 [package]
 name = "stemma-desktop"
-version.workspace = true
-edition.workspace = true
-rust-version.workspace = true
+version = "0.1.1"
+edition = "2024"
+rust-version = "1.94"
 description = "Stemma's desktop app and this machine's controls"
-repository.workspace = true
-license.workspace = true
+repository = "https://github.com/stemma-math/stemma-exedra"
+license = "MIT"
 
 [dependencies]
-anyhow.workspace = true
-serde.workspace = true
-serde_json.workspace = true
-stemma-client.workspace = true
-stemma-core.workspace = true
-stemma-worker.workspace = true
+anyhow = "1.0.104"
+serde = { version = "1.0.229", features = ["derive"] }
+serde_json = "1.0.154"
+stemma-client = { path = "../../crates/stemma-client" }
+stemma-core = { path = "../../crates/stemma-core" }
+stemma-worker = { path = "../../crates/stemma-worker" }
 tauri = { version = "2", features = [] }
-tokio.workspace = true
+tokio = { version = "1.53.3", features = ["sync"] }
 
 [build-dependencies]
 tauri-build = { version = "2", features = [] }
 
-[lints]
-workspace = true
+[lints.clippy]
+all = { level = "warn", priority = -1 }
+
+[lints.rust]
+unsafe_code = "forbid"
+
+# This package is independent of the server workspace.
+[workspace]
