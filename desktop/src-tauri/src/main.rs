@@ -363,6 +363,35 @@ fn main() {
 #[cfg(test)]
 mod tests {
     #[test]
+    fn versions_match_the_workspace() {
+        let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
+        let workspace: toml::Value = toml::from_str(
+            &std::fs::read_to_string(root.join("../../Cargo.toml"))
+                .expect("read workspace Cargo.toml"),
+        )
+        .expect("parse workspace Cargo.toml");
+        let expected = workspace["workspace"]["package"]["version"]
+            .as_str()
+            .unwrap();
+        assert_eq!(
+            env!("CARGO_PKG_VERSION"),
+            expected,
+            "desktop Cargo.toml version must match workspace.package.version in the root Cargo.toml"
+        );
+        let tauri: serde_json::Value = serde_json::from_str(
+            &std::fs::read_to_string(root.join("tauri.conf.json")).expect("read tauri.conf.json"),
+        )
+        .expect("parse tauri.conf.json");
+        if let Some(version) = tauri.get("version") {
+            assert_eq!(
+                version.as_str(),
+                Some(expected),
+                "tauri.conf.json version must match workspace.package.version in the root Cargo.toml"
+            );
+        }
+    }
+
+    #[test]
     fn remote_content_cannot_be_a_machine_page() {
         for url in [
             "https://stemma.example.org",
