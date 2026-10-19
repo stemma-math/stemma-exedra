@@ -179,6 +179,11 @@ impl Hub {
 
     // ── Accounts ──────────────────────────────────────────────────────
 
+    /// Only the code reaches the browser, never this client's device token.
+    pub async fn login_handoff(&self) -> Result<stemma_core::api::LoginHandoff> {
+        self.post("/me/login-handoff", &()).await
+    }
+
     pub async fn me(&self) -> Result<Me> {
         self.get("/me", &[]).await
     }
@@ -211,6 +216,7 @@ impl Hub {
     pub async fn create_token(&self, name: &str) -> Result<CreatedToken> {
         let body = CreateToken {
             name: name.into(),
+            launcher: false,
             expires_in_minutes: None,
         };
         self.post("/me/tokens", &body).await
@@ -220,6 +226,7 @@ impl Hub {
     pub async fn create_expiring_token(&self, name: &str, minutes: u32) -> Result<CreatedToken> {
         let body = CreateToken {
             name: name.into(),
+            launcher: true,
             expires_in_minutes: Some(minutes),
         };
         self.post("/me/tokens", &body).await

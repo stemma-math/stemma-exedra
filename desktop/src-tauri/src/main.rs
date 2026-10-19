@@ -295,16 +295,19 @@ async fn open_hub(window: WebviewWindow, app: tauri::AppHandle) -> Result<()> {
     if let Some(window) = app.get_webview_window("hub") {
         window.close().map_err(error)?;
     }
+    let handoff = hub.login_handoff().await.map_err(error)?;
+    let mut url: tauri::Url = format!("{}/login/handoff", hub.base())
+        .parse()
+        .map_err(error)?;
+    url.query_pairs_mut()
+        .append_pair("code", &handoff.code)
+        .append_pair("next", "/");
     // No capabilities are granted to this remote window. Its browser session
     // belongs to the hub, and the native device token never enters JavaScript.
-    tauri::WebviewWindowBuilder::new(
-        &app,
-        "hub",
-        tauri::WebviewUrl::External(hub.base().parse().map_err(error)?),
-    )
-    .title("Stemma")
-    .build()
-    .map_err(error)?;
+    tauri::WebviewWindowBuilder::new(&app, "hub", tauri::WebviewUrl::External(url))
+        .title("Stemma")
+        .build()
+        .map_err(error)?;
     Ok(())
 }
 

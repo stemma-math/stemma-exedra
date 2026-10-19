@@ -11,7 +11,7 @@
   function showHub() {
     controls.run(
       openHub,
-      "The hub opens in its own window. Sign in there if its browser session has expired.",
+      "The hub opens in its own window, signed in to your account.",
     );
   }
 

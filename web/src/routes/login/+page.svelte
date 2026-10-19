@@ -23,6 +23,7 @@
   }
 
   onMount(async () => {
+    if (page.url.searchParams.get("handoff") === "expired") return;
     if (session.me) proceed();
     else if ((await api.setupState()).needed) goto("/setup", { replaceState: true });
   });
@@ -52,6 +53,9 @@
     </a>
     <form class="card card--raised card__body form" onsubmit={submit}>
       <h1>Log in</h1>
+      {#if page.url.searchParams.get("handoff") === "expired"}
+        <p class="quiet">That sign-in link has expired or was already used. Log in to continue.</p>
+      {/if}
       <div class="field">
         <label class="field__label" for="username">Username</label>
         <input

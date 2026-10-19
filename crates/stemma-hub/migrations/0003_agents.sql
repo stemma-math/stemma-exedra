@@ -7,6 +7,7 @@
 -- pushes, if at all, only to one branch of one repository, its task's; and
 -- it opens a few
 -- threads, if its job is the workshop's.
+-- Launcher tokens expire with an agent session and cannot mint tokens or browser sessions.
 CREATE TABLE api_tokens (
     id INTEGER PRIMARY KEY,
     user_id INTEGER NOT NULL REFERENCES users (id) ON DELETE CASCADE,
@@ -16,7 +17,7 @@ CREATE TABLE api_tokens (
     created_at INTEGER NOT NULL,
     last_used_at INTEGER,
     revoked_at INTEGER,
-    kind TEXT NOT NULL DEFAULT 'personal' CHECK (kind IN ('personal', 'job')),
+    kind TEXT NOT NULL DEFAULT 'personal' CHECK (kind IN ('personal', 'launcher', 'job')),
     group_id INTEGER REFERENCES groups (id) ON DELETE CASCADE,
     thread_id INTEGER REFERENCES threads (id) ON DELETE CASCADE,
     agent TEXT,

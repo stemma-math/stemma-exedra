@@ -28,7 +28,8 @@ Its Rust crate is a separate Cargo project with its own lockfile. `just check`
 includes its native clippy and tests, and its frontend lint and types. On Linux,
 install [Tauri v2's prerequisites](https://v2.tauri.app/start/prerequisites/#linux)
 first; CI checks the native crate separately on Ubuntu.
-The hub window uses the hub's own browser session. No release packaging yet.
+The hub window exchanges a one-use, sixty-second code for its browser session;
+the device token stays native. No release packaging yet.
 
 ## Layout
 

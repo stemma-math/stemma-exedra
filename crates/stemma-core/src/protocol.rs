@@ -20,7 +20,7 @@ pub use crate::api::JobKind;
 use crate::api::{AgentProfile, LibraryReport, Message, ThreadKind, User};
 
 /// The version of this protocol. A hub refuses workers that speak another.
-pub const PROTOCOL_VERSION: u32 = 9;
+pub const PROTOCOL_VERSION: u32 = 10;
 
 /// The path of the workers' WebSocket, under the API's prefix.
 pub const WORKER_PATH: &str = "/worker";

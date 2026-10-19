@@ -2586,3 +2586,169 @@ async fn webhooks_must_be_signed() {
     );
     assert_eq!(send(Some(signed), "issues").await, StatusCode::NO_CONTENT);
 }
+
+#[tokio::test]
+async fn browser_handoffs_are_personal_single_use_and_short_lived() {
+    let hub = TestHub::new().await;
+    let ada = hub.admin_with_group().await;
+    let bob = hub.member(&ada, "bob").await;
+    let created = hub
+        .post(&bob, "/me/tokens", json!({"name": "desktop"}))
+        .await;
+    let device = Client {
+        cookie: None,
+        token: Some(created.json()["secret"].as_str().unwrap().into()),
+    };
+    // Browser sessions cannot issue handoffs either.
+    assert_eq!(
+        hub.post(&bob, "/me/login-handoff", json!(null))
+            .await
+            .status,
+        StatusCode::FORBIDDEN
+    );
+    let issued = hub.post(&device, "/me/login-handoff", json!(null)).await;
+    assert_eq!(issued.status, StatusCode::OK);
+    assert_eq!(issued.headers[header::CACHE_CONTROL], "no-store");
+    let code = issued.json()["code"].as_str().unwrap().to_owned();
+    let (hash, user, expires): (String, i64, i64) =
+        sqlx::query_as("SELECT code_hash, user_id, expires_at FROM login_handoffs")
+            .fetch_one(&hub.state.db)
+            .await
+            .unwrap();
+    assert_eq!(hash, stemma_hub::secret::token_hash(&code));
+    assert_ne!(hash, code);
+    assert!(expires > db::now() && expires <= db::now() + 60_000);
+    assert_eq!(
+        user,
+        hub.get(&bob, "/me").await.json()["id"].as_i64().unwrap()
+    );
+    let path = format!("/login/handoff?code={code}&next=/groups");
+    let anonymous = Client::default();
+    let (a, b) = tokio::join!(hub.fetch(&anonymous, &path), hub.fetch(&anonymous, &path));
+    let (success, used) = if a.headers.contains_key(header::SET_COOKIE) {
+        (a, b)
+    } else {
+        (b, a)
+    };
+    let browser = signed_in(&success);
+    let cookie = success.headers[header::SET_COOKIE].to_str().unwrap();
+    assert!(cookie.contains("Path=/; HttpOnly; SameSite=Lax; Max-Age=2592000"));
+    assert_eq!(success.headers[header::CACHE_CONTROL], "no-store");
+    assert_eq!(success.headers[header::REFERRER_POLICY], "no-referrer");
+    assert!(
+        success
+            .headers
+            .contains_key(header::CONTENT_SECURITY_POLICY)
+    );
+    let html = String::from_utf8(success.body).unwrap();
+    assert!(html.contains("location.replace(\"/groups\")"));
+    assert!(!html.contains(&code));
+    assert_eq!(hub.get(&browser, "/me").await.json()["username"], "bob");
+    assert!(!used.headers.contains_key(header::SET_COOKIE));
+    assert!(
+        String::from_utf8(used.body)
+            .unwrap()
+            .contains("handoff=expired")
+    );
+    let issued = hub.post(&device, "/me/login-handoff", json!(null)).await;
+    let code = issued.json()["code"].as_str().unwrap().to_owned();
+    sqlx::query("UPDATE login_handoffs SET expires_at = ?")
+        .bind(db::now())
+        .execute(&hub.state.db)
+        .await
+        .unwrap();
+    for code in [code.as_str(), "unknown"] {
+        let reply = hub
+            .fetch(&Client::default(), &format!("/login/handoff?code={code}"))
+            .await;
+        assert!(!reply.headers.contains_key(header::SET_COOKIE));
+        assert!(
+            String::from_utf8(reply.body)
+                .unwrap()
+                .contains("handoff=expired")
+        );
+    }
+    // Invalid destinations do not consume a valid code.
+    let issued = hub.post(&device, "/me/login-handoff", json!(null)).await;
+    let code = issued.json()["code"].as_str().unwrap().to_owned();
+    for next in [
+        "https://evil.test",
+        "//evil.test",
+        "/\\evil.test",
+        "/a\\b",
+        "groups",
+    ] {
+        let query = url::form_urlencoded::Serializer::new(String::new())
+            .append_pair("code", &code)
+            .append_pair("next", next)
+            .finish();
+        let reply = hub
+            .fetch(&Client::default(), &format!("/login/handoff?{query}"))
+            .await;
+        assert_eq!(reply.status, StatusCode::UNPROCESSABLE_ENTITY, "{next}");
+        assert!(!reply.headers.contains_key(header::SET_COOKIE));
+    }
+    let reply = hub
+        .fetch(
+            &Client::default(),
+            &format!("/login/handoff?code={code}&next=/"),
+        )
+        .await;
+    assert!(reply.headers.contains_key(header::SET_COOKIE));
+}
+
+#[tokio::test]
+async fn jobs_and_session_launchers_cannot_get_browser_handoffs() {
+    let hub = TestHub::new().await;
+    let ada = hub.admin_with_group().await;
+    let (user, group): (i64, i64) =
+        sqlx::query_as("SELECT user_id, group_id FROM memberships LIMIT 1")
+            .fetch_one(&hub.state.db)
+            .await
+            .unwrap();
+    let (_, token) = stemma_hub::auth::create_job_token(
+        &hub.state.db,
+        user,
+        group,
+        None,
+        "Claude",
+        db::now() + 60_000,
+    )
+    .await
+    .unwrap();
+    let job = Client {
+        cookie: None,
+        token: Some(token),
+    };
+    assert_eq!(
+        hub.post(&job, "/me/login-handoff", json!(null))
+            .await
+            .status,
+        StatusCode::FORBIDDEN
+    );
+    let created = hub
+        .post(
+            &ada,
+            "/me/tokens",
+            json!({"name": "launcher", "launcher": true, "expires_in_minutes": 60}),
+        )
+        .await;
+    assert_eq!(created.status, StatusCode::CREATED);
+    let launcher = Client {
+        cookie: None,
+        token: Some(created.json()["secret"].as_str().unwrap().into()),
+    };
+    assert_eq!(hub.get(&launcher, "/me").await.status, StatusCode::OK);
+    assert_eq!(
+        hub.post(&launcher, "/me/login-handoff", json!(null))
+            .await
+            .status,
+        StatusCode::FORBIDDEN
+    );
+    assert_eq!(
+        hub.post(&launcher, "/me/tokens", json!({"name": "escape"}))
+            .await
+            .status,
+        StatusCode::FORBIDDEN
+    );
+}

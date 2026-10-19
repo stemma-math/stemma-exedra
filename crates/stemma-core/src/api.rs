@@ -108,6 +108,9 @@ pub struct ApiToken {
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct CreateToken {
     pub name: String,
+    /// An agent session's token; cannot mint tokens or browser sessions.
+    #[serde(default)]
+    pub launcher: bool,
     /// How long it lasts, in minutes; until revoked if absent. The
     /// launcher's tokens last a session.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -1470,4 +1473,10 @@ pub enum Event {
     PaperUpdated {
         paper: Box<Paper>,
     },
+}
+
+/// A short-lived, one-use code for signing a browser into the hub.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct LoginHandoff {
+    pub code: String,
 }

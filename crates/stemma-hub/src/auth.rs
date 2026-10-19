@@ -30,6 +30,8 @@ pub struct Viewer {
     pub hub_admin: bool,
     /// Whether the request came with an API token, not a session.
     pub with_token: bool,
+    /// A person's token, excluding jobs, launchers and browser sessions.
+    pub personal_token: bool,
     pub scope: Scope,
 }
 
@@ -100,6 +102,7 @@ impl ViewerRow {
             display_name: self.display_name,
             hub_admin: self.hub_admin,
             with_token,
+            personal_token: false,
             scope,
         }
     }
@@ -187,7 +190,9 @@ async fn authenticate(headers: &HeaderMap, state: &AppState) -> Result<Option<Vi
             ("job", None) => return Err(ApiError::internal("a job token without a group")),
             _ => Scope::Full,
         };
-        return Ok(Some(row.user.viewer(true, scope)));
+        let mut viewer = row.user.viewer(true, scope);
+        viewer.personal_token = row.kind == "personal";
+        return Ok(Some(viewer));
     }
 
     let Some(token) = cookie(headers, SESSION_COOKIE) else {

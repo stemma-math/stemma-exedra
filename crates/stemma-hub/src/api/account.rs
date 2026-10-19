@@ -262,7 +262,7 @@ pub async fn list_tokens(
     viewer.require_full()?;
     let rows: Vec<TokenRow> = sqlx::query_as(
         "SELECT id, name, prefix, created_at, last_used_at, expires_at FROM api_tokens
-         WHERE user_id = ? AND kind = 'personal' AND revoked_at IS NULL
+         WHERE user_id = ? AND kind IN ('personal', 'launcher') AND revoked_at IS NULL
            AND (expires_at IS NULL OR expires_at > ?)
          ORDER BY created_at DESC",
     )
@@ -279,6 +279,12 @@ pub async fn create_token(
     Json(body): Json<CreateToken>,
 ) -> ApiResult<(StatusCode, Json<CreatedToken>)> {
     viewer.require_full()?;
+    if viewer.with_token && !viewer.personal_token {
+        return Err(ApiError::forbidden("An agent session cannot mint tokens"));
+    }
+    if body.launcher && body.expires_in_minutes.is_none() {
+        return Err(ApiError::invalid("An agent session token must expire"));
+    }
     let name = required_text(&body.name, "The name", 80)?;
     let secret = secret::token(API_TOKEN_PREFIX);
     let prefix: String = secret.chars().take(API_TOKEN_PREFIX.len() + 6).collect();
@@ -289,8 +295,8 @@ pub async fn create_token(
         None => None,
     };
     let id = sqlx::query(
-        "INSERT INTO api_tokens (user_id, name, token_hash, prefix, created_at, expires_at)
-         VALUES (?, ?, ?, ?, ?, ?)",
+        "INSERT INTO api_tokens (user_id, name, token_hash, prefix, created_at, expires_at, kind)
+         VALUES (?, ?, ?, ?, ?, ?, ?)",
     )
     .bind(viewer.id)
     .bind(&name)
@@ -298,6 +304,11 @@ pub async fn create_token(
     .bind(&prefix)
     .bind(now)
     .bind(expires_at)
+    .bind(if body.launcher {
+        "launcher"
+    } else {
+        "personal"
+    })
     .execute(&state.db)
     .await?
     .last_insert_rowid();
@@ -320,7 +331,7 @@ pub async fn revoke_token(
     viewer.require_full()?;
     let done = sqlx::query(
         "UPDATE api_tokens SET revoked_at = ?
-         WHERE id = ? AND user_id = ? AND kind = 'personal' AND revoked_at IS NULL",
+         WHERE id = ? AND user_id = ? AND kind IN ('personal', 'launcher') AND revoked_at IS NULL",
     )
     .bind(db::now())
     .bind(id)
