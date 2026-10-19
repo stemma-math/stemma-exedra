@@ -36,8 +36,11 @@ request, and reports in the thread.
 The desktop app opens your hub's web app and has a **This machine** screen:
 separate personal and workshop services, sign-in status, repository folder,
 agents, daily limits and container settings. It shares the CLI's sign-in and
-machine configuration; keep it open while serving. `stemma machine status`
+machine configuration. `stemma machine service install` installs and starts a
+per-user login service (launchd on macOS, systemd on Linux); `start`, `stop`,
+`status` and `uninstall` manage it. Closing the app leaves it running. Status
+includes the configured modes, hub connection when reachable, and log location. `stemma machine status`
 inspects local tools; `stemma machine configure --personal true --workshop true`
-selects the services for the next `stemma machine run`. The workshop starts
+selects its modes and restarts an active system service. Only one process can serve it. The workshop starts
 disabled; only admins can lend a machine. `stemma machine workshop credentials`
 selects the sign-in material passed to its containers.

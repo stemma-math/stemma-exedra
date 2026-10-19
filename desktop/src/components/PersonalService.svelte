@@ -10,9 +10,9 @@
   let { controls, data }: Props = $props();
 
   const connection = $derived(
-    data.machine?.online
+    data.service.connected === true
       ? "Connected to the hub"
-      : data.serving
+      : data.service.running
         ? "Connecting to the hub…"
         : "Service stopped",
   );
@@ -97,8 +97,20 @@
       </button>
     </div>
     <p class="quiet">
-      {connection}. Keep this app open while serving. The stemma CLI must be installed for personal
-      agents’ tools.
+      Service {data.service.installed ? "installed" : "not installed"} ·
+      {data.service.running ? "running" : "stopped"}. Logs: {data.service.logs}
+    </p>
+    <button
+      type="button"
+      class="button"
+      disabled={controls.busy || (!data.personal && !data.workshop)}
+      onclick={() => controls.save({ kind: "serving", enabled: !data.service.running })}
+    >
+      {data.service.running ? "Stop service" : "Start service"}
+    </button>
+    <p class="quiet">
+      {connection}. The service keeps running when this app closes. The stemma CLI must be installed
+      for personal agents’ tools.
     </p>
     <button
       type="button"

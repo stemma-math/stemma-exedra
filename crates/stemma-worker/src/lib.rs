@@ -23,6 +23,7 @@ pub mod library;
 pub mod machine;
 pub mod papers;
 pub mod runners;
+pub mod service;
 pub mod session;
 pub mod workshop;
 

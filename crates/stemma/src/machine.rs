@@ -6,9 +6,9 @@ use anyhow::Context as _;
 use clap::{Args, Subcommand};
 use stemma_client::config::ClientConfig;
 use stemma_core::api::{Isolation, Machine, WorkshopAgent, runners};
-use stemma_worker::image;
 use stemma_worker::isolation::{self, Isolator, Runtime};
 use stemma_worker::machine::{self, MachineConfig};
+use stemma_worker::{image, service};
 
 use crate::client::hostname;
 
@@ -32,6 +32,9 @@ enum MachineCommand {
     },
     /// Serve this machine: run your agents' jobs here until stopped.
     Run,
+    /// Manage this machine's per-user system service.
+    #[command(subcommand)]
+    Service(ServiceCommand),
     /// Detected agents, their sign-in state, Lean and LaTeX on this machine.
     Status,
     /// Set the repository folder or enable the personal and workshop services.
@@ -60,6 +63,43 @@ enum MachineCommand {
     /// it offers it.
     #[command(subcommand)]
     Workshop(WorkshopCommand),
+}
+
+#[derive(Subcommand)]
+enum ServiceCommand {
+    /// Install for login and start now.
+    Install,
+    /// Stop and remove the service.
+    Uninstall,
+    Start,
+    Stop,
+    /// Installation, process, modes, hub connection and logs.
+    Status,
+}
+
+async fn service(command: ServiceCommand) -> anyhow::Result<()> {
+    match command {
+        ServiceCommand::Install => service::install(&std::env::current_exe()?),
+        ServiceCommand::Uninstall => service::uninstall(),
+        ServiceCommand::Start => service::start(),
+        ServiceCommand::Stop => service::stop(),
+        ServiceCommand::Status => {
+            let status = service::status().await?;
+            println!(
+                "Installed: {}\nRunning: {}\nPersonal: {}\nWorkshop: {}\nConnected to hub: {}\nLogs: {}",
+                status.installed,
+                status.running,
+                status.personal,
+                status.workshop,
+                status
+                    .connected
+                    .map(|c| c.to_string())
+                    .unwrap_or_else(|| "unknown".into()),
+                status.logs
+            );
+            Ok(())
+        }
+    }
 }
 
 #[derive(Subcommand)]
@@ -163,6 +203,7 @@ enum WorkshopCommand {
 pub async fn machine(args: MachineArgs) -> anyhow::Result<()> {
     match args.command {
         MachineCommand::Add { name, preferred } => add(name, preferred).await,
+        MachineCommand::Service(command) => service(command).await,
         MachineCommand::Run => machine::run(&machine::path()?).await,
         MachineCommand::Status => {
             let config = MachineConfig::load_from(&machine::path()?)?;
@@ -389,7 +430,7 @@ async fn isolation(
         settings.runtime = Some(chosen);
         if chosen == Runtime::Host {
             config.isolation = Some(settings.clone());
-            config.save_to(&path)?;
+            stemma_worker::control::save(&config)?;
         } else {
             stemma_worker::control::containers(chosen, settings.image())?;
         }
@@ -397,7 +438,7 @@ async fn isolation(
             eprintln!("{UNISOLATED}");
         }
         println!(
-            "Saved in {}. Serve the machine again (`stemma machine run`) for it to apply.",
+            "Saved in {}. The active system service reloads these settings.",
             path.display()
         );
     }
@@ -558,6 +599,7 @@ async fn remove(name: Option<String>) -> anyhow::Result<()> {
     if let Some(this) = this
         && name.as_deref().is_none_or(|n| n == this.name)
     {
+        service::remove_machine()?;
         std::fs::remove_file(&path).with_context(|| format!("removing {}", path.display()))?;
         println!("This machine forgot its token.");
     }

@@ -9,16 +9,12 @@ use stemma_core::api::{Machine, Me, WorkshopAgent};
 use stemma_worker::{
     control, detect, image,
     isolation::{AgentSignIn, Runtime, SignInFile},
-    machine,
+    machine, service,
 };
 use tauri::{Manager, State, WebviewWindow};
 use tokio::sync::Mutex;
 
-#[derive(Default)]
-struct Local {
-    service: control::Service,
-}
-type Shared<'a> = State<'a, Mutex<Local>>;
+type Shared<'a> = State<'a, Mutex<()>>;
 type Result<T> = std::result::Result<T, String>;
 
 fn error(error: impl std::fmt::Display) -> String {
@@ -56,7 +52,7 @@ struct Snapshot {
     work_dir: String,
     personal: bool,
     workshop: bool,
-    serving: bool,
+    service: service::Status,
     agents: Vec<detect::AgentStatus>,
     elan: Option<String>,
     latex: Option<String>,
@@ -66,7 +62,7 @@ struct Snapshot {
 }
 
 #[tauri::command]
-async fn snapshot(window: WebviewWindow, state: Shared<'_>) -> Result<Snapshot> {
+async fn snapshot(window: WebviewWindow) -> Result<Snapshot> {
     local(&window)?;
     let config = ClientConfig::load().map_err(error)?.with_env();
     let machine =
@@ -109,10 +105,9 @@ async fn snapshot(window: WebviewWindow, state: Shared<'_>) -> Result<Snapshot> 
         detect::version("elan"),
         detect::version("latexmk")
     );
-    let state = state.lock().await;
-    let serving = state.service.running();
-    let personal = state.service.personal();
-    let workshop = state.service.workshop();
+    let service = service::status().await.map_err(error)?;
+    let personal = service.personal;
+    let workshop = service.workshop;
     Ok(Snapshot {
         hub: config.hub,
         username: config.username,
@@ -130,7 +125,7 @@ async fn snapshot(window: WebviewWindow, state: Shared<'_>) -> Result<Snapshot> 
             .unwrap_or_default(),
         personal,
         workshop,
-        serving,
+        service,
         agents,
         elan,
         latex,
@@ -143,7 +138,6 @@ async fn snapshot(window: WebviewWindow, state: Shared<'_>) -> Result<Snapshot> 
 #[tauri::command]
 async fn login(
     window: WebviewWindow,
-    state: Shared<'_>,
     url: String,
     username: String,
     password: String,
@@ -159,7 +153,6 @@ async fn login(
             );
         }
     }
-    state.lock().await.service.stop().await;
     stemma_client::sign_in::password(&url, &username, &password, "desktop", None)
         .await
         .map_err(error)?;
@@ -179,6 +172,9 @@ enum Action {
     Remove,
     Folder {
         path: PathBuf,
+    },
+    Serving {
+        enabled: bool,
     },
     Service {
         personal: bool,
@@ -223,12 +219,7 @@ async fn perform(state: Shared<'_>, action: Action) -> anyhow::Result<()> {
         };
         return control::build_image(&settings, &build).await;
     }
-    let mut state = state.lock().await;
-    let was_running = state.service.running();
-    let restart = matches!(
-        &action,
-        Action::Folder { .. } | Action::Containers { .. } | Action::Credentials { .. }
-    );
+    let _guard = state.lock().await;
     match action {
         Action::Register { name, preferred } => {
             control::register(&hub()?, &name, preferred).await?;
@@ -241,7 +232,7 @@ async fn perform(state: Shared<'_>, action: Action) -> anyhow::Result<()> {
         Action::Remove => {
             let hub = hub()?;
             let machine = control::this(&hub).await?;
-            state.service.stop().await;
+            service::remove_machine()?;
             hub.revoke_machine(machine.id).await?;
             std::fs::remove_file(machine::path()?)?;
         }
@@ -252,13 +243,20 @@ async fn perform(state: Shared<'_>, action: Action) -> anyhow::Result<()> {
             control::configure(None, Some(personal), Some(workshop))?;
             let config = control::load()?;
             control::check_hub(&config, &hub()?)?;
-            let stemma = if personal {
-                control::stemma()?
+            if personal || workshop {
+                ensure_serving()?;
             } else {
-                PathBuf::from("stemma")
-            };
-            state.service.start(config, stemma).await?;
+                service::stop()?;
+            }
         }
+        Action::Serving { enabled } => {
+            if enabled {
+                ensure_serving()?;
+            } else {
+                service::stop()?;
+            }
+        }
+
         Action::Containers { runtime, image } => {
             control::containers(runtime, image)?;
         }
@@ -281,18 +279,13 @@ async fn perform(state: Shared<'_>, action: Action) -> anyhow::Result<()> {
             control::credentials(runner, env, files)?;
         }
     }
-    if was_running
-        && restart
-        && let Ok(config) = control::load()
-    {
-        let stemma = if config.personal {
-            control::stemma()?
-        } else {
-            PathBuf::from("stemma")
-        };
-        state.service.start(config, stemma).await?;
-    }
     Ok(())
+}
+
+fn ensure_serving() -> anyhow::Result<()> {
+    // Installation starts the service too; start is also safe for an existing one.
+    let stemma = control::stemma()?;
+    service::install(&stemma)
 }
 
 #[tauri::command]
@@ -317,7 +310,7 @@ async fn open_hub(window: WebviewWindow, app: tauri::AppHandle) -> Result<()> {
 
 fn main() {
     tauri::Builder::default()
-        .manage(Mutex::new(Local::default()))
+        .manage(Mutex::new(()))
         .setup(|app| {
             tauri::WebviewWindowBuilder::from_config(app, &app.config().app.windows[0])?
                 .on_navigation(trusted_machine_url)
@@ -325,39 +318,8 @@ fn main() {
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![snapshot, login, action, open_hub])
-        .build(tauri::generate_context!())
-        .expect("building Stemma")
-        .run(|app, event| {
-            let closing = match event {
-                tauri::RunEvent::ExitRequested {
-                    code: None, api, ..
-                } => {
-                    api.prevent_exit();
-                    true
-                }
-                tauri::RunEvent::WindowEvent {
-                    label,
-                    event: tauri::WindowEvent::CloseRequested { api, .. },
-                    ..
-                } if label == "machine" => {
-                    api.prevent_close();
-                    true
-                }
-                _ => false,
-            };
-            if closing {
-                let app = app.clone();
-                tauri::async_runtime::spawn(async move {
-                    app.state::<Mutex<Local>>()
-                        .lock()
-                        .await
-                        .service
-                        .stop()
-                        .await;
-                    app.exit(0);
-                });
-            }
-        });
+        .run(tauri::generate_context!())
+        .expect("running Stemma");
 }
 
 #[cfg(test)]

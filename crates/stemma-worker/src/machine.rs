@@ -179,17 +179,59 @@ pub async fn run(path: &Path) -> anyhow::Result<()> {
             path.display()
         )
     })?;
-    let mut service = crate::control::Service::default();
+    // The lock belongs to the machine's data, not its configurable checkout folder.
+    let _lock = lock(&data_dir()?)?;
+    if !config.personal && !config.workshop_enabled {
+        tracing::info!("Both machine modes are off");
+        return Ok(());
+    }
+    let found = installed(&config.runners).await;
+    tracing::info!("found {}", names(&found));
     let stemma = std::env::current_exe().context("finding the stemma binary")?;
-    service.start(config, stemma).await?;
+    let context = crate::Context::start(config.worker_config(&found), stemma).await?;
+    anyhow::ensure!(
+        !config.workshop_enabled || context.isolator.is_some(),
+        "The workshop has no usable isolation. Choose Docker or Podman and build the configured image."
+    );
     tokio::select! {
-        served = service.wait() => served,
-        _ = tokio::signal::ctrl_c() => {
-            tracing::info!("Stopping");
-            service.stop().await;
-            Ok(())
+        served = crate::connection::serve(std::sync::Arc::new(context), config.token) => served,
+        _ = shutdown() => Ok(()),
+    }
+}
+
+fn data_dir() -> anyhow::Result<PathBuf> {
+    Ok(dirs::data_local_dir()
+        .context("This system has no data directory")?
+        .join("stemma")
+        .join("machine"))
+}
+
+fn lock(dir: &Path) -> anyhow::Result<std::fs::File> {
+    std::fs::create_dir_all(dir)?;
+    let file = std::fs::OpenOptions::new()
+        .read(true)
+        .write(true)
+        .create(true)
+        .truncate(false)
+        .open(dir.join("run.lock"))?;
+    file.try_lock().context("Another process is already serving this machine; stop it before running `stemma machine run`")?;
+    Ok(file)
+}
+
+async fn shutdown() {
+    #[cfg(unix)]
+    {
+        let mut terminate =
+            tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())
+                .expect("listen for SIGTERM");
+        tokio::select! {
+            _ = tokio::signal::ctrl_c() => {},
+            _ = terminate.recv() => {},
         }
     }
+    #[cfg(not(unix))]
+    let _ = tokio::signal::ctrl_c().await;
+    tracing::info!("Stopping");
 }
 
 fn enabled() -> bool {
@@ -199,6 +241,16 @@ fn enabled() -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn only_one_process_can_serve_and_exit_releases_the_lock() {
+        let dir = tempfile::tempdir().unwrap();
+        let first = lock(dir.path()).unwrap();
+        let error = lock(dir.path()).unwrap_err();
+        assert!(error.to_string().contains("already serving this machine"));
+        drop(first);
+        assert!(lock(dir.path()).is_ok());
+    }
 
     #[test]
     fn saves_privately_and_offers_what_it_found() {

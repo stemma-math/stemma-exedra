@@ -18,7 +18,14 @@ export interface Snapshot {
   work_dir: string;
   personal: boolean;
   workshop: boolean;
-  serving: boolean;
+  service: {
+    installed: boolean;
+    running: boolean;
+    personal: boolean;
+    workshop: boolean;
+    connected: boolean | null;
+    logs: string;
+  };
   agents: { runner: string; name: string; installed: boolean; sign_in: string }[];
   elan: string | null;
   latex: string | null;

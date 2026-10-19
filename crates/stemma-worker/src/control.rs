@@ -1,15 +1,13 @@
 //! Local machine operations shared by the CLI and desktop.
 
 use std::path::PathBuf;
-use std::sync::Arc;
 
 use anyhow::Context as _;
 use stemma_client::Hub;
 use stemma_core::api::Machine;
-use tokio::task::JoinHandle;
 
 use crate::{
-    Context, connection, detect, image, isolation,
+    detect, image, isolation,
     machine::{self, MachineConfig},
 };
 
@@ -86,7 +84,7 @@ pub fn configure(
     if let Some(enabled) = workshop {
         config.workshop_enabled = enabled;
     }
-    config.save_to(&machine::path()?)
+    save(&config)
 }
 
 /// Save container settings without exposing an implicit unisolated option.
@@ -102,7 +100,7 @@ pub fn containers(runtime: isolation::Runtime, image: String) -> anyhow::Result<
     settings.image = Some(image);
     settings.validate()?;
     config.isolation = Some(settings);
-    config.save_to(&machine::path()?)
+    save(&config)
 }
 
 pub async fn build_image(
@@ -117,82 +115,6 @@ pub async fn build_image(
         .await
         .context("Docker or Podman must be running")?;
     image::build(engine.as_ref(), build).await
-}
-
-/// A worker owned by its caller. Dropping it disconnects and cancels its jobs.
-#[derive(Default)]
-pub struct Service {
-    task: Option<JoinHandle<anyhow::Result<()>>>,
-    context: Option<Arc<Context>>,
-}
-
-impl Service {
-    pub async fn start(&mut self, config: MachineConfig, stemma: PathBuf) -> anyhow::Result<()> {
-        if !config.personal && !config.workshop_enabled {
-            self.stop().await;
-            return Ok(());
-        }
-        let found = machine::installed(&config.runners).await;
-        tracing::info!("found {}", machine::names(&found));
-        let context = Context::start(config.worker_config(&found), stemma).await?;
-        anyhow::ensure!(
-            !config.workshop_enabled || context.isolator.is_some(),
-            "The workshop has no usable isolation. Choose Docker or Podman and build the configured image."
-        );
-        self.stop().await;
-        let context = Arc::new(context);
-        self.task = Some(tokio::spawn(connection::serve(
-            context.clone(),
-            config.token,
-        )));
-        self.context = Some(context);
-        Ok(())
-    }
-
-    pub async fn stop(&mut self) {
-        if let Some(task) = self.task.take() {
-            task.abort();
-            let _ = task.await;
-        }
-        // Jobs hold the context until cancellation drops their worktrees and
-        // containers. Wait before opening the same checkouts again.
-        if let Some(context) = self.context.take() {
-            while Arc::strong_count(&context) > 1 {
-                tokio::time::sleep(std::time::Duration::from_millis(10)).await;
-            }
-        }
-    }
-
-    pub async fn wait(&mut self) -> anyhow::Result<()> {
-        if let Some(task) = self.task.as_mut() {
-            task.await??;
-        }
-        Ok(())
-    }
-
-    pub fn personal(&self) -> bool {
-        self.running() && self.context.as_ref().is_some_and(|c| c.config.personal)
-    }
-
-    pub fn workshop(&self) -> bool {
-        self.running()
-            && self
-                .context
-                .as_ref()
-                .is_some_and(|c| c.config.workshop_enabled)
-    }
-
-    pub fn running(&self) -> bool {
-        self.task.as_ref().is_some_and(|t| !t.is_finished())
-    }
-}
-
-impl Drop for Service {
-    fn drop(&mut self) {
-        if let Some(task) = &self.task {
-            task.abort();
-        }
-    }
 }
 
 /// The installed CLI provides MCP to personal agents; the container has its own.
@@ -224,5 +146,11 @@ pub fn credentials(
         }
     }
     config.isolation = Some(settings);
-    config.save_to(&machine::path()?)
+    save(&config)
+}
+
+/// Apply saved settings to the service managed by either face.
+pub fn save(config: &MachineConfig) -> anyhow::Result<()> {
+    config.save_to(&machine::path()?)?;
+    crate::service::reload()
 }
