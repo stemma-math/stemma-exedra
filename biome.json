@@ -23,6 +23,18 @@
   "html": {
     "experimentalFullSupportEnabled": true
   },
+  "overrides": [
+    {
+      "includes": ["desktop/**/*.svelte"],
+      "html": {
+        "formatter": {
+          "enabled": true,
+          "indentScriptAndStyle": true,
+          "selfCloseVoidElements": "always"
+        }
+      }
+    }
+  ],
   "linter": {
     "rules": {
       "recommended": true

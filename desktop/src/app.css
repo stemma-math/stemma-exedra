@@ -1,21 +1,8 @@
+@import "../../web/src/lib/layout.css";
+
 /* Composition only; every visual treatment comes from Stemma's design. */
 main {
   padding: var(--space-6);
-}
-.stack {
-  display: flex;
-  flex-direction: column;
-  gap: var(--space-4);
-}
-.row {
-  display: flex;
-  align-items: center;
-  gap: var(--space-3);
-  flex-wrap: wrap;
-}
-.grow {
-  flex: 1;
-  min-width: 0;
 }
 .panel {
   padding: var(--space-5);
@@ -33,7 +20,4 @@ header p {
 }
 header stemma-mark {
   width: var(--space-8);
-}
-.tools {
-  gap: var(--space-2);
 }

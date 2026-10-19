@@ -1,0 +1,30 @@
+/* Shared composition for the web and desktop apps. */
+.stack {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-4);
+}
+
+.stack--tight {
+  gap: var(--space-2);
+}
+
+.stack--loose {
+  gap: var(--space-8);
+}
+
+.row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-2);
+}
+
+.row--end {
+  justify-content: flex-end;
+}
+
+.grow {
+  flex: 1;
+  min-width: 0;
+}

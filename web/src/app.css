@@ -1,3 +1,5 @@
+@import "./lib/layout.css";
+
 /* Layout and composition of the web app. How things look comes from
  * @stemma-math/design: these rules only place its components and use its
  * tokens for space, rules and surfaces. */
@@ -244,36 +246,6 @@ body {
 
 .page__head > :first-child {
   margin: 0;
-}
-
-.stack {
-  display: flex;
-  flex-direction: column;
-  gap: var(--space-4);
-}
-
-.stack--tight {
-  gap: var(--space-2);
-}
-
-.stack--loose {
-  gap: var(--space-8);
-}
-
-.row {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: center;
-  gap: var(--space-2);
-}
-
-.row--end {
-  justify-content: flex-end;
-}
-
-.grow {
-  flex: 1;
-  min-width: 0;
 }
 
 .card__body {
