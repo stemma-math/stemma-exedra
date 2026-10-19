@@ -45,7 +45,6 @@ pub enum WorkerMessage {
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Hello {
     /// Whether this machine accepts its owner's personal jobs.
-    #[serde(default = "enabled")]
     pub personal: bool,
     pub protocol: u32,
     /// The worker's version of Stemma.
@@ -381,6 +380,30 @@ pub enum ContextItem {
     },
 }
 
-fn enabled() -> bool {
-    true
+#[cfg(test)]
+mod tests {
+    use super::{Hello, PROTOCOL_VERSION};
+    use serde_json::json;
+
+    #[test]
+    fn hello_requires_an_explicit_personal_service_mode() {
+        let mut hello = json!({
+            "protocol": PROTOCOL_VERSION,
+            "version": "0.1.1",
+            "runners": [],
+            "lean": false,
+            "concurrency": 1,
+        });
+        let error = serde_json::from_value::<Hello>(hello.clone()).unwrap_err();
+        assert!(error.to_string().contains("missing field `personal`"));
+        for personal in [false, true] {
+            hello["personal"] = json!(personal);
+            assert_eq!(
+                serde_json::from_value::<Hello>(hello.clone())
+                    .unwrap()
+                    .personal,
+                personal
+            );
+        }
+    }
 }
