@@ -1,10 +1,11 @@
 //! Which runners a machine has: those whose program is installed and
 //! answers `--version`.
 
-use std::ffi::OsStr;
+use std::ffi::{OsStr, OsString};
+use std::io::Read;
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use stemma_core::api::runners;
 
@@ -12,6 +13,50 @@ use crate::config::Runners;
 
 /// How long a program has to say its version.
 const VERSION_WAIT: Duration = Duration::from_secs(15);
+
+/// How long the login shell has to say its environment.
+const LOGIN_WAIT: Duration = Duration::from_secs(10);
+
+/// The `PATH` the person's login shell sets up. An app opened from the
+/// desktop does not inherit it (on macOS it gets `/usr/bin:/bin:…`), and
+/// so would find neither the agents nor what they run on. `None` if there
+/// is no shell to ask, or it does not answer in a while.
+pub fn login_path() -> Option<OsString> {
+    login_path_of(Path::new(&std::env::var_os("SHELL")?), LOGIN_WAIT)
+}
+
+fn login_path_of(shell: &Path, wait: Duration) -> Option<OsString> {
+    // `env` prints the environment the same way whatever the shell: fish,
+    // zsh or bash.
+    let mut child = std::process::Command::new(shell)
+        .args(["-l", "-c", "env"])
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .spawn()
+        .ok()?;
+    let deadline = Instant::now() + wait;
+    loop {
+        match child.try_wait() {
+            Ok(Some(status)) if status.success() => break,
+            Ok(None) if Instant::now() < deadline => {
+                std::thread::sleep(Duration::from_millis(20));
+            }
+            _ => {
+                let _ = child.kill();
+                let _ = child.wait();
+                return None;
+            }
+        }
+    }
+    let mut output = String::new();
+    child.stdout.take()?.read_to_string(&mut output).ok()?;
+    output
+        .lines()
+        .find_map(|line| line.strip_prefix("PATH="))
+        .filter(|path| !path.trim().is_empty())
+        .map(OsString::from)
+}
 
 /// Where `program` is: itself, if it is a path, or else the first of
 /// that name on `search`, a list of folders as `PATH` has them.
@@ -197,6 +242,26 @@ mod tests {
             std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).unwrap();
         }
         path
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn reads_the_path_of_the_login_shell() {
+        let dir = tempfile::tempdir().unwrap();
+        let shell = fake(
+            dir.path(),
+            "shell",
+            "[ \"$*\" = '-l -c env' ] || exit 2\nprintf 'HOME=/home/ada\\nPATH=/nix/bin:/usr/bin\\nTERM=dumb\\n'",
+        );
+        assert_eq!(
+            login_path_of(&shell, LOGIN_WAIT),
+            Some(OsString::from("/nix/bin:/usr/bin"))
+        );
+        let failing = fake(dir.path(), "failing", "exit 1");
+        assert_eq!(login_path_of(&failing, LOGIN_WAIT), None);
+        let silent = fake(dir.path(), "silent", "sleep 5");
+        assert_eq!(login_path_of(&silent, Duration::from_millis(200)), None);
+        assert_eq!(login_path_of(&dir.path().join("missing"), LOGIN_WAIT), None);
     }
 
     #[cfg(unix)]

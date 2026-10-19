@@ -311,7 +311,21 @@ async fn open_hub(window: WebviewWindow, app: tauri::AppHandle) -> Result<()> {
     Ok(())
 }
 
+/// An app opened from the Finder or the Dock gets a bare `PATH`, without
+/// the folders where the agents and the tools they need are installed: it
+/// takes the login shell's, for finding them, for what it runs, and for the
+/// service it installs.
+#[allow(unsafe_code)]
+fn use_login_path() {
+    if let Some(path) = stemma_worker::detect::login_path() {
+        // SAFETY: called first thing in `main`, before any other thread
+        // exists to read the environment.
+        unsafe { std::env::set_var("PATH", path) };
+    }
+}
+
 fn main() {
+    use_login_path();
     tauri::Builder::default()
         .manage(Mutex::new(()))
         .setup(|app| {
