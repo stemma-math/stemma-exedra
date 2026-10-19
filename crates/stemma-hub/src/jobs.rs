@@ -99,13 +99,21 @@ pub struct Connected {
     pub concurrency: u32,
     /// Whether it is its owner's preferred machine.
     pub preferred: bool,
-    pub running: HashSet<i64>,
+    pub running: HashMap<i64, JobKind>,
     pub sender: mpsc::UnboundedSender<HubMessage>,
 }
 
 impl Connected {
-    fn has_room(&self) -> bool {
-        (self.running.len() as u32) < self.concurrency
+    fn has_room(&self, kind: JobKind) -> bool {
+        // Any paper may occupy the extra slot, freeing a normal slot as other
+        // jobs finish. At most concurrency + 1 jobs run, with one being a paper.
+        let extra = self.latex
+            && (kind == JobKind::PaperBuild
+                || self
+                    .running
+                    .values()
+                    .any(|kind| *kind == JobKind::PaperBuild));
+        self.running.len() < self.concurrency as usize + usize::from(extra)
     }
 
     /// Whether it may run the jobs of a group's workshop: it works for
@@ -154,7 +162,7 @@ impl Workers {
         let mut free: Vec<(&i64, &Connected)> = self
             .connected
             .iter()
-            .filter(|(_, w)| self.can_run(w, job) && w.has_room())
+            .filter(|(_, w)| self.can_run(w, job) && w.has_room(job.kind()))
             .collect();
         free.sort_by_key(|(id, w)| (!w.preferred, w.running.len(), **id));
         free.into_iter().map(|(id, _)| *id).collect()
@@ -605,7 +613,7 @@ pub async fn dispatch(state: &AppState) -> ApiResult<()> {
     let mut workers = state.workers.lock().await;
     let queued: Vec<JobRow> = sqlx::query_as(concat!(
         job_query!(),
-        " WHERE j.state = 'queued' ORDER BY j.id LIMIT 500"
+        " WHERE j.state = 'queued' ORDER BY j.id"
     ))
     .fetch_all(&state.db)
     .await?;
@@ -676,7 +684,7 @@ pub async fn dispatch(state: &AppState) -> ApiResult<()> {
                     .connected
                     .get_mut(&worker_id)
                     .expect("found just now");
-                worker.running.insert(job.id);
+                worker.running.insert(job.id, job.kind());
                 let _ = worker.sender.send(HubMessage::Job(Box::new(spec)));
                 if is_build {
                     building.insert(job.group_id);
@@ -1048,8 +1056,8 @@ pub async fn disconnect(state: &AppState, worker_id: i64) -> ApiResult<()> {
 }
 
 /// Queues again the jobs a machine was running, unless they ran too often.
-async fn requeue(state: &AppState, worker_id: i64, jobs: HashSet<i64>) -> ApiResult<()> {
-    for job_id in jobs {
+async fn requeue(state: &AppState, worker_id: i64, jobs: HashMap<i64, JobKind>) -> ApiResult<()> {
+    for job_id in jobs.into_keys() {
         let Some(job) = running_on(state, worker_id, job_id).await? else {
             continue;
         };
@@ -1151,4 +1159,43 @@ pub async fn stop(state: &AppState, job_id: i64) -> ApiResult<()> {
     publish(state, &workers, job_id).await?;
     drop(workers);
     dispatch(state).await
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_paper_can_use_either_slot_and_release_normal_capacity() {
+        let (sender, _) = mpsc::unbounded_channel();
+        let mut machine = Connected {
+            personal: true,
+            connection: 1,
+            owner_id: 1,
+            runners: Vec::new(),
+            lean: true,
+            latex: true,
+            isolation: Some(Isolation::Docker),
+            workshop: HashSet::new(),
+            concurrency: 1,
+            preferred: false,
+            running: HashMap::new(),
+            sender,
+        };
+        assert!(machine.has_room(JobKind::PaperBuild));
+        machine.running.insert(1, JobKind::PaperBuild);
+        assert!(machine.has_room(JobKind::LibraryBuild));
+        assert!(machine.has_room(JobKind::PaperBuild));
+        machine.running.insert(2, JobKind::PaperBuild);
+        assert!(!machine.has_room(JobKind::PaperBuild));
+        assert!(!machine.has_room(JobKind::LibraryBuild));
+        machine.running.remove(&2);
+        machine.running.insert(3, JobKind::LibraryBuild);
+        assert!(!machine.has_room(JobKind::PaperBuild));
+        machine.running.remove(&1);
+        assert!(machine.has_room(JobKind::PaperBuild));
+        assert!(!machine.has_room(JobKind::Reply));
+        machine.latex = false;
+        assert!(!machine.has_room(JobKind::PaperBuild));
+    }
 }

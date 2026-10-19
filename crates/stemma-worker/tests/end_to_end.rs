@@ -932,8 +932,8 @@ async fn a_workshop_machine_with_lean_builds_and_inspects_the_library() {
     running.abort();
 }
 
-/// Paper tests must not wait for the unrelated template's Mathlib build.
-/// Containers offer Lean too, and the worker has only one slot.
+/// Paper tests avoid spending resources on the unrelated template's Mathlib build.
+/// Containers offer Lean too, so it would otherwise run beside the paper.
 async fn cancel_initial_library_build(hub: &TestHub) {
     let job: i64 =
         sqlx::query_scalar("SELECT id FROM jobs WHERE kind = 'library_build' AND state = 'queued'")

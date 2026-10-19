@@ -106,7 +106,6 @@ pub struct PaperRow {
     creator_username: String,
     creator_display_name: String,
     head: Option<String>,
-    pdf_build: Option<i64>,
     created_at: i64,
     group_slug: String,
 }
@@ -115,7 +114,7 @@ macro_rules! paper_query {
     () => {
         "SELECT p.id, p.group_id, p.slug, p.title, p.repository, p.created_by,
                 u.username AS creator_username, u.display_name AS creator_display_name,
-                p.head, p.pdf_build, p.created_at, g.slug AS group_slug
+                p.head, p.created_at, g.slug AS group_slug
          FROM papers p JOIN users u ON u.id = p.created_by JOIN groups g ON g.id = p.group_id"
     };
 }
@@ -226,17 +225,17 @@ impl PaperRow {
     }
 
     async fn pdf(&self, state: &AppState) -> ApiResult<Option<PaperPdf>> {
-        let Some(build) = self.pdf_build else {
-            return Ok(None);
-        };
-        let row: Option<(String, Option<i64>, Option<i64>)> = sqlx::query_as(
-            "SELECT commit_sha, pdf_size, finished_at FROM paper_builds WHERE id = ?",
+        // The row may predate a completed build; read its current PDF together
+        // with that build's metadata, after reading the latest build state.
+        let row: Option<(i64, String, Option<i64>, Option<i64>)> = sqlx::query_as(
+            "SELECT b.id, b.commit_sha, b.pdf_size, b.finished_at FROM papers p
+             JOIN paper_builds b ON b.id = p.pdf_build WHERE p.id = ?",
         )
-        .bind(build)
+        .bind(self.id)
         .fetch_optional(&state.db)
         .await?;
         Ok(match row {
-            Some((commit, Some(size), finished_at)) => Some(PaperPdf {
+            Some((build, commit, Some(size), finished_at)) => Some(PaperPdf {
                 build,
                 commit,
                 size: size as u64,
@@ -790,6 +789,9 @@ pub async fn build_finished(state: &AppState, job_id: i64, built: PaperBuilt) ->
         (None, false) => Some("The build made no PDF".to_owned()),
         (None, true) => None,
     };
+    // Publish completion and the PDF pointer together: readers must never see
+    // a successful build before its PDF is available.
+    let mut tx = state.db.begin().await?;
     sqlx::query(
         "UPDATE paper_builds SET succeeded = ?, error = ?, log = ?, finished_at = ?,
                                  pdf_size = CASE WHEN ? THEN pdf_size END
@@ -801,14 +803,14 @@ pub async fn build_finished(state: &AppState, job_id: i64, built: PaperBuilt) ->
     .bind(db::now())
     .bind(succeeded)
     .bind(build_id)
-    .execute(&state.db)
+    .execute(&mut *tx)
     .await?;
     let mut gone = Vec::new();
     if succeeded {
         let before: Option<Option<i64>> =
             sqlx::query_scalar("SELECT pdf_build FROM papers WHERE id = ?")
                 .bind(paper_id)
-                .fetch_optional(&state.db)
+                .fetch_optional(&mut *tx)
                 .await?;
         match before.flatten() {
             // A newer build made the paper's PDF already.
@@ -817,7 +819,7 @@ pub async fn build_finished(state: &AppState, job_id: i64, built: PaperBuilt) ->
                 sqlx::query("UPDATE papers SET pdf_build = ? WHERE id = ?")
                     .bind(build_id)
                     .bind(paper_id)
-                    .execute(&state.db)
+                    .execute(&mut *tx)
                     .await?;
                 gone.extend(before);
             }
@@ -825,11 +827,14 @@ pub async fn build_finished(state: &AppState, job_id: i64, built: PaperBuilt) ->
     } else {
         gone.push(build_id);
     }
-    for build in gone {
+    for build in &gone {
         sqlx::query("UPDATE paper_builds SET pdf_size = NULL WHERE id = ?")
             .bind(build)
-            .execute(&state.db)
+            .execute(&mut *tx)
             .await?;
+    }
+    tx.commit().await?;
+    for build in gone {
         let _ = tokio::fs::remove_file(pdf_path(state, build)).await;
     }
     Ok(())

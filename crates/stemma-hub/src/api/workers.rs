@@ -7,7 +7,6 @@
 //! once, that the machine connects with. See [`stemma_core::protocol`]
 //! for what is said on the connection.
 
-use std::collections::HashSet;
 use std::sync::atomic::Ordering;
 use std::time::{Duration, Instant};
 
@@ -351,7 +350,7 @@ async fn serve(state: AppState, machine: MachineRow, mut socket: WebSocket) -> a
             workshop,
             concurrency: hello.concurrency.clamp(1, 64),
             preferred: machine.preferred,
-            running: HashSet::new(),
+            running: Default::default(),
             sender,
         },
     )

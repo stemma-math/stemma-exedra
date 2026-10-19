@@ -176,6 +176,14 @@ fn git(dir: &Path, args: &[&str]) -> std::process::Output {
 /// as if over its WebSocket: what the hub sends it arrives on the
 /// receiver.
 async fn machine(hub: &Hub, ada: &Person) -> (i64, UnboundedReceiver<HubMessage>) {
+    machine_with_concurrency(hub, ada, 4).await
+}
+
+async fn machine_with_concurrency(
+    hub: &Hub,
+    ada: &Person,
+    concurrency: u32,
+) -> (i64, UnboundedReceiver<HubMessage>) {
     let (_, created) = call(
         hub,
         ada,
@@ -226,7 +234,7 @@ async fn machine(hub: &Hub, ada: &Person) -> (i64, UnboundedReceiver<HubMessage>
             latex: true,
             isolation: Some(Isolation::Docker),
             workshop,
-            concurrency: 4,
+            concurrency,
             preferred: false,
             running: Default::default(),
             sender,
@@ -499,6 +507,13 @@ async fn each_push_is_compiled_and_the_last_good_pdf_is_kept() {
         .branch_commit("geometry", "paper-notes", "main")
         .await
         .unwrap();
+    let group: i64 = sqlx::query_scalar("SELECT id FROM groups WHERE slug = 'geometry'")
+        .fetch_one(&hub.state.db)
+        .await
+        .unwrap();
+    let before_build = stemma_hub::papers::find(&hub.state, group, "notes")
+        .await
+        .unwrap();
     let (worker, mut receiver) = machine(&hub, &ada).await;
 
     // The first build goes to the machine with LaTeX.
@@ -531,6 +546,17 @@ async fn each_push_is_compiled_and_the_last_good_pdf_is_kept() {
     let paper = get(&hub, &gus, "/groups/geometry/papers/notes").await;
     assert_eq!(paper["latest"]["state"], "succeeded");
     assert_eq!(paper["pdf"]["commit"], first.as_str());
+    // A request that loaded the paper before completion still sees its PDF.
+    assert_eq!(
+        before_build
+            .to_api(&hub.state)
+            .await
+            .unwrap()
+            .pdf
+            .unwrap()
+            .commit,
+        first
+    );
     assert_eq!(paper["pdf"]["size"], one.len());
     assert_eq!(
         paper["pdf"]["url"],
@@ -867,4 +893,87 @@ async fn the_workshop_edits_papers_with_an_authors_approval() {
     )
     .await;
     assert_eq!(status, StatusCode::NOT_FOUND);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn papers_use_one_extra_slot_while_the_library_keeps_building() {
+    let hub = hub().await;
+    let ada = person(&hub, "ada", "admin").await;
+    let (worker, mut receiver) = machine_with_concurrency(&hub, &ada, 1).await;
+    let initial = sent(&mut receiver);
+    assert_eq!(initial.len(), 1);
+    assert!(matches!(initial[0].work, Work::LibraryBuild(_)));
+    let library = initial[0].id;
+    let (status, _) = call(
+        &hub,
+        &ada,
+        "POST",
+        "/groups/geometry/papers",
+        Some(json!({"slug": "notes", "title": "Notes"})),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED);
+    let paper = next_job(&mut receiver).await;
+    assert!(matches!(paper.work, Work::PaperBuild(_)));
+    // Another group shares this machine, but cannot take a second extra slot.
+    let (status, _) = call(
+        &hub,
+        &ada,
+        "POST",
+        "/groups",
+        Some(json!({"slug": "algebra", "name": "Algebra"})),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED);
+    let (status, _) = call(
+        &hub,
+        &ada,
+        "POST",
+        "/groups/algebra/workshop/machines",
+        Some(json!({"machine": worker})),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED);
+    let (status, _) = call(
+        &hub,
+        &ada,
+        "POST",
+        "/groups/algebra/papers",
+        Some(json!({"slug": "notes", "title": "Notes"})),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED);
+    assert!(sent(&mut receiver).is_empty());
+    let pending = get(&hub, &ada, "/groups/algebra/papers/notes").await;
+    assert_eq!(pending["latest"]["state"], "queued");
+    // A second paper in the same group remains serialized too.
+    call(
+        &hub,
+        &ada,
+        "POST",
+        "/groups/geometry/papers",
+        Some(json!({"slug": "more", "title": "More"})),
+    )
+    .await;
+    assert!(sent(&mut receiver).is_empty());
+    built(
+        &hub,
+        worker,
+        paper.id,
+        false,
+        "Test failure frees the paper slot",
+    )
+    .await;
+    let next = next_job(&mut receiver).await;
+    assert_eq!(next.group.slug, "algebra");
+    let state: String = sqlx::query_scalar("SELECT state FROM jobs WHERE id = ?")
+        .bind(library)
+        .fetch_one(&hub.state.db)
+        .await
+        .unwrap();
+    assert_eq!(state, "running");
+    // Cancellation frees the slot through the same accounting path.
+    stemma_hub::jobs::stop(&hub.state, next.id).await.unwrap();
+    let next = next_job(&mut receiver).await;
+    assert_eq!(next.group.slug, "geometry");
 }

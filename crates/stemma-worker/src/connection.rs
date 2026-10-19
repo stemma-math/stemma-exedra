@@ -11,7 +11,7 @@ use stemma_core::api::PREFIX;
 use stemma_core::protocol::{
     Hello, HubMessage, Outcome, PROTOCOL_VERSION, Usage, WORKER_PATH, WorkerMessage,
 };
-use tokio::sync::{Semaphore, mpsc};
+use tokio::sync::mpsc;
 use tokio::task::JoinHandle;
 use tokio_tungstenite::tungstenite::client::IntoClientRequest;
 use tokio_tungstenite::tungstenite::http::{HeaderValue, StatusCode, header};
@@ -184,7 +184,6 @@ impl Drop for RunningJobs {
 async fn work(context: &Arc<Context>, socket: &mut Socket) -> anyhow::Error {
     let (progress, mut progress_out) = mpsc::unbounded_channel::<(i64, String)>();
     let (finished, mut finished_out) = mpsc::unbounded_channel::<(i64, Outcome, Usage)>();
-    let slots = Arc::new(Semaphore::new(context.config.concurrency as usize));
     let mut jobs = RunningJobs::default();
     let mut heard = Instant::now();
     let mut check = tokio::time::interval(Duration::from_secs(15));
@@ -206,9 +205,8 @@ async fn work(context: &Arc<Context>, socket: &mut Socket) -> anyhow::Error {
                         let context = context.clone();
                         let progress = Progress::new(id, progress.clone());
                         let finished = finished.clone();
-                        let slots = slots.clone();
                         let task = tokio::spawn(async move {
-                            let _slot = slots.acquire_owned().await;
+                            // The hub accounts for normal slots and the extra paper slot.
                             let (outcome, usage) = job::run(context, *spec, progress).await;
                             let _ = finished.send((id, outcome, usage));
                         });

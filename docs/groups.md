@@ -10,5 +10,6 @@ Members ask the workshop for work; guests read and talk, and approve nothing.
 - **The library**: the group's Lean project, on Mathlib. Each push to `main`
   is built and inspected, and each declaration shows whether it is proved.
 - **Working papers**: each a LaTeX repository, made from `latex/template/`.
-  Each push compiles it into a PDF, which the web app shows. The editor in
+  Each push compiles it into a PDF, which the web app shows. Each workshop
+  machine has one extra paper-build slot, so other work cannot hold up a PDF. The editor in
   the browser is not there yet.
