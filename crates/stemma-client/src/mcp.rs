@@ -92,6 +92,10 @@ impl ServerHandler for StemmaServer {
                 };
                 let mut annotations = ToolAnnotations::default();
                 annotations.read_only_hint = Some(!def.writes);
+                // Current writes append messages, threads or tasks; none destroys data.
+                annotations.destructive_hint = Some(false);
+                annotations.idempotent_hint = Some(!def.writes);
+                annotations.open_world_hint = Some(true);
                 Tool::new(def.name, def.description, Arc::new(schema)).annotate(annotations)
             })
             .collect();

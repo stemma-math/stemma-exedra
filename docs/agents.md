@@ -15,6 +15,16 @@ Stemma supports Claude Code, Codex and OpenCode.
 `stemma mcp` serves the same tools over MCP, for agents you install Stemma
 into.
 
+Headless launches allow only the Stemma tools exposed for the job. Codex uses
+`mcp_servers.stemma.default_tools_approval_mode="approve"` alongside
+`enabled_tools`, while keeping `approval_policy="never"`. This is the
+[`McpServerConfig` / `AppToolApproval` setting in Codex 0.163.0](https://github.com/openai/codex/blob/rust-v0.163.0/codex-rs/config/src/mcp_types.rs),
+the version pinned in the workshop image. Claude Code uses exact
+[`--allowedTools`](https://code.claude.com/docs/en/cli-reference) names under
+`mcp__stemma__`; OpenCode uses explicit
+[`permission`](https://opencode.ai/docs/permissions/) entries for the selected
+`stemma_` tools. Neither grants blanket permission to other MCP servers.
+
 ## The workshop
 
 The workshop is the only place where agents change the group's

@@ -28,7 +28,7 @@ use std::sync::Arc;
 
 use anyhow::Context;
 use axum::Router;
-use axum::routing::{get, post};
+use axum::routing::post;
 use sqlx::SqlitePool;
 use stemma_core::api::NewAccount;
 use tower_http::trace::TraceLayer;

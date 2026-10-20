@@ -271,6 +271,17 @@ async fn mcp_serves_the_tools_and_names_the_agent() {
     let client = config.serve(client).await.unwrap();
 
     let tools = client.list_tools(None).await.unwrap().tools;
+    for tool in &tools {
+        let annotations = tool.annotations.as_ref().expect("tool annotations");
+        let writes = matches!(
+            tool.name.as_ref(),
+            "post_message" | "open_thread" | "create_task"
+        );
+        assert_eq!(annotations.read_only_hint, Some(!writes), "{}", tool.name);
+        assert_eq!(annotations.destructive_hint, Some(false));
+        assert_eq!(annotations.idempotent_hint, Some(!writes));
+        assert_eq!(annotations.open_world_hint, Some(true));
+    }
     let names: Vec<&str> = tools.iter().map(|t| t.name.as_ref()).collect();
     assert_eq!(
         names,

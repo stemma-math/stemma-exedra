@@ -240,9 +240,19 @@ fn codex(launch: &Launch, prepared: &mut Prepared) {
             .collect(),
     ));
     let instructions = toml_value(toml::Value::String(launch.instructions.to_owned()));
+    let allowed = match &launch.mode {
+        Mode::Session { allowed } | Mode::Job { allowed, .. } => allowed,
+    };
+    let enabled = toml_value(toml::Value::Array(
+        allowed.iter().cloned().map(toml::Value::String).collect(),
+    ));
+    // Codex 0.163.0: config/src/mcp_types.rs, McpServerConfig and AppToolApproval.
+    // https://github.com/openai/codex/blob/rust-v0.163.0/codex-rs/config/src/mcp_types.rs
     let configuration = [
         format!("mcp_servers.stemma.command={command}"),
         format!("mcp_servers.stemma.args={mcp_args}"),
+        "mcp_servers.stemma.default_tools_approval_mode=\"approve\"".into(),
+        format!("mcp_servers.stemma.enabled_tools={enabled}"),
         format!("developer_instructions={instructions}"),
     ];
     let mut answer = None;
@@ -305,15 +315,28 @@ fn opencode(launch: &Launch, prepared: &mut Prepared) -> anyhow::Result<()> {
         },
         "instructions": [instructions.display().to_string()],
     });
+    let allowed = match &launch.mode {
+        Mode::Session { allowed } | Mode::Job { allowed, .. } => allowed,
+    };
+    let mut permission = serde_json::Map::new();
     if let Mode::Job { edits, .. } = &launch.mode {
-        let allow = if *edits { "allow" } else { "deny" };
         config["autoupdate"] = json!(false);
         config["share"] = json!("disabled");
-        config["permission"] = json!({"edit": allow, "bash": allow, "webfetch": "deny"});
-        if !edits {
-            config["tools"] = json!({"write": false, "edit": false, "patch": false, "bash": false});
+        permission.insert("*".into(), json!("deny"));
+        for tool in ["read", "glob", "grep", "list"] {
+            permission.insert(tool.into(), json!("allow"));
+        }
+        for tool in ["edit", "bash"] {
+            permission.insert(tool.into(), json!(if *edits { "allow" } else { "deny" }));
         }
     }
+    // Scope automatic permission to the tools this Stemma session exposes.
+    // https://opencode.ai/docs/permissions/ and /docs/mcp-servers/
+    permission.insert("stemma_*".into(), json!("deny"));
+    for tool in allowed {
+        permission.insert(format!("stemma_{tool}"), json!("allow"));
+    }
+    config["permission"] = json!(permission);
     write(
         prepared,
         launch.files.join("opencode.json"),
@@ -441,6 +464,10 @@ mod tests {
                 "-c",
                 "mcp_servers.stemma.args=[\"mcp\", \"--token-file\", \"/t/token\"]",
                 "-c",
+                "mcp_servers.stemma.default_tools_approval_mode=\"approve\"",
+                "-c",
+                "mcp_servers.stemma.enabled_tools=[]",
+                "-c",
                 "developer_instructions=\"Be precise.\"",
                 "--model",
                 "sonnet"
@@ -540,8 +567,8 @@ mod tests {
             config["mcp"]["stemma"]["command"],
             json!(["/bin/stemma", "mcp", "--token-file", "/t/token"])
         );
-        // The person's own permissions stay theirs.
-        assert!(config.get("permission").is_none());
+        // Only Stemma's permissions change in an interactive session.
+        assert_eq!(config["permission"], json!({"stemma_*": "deny"}));
         let instructions = config["instructions"][0].as_str().unwrap();
         assert_eq!(
             std::fs::read_to_string(instructions).unwrap(),
@@ -555,6 +582,76 @@ mod tests {
                 .permissions()
                 .mode();
             assert_eq!(mode & 0o777, 0o600);
+        }
+    }
+    #[test]
+    fn write_tools_are_allowed_only_for_stemma_and_only_when_exposed() {
+        let files = tempfile::tempdir().unwrap();
+        let mcp = mcp();
+        for runner in runners::ALL {
+            let prepared = prepare(&launch(
+                runner,
+                files.path(),
+                &mcp,
+                Mode::Job {
+                    dir: files.path(),
+                    edits: false,
+                    contained: false,
+                    max_turns: None,
+                    allowed: vec!["read_thread".into(), "create_task".into()],
+                },
+            ))
+            .unwrap();
+            match *runner {
+                runners::CODEX => {
+                    let values: Vec<_> = prepared
+                        .args
+                        .windows(2)
+                        .filter(|w| w[0] == "-c")
+                        .map(|w| w[1].as_str())
+                        .collect();
+                    assert!(values.contains(&"approval_policy=\"never\""));
+                    assert!(
+                        values.contains(
+                            &"mcp_servers.stemma.default_tools_approval_mode=\"approve\""
+                        )
+                    );
+                    assert!(values.contains(
+                        &"mcp_servers.stemma.enabled_tools=[\"read_thread\", \"create_task\"]"
+                    ));
+                    assert!(
+                        !values.iter().any(|v| v.contains("approval_mode")
+                            && !v.starts_with("mcp_servers.stemma."))
+                    );
+                }
+                runners::CLAUDE_CODE => {
+                    let tools = prepared
+                        .args
+                        .windows(2)
+                        .find(|w| w[0] == "--allowedTools")
+                        .unwrap();
+                    assert_eq!(
+                        tools[1],
+                        "mcp__stemma__read_thread,mcp__stemma__create_task"
+                    );
+                    assert!(
+                        !prepared
+                            .args
+                            .iter()
+                            .any(|arg| arg.contains("skip-permissions"))
+                    );
+                }
+                runners::OPENCODE => {
+                    let config = read_json(&files.path().join("opencode.json")).unwrap();
+                    assert_eq!(config["permission"]["stemma_create_task"], "allow");
+                    assert_eq!(config["permission"]["stemma_read_thread"], "allow");
+                    assert_eq!(config["permission"]["stemma_*"], "deny");
+                    assert_eq!(config["permission"]["*"], "deny");
+                    assert_eq!(config["permission"]["bash"], "deny");
+                    assert_eq!(config["permission"]["edit"], "deny");
+                }
+                _ => unreachable!(),
+            }
         }
     }
 }
