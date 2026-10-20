@@ -23,6 +23,7 @@
 
 <fieldset class="fieldset stack" disabled={controls.busy || !data.registered}>
   <legend>Isolation</legend>
+  <p class="quiet">Run each workshop job in a separate container.</p>
   <label class="field">
     Runtime
     <select class="input" bind:value={controls.runtime}>
@@ -30,7 +31,7 @@
       <option value="podman">Podman</option>
       <option value="docker">Docker</option>
       {#if controls.runtime === "host"}
-        <option value="host">Unisolated (configured in CLI)</option>
+        <option value="host">Without isolation</option>
       {/if}
     </select>
   </label>
@@ -41,7 +42,7 @@
     </p>
   {/if}
   <label class="field">
-    Image
+    Container image
     <input class="input" bind:value={controls.image} required />
   </label>
   <div>
@@ -55,10 +56,10 @@
     </button>
   </div>
   <label class="field">
-    Stemma in the image
+    Build the image
     <select class="input" bind:value={controls.source}>
-      <option value="git">Build from release tag (any architecture)</option>
-      <option value="release">Download release (x86_64)</option>
+      <option value="git">Build from source (any architecture)</option>
+      <option value="release">Download a release (Intel or AMD)</option>
     </select>
   </label>
   <div>

@@ -26,10 +26,10 @@
         "label": "machine",
         "title": "Stemma \u2014 Settings",
         "url": "index.html?settings",
-        "width": 960,
-        "height": 780,
-        "minWidth": 760,
-        "minHeight": 440,
+        "width": 820,
+        "height": 640,
+        "minWidth": 680,
+        "minHeight": 480,
         "create": false
       }
     ],

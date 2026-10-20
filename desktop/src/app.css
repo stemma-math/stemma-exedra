@@ -7,13 +7,44 @@ main {
 .panel {
   padding: var(--space-5);
 }
-.machine-columns {
+/* Composition uses design components and spacing scales. */
+.settings {
   display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
-  gap: var(--space-6);
-  align-items: start;
+  grid-template-columns: max-content minmax(0, 1fr);
+  height: 100dvh;
+  overflow: hidden;
 }
+.settings__nav {
+  padding: var(--space-5) var(--space-3);
+  align-self: start;
+}
+.settings__nav .button { justify-content: start; }
+.settings__pane {
+  min-width: 0;
+  overflow: auto;
+  padding: var(--space-5) var(--space-6);
+  gap: var(--space-5);
+}
+.setting { min-width: 0; }
+.setting__limits { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: var(--space-4); }
+.setting__row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-4);
+  min-width: 0;
+}
+.setting__row > :not(.grow):not(.truncate) { flex-shrink: 0; }
+.setting__row input[role="switch"] { flex-shrink: 0; }
+.truncate {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.checklist { margin: 0; padding: 0; }
 .stack > :is(h1, h2, h3, p),
+.setting__row > :is(h1, h2, h3),
 .row > :is(h1, h2, h3),
 header p {
   margin: 0;
@@ -42,9 +73,4 @@ header stemma-mark {
 }
 .entrance__card {
   width: min(100%, calc(var(--space-16) * 6));
-}
-@media (max-width: 60rem) {
-  .machine-columns {
-    grid-template-columns: minmax(0, 1fr);
-  }
 }

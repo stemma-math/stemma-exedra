@@ -191,7 +191,7 @@ body {
     display: block;
     padding: 0;
     border: 0;
-    /* TODO(design): a scrim colour; this is the dialog's backdrop. */
+    /* TODO(design): scrim, https://github.com/stemma-math/design/issues/18; use the dialog backdrop until available. */
     background: color-mix(in srgb, var(--navy-950) 45%, transparent);
   }
 }

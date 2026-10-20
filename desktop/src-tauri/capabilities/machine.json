@@ -3,5 +3,5 @@
   "identifier": "machine",
   "description": "Only local settings can manage this machine.",
   "windows": ["machine"],
-  "permissions": ["allow-snapshot", "allow-action", "allow-sign-out"]
+  "permissions": ["allow-snapshot", "allow-action", "allow-sign-out", "allow-open-hub"]
 }

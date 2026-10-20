@@ -32,13 +32,13 @@
 </script>
 
 <fieldset class="fieldset stack" disabled={controls.busy || !data.registered || !data.me}>
-  <legend>Agents offered, in preference order</legend>
+  <legend>Agents offered</legend>
   <p class="quiet">
-    Offers and daily limits apply to every workshop this machine serves. An empty limit means
-    unlimited.
+    Agents are tried in order. Offers and daily limits apply to every workshop this machine serves.
+    An empty limit means unlimited.
   </p>
   {#each controls.agents as agent, index (index)}
-    <div class="card panel stack">
+    <div class="setting stack stack--tight">
       <strong>{index + 1}. {RUNNER_NAMES[agent.runner] ?? agent.runner}</strong>
       <label class="field">
         Model (optional)
@@ -48,28 +48,30 @@
           oninput={(event) => (agent.model = event.currentTarget.value || null)}
         />
       </label>
-      <label class="field">
-        Jobs per day
-        <input
-          class="input"
-          type="number"
-          min="0"
-          step="1"
-          value={agent.daily_jobs ?? ""}
-          oninput={(event) => setLimit(agent, "daily_jobs", event.currentTarget.value)}
-        />
-      </label>
-      <label class="field">
-        Minutes per day
-        <input
-          class="input"
-          type="number"
-          min="0"
-          step="1"
-          value={agent.daily_minutes ?? ""}
-          oninput={(event) => setLimit(agent, "daily_minutes", event.currentTarget.value)}
-        />
-      </label>
+      <div class="setting__limits">
+        <label class="field">
+          Jobs per day
+          <input
+            class="input"
+            type="number"
+            min="0"
+            step="1"
+            value={agent.daily_jobs ?? ""}
+            oninput={(event) => setLimit(agent, "daily_jobs", event.currentTarget.value)}
+          />
+        </label>
+        <label class="field">
+          Minutes per day
+          <input
+            class="input"
+            type="number"
+            min="0"
+            step="1"
+            value={agent.daily_minutes ?? ""}
+            oninput={(event) => setLimit(agent, "daily_minutes", event.currentTarget.value)}
+          />
+        </label>
+      </div>
       <div class="row">
         <button
           type="button"
@@ -96,6 +98,8 @@
         </button>
       </div>
     </div>
+  {:else}
+    <p class="quiet">No agents offered yet. Add an agent to take workshop jobs.</p>
   {/each}
   <div class="row">
     <label class="field grow">

@@ -3,6 +3,7 @@ import { action, type Snapshot, snapshot, type WorkshopAgent } from "./api.ts";
 /** Shared snapshot and drafts, refreshed together after a successful command. */
 export class MachineControls {
   data = $state<Snapshot | null>(null);
+  settingUp = $state(false);
   busy = $state(false);
   error = $state("");
   notice = $state("");
@@ -11,7 +12,6 @@ export class MachineControls {
   password = $state("");
   name = $state("This machine");
   folder = $state("");
-  group = $state("");
   runtime = $state("auto");
   image = $state("");
   source = $state("git");
@@ -30,9 +30,15 @@ export class MachineControls {
     this.runtime = this.data.runtime;
     this.image = this.data.image;
     this.agents = structuredClone($state.snapshot(this.data.machine?.workshop_agents ?? []));
-    if (!this.data.me?.groups.some((g) => g.slug === this.group)) {
-      this.group = this.data.me?.groups[0]?.slug ?? "";
-    }
+    const key = `stemma-machine-setup:${this.data.hub}:${this.data.username}`;
+    if (this.data.me && !this.data.registered) localStorage.setItem(key, "pending");
+    if (
+      this.data.registered &&
+      this.data.agents.some((agent) => agent.installed) &&
+      this.data.service.running
+    )
+      localStorage.removeItem(key);
+    this.settingUp = localStorage.getItem(key) === "pending";
     this.loadCredentials();
   }
 

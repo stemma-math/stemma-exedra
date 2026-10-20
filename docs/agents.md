@@ -34,14 +34,22 @@ request, and reports in the thread.
 ## Desktop
 
 The desktop app signs in locally, then opens your hub in the same window.
-**Stemma → Settings…** (⌘,) opens **This machine**: personal and workshop
-services, sign-in and sign-out, repository folder, agents, daily limits and
-container settings. It opens after signing in when the machine is not registered. It shares the CLI's sign-in and
-machine configuration. `stemma machine service install` installs and starts a
-per-user login service (launchd on macOS, systemd on Linux); `start`, `stop`,
-`status` and `uninstall` manage it. Closing the app leaves it running. Status
-includes the configured modes, hub connection when reachable, and log location. `stemma machine status`
-inspects local tools; `stemma machine configure --personal true --workshop true`
-selects its modes and restarts an active system service. Only one process can serve it. The workshop starts
-disabled; only admins can lend a machine. `stemma machine workshop credentials`
-selects the sign-in material passed to its containers.
+**Stemma → Settings…** (⌘,) opens three pages: **This machine** (status,
+service, your agents and repository folder), **Workshop** (lending, offers and
+daily limits, with isolation and container sign-in under **Advanced**), and
+**Account**. After the first sign-in, an unregistered machine opens a short
+setup checklist. It shares the CLI's sign-in and machine configuration.
+
+`stemma machine service install` installs and starts a per-user login service
+(launchd on macOS, systemd on Linux); `start`, `stop`, `status` and `uninstall`
+manage it. Closing the app leaves it running. Status includes its modes,
+hub connection and log location. It warns when newly installed agents need
+the service's saved search path updated: reinstall the service, or use
+**Reinstall service** in settings.
+
+`stemma machine status` inspects local tools;
+`stemma machine configure --personal true --workshop true` selects its modes
+and restarts an active service. Only one process can serve it. The workshop
+starts disabled; only admins can lend a machine.
+`stemma machine workshop credentials` selects the sign-in material passed to
+its containers.

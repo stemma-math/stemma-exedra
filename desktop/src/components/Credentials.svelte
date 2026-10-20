@@ -31,42 +31,41 @@
   }
 </script>
 
-<details class="disclosure">
-  <summary>Workshop sign-in</summary>
-  <div class="stack panel">
-    <p class="quiet">
-      Choose only the credentials to share with isolated workshop jobs. Files are mounted read-only.
-      Enter variable names, never their values. Personal sign-in is not shared automatically.
-    </p>
-    <label class="field">
-      Agent
-      <select
-        class="input"
-        bind:value={controls.credentialRunner}
-        onchange={() => controls.loadCredentials()}
-      >
-        {#each RUNNERS as runner (runner)}
-          <option value={runner}>{RUNNER_NAMES[runner]}</option>
-        {/each}
-      </select>
-    </label>
-    <label class="field">
-      Environment variable names (one per line)
-      <textarea class="input" bind:value={controls.env}></textarea>
-    </label>
-    <label class="field">
-      Files (one per line: ~/path or /host/path=/container/path)
-      <textarea class="input" bind:value={controls.files}></textarea>
-    </label>
-    <div>
-      <button
-        type="button"
-        class="button"
-        disabled={controls.busy || !data.registered}
-        onclick={save}
-      >
-        Save workshop sign-in
-      </button>
-    </div>
+<section class="setting stack">
+  <h2>Sign-in given to containers</h2>
+  <p class="quiet">
+    Choose only the sign-in details to share with isolated workshop jobs. Files are mounted
+    read-only. Enter variable names, never their values. For a different container location, enter
+    source=destination. Personal sign-in is not shared automatically.
+  </p>
+  <label class="field">
+    Agent
+    <select
+      class="input"
+      bind:value={controls.credentialRunner}
+      onchange={() => controls.loadCredentials()}
+    >
+      {#each RUNNERS as runner (runner)}
+        <option value={runner}>{RUNNER_NAMES[runner]}</option>
+      {/each}
+    </select>
+  </label>
+  <label class="field">
+    Environment variable names (one per line)
+    <textarea class="input" bind:value={controls.env}></textarea>
+  </label>
+  <label class="field">
+    Files to share (one per line)
+    <textarea class="input" bind:value={controls.files}></textarea>
+  </label>
+  <div>
+    <button
+      type="button"
+      class="button"
+      disabled={controls.busy || !data.registered}
+      onclick={save}
+    >
+      Save workshop sign-in
+    </button>
   </div>
-</details>
+</section>

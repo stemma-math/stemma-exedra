@@ -83,7 +83,7 @@
     <aside class="sidebar" id="sidebar" aria-label="{group.name}, its places">
       <Sidebar {group} />
     </aside>
-    <!-- TODO(design): a scrim for a drawer over the page (the dialog's backdrop, as a class). -->
+    <!-- TODO(design): drawer scrim, https://github.com/stemma-math/design/issues/18. -->
     <button type="button" class="shell__scrim" aria-label="Close the menu" tabindex="-1" onclick={() => (drawer = false)}></button>
     <div class="shell__main">
       {@render children()}

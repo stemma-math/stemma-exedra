@@ -25,6 +25,7 @@ export interface Snapshot {
     workshop: boolean;
     connected: boolean | null;
     logs: string;
+    stale_agents: string[];
   };
   agents: { runner: string; name: string; installed: boolean; sign_in: string }[];
   elan: string | null;

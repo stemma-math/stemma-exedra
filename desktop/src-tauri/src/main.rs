@@ -523,7 +523,12 @@ mod tests {
             ),
             (
                 include_str!("../capabilities/machine.json"),
-                vec!["allow-snapshot", "allow-action", "allow-sign-out"],
+                vec![
+                    "allow-snapshot",
+                    "allow-action",
+                    "allow-sign-out",
+                    "allow-open-hub",
+                ],
             ),
         ] {
             let local: serde_json::Value = serde_json::from_str(source).unwrap();
