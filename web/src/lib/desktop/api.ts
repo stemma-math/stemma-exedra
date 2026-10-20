@@ -32,6 +32,7 @@ export interface Snapshot {
   latex: string | null;
   runtime: string;
   image: string;
+  image_ready: boolean;
   credentials: Record<string, Credentials>;
 }
 export const snapshot = () => invoke<Snapshot>("snapshot");

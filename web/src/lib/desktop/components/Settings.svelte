@@ -34,7 +34,7 @@
   </nav>
   <main class="settings__pane stack" aria-busy={controls.busy}>
     <header class="row">
-      <h1 class="grow">{page}</h1>
+      <h1 class="grow">{page === "This machine" && controls.settingUp ? "Set up this machine" : page}</h1>
       <button
         type="button"
         class="button button--small"

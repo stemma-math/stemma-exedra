@@ -69,6 +69,7 @@ struct Snapshot {
     latex: Option<String>,
     runtime: Runtime,
     image: String,
+    image_ready: bool,
     credentials: BTreeMap<String, AgentSignIn>,
 }
 
@@ -116,6 +117,20 @@ async fn snapshot(window: WebviewWindow) -> Result<Snapshot> {
         detect::version("elan"),
         detect::version("latexmk")
     );
+    let image_ready = if machine.is_some() && settings.runtime() != Runtime::Host {
+        tokio::time::timeout(
+            std::time::Duration::from_secs(3),
+            stemma_worker::isolation::resolve(
+                &settings,
+                config.hub.as_deref().unwrap_or(""),
+                std::env::var_os("PATH").as_deref(),
+            ),
+        )
+        .await
+        .is_ok_and(|result| result.is_ok())
+    } else {
+        false
+    };
     let service = service::status().await.map_err(error)?;
     let personal = service.personal;
     let workshop = service.workshop;
@@ -142,6 +157,7 @@ async fn snapshot(window: WebviewWindow) -> Result<Snapshot> {
         latex,
         runtime: settings.runtime(),
         image: settings.image(),
+        image_ready,
         credentials: settings.agents,
     })
 }
@@ -190,7 +206,6 @@ enum Action {
     },
     Service {
         personal: bool,
-        workshop: bool,
     },
     Containers {
         runtime: Runtime,
@@ -229,7 +244,14 @@ async fn perform(state: Shared<'_>, action: Action) -> anyhow::Result<()> {
             toolchain: image::TOOLCHAIN.trim().into(),
             version: env!("CARGO_PKG_VERSION").into(),
         };
-        return control::build_image(&settings, &build).await;
+        control::build_image(&settings, &build).await.map_err(|_| anyhow::anyhow!(
+            "The image could not be prepared. Make sure Docker or Podman is running, then try again."
+        ))?;
+        let config = control::load()?;
+        if config.personal || config.workshop_enabled {
+            ensure_serving()?;
+        }
+        return Ok(());
     }
     let _guard = state.lock().await;
     match action {
@@ -251,7 +273,8 @@ async fn perform(state: Shared<'_>, action: Action) -> anyhow::Result<()> {
         Action::Folder { path } => {
             control::configure(Some(path), None, None)?;
         }
-        Action::Service { personal, workshop } => {
+        Action::Service { personal } => {
+            let workshop = !control::this(&hub()?).await?.workshop.is_empty();
             control::configure(None, Some(personal), Some(workshop))?;
             let config = control::load()?;
             control::check_hub(&config, &hub()?)?;
@@ -280,6 +303,14 @@ async fn perform(state: Shared<'_>, action: Action) -> anyhow::Result<()> {
                 hub.add_workshop_machine(&group, machine.id).await?;
             } else {
                 hub.remove_workshop_machine(&group, machine.id).await?;
+            }
+            let workshop = !control::this(&hub).await?.workshop.is_empty();
+            let config = control::load()?;
+            control::configure(None, None, Some(workshop))?;
+            if config.personal || workshop {
+                ensure_serving()?;
+            } else {
+                service::stop()?;
             }
         }
         Action::Agents { agents } => {

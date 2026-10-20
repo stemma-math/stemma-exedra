@@ -5,6 +5,7 @@ export class MachineControls {
   data = $state<Snapshot | null>(null);
   settingUp = $state(false);
   busy = $state(false);
+  preparing = $state(false);
   error = $state("");
   notice = $state("");
   url = $state("");
@@ -66,6 +67,15 @@ export class MachineControls {
       }
     } finally {
       this.busy = false;
+    }
+  }
+
+  async prepare() {
+    this.preparing = true;
+    try {
+      await this.save({ kind: "build", source: this.source }, "The workshop image is ready.");
+    } finally {
+      this.preparing = false;
     }
   }
 

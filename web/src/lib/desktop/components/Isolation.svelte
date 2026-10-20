@@ -64,7 +64,7 @@
   </label>
   <div>
     <button type="button" class="button" onclick={build} disabled={controls.runtime === "host"}>
-      Build image
+      Prepare the image
     </button>
   </div>
 </fieldset>
