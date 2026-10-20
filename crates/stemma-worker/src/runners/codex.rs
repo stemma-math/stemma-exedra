@@ -6,6 +6,8 @@
 //! last message is the answer. Its `--json` events say, at the end of each
 //! turn (`turn.completed`), the tokens it took, but not their cost: its
 //! `input_tokens` include the cached ones, which are counted apart here.
+//! When it stops on an error, such as a usage limit, its events say why
+//! (`turn.failed`, or `error`), and its standard error says nothing.
 
 use serde_json::Value;
 use stemma_core::api::AgentProfile;
@@ -28,6 +30,7 @@ pub async fn run(
 ) -> anyhow::Result<Answer> {
     let prepared = prepared(context, config, job, agent, dir, work, prompt)?;
     let mut usage = Usage::default();
+    let mut error = None;
     let answer_file = prepared
         .answer
         .clone()
@@ -39,6 +42,9 @@ pub async fn run(
             return;
         };
         add_turn(&event, &mut usage);
+        if let Some(said) = error_of(&event) {
+            error = Some(said);
+        }
         let item = &event["item"];
         if event["type"] == "item.started" && item["type"] == "mcp_tool_call" {
             let args = match &item["arguments"] {
@@ -53,6 +59,9 @@ pub async fn run(
     })
     .await?;
     if !ran.status.success() {
+        if let Some(error) = error {
+            anyhow::bail!("Codex stopped: {error}");
+        }
         return Err(failed(&prepared.program, &ran));
     }
     let text = std::fs::read_to_string(&answer_file)
@@ -70,6 +79,16 @@ pub fn usage_of_output(output: &str) -> Usage {
         add_turn(&event, &mut usage);
     }
     usage
+}
+
+/// Why Codex stopped, if `event` says it did.
+fn error_of(event: &Value) -> Option<String> {
+    let message = match event["type"].as_str()? {
+        "turn.failed" => event["error"]["message"].as_str(),
+        "error" => event["message"].as_str(),
+        _ => None,
+    }?;
+    Some(message.trim().to_owned()).filter(|m| !m.is_empty())
 }
 
 /// Adds what a turn took, if `event` ends one.
@@ -92,6 +111,20 @@ pub fn add_turn(event: &Value, usage: &mut Usage) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn says_why_it_stopped() {
+        let limit = "You've hit your usage limit. Try again at 11:31 PM.";
+        let failed = serde_json::json!({"type": "turn.failed", "error": {"message": limit}});
+        assert_eq!(error_of(&failed).as_deref(), Some(limit));
+        let error = serde_json::json!({"type": "error", "message": limit});
+        assert_eq!(error_of(&error).as_deref(), Some(limit));
+        assert_eq!(error_of(&serde_json::json!({"type": "turn.started"})), None);
+        assert_eq!(
+            error_of(&serde_json::json!({"type": "error", "message": " "})),
+            None
+        );
+    }
 
     #[test]
     fn reads_what_a_run_consumed() {
