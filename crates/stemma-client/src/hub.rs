@@ -242,6 +242,11 @@ impl Hub {
         self.get("/me/agents", &[]).await
     }
 
+    /// The machine authenticated by this client's worker token.
+    pub async fn machine_identity(&self) -> Result<Machine> {
+        self.get("/worker/me", &[]).await
+    }
+
     /// The person's machines.
     pub async fn machines(&self) -> Result<Vec<Machine>> {
         self.get("/me/machines", &[]).await

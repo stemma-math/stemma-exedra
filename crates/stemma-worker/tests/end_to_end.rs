@@ -1194,7 +1194,7 @@ async fn a_revoked_worker_stops() {
         .unwrap();
     let error = ended.unwrap_err().to_string();
     assert!(
-        error.contains("does not accept this worker's token"),
+        error.contains("The hub no longer knows this machine."),
         "{error}"
     );
 }
@@ -1711,4 +1711,135 @@ files = [{{ from = {opencode:?}, to = "/opt/fake/opencode" }}]
         0
     );
     running.abort();
+}
+
+/// Exercise the same runner and persisted terminal state used by launchd/systemd.
+#[tokio::test]
+async fn a_lost_registration_stops_cleanly_and_registers_again_with_its_settings() {
+    use stemma_worker::{
+        control,
+        machine::{self, MachineConfig, Stopped},
+    };
+    let hub = TestHub::start().await;
+    let ada = Person::new(&hub, "ada", true).await;
+    let client = stemma_client::Hub::new(&hub.url, Some(ada.token.clone())).unwrap();
+    let created = client.create_machine("laptop", false).await.unwrap();
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("machine.toml");
+    let config: MachineConfig = toml::from_str(&format!(
+        "hub = {:?}\ntoken = {:?}\nid = {}\nname = 'laptop'\nwork_dir = {:?}\n[isolation]\nruntime = 'host'\n[runners.codex]\nmodel = 'test-model'\n",
+        hub.url, created.secret, created.machine.id, dir.path().join("copies").to_str().unwrap()
+    )).unwrap();
+    let mut config = config;
+    config.offers = serde_json::from_value(
+        json!([{"runner": "codex", "model": "test-model", "args": [], "daily_jobs": 3}]),
+    )
+    .unwrap();
+    config.offers = client
+        .set_workshop_agents(config.id, &config.offers)
+        .await
+        .unwrap();
+    config.save_to(&path).unwrap();
+    client.revoke_machine(config.id).await.unwrap();
+
+    // Refusal is a successful exit, so neither service manager restarts it.
+    tokio::time::timeout(Duration::from_secs(10), machine::run(&path))
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        machine::stopped(&path, &config).unwrap(),
+        Some(Stopped::NotKnown)
+    );
+    let state = std::fs::read_to_string(path.with_extension("state.json")).unwrap();
+    assert!(!state.contains(&config.token));
+    // Even an explicit second launch does not retry the rejected token.
+    tokio::time::timeout(Duration::from_millis(100), machine::run(&path))
+        .await
+        .unwrap()
+        .unwrap();
+
+    let replacement = control::register_again_at(&client, &path).await.unwrap();
+    assert_ne!(replacement.token, config.token);
+    assert_eq!(replacement.work_dir, config.work_dir);
+    assert_eq!(
+        replacement.isolation.unwrap().runtime,
+        config.isolation.unwrap().runtime
+    );
+    assert_eq!(
+        replacement.runners.get("codex").unwrap().model.as_deref(),
+        Some("test-model")
+    );
+    assert_eq!(replacement.offers[0].runner, config.offers[0].runner);
+    assert_eq!(
+        replacement.offers[0].daily_jobs,
+        config.offers[0].daily_jobs
+    );
+    let restored = control::identity(&MachineConfig::load_from(&path).unwrap().unwrap())
+        .await
+        .unwrap();
+    assert_eq!(restored.workshop_agents[0].daily_jobs, Some(3));
+    // A failed offer-restoration request can be retried with the saved new token.
+    let mut pending = MachineConfig::load_from(&path).unwrap().unwrap();
+    pending.restore_offers = true;
+    client.set_workshop_agents(pending.id, &[]).await.unwrap();
+    pending.save_to(&path).unwrap();
+    let resumed = control::register_again_at(&client, &path).await.unwrap();
+    assert_eq!(resumed.id, pending.id);
+    assert!(!resumed.restore_offers);
+    assert_eq!(
+        control::identity(&resumed).await.unwrap().workshop_agents[0].daily_jobs,
+        Some(3)
+    );
+    let running_path = path.clone();
+    let running = tokio::spawn(async move { machine::run(&running_path).await });
+    wait_online(&hub, &ada, "/me/machines").await;
+    assert!(
+        control::identity(&MachineConfig::load_from(&path).unwrap().unwrap())
+            .await
+            .unwrap()
+            .online
+    );
+    running.abort();
+}
+
+#[tokio::test]
+async fn machine_identity_uses_the_token_even_when_an_id_is_reused() {
+    use stemma_worker::{
+        control,
+        machine::{MachineConfig, Stopped},
+    };
+    let hub = TestHub::start().await;
+    let ada = Person::new(&hub, "ada", true).await;
+    let client = stemma_client::Hub::new(&hub.url, Some(ada.token.clone())).unwrap();
+    let original = client.create_machine("old laptop", false).await.unwrap();
+    let mut config: MachineConfig = toml::from_str(&format!(
+        "hub = {:?}\ntoken = {:?}\nid = {}\nname = 'old laptop'\n",
+        hub.url, original.secret, original.machine.id
+    ))
+    .unwrap();
+    sqlx::query("DELETE FROM workers WHERE id = ?")
+        .bind(config.id)
+        .execute(&hub.state.db)
+        .await
+        .unwrap();
+    let other = client
+        .create_machine("another machine", false)
+        .await
+        .unwrap();
+    assert_eq!(
+        other.machine.id, config.id,
+        "simulate a fresh hub reusing the local id"
+    );
+    let error = control::identity(&config).await.unwrap_err();
+    assert_eq!(error.downcast_ref::<Stopped>(), Some(&Stopped::NotKnown));
+    // Even an incorrect cached id cannot override a valid token's identity.
+    config.token = other.secret;
+    config.id += 100;
+    assert_eq!(
+        control::identity(&config).await.unwrap().id,
+        other.machine.id
+    );
+    let person = client.machine_identity().await.unwrap_err();
+    assert_eq!(person.status().unwrap().as_u16(), 401);
 }

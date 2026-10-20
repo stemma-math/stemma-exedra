@@ -5,7 +5,6 @@ use std::process::{Command, Output};
 
 use anyhow::Context as _;
 use serde::Serialize;
-use stemma_client::config::ClientConfig;
 
 use crate::machine::{self, MachineConfig};
 
@@ -19,6 +18,7 @@ pub struct Status {
     pub personal: bool,
     pub workshop: bool,
     pub connected: Option<bool>,
+    pub stopped: Option<machine::Stopped>,
     pub logs: String,
     /// Installed now, but unavailable with the service's saved search path.
     pub stale_agents: Vec<String>,
@@ -240,14 +240,29 @@ pub async fn status() -> anyhow::Result<Status> {
     let running = installed && running()?;
     let config = MachineConfig::load_from(&machine::path()?)?;
     let mut connected = None;
-    if let Some(config) = &config
-        && let Ok(client) = ClientConfig::load()
-        && let Ok(hub) = client.with_env().hub()
-        && crate::control::check_hub(config, &hub).is_ok()
-        && let Ok(Ok(machines)) =
-            tokio::time::timeout(std::time::Duration::from_secs(2), hub.machines()).await
-    {
-        connected = Some(machines.iter().any(|m| m.id == config.id && m.online));
+    let mut stopped = config
+        .as_ref()
+        .map(|c| machine::stopped(&machine::path()?, c))
+        .transpose()?
+        .flatten();
+    if let Some(config) = &config {
+        match tokio::time::timeout(
+            std::time::Duration::from_secs(2),
+            crate::control::identity(config),
+        )
+        .await
+        {
+            Ok(Ok(machine)) => connected = Some(machine.online),
+            Ok(Err(error))
+                if error.downcast_ref::<machine::Stopped>()
+                    == Some(&machine::Stopped::NotKnown) =>
+            {
+                stopped = Some(machine::Stopped::NotKnown);
+                connected = Some(false);
+                machine::record_stopped(&machine::path()?, config, &machine::Stopped::NotKnown)?;
+            }
+            _ => {}
+        }
     }
     let stale_agents = if installed {
         let text = std::fs::read_to_string(path()?)?;
@@ -268,6 +283,7 @@ pub async fn status() -> anyhow::Result<Status> {
         personal: config.as_ref().is_some_and(|c| c.personal),
         workshop: config.as_ref().is_some_and(|c| c.workshop_enabled),
         connected,
+        stopped,
         logs: if cfg!(target_os = "macos") {
             home()?
                 .join("Library/Logs/Stemma/machine.log")

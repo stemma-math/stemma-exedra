@@ -94,9 +94,7 @@ async fn connect(context: &Context, token: &str) -> Result<Socket, Ended> {
         Err(tungstenite::Error::Http(response))
             if response.status() == StatusCode::UNAUTHORIZED =>
         {
-            Err(Ended::Refused(anyhow::anyhow!(
-                "the hub does not accept this worker's token: it is not valid, or was revoked"
-            )))
+            Err(Ended::Refused(crate::machine::Stopped::NotKnown.into()))
         }
         Err(error) => Err(Ended::Dropped(
             anyhow::Error::new(error).context(format!("connecting to {url}")),
@@ -141,7 +139,7 @@ async fn session(context: &Arc<Context>, token: &str) -> Ended {
                 if latex(context) { "yes" } else { "no" }
             );
         }
-        Ok(Err(reason)) => return Ended::Refused(anyhow::anyhow!("the hub refused: {reason}")),
+        Ok(Err(reason)) => return Ended::Refused(crate::machine::Stopped::Refused(reason).into()),
         Err(error) => return Ended::Dropped(error),
     }
     let ended = work(context, &mut socket, RunningJobs::default()).await;

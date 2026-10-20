@@ -9,8 +9,8 @@ Stemma supports Claude Code, Codex and OpenCode.
   Stemma's tools for the session, without changing its configuration.
 - Mention `@claude` (or another of your profiles) in a thread, and it answers
   from your machine.
-- `stemma machine add` registers this machine, `stemma machine run` serves
-  it, and `stemma machine prefer` chooses where your jobs go first.
+- `stemma machine add` registers this machine and starts its login service;
+  `stemma machine run` serves it in the foreground after stopping the service, and `stemma machine prefer` chooses where your jobs go first.
 
 `stemma mcp` serves the same tools over MCP, for agents you install Stemma
 into.
@@ -44,17 +44,23 @@ request, and reports in the thread.
 ## Desktop
 
 The desktop app bundles the web interface and signs in locally.
-**Stemma → Settings…** (⌘,) opens a dialog with three pages: **This machine** (status,
+**Stemma → Settings…** (⌘,) opens a dialog with four pages: **This machine** (status,
 service, your agents and repository folder), **Workshop** (lending, offers and
-daily limits, with isolation and container sign-in under **Advanced**), and
-**Account**. After the first sign-in, an unregistered machine opens a short
+daily limits, with isolation and container sign-in under **Advanced**), **Appearance** (the theme),
+and **Account**. After the first sign-in, an unregistered machine opens a short
 setup checklist. It shares the CLI's sign-in and machine configuration.
 
 `stemma machine service install` installs and starts a per-user login service
 (launchd on macOS, systemd on Linux); `start`, `stop`, `status` and `uninstall`
 manage it. Closing the app leaves it running. Status includes its modes,
-hub connection and log location. It warns when newly installed agents need
-the service's saved search path updated: reinstall the service, or use
+hub connection and log location. If its token is rejected, it stops successfully
+instead of restarting, and records “The hub no longer knows this machine.” beside
+`machine.toml`. Use **Register again** in settings or
+`stemma machine register-again` after signing in to the hub again. This replaces
+the registration and restores the saved folder, isolation, runners and workshop
+offers. Registration starts the login service; the app and CLI report success
+only after the hub sees the machine online. It warns when newly installed agents
+need the service's saved search path updated: reinstall the service, or use
 **Reinstall service** in settings.
 
 `stemma machine status` inspects local tools;

@@ -30,6 +30,8 @@ enum MachineCommand {
         #[arg(long)]
         preferred: bool,
     },
+    /// Replace a registration the hub no longer knows, keeping local settings.
+    RegisterAgain,
     /// Serve this machine: run your agents' jobs here until stopped.
     Run,
     /// Manage this machine's per-user system service.
@@ -97,6 +99,12 @@ async fn service(command: ServiceCommand) -> anyhow::Result<()> {
                     .unwrap_or_else(|| "unknown".into()),
                 status.logs
             );
+            if let Some(stopped) = status.stopped {
+                println!("{stopped}");
+                if stopped == machine::Stopped::NotKnown {
+                    println!("Register again: `stemma machine register-again`");
+                }
+            }
             if !status.stale_agents.is_empty() {
                 let names = status
                     .stale_agents
@@ -214,6 +222,14 @@ enum WorkshopCommand {
 pub async fn machine(args: MachineArgs) -> anyhow::Result<()> {
     match args.command {
         MachineCommand::Add { name, preferred } => add(name, preferred).await,
+        MachineCommand::RegisterAgain => {
+            let hub = ClientConfig::load()?.with_env().hub()?;
+            let config = stemma_worker::control::register_again(&hub).await?;
+            service::install(&std::env::current_exe()?)?;
+            stemma_worker::control::wait_online(&config).await?;
+            println!("Registered again. This machine is online.");
+            Ok(())
+        }
         MachineCommand::Service(command) => service(command).await,
         MachineCommand::Run => machine::run(&machine::path()?).await,
         MachineCommand::Status => {
@@ -283,6 +299,16 @@ async fn workshop(command: WorkshopCommand) -> anyhow::Result<()> {
         WorkshopCommand::Add { group, machine } => {
             let found = find(&hub, machine.as_deref()).await?;
             hub.add_workshop_machine(&group, found.id).await?;
+            if machine.is_none() {
+                stemma_worker::control::configure(None, None, Some(true))?;
+                service::install(&std::env::current_exe()?)?;
+                stemma_worker::control::wait_online(&stemma_worker::control::load()?).await?;
+            } else {
+                anyhow::ensure!(
+                    found.online,
+                    "This machine is offline. Start its service before lending it."
+                );
+            }
             println!(
                 "“{}” works for the workshop of {group}. Offer it agents with \
                  `stemma machine workshop offer`.",
@@ -338,7 +364,7 @@ async fn workshop(command: WorkshopCommand) -> anyhow::Result<()> {
                 .map(|p| p.saturating_sub(1).min(agents.len()))
                 .unwrap_or(agents.len());
             agents.insert(at, agent);
-            let agents = hub.set_workshop_agents(found.id, &agents).await?;
+            let agents = stemma_worker::control::offers(&hub, &found, &agents).await?;
             show(&Machine {
                 workshop_agents: agents,
                 ..found
@@ -354,7 +380,7 @@ async fn workshop(command: WorkshopCommand) -> anyhow::Result<()> {
                 agents.len()
             );
             agents.remove(position - 1);
-            let agents = hub.set_workshop_agents(found.id, &agents).await?;
+            let agents = stemma_worker::control::offers(&hub, &found, &agents).await?;
             show(&Machine {
                 workshop_agents: agents,
                 ..found
@@ -525,9 +551,11 @@ async fn add(name: Option<String>, preferred: bool) -> anyhow::Result<()> {
     let hub = ClientConfig::load()?.with_env().hub()?;
     let config =
         stemma_worker::control::register(&hub, &name.unwrap_or_else(hostname), preferred).await?;
+    service::install(&std::env::current_exe()?)?;
+    stemma_worker::control::wait_online(&config).await?;
     let found = machine::installed(&config.runners).await;
     println!(
-        "Registered this machine as “{}” on {}.",
+        "Registered this machine as “{}” on {}. It is online.",
         config.name, config.hub
     );
     println!("Its token is in {}, readable only by you.", path.display());
@@ -538,32 +566,26 @@ async fn add(name: Option<String>, preferred: bool) -> anyhow::Result<()> {
         );
     }
     println!(
-        "Serve it with `stemma machine run`. Enable the workshop with `stemma machine configure --workshop true`."
+        "The login service keeps it online. Enable the workshop with `stemma machine configure --workshop true`."
     );
     Ok(())
 }
 
 /// The machine named `name`, or this one.
 async fn find(hub: &stemma_client::Hub, name: Option<&str>) -> anyhow::Result<Machine> {
-    let machines = hub.machines().await?;
-    let found = match name {
-        Some(name) => machines.into_iter().find(|m| m.name == name),
-        None => {
-            let this = MachineConfig::load_from(&machine::path()?)?
-                .context("this machine is not set up: name one, or `stemma machine add`")?;
-            stemma_worker::control::check_hub(&this, hub)?;
-            machines.into_iter().find(|m| m.id == this.id)
-        }
-    };
-    found.with_context(|| match name {
-        Some(name) => format!("you have no machine “{name}”"),
-        None => "this machine is no longer registered: `stemma machine remove`, then add it".into(),
-    })
+    if name.is_none() {
+        return stemma_worker::control::this(hub).await;
+    }
+    hub.machines()
+        .await?
+        .into_iter()
+        .find(|m| Some(m.name.as_str()) == name)
+        .with_context(|| format!("you have no machine “{}”", name.unwrap_or_default()))
 }
 
 async fn list() -> anyhow::Result<()> {
     let hub = ClientConfig::load()?.with_env().hub()?;
-    let this = MachineConfig::load_from(&machine::path()?)?.map(|m| m.id);
+    let this = stemma_worker::control::this(&hub).await.ok().map(|m| m.id);
     let machines = hub.machines().await?;
     if machines.is_empty() {
         println!("You have no machines: `stemma machine add` sets this one up.");

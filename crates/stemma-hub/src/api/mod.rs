@@ -175,6 +175,7 @@ pub fn router(state: AppState) -> Router {
             "/groups/{group}/tasks/{number}/reject",
             post(workshop::reject),
         )
+        .route("/worker/me", get(workers::identity))
         .route(stemma_core::protocol::WORKER_PATH, get(workers::connect))
         .route(
             "/groups/{group}/attachments",

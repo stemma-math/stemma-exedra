@@ -102,8 +102,7 @@
       </p>
       <span class="copy-block">
         <span class="copy-block__label">On the machine</span>
-        <pre id="machine-commands">stemma machine add
-stemma machine run</pre>
+        <pre id="machine-commands">stemma machine add</pre>
         <stemma-copy-button for="machine-commands" label="Copy the commands"></stemma-copy-button>
       </span>
       <MachineSettings />

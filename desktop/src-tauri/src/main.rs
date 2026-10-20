@@ -45,6 +45,7 @@ struct Snapshot {
     me: Option<Me>,
     hub_error: Option<String>,
     registered: bool,
+    offers: Vec<WorkshopAgent>,
     machine: Option<Machine>,
     name: String,
     work_dir: String,
@@ -84,10 +85,11 @@ async fn snapshot(window: WebviewWindow) -> Result<Snapshot> {
                     me = Some(person);
                     if let Some(machine) = &machine {
                         match control::check_hub(machine, &hub) {
-                            Ok(()) => match hub.machines().await {
-                                Ok(machines) => {
-                                    remote = machines.into_iter().find(|m| m.id == machine.id)
-                                }
+                            Ok(()) => match control::this(&hub).await {
+                                Ok(machine) => remote = Some(machine),
+                                Err(e)
+                                    if e.downcast_ref::<machine::Stopped>()
+                                        == Some(&machine::Stopped::NotKnown) => {}
                                 Err(e) => hub_error = Some(error(e)),
                             },
                             Err(e) => hub_error = Some(error(e)),
@@ -131,6 +133,10 @@ async fn snapshot(window: WebviewWindow) -> Result<Snapshot> {
         me,
         hub_error,
         registered: machine.is_some(),
+        offers: machine
+            .as_ref()
+            .map(|c| c.offers.clone())
+            .unwrap_or_default(),
         machine: remote,
         name: machine
             .as_ref()
@@ -185,6 +191,7 @@ enum Action {
         name: String,
         preferred: bool,
     },
+    RegisterAgain,
     Prefer {
         preferred: bool,
     },
@@ -247,7 +254,14 @@ async fn perform(state: Shared<'_>, action: Action) -> anyhow::Result<()> {
     let _guard = state.lock().await;
     match action {
         Action::Register { name, preferred } => {
-            control::register(&hub()?, &name, preferred).await?;
+            let config = control::register(&hub()?, &name, preferred).await?;
+            ensure_serving()?;
+            control::wait_online(&config).await?;
+        }
+        Action::RegisterAgain => {
+            let config = control::register_again(&hub()?).await?;
+            ensure_serving()?;
+            control::wait_online(&config).await?;
         }
         Action::Prefer { preferred } => {
             let hub = hub()?;
@@ -271,6 +285,7 @@ async fn perform(state: Shared<'_>, action: Action) -> anyhow::Result<()> {
             control::check_hub(&config, &hub()?)?;
             if personal || workshop {
                 ensure_serving()?;
+                control::wait_online(&control::load()?).await?;
             } else {
                 service::stop()?;
             }
@@ -278,6 +293,7 @@ async fn perform(state: Shared<'_>, action: Action) -> anyhow::Result<()> {
         Action::Serving { enabled } => {
             if enabled {
                 ensure_serving()?;
+                control::wait_online(&control::load()?).await?;
             } else {
                 service::stop()?;
             }
@@ -300,6 +316,7 @@ async fn perform(state: Shared<'_>, action: Action) -> anyhow::Result<()> {
             control::configure(None, None, Some(workshop))?;
             if config.personal || workshop {
                 ensure_serving()?;
+                control::wait_online(&control::load()?).await?;
             } else {
                 service::stop()?;
             }
@@ -307,7 +324,7 @@ async fn perform(state: Shared<'_>, action: Action) -> anyhow::Result<()> {
         Action::Agents { agents } => {
             let hub = hub()?;
             let machine = control::this(&hub).await?;
-            hub.set_workshop_agents(machine.id, &agents).await?;
+            control::offers(&hub, &machine, &agents).await?;
         }
         Action::Credentials { runner, env, files } => {
             control::credentials(runner, env, files)?;

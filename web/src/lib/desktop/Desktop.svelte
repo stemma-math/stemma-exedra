@@ -38,6 +38,7 @@
       connection.hub = controls.data.hub ?? "";
       desktopUI.serviceConnected = controls.data.service.connected;
       desktopUI.serviceRunning = controls.data.service.running;
+      desktopUI.machineNotKnown = controls.data.service.stopped?.kind === "not_known";
       if (controls.data.me && controls.settingUp && !setupShown) {
         setupShown = true;
         open = true;

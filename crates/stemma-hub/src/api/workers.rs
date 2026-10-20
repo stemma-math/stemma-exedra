@@ -267,6 +267,19 @@ async fn authenticate(state: &AppState, headers: &HeaderMap) -> ApiResult<Machin
     row.ok_or_else(invalid)
 }
 
+/// Identify a machine by its complete token, including after a database reset.
+pub async fn identity(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+) -> ApiResult<Json<Machine>> {
+    Ok(Json(
+        authenticate(&state, &headers)
+            .await?
+            .machine(&state)
+            .await?,
+    ))
+}
+
 /// The machines' WebSocket.
 pub async fn connect(
     State(state): State<AppState>,

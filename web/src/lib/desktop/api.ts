@@ -13,6 +13,7 @@ export interface Snapshot {
   me: Me | null;
   hub_error: string | null;
   registered: boolean;
+  offers: WorkshopAgent[];
   machine: Machine | null;
   name: string;
   work_dir: string;
@@ -24,6 +25,7 @@ export interface Snapshot {
     personal: boolean;
     workshop: boolean;
     connected: boolean | null;
+    stopped: { kind: "not_known" } | { kind: "refused"; reason: string } | null;
     logs: string;
     stale_agents: string[];
   };

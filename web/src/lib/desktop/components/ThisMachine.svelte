@@ -34,7 +34,25 @@
   }
 </script>
 
-{#if controls.settingUp}
+{#if data.service.stopped?.kind === "not_known"}
+  <section class="setting stack" aria-label="Machine status">
+    <h2>The hub no longer knows this machine.</h2>
+    <p class="quiet">
+      Register again to reconnect. Your folder, isolation, runners and offers stay here.
+    </p>
+    <div>
+      <button
+        type="button"
+        class="button button--primary"
+        disabled={controls.busy || !data.me}
+        onclick={() =>
+          controls.save({ kind: "register_again" }, "Registered again. This machine is online.")}
+      >
+        Register again
+      </button>
+    </div>
+  </section>
+{:else if controls.settingUp}
   <section class="stack" aria-label="Set up this machine">
     <p class="quiet">Everything here can also be done later from Settings → This machine.</p>
     <ol class="checklist stack stack--tight">
@@ -81,6 +99,9 @@
         >{data.service.connected === true ? "Online" : "Offline"}</span
       >
     </div>
+    {#if data.service.stopped?.kind === "refused"}
+      <p class="message message--warning">{data.service.stopped.reason}</p>
+    {/if}
     <p>The service is {data.service.running ? "on" : "off"}. This machine serves {serving}.</p>
     <p class="quiet">
       {data.service.running

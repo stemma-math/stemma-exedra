@@ -24,7 +24,8 @@ export class MachineControls {
 
   async load() {
     const preserveOffers =
-      JSON.stringify(this.agents) !== JSON.stringify(this.data?.machine?.workshop_agents ?? []);
+      JSON.stringify(this.agents) !==
+      JSON.stringify(this.data?.machine?.workshop_agents ?? this.data?.offers ?? []);
     this.data = await snapshot();
     this.url = this.data.hub ?? "";
     this.username = this.data.username ?? "";
@@ -33,7 +34,9 @@ export class MachineControls {
     this.runtime = this.data.runtime;
     this.image = this.data.image;
     if (!preserveOffers)
-      this.agents = structuredClone($state.snapshot(this.data.machine?.workshop_agents ?? []));
+      this.agents = structuredClone(
+        $state.snapshot(this.data.machine?.workshop_agents ?? this.data.offers),
+      );
     const key = `stemma-machine-setup:${this.data.hub}:${this.data.username}`;
     if (this.data.me && !this.data.registered) localStorage.setItem(key, "pending");
     if (
@@ -42,7 +45,7 @@ export class MachineControls {
       this.data.service.running
     )
       localStorage.removeItem(key);
-    this.settingUp = localStorage.getItem(key) === "pending";
+    this.settingUp = !this.data.service.stopped && localStorage.getItem(key) === "pending";
     this.loadCredentials();
   }
 
