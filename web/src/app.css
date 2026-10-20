@@ -192,16 +192,57 @@ body {
 
 /* ── The front page ─────────────────────────────────────────────────── */
 
+.doorway {
+  position: relative;
+  isolation: isolate;
+  flex: 1;
+  display: grid;
+  place-items: center;
+  min-height: 100dvh;
+  padding: var(--space-12) var(--space-6);
+  color: var(--on-dark-1);
+}
+
+.doorway__light {
+  position: absolute;
+  inset: 0;
+  z-index: -1;
+}
+
 .front {
   display: flex;
   flex-direction: column;
   align-items: center;
-  gap: var(--space-6);
+  gap: var(--space-8);
+  max-width: var(--measure);
   text-align: center;
+  padding-bottom: 15dvh;
+  transition: opacity var(--dur-ui) var(--ease-out);
 }
 
-.front__mark {
-  width: 4rem;
+.front--entering {
+  opacity: 0;
+  pointer-events: none;
+}
+
+.front__brand {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: var(--space-5);
+}
+
+.front__brand > :is(h1, p) {
+  margin: 0;
+}
+
+.front__brand stemma-mark {
+  width: calc(var(--space-16) * 3);
+  max-width: 40vw;
+}
+
+.front__brand .wordmark {
+  font-size: var(--step-8);
 }
 
 .front__actions {
@@ -212,7 +253,7 @@ body {
 }
 
 .front__note {
-  max-width: 22rem;
+  max-width: var(--measure);
   margin: 0;
 }
 
