@@ -310,6 +310,7 @@ async fn mcp_serves_the_tools_and_names_the_agent() {
     assert_eq!(result.is_error, Some(false), "{result:?}");
     let messages = hub.messages("geometry", 1, 2, 2).await.unwrap();
     assert_eq!(messages[0].agent.as_deref(), Some("Claude Code"));
+    assert_eq!(messages[0].agent_runner.as_deref(), Some("claude-code"));
 
     let mut call = CallToolRequestParams::new("read_thread");
     call.arguments = json!({"address": "t7"}).as_object().cloned();

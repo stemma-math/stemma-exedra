@@ -12,7 +12,8 @@
       "!web/build",
       "!web/.svelte-kit",
       "!desktop/dist",
-      "!desktop/src-tauri/gen"
+      "!desktop/src-tauri/gen",
+      "!web/static/agents"
     ]
   },
   "formatter": {
@@ -25,7 +26,11 @@
   },
   "overrides": [
     {
-      "includes": ["desktop/**/*.svelte"],
+      "includes": [
+        "web/src/lib/desktop/**/*.svelte",
+        "web/src/lib/components/AccountFrame.svelte",
+        "web/src/lib/components/PublicFrame.svelte"
+      ],
       "html": {
         "formatter": {
           "enabled": true,

@@ -975,6 +975,7 @@ async fn agents_post_for_people_with_their_tokens() {
         .await;
     assert_eq!(reply.status, StatusCode::CREATED, "{:?}", reply.json());
     assert_eq!(reply.json()["agent"], "Claude Code");
+    assert_eq!(reply.json()["agent_runner"], "claude-code");
     assert_eq!(reply.json()["author"]["username"], "ada");
 
     // A session is a person at the web app, not an agent.

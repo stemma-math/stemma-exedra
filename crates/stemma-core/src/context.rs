@@ -111,6 +111,7 @@ mod tests {
                 display_name: "Ada".into(),
             },
             agent: None,
+            agent_runner: None,
             body: body.into(),
             reply_to,
             attachments: Vec::new(),

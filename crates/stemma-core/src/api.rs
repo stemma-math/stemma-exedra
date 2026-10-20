@@ -283,6 +283,7 @@ pub struct Thread {
     pub kind: ThreadKind,
     /// The agent profile that answers every message of a chat.
     pub resident_agent: Option<String>,
+    pub resident_runner: Option<String>,
     /// The model it answers with, if chosen when the chat started.
     #[serde(default)]
     pub resident_model: Option<String>,
@@ -378,6 +379,8 @@ pub struct Message {
     pub author: User,
     /// The agent that wrote it for its author, if one did.
     pub agent: Option<String>,
+    /// The runner that wrote it, kept independently of the profile name.
+    pub agent_runner: Option<String>,
     /// Markdown, with `$…$` math and `[[…]]` references. Empty once
     /// deleted.
     pub body: String,

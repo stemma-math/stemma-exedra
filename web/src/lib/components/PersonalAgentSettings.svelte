@@ -1,4 +1,5 @@
 <script lang="ts">
+  import AgentAvatar from "./AgentAvatar.svelte";
   import { api, type PersonalAgent, RUNNER_NAMES, RUNNERS } from "#lib/api.ts";
   import { toastError } from "#lib/toast.ts";
 
@@ -72,7 +73,7 @@
     {#each agents as agent (agent.handle)}
       <div class="table__row">
         <span class="stack stack--tight">
-          <strong>{agent.display_name} <span class="identifier quiet">@{agent.handle}</span></strong>
+          <span class="row"><AgentAvatar name={agent.display_name} runner={agent.runner} /><strong>{agent.display_name} <span class="identifier quiet">@{agent.handle}</span></strong></span>
           <span class="quiet">
             {RUNNER_NAMES[agent.runner] ?? agent.runner}{agent.args.length ? `, with ${agent.args.join(" ")}` : ""}
           </span>
@@ -121,11 +122,12 @@
     <div class="row">
       <div class="field grow">
         <label class="field__label" for="my-agent-runner">Runner</label>
+        <span class="row"><AgentAvatar name={RUNNER_NAMES[draft.runner] ?? draft.runner} runner={draft.runner} />
         <select id="my-agent-runner" class="input" bind:value={draft.runner} disabled={draft.default}>
           {#each RUNNERS as runner (runner)}
             <option value={runner}>{RUNNER_NAMES[runner]}</option>
           {/each}
-        </select>
+        </select></span>
       </div>
       <div class="field grow">
         <label class="field__label" for="my-agent-model">Model</label>

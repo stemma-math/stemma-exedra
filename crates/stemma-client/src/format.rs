@@ -501,6 +501,7 @@ mod tests {
                 display_name: "Ada".into(),
             },
             agent: Some("Claude".into()),
+            agent_runner: None,
             body: "The map is proper.\n".into(),
             reply_to: Some(44),
             attachments: Vec::new(),

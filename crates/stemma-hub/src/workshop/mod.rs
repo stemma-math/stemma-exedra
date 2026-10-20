@@ -703,6 +703,7 @@ pub(crate) async fn say(state: &AppState, row: &TaskRow, text: &str) -> ApiResul
         row.thread_id,
         row.user_id,
         Some(&profile().display_name),
+        None,
         text,
         Some(row.origin_message as u32),
         &[],

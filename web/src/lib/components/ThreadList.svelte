@@ -1,4 +1,5 @@
 <script lang="ts">
+  import AgentAvatar from "./AgentAvatar.svelte";
   import type { Thread } from "#lib/api.ts";
   import { exactly, when } from "#lib/format.ts";
 
@@ -9,7 +10,7 @@
   <div class="table threads">
     {#each threads as thread (thread.number)}
       <a class="table__row" href="/g/{group}/t/{thread.number}">
-        <span class="identifier quiet">t{thread.number}</span>
+        <span class="stack stack--tight">{#if thread.kind === "chat"}<AgentAvatar name={thread.resident_agent ?? "Agent"} runner={thread.resident_runner} />{/if}<span class="identifier quiet">t{thread.number}</span></span>
         <span class="stack stack--tight">
           <span class="thread-row__title">
             <strong>{thread.title}</strong>

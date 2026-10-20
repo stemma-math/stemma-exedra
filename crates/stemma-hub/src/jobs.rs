@@ -1000,6 +1000,7 @@ async fn say(state: &AppState, job: &JobRow, text: &str) -> ApiResult<u32> {
         thread_id,
         job.requester_id,
         Some(&profile.display_name),
+        Some(&profile.runner),
         text,
         job.trigger_message.map(|n| n as u32),
         &[],

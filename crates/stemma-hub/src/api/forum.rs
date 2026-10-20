@@ -24,7 +24,7 @@ const MAX_BODY_CHARS: usize = 100_000;
 
 /// What [`ThreadRow`] reads, from `threads t` and its creator.
 const THREAD_COLUMNS: &str =
-    "SELECT t.id, t.number, t.title, t.kind, t.resident_agent, t.resident_model,
+    "SELECT t.id, t.number, t.title, t.kind, t.resident_agent, t.resident_runner, t.resident_model,
             t.resident_effort, t.anchor, t.created_at, t.last_activity_at,
             t.last_message, u.id AS user_id, u.username, u.display_name
      FROM threads t JOIN users u ON u.id = t.created_by";
@@ -36,6 +36,7 @@ pub(crate) struct ThreadRow {
     title: String,
     kind: String,
     resident_agent: Option<String>,
+    resident_runner: Option<String>,
     resident_model: Option<String>,
     resident_effort: Option<String>,
     anchor: Option<String>,
@@ -53,6 +54,7 @@ impl From<ThreadRow> for Thread {
             title: row.title,
             kind: ThreadKind::parse(&row.kind).unwrap_or(ThreadKind::Discussion),
             resident_agent: row.resident_agent,
+            resident_runner: row.resident_runner,
             resident_model: row.resident_model,
             resident_effort: row.resident_effort.as_deref().and_then(Effort::parse),
             anchor: row.anchor.and_then(|a| a.parse().ok()),
@@ -209,6 +211,7 @@ pub async fn create_thread(
     };
 
     let now = db::now();
+    let agent_runner = attribution_runner(&state, &viewer, agent.as_deref()).await?;
     let mut tx = state.db.begin().await?;
     let number: i64 = sqlx::query_scalar(
         "UPDATE groups SET last_thread = last_thread + 1 WHERE id = ? RETURNING last_thread",
@@ -244,6 +247,7 @@ pub async fn create_thread(
             thread_id,
             viewer.id,
             agent.as_deref(),
+            agent_runner.as_deref(),
             text,
             None,
             &body.attachments,
@@ -390,12 +394,14 @@ pub async fn post_message(
         )));
     }
 
+    let agent_runner = attribution_runner(&state, &viewer, agent.as_deref()).await?;
     let message = post(
         &state,
         &group,
         row.id,
         viewer.id,
         agent.as_deref(),
+        agent_runner.as_deref(),
         &text,
         body.reply_to,
         &body.attachments,
@@ -408,6 +414,26 @@ pub async fn post_message(
     Ok((StatusCode::CREATED, Json(message)))
 }
 
+/// Job attribution comes from the saved runner, so renaming a profile never changes its mark.
+async fn attribution_runner(
+    state: &AppState,
+    viewer: &Viewer,
+    agent: Option<&str>,
+) -> ApiResult<Option<String>> {
+    if let Some(job) = viewer.job() {
+        let runner: Option<String> = sqlx::query_scalar(
+            "SELECT COALESCE((SELECT r.runner FROM job_runs r WHERE r.job_id = j.id ORDER BY r.id DESC LIMIT 1), j.runner) FROM jobs j WHERE j.token_id = ?"
+        ).bind(job.token_id).fetch_optional(&state.db).await?;
+        return Ok(runner);
+    }
+    Ok(agent.and_then(|name| {
+        stemma_core::api::runners::ALL
+            .iter()
+            .find(|&&runner| stemma_core::api::runners::name(runner).eq_ignore_ascii_case(name))
+            .map(|r| (*r).to_owned())
+    }))
+}
+
 /// Posts a message in a thread, and tells the group's listeners.
 #[allow(clippy::too_many_arguments)]
 pub(crate) async fn post(
@@ -416,6 +442,7 @@ pub(crate) async fn post(
     thread_id: i64,
     author_id: i64,
     agent: Option<&str>,
+    agent_runner: Option<&str>,
     text: &str,
     reply_to: Option<u32>,
     attachments: &[i64],
@@ -427,6 +454,7 @@ pub(crate) async fn post(
         thread_id,
         author_id,
         agent,
+        agent_runner,
         text,
         reply_to,
         attachments,
@@ -465,6 +493,7 @@ async fn insert_message(
     thread_id: i64,
     author_id: i64,
     agent: Option<&str>,
+    agent_runner: Option<&str>,
     text: &str,
     reply_to: Option<u32>,
     attachment_ids: &[i64],
@@ -479,13 +508,14 @@ async fn insert_message(
     .fetch_one(&mut **tx)
     .await?;
     let message_id = sqlx::query(
-        "INSERT INTO messages (thread_id, number, author_id, agent, body, reply_to, created_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?)",
+        "INSERT INTO messages (thread_id, number, author_id, agent, agent_runner, body, reply_to, created_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
     )
     .bind(thread_id)
     .bind(number)
     .bind(author_id)
     .bind(agent)
+    .bind(agent_runner)
     .bind(text)
     .bind(reply_to)
     .bind(now)
@@ -517,6 +547,7 @@ struct MessageRow {
     id: i64,
     number: i64,
     agent: Option<String>,
+    agent_runner: Option<String>,
     body: String,
     reply_to: Option<i64>,
     created_at: i64,
@@ -534,7 +565,7 @@ pub(crate) async fn load_messages(
     to: u32,
 ) -> ApiResult<Vec<Message>> {
     let rows: Vec<MessageRow> = sqlx::query_as(
-        "SELECT m.id, m.number, m.agent, m.body, m.reply_to, m.created_at, m.edited_at,
+        "SELECT m.id, m.number, m.agent, m.agent_runner, m.body, m.reply_to, m.created_at, m.edited_at,
                 m.deleted_at, u.id AS user_id, u.username, u.display_name
          FROM messages m JOIN users u ON u.id = m.author_id
          WHERE m.thread_id = ? AND m.number BETWEEN ? AND ?
@@ -572,6 +603,7 @@ fn to_message(row: MessageRow, attachments: Vec<stemma_core::api::Attachment>) -
         number: row.number as u32,
         author: row.author.into(),
         agent: row.agent,
+        agent_runner: row.agent_runner,
         body: row.body,
         reply_to: row.reply_to.map(|n| n as u32),
         attachments,

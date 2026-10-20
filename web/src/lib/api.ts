@@ -72,6 +72,7 @@ export interface Thread {
   title: string;
   kind: ThreadKind;
   resident_agent: string | null;
+  resident_runner: string | null;
   /** The model a chat's resident agent answers with, if the chat chose one. */
   resident_model?: string | null;
   resident_effort?: Effort | null;
@@ -94,6 +95,7 @@ export interface Message {
   number: number;
   author: User;
   agent: string | null;
+  agent_runner: string | null;
   body: string;
   reply_to: number | null;
   attachments: Attachment[];

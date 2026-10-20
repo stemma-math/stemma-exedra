@@ -33,6 +33,7 @@ CREATE TABLE messages (
     author_id INTEGER NOT NULL REFERENCES users (id),
     -- The agent that wrote it for its author, if one did.
     agent TEXT,
+    agent_runner TEXT,
     body TEXT NOT NULL,
     reply_to INTEGER,
     created_at INTEGER NOT NULL,

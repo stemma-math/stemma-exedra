@@ -1,4 +1,5 @@
 <script lang="ts">
+  import AgentAvatar from "./AgentAvatar.svelte";
   import { api, type Machine, RUNNER_NAMES, RUNNERS, type WorkshopAgent } from "#lib/api.ts";
   import { toastError } from "#lib/toast.ts";
 
@@ -76,7 +77,7 @@
           <div class="table__row">
             <span class="identifier quiet">{i + 1}</span>
             <span class="stack stack--tight">
-              <strong>{RUNNER_NAMES[agent.runner] ?? agent.runner}</strong>
+              <strong class="row"><AgentAvatar name={RUNNER_NAMES[agent.runner] ?? agent.runner} runner={agent.runner} /> {RUNNER_NAMES[agent.runner] ?? agent.runner}</strong>
               <span class="identifier quiet agent-model">
                 {agent.model ?? "default model"}{agent.args.length ? ` ${agent.args.join(" ")}` : ""}
               </span>
