@@ -179,8 +179,9 @@ pub async fn run(path: &Path) -> anyhow::Result<()> {
             path.display()
         )
     })?;
-    // The lock belongs to the machine's data, not its configurable checkout folder.
-    let _lock = lock(&data_dir()?)?;
+    // One process serves a machine: the lock sits beside its configuration,
+    // not in its configurable checkout folder.
+    let _lock = lock(&path.with_extension("lock"))?;
     if !config.personal && !config.workshop_enabled {
         tracing::info!("Both machine modes are off");
         return Ok(());
@@ -199,21 +200,13 @@ pub async fn run(path: &Path) -> anyhow::Result<()> {
     }
 }
 
-fn data_dir() -> anyhow::Result<PathBuf> {
-    Ok(dirs::data_local_dir()
-        .context("This system has no data directory")?
-        .join("stemma")
-        .join("machine"))
-}
-
-fn lock(dir: &Path) -> anyhow::Result<std::fs::File> {
-    std::fs::create_dir_all(dir)?;
+fn lock(path: &Path) -> anyhow::Result<std::fs::File> {
     let file = std::fs::OpenOptions::new()
         .read(true)
         .write(true)
         .create(true)
         .truncate(false)
-        .open(dir.join("run.lock"))?;
+        .open(path)?;
     file.try_lock().context("Another process is already serving this machine; stop it before running `stemma machine run`")?;
     Ok(file)
 }
@@ -245,11 +238,12 @@ mod tests {
     #[test]
     fn only_one_process_can_serve_and_exit_releases_the_lock() {
         let dir = tempfile::tempdir().unwrap();
-        let first = lock(dir.path()).unwrap();
-        let error = lock(dir.path()).unwrap_err();
+        let path = dir.path().join("machine.lock");
+        let first = lock(&path).unwrap();
+        let error = lock(&path).unwrap_err();
         assert!(error.to_string().contains("already serving this machine"));
         drop(first);
-        assert!(lock(dir.path()).is_ok());
+        assert!(lock(&path).is_ok());
     }
 
     #[test]
