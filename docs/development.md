@@ -10,7 +10,9 @@ just check    # formatting, lints, tests and the web build
 
 Without Nix: Rust, Node.js with pnpm, just, git and, for Lean, elan.
 
-The tests use a stand-in for Forgejo (`crates/stemma-fake-forge`). Some are
+The tests use a stand-in for Forgejo (`crates/stemma-fake-forge`). The CLI machine
+test isolates service files and logs with `STEMMA_SERVICE_DIR` and substitutes
+the system service managers; it never installs a login service. Some tests are
 skipped without their environment:
 
 ```sh

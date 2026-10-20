@@ -12,6 +12,11 @@ async fn cli(dir: &Path, args: &[&str]) {
         .env_remove("STEMMA_HUB")
         .env_remove("STEMMA_TOKEN")
         .env_remove("STEMMA_GROUP")
+        .env("STEMMA_SERVICE_DIR", dir.join("service"))
+        .env(
+            "PATH",
+            std::env::join_paths([dir.join("bin"), "/usr/bin".into(), "/bin".into()]).unwrap(),
+        )
         .env("STEMMA_CLIENT_CONFIG", dir.join("client.toml"))
         .env("STEMMA_MACHINE_CONFIG", dir.join("machine.toml"))
         .output()
@@ -27,6 +32,22 @@ async fn cli(dir: &Path, args: &[&str]) {
 #[tokio::test(flavor = "multi_thread")]
 async fn registers_configures_prefers_and_removes_this_machine() {
     let dir = tempfile::tempdir().unwrap();
+    // Never install a real login service or overwrite the developer's service.
+    let bin = dir.path().join("bin");
+    std::fs::create_dir_all(&bin).unwrap();
+    for manager in ["launchctl", "systemctl"] {
+        let script = bin.join(manager);
+        std::fs::write(
+            &script,
+            "#!/bin/sh\ncase \"$*\" in *print*|*is-active*) exit 1;; *) exit 0;; esac\n",
+        )
+        .unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755)).unwrap();
+        }
+    }
     let state = Arc::new(
         stemma_hub::Hub::new(
             stemma_hub::db::in_memory().await.unwrap(),
@@ -55,7 +76,17 @@ async fn registers_configures_prefers_and_removes_this_machine() {
     hub.sign_in("ada", "analytical").await.unwrap();
     let created = hub.create_token("tests").await.unwrap();
     cli(dir.path(), &["login", &url, "--token", &created.secret]).await;
+    let worker_path = dir.path().join("machine.toml");
+    let worker = tokio::spawn(async move {
+        while !worker_path.exists() {
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+        stemma_worker::machine::run(&worker_path).await.unwrap();
+    });
     cli(dir.path(), &["machine", "add", "test machine"]).await;
+    assert!(hub.machines().await.unwrap()[0].online);
+    worker.abort();
+    let _ = worker.await;
     let path = dir.path().join("machine.toml");
     let config = MachineConfig::load_from(&path).unwrap().unwrap();
     assert!(config.personal);

@@ -38,11 +38,25 @@ fn home() -> anyhow::Result<PathBuf> {
 
 fn path() -> anyhow::Result<PathBuf> {
     supported()?;
+    if let Some(root) = std::env::var_os("STEMMA_SERVICE_DIR") {
+        return Ok(PathBuf::from(root).join(if cfg!(target_os = "macos") {
+            "org.stemma.machine.plist"
+        } else {
+            UNIT
+        }));
+    }
     Ok(if cfg!(target_os = "macos") {
         home()?.join("Library/LaunchAgents/org.stemma.machine.plist")
     } else {
         home()?.join(".config/systemd/user/stemma-machine.service")
     })
+}
+
+fn log_path() -> anyhow::Result<PathBuf> {
+    match std::env::var_os("STEMMA_SERVICE_DIR") {
+        Some(root) => Ok(PathBuf::from(root).join("machine.log")),
+        None => Ok(home()?.join("Library/Logs/Stemma/machine.log")),
+    }
 }
 
 fn output(program: &str, args: &[&str]) -> anyhow::Result<Output> {
@@ -109,7 +123,7 @@ pub fn install(stemma: &Path) -> anyhow::Result<()> {
         if loaded()? {
             stop()?;
         }
-        let logs = home()?.join("Library/Logs/Stemma/machine.log");
+        let logs = log_path()?;
         std::fs::create_dir_all(logs.parent().context("Log directory")?)?;
         std::fs::write(&path, plist(stemma, &config, &search, &logs))?;
         command(
@@ -285,10 +299,7 @@ pub async fn status() -> anyhow::Result<Status> {
         connected,
         stopped,
         logs: if cfg!(target_os = "macos") {
-            home()?
-                .join("Library/Logs/Stemma/machine.log")
-                .display()
-                .to_string()
+            log_path()?.display().to_string()
         } else {
             "journalctl --user -u stemma-machine".into()
         },
