@@ -164,7 +164,8 @@ body {
   flex: 1;
   display: grid;
   place-items: center;
-  min-height: 100dvh;
+  min-height: 100%;
+  box-sizing: border-box;
   padding: var(--space-12) var(--space-6);
   color: var(--on-dark-1);
 }
@@ -177,12 +178,6 @@ body {
   max-width: var(--measure);
   text-align: center;
   padding-bottom: 15dvh;
-  transition: opacity var(--dur-ui) var(--ease-out);
-}
-
-.front--entering {
-  opacity: 0;
-  pointer-events: none;
 }
 
 .front__brand {
@@ -639,7 +634,7 @@ stemma-toast-region {
 .sidebar__connection { display: flex; flex-wrap: nowrap; justify-content: space-between; gap: var(--space-2); }
 .sidebar__connection .quiet { white-space: normal; }
 .truncate { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.account-frame { display: flex; flex: 1; flex-direction: column; min-height: 100dvh; }
+.account-frame { display: flex; flex: 1; flex-direction: column; min-height: 100%; }
 .account-frame__head { display: flex; justify-content: space-between; align-items: center; gap: var(--space-3); padding: var(--space-4) var(--space-8); }
 .account-frame__brand stemma-mark { width: var(--space-6); }
 .account-frame__body { display: flex; flex: 1; }
@@ -652,9 +647,11 @@ stemma-toast-region {
   .sidebar__switcher .avatar { flex-shrink: 0; }
 }
 
-.public-frame { position: relative; isolation: isolate; min-height: 100dvh; }
+.public-frame { position: relative; isolation: isolate; height: 100dvh; overflow: hidden; }
 .public-frame__light { position: fixed; inset: 0; z-index: -1; pointer-events: none; }
-.public-frame__content { min-height: 100dvh; }
+.public-frame__view { position: absolute; inset: 0; overflow: auto; overscroll-behavior: none; }
+.public-frame__inside { display: flex; flex-direction: column; }
+.public-frame__view > * { flex-shrink: 0; }
 
 
 
