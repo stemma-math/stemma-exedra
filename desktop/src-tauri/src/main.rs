@@ -305,12 +305,11 @@ async fn perform(state: Shared<'_>, action: Action) -> anyhow::Result<()> {
         Action::Build { .. } => unreachable!("handled before locking the service"),
         Action::Lend { group, enabled } => {
             let hub = hub()?;
-            let machine = control::this(&hub).await?;
             if enabled {
-                hub.add_workshop_machine(&group, machine.id).await?;
-            } else {
-                hub.remove_workshop_machine(&group, machine.id).await?;
+                return control::lend(&hub, &group, &control::stemma()?).await;
             }
+            let machine = control::this(&hub).await?;
+            hub.remove_workshop_machine(&group, machine.id).await?;
             let workshop = !control::this(&hub).await?.workshop.is_empty();
             let config = control::load()?;
             control::configure(None, None, Some(workshop))?;

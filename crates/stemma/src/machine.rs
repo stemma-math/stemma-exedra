@@ -297,17 +297,16 @@ async fn workshop(command: WorkshopCommand) -> anyhow::Result<()> {
         | WorkshopCommand::Isolation { .. }
         | WorkshopCommand::Image { .. } => {}
         WorkshopCommand::Add { group, machine } => {
-            let found = find(&hub, machine.as_deref()).await?;
-            hub.add_workshop_machine(&group, found.id).await?;
+            let mut found = find(&hub, machine.as_deref()).await?;
             if machine.is_none() {
-                stemma_worker::control::configure(None, None, Some(true))?;
-                service::install(&std::env::current_exe()?)?;
-                stemma_worker::control::wait_online(&stemma_worker::control::load()?).await?;
+                stemma_worker::control::lend(&hub, &group, &std::env::current_exe()?).await?;
+                found = find(&hub, None).await?;
             } else {
                 anyhow::ensure!(
                     found.online,
                     "This machine is offline. Start its service before lending it."
                 );
+                hub.add_workshop_machine(&group, found.id).await?;
             }
             println!(
                 "“{}” works for the workshop of {group}. Offer it agents with \

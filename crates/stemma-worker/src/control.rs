@@ -145,6 +145,58 @@ pub async fn offers(
     Ok(saved)
 }
 
+/// Lends this machine to a group's workshop. The hub only takes a machine
+/// that said how it isolates the workshop's jobs, and a machine only says so
+/// while it serves the workshop: so it serves the workshop first, and is
+/// lent once the hub has heard it.
+pub async fn lend(hub: &Hub, group: &str, stemma: &std::path::Path) -> anyhow::Result<()> {
+    let before = load()?;
+    let machine = this(hub).await?;
+    if !before.workshop_enabled {
+        configure(None, None, Some(true))?;
+    }
+    let lent = async {
+        crate::service::install(stemma)?;
+        wait_isolated(&load()?).await?;
+        hub.add_workshop_machine(group, machine.id).await?;
+        anyhow::Ok(())
+    }
+    .await;
+    if lent.is_err() && !before.workshop_enabled {
+        let _ = configure(None, None, Some(false));
+    }
+    lent
+}
+
+/// Waits until the hub has heard this machine, serving the workshop, say how
+/// it isolates its jobs.
+async fn wait_isolated(config: &MachineConfig) -> anyhow::Result<()> {
+    let wait = async {
+        loop {
+            if let Ok(Ok(machine)) =
+                tokio::time::timeout(std::time::Duration::from_secs(2), identity(config)).await
+                && machine.online
+                && machine.isolation.is_some()
+            {
+                return;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(250)).await;
+        }
+    };
+    if tokio::time::timeout(std::time::Duration::from_secs(20), wait)
+        .await
+        .is_ok()
+    {
+        return Ok(());
+    }
+    anyhow::bail!(if crate::service::status().await?.running {
+        "This machine has not told the hub how it isolates the workshop's jobs. Check its logs."
+    } else {
+        "This machine cannot isolate the workshop's jobs: start Docker or Podman and prepare the \
+         workshop's image, or choose to run them unisolated."
+    })
+}
+
 /// Success is the hub observing the authenticated worker's live connection.
 pub async fn wait_online(config: &MachineConfig) -> anyhow::Result<()> {
     let wait = async {

@@ -22,11 +22,14 @@
           aria-checked={lent}
           checked={lent}
           disabled={controls.busy || !data.registered || !data.machine}
-          onchange={() =>
+          onchange={(event) => {
+            // The switch shows what the hub says, also when lending fails.
+            event.currentTarget.checked = lent;
             controls.save(
               { kind: "lend", group: group.slug, enabled: !lent },
               lent ? "Machine withdrawn from this workshop." : "Machine lent to this workshop.",
-            )}
+            );
+          }}
         />
       </label>
       <p class="quiet">
@@ -35,7 +38,8 @@
       </p>
     </section>
   {/each}
-  {#if !data.image_ready}
+  <!-- Unisolated, the workshop needs no image: Advanced says so. -->
+  {#if data.runtime !== "host" && !data.image_ready}
     <section class="message message--warning stack stack--tight" role="status">
       <div class="setting__row">
         <span>The workshop’s image is not ready on this machine.</span>
