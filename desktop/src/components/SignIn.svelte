@@ -1,5 +1,7 @@
 <script lang="ts">
-  import { login } from "../api.ts";
+  import { onMount } from "svelte";
+  import type { StemmaLight } from "@stemma-math/design-elements/light.js";
+  import { login, openHub } from "../api.ts";
   import type { MachineControls } from "../machine.svelte.ts";
 
   interface Props {
@@ -7,23 +9,50 @@
   }
 
   let { controls }: Props = $props();
+  let light = $state<StemmaLight>();
+
+  onMount(() => {
+    if (light) light.progress = 1;
+  });
 
   function signIn(event: Event) {
     event.preventDefault();
-    controls.run(async () => {
-      try {
-        await login(controls.url, controls.username, controls.password);
-      } finally {
-        controls.password = "";
-      }
-    }, "Signed in.");
+    controls.run(
+      async () => {
+        try {
+          await login(controls.url, controls.username, controls.password);
+          await openHub();
+        } finally {
+          controls.password = "";
+        }
+      },
+      "",
+      false,
+    );
   }
 </script>
 
-{#if !controls.data?.me}
-  <section class="card panel stack">
-    <h2>Sign in to a hub</h2>
-    <p class="quiet">Uses the same sign-in and settings as <code>stemma login</code>.</p>
+<main class="entrance" aria-busy={controls.busy}>
+  <stemma-light
+    preset="still"
+    bind:this={light}
+    class="entrance__light"
+    aria-hidden="true"
+  ></stemma-light>
+  <div class="entrance__drag" data-tauri-drag-region></div>
+  <section class="card panel stack entrance__card">
+    <header class="row">
+      <stemma-mark></stemma-mark>
+      <h1 class="wordmark">Stemma</h1>
+    </header>
+    <p class="quiet">Where a research group does mathematics by talking.</p>
+    <h2>Sign in to your hub</h2>
+    {#if controls.error}
+      <p class="message message--danger" role="alert">{controls.error}</p>
+    {/if}
+    {#if controls.data?.hub_error}
+      <p class="message message--warning">{controls.data.hub_error}</p>
+    {/if}
     <form class="stack" onsubmit={signIn}>
       <label class="field">
         Hub address
@@ -49,13 +78,19 @@
           required
         />
       </label>
-      <div>
-        <button type="submit" class="button button--primary" disabled={controls.busy}>
-          Sign in
-        </button>
-      </div>
+      <button type="submit" class="button button--primary" disabled={controls.busy}>
+        {controls.busy ? "Connecting…" : "Sign in"}
+      </button>
     </form>
+    {#if controls.data?.me}
+      <button
+        type="button"
+        class="button"
+        disabled={controls.busy}
+        onclick={() => controls.run(openHub, "", false)}
+      >
+        Try opening Stemma again
+      </button>
+    {/if}
   </section>
-{:else}
-  <p class="quiet">Signed in as {controls.data.me.username} · {controls.data.hub}</p>
-{/if}
+</main>

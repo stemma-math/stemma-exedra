@@ -6,6 +6,7 @@
     <meta name="color-scheme" content="light dark" />
     <title>Stemma</title>
     <script>
+      if (/\bStemmaDesktop\//.test(navigator.userAgent)) document.documentElement.dataset.desktop = "";
       // The appearance chosen in the settings, before the page paints.
       try {
         const theme = localStorage.getItem("stemma-theme");

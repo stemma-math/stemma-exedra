@@ -8,7 +8,6 @@ use anyhow::Context;
 use clap::Args;
 use serde_json::{Value, json};
 use stemma_client::config::{self, ClientConfig};
-use stemma_client::hub::Hub;
 use stemma_client::mcp::StemmaServer;
 use stemma_client::tools::Toolbox;
 
@@ -259,20 +258,10 @@ pub async fn login(args: LoginArgs) -> anyhow::Result<()> {
 }
 
 pub async fn logout() -> anyhow::Result<()> {
-    let path = config::path()?;
-    let config = ClientConfig::load_from(&path)?;
-    let (Some(url), Some(token)) = (&config.hub, &config.token) else {
-        println!("Not signed in.");
-        return Ok(());
-    };
-    if let Some(id) = config.token_id {
-        match Hub::new(url, Some(token.clone()))?.revoke_token(id).await {
-            Ok(()) => println!("Revoked this machine's token."),
-            Err(e) => eprintln!("Could not revoke the token ({e}); revoke it in the web app."),
-        }
+    if let Some(warning) = stemma_client::sign_in::logout().await? {
+        eprintln!("{warning}");
     }
-    std::fs::remove_file(&path).with_context(|| format!("removing {}", path.display()))?;
-    println!("Signed out of {url}.");
+    println!("Signed out.");
     Ok(())
 }
 

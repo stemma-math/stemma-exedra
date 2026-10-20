@@ -11,11 +11,25 @@
   "app": {
     "windows": [
       {
+        "label": "main",
+        "title": "Stemma",
+        "width": 1480,
+        "height": 940,
+        "minWidth": 760,
+        "minHeight": 440,
+        "titleBarStyle": "Overlay",
+        "hiddenTitle": true,
+        "dragDropEnabled": false,
+        "create": false
+      },
+      {
         "label": "machine",
-        "title": "Stemma \u2014 This machine",
-        "width": 1120,
-        "height": 850,
-        "minWidth": 900,
+        "title": "Stemma \u2014 Settings",
+        "url": "index.html?settings",
+        "width": 960,
+        "height": 780,
+        "minWidth": 760,
+        "minHeight": 440,
         "create": false
       }
     ],

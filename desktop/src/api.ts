@@ -38,3 +38,4 @@ export const action = (action: object) => invoke<void>("action", { action });
 export const login = (url: string, username: string, password: string) =>
   invoke<void>("login", { url, username, password });
 export const openHub = () => invoke<void>("open_hub");
+export const signOut = () => invoke<string | null>("sign_out");

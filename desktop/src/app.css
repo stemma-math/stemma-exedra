@@ -21,3 +21,30 @@ header p {
 header stemma-mark {
   width: var(--space-8);
 }
+
+.entrance {
+  position: relative;
+  isolation: isolate;
+  display: grid;
+  place-items: center;
+  min-height: 100dvh;
+  padding: var(--space-12) var(--space-6);
+}
+.entrance__light {
+  position: absolute;
+  inset: 0;
+  z-index: -1;
+}
+.entrance__drag {
+  position: absolute;
+  inset: 0 0 auto;
+  height: var(--space-11);
+}
+.entrance__card {
+  width: min(100%, calc(var(--space-16) * 6));
+}
+@media (max-width: 60rem) {
+  .machine-columns {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}

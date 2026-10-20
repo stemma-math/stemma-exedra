@@ -216,6 +216,40 @@ body {
   margin: 0;
 }
 
+/* The native titlebar overlays content. Its empty top strip is also a
+ * drag target; all controls remain below it, including in the drawer. */
+.desktop-titlebar {
+  display: none;
+}
+
+html[data-desktop] body {
+  padding-top: var(--space-11);
+}
+
+html[data-desktop] :is(.app, .shell, .doorway) {
+  min-height: calc(100dvh - var(--space-11));
+}
+
+html[data-desktop] .desktop-titlebar {
+  position: fixed;
+  inset: 0 0 auto;
+  z-index: 40;
+  display: block;
+  height: var(--space-11);
+}
+
+html[data-desktop] :is(.sidebar, .shell__bar) {
+  top: var(--space-11);
+}
+
+html[data-desktop] .sidebar {
+  height: calc(100dvh - var(--space-11));
+}
+
+html[data-desktop] .sidebar__signout {
+  display: none;
+}
+
 /* ── Pages ──────────────────────────────────────────────────────────── */
 
 .page {

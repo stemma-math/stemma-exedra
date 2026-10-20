@@ -54,3 +54,24 @@ pub async fn password(
     let _ = client.sign_out().await;
     save(hub, created.secret, Some(created.token.id), group).await
 }
+
+/// Forget the local sign-in, revoking its device token when the hub is reachable.
+/// Returns a warning if the token must be revoked later from the web app.
+pub async fn logout() -> anyhow::Result<Option<String>> {
+    let path = crate::config::path()?;
+    let config = ClientConfig::load_from(&path)?;
+    let mut warning = None;
+    if let (Some(url), Some(token), Some(id)) = (config.hub, config.token, config.token_id)
+        && let Err(error) = Hub::new(&url, Some(token))?.revoke_token(id).await
+    {
+        warning = Some(format!(
+            "Could not revoke the token ({error}); revoke it in the web app."
+        ));
+    }
+    match std::fs::remove_file(&path) {
+        Ok(()) => {}
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+        Err(error) => return Err(error).with_context(|| format!("removing {}", path.display())),
+    }
+    Ok(warning)
+}

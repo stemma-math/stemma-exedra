@@ -10,6 +10,7 @@
   import { page } from "$app/state";
   import { loadSession, session } from "#lib/session.svelte.ts";
   import { onMount } from "svelte";
+  import { getCurrentWindow } from "@tauri-apps/api/window";
 
   let { children } = $props();
 
@@ -33,6 +34,10 @@
   <link rel="apple-touch-icon" href={touchIcon} />
 </svelte:head>
 
+<!-- The hub requests only startDragging; native machine commands stay local. -->
+<div class="desktop-titlebar" aria-hidden="true" onpointerdown={(event) => {
+  if (event.button === 0 && event.isPrimary) void getCurrentWindow().startDragging();
+}}></div>
 <div class="app">
   {#if session.loaded && (session.me || isPublic)}
     {@render children()}

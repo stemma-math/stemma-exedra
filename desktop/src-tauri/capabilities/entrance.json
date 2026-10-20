@@ -1,0 +1,11 @@
+{
+  "identifier": "entrance",
+  "description": "Only the local entrance can sign in and hand off to the hub.",
+  "windows": ["main"],
+  "permissions": [
+    "allow-snapshot",
+    "allow-login",
+    "allow-open-hub",
+    "core:window:allow-start-dragging"
+  ]
+}

@@ -33,9 +33,10 @@ request, and reports in the thread.
 
 ## Desktop
 
-The desktop app opens your hub's web app and has a **This machine** screen:
-separate personal and workshop services, sign-in status, repository folder,
-agents, daily limits and container settings. It shares the CLI's sign-in and
+The desktop app signs in locally, then opens your hub in the same window.
+**Stemma → Settings…** (⌘,) opens **This machine**: personal and workshop
+services, sign-in and sign-out, repository folder, agents, daily limits and
+container settings. It opens after signing in when the machine is not registered. It shares the CLI's sign-in and
 machine configuration. `stemma machine service install` installs and starts a
 per-user login service (launchd on macOS, systemd on Linux); `start`, `stop`,
 `status` and `uninstall` manage it. Closing the app leaves it running. Status

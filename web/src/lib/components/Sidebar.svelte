@@ -210,7 +210,7 @@
         <Avatar user={session.me} />
         <span class="sidebar__text">{session.me.display_name}</span>
       </a>
-      <button type="button" class="button button--quiet button--icon" aria-label="Log out" onclick={logOut}>
+      <button type="button" class="button button--quiet button--icon sidebar__signout" aria-label="Log out" onclick={logOut}>
         <Glyph name="log-out" />
       </button>
     </div>
