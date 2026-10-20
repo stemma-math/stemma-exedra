@@ -97,6 +97,17 @@ async fn service(command: ServiceCommand) -> anyhow::Result<()> {
                     .unwrap_or_else(|| "unknown".into()),
                 status.logs
             );
+            if !status.stale_agents.is_empty() {
+                let names = status
+                    .stale_agents
+                    .iter()
+                    .map(|agent| stemma_core::api::runners::name(agent))
+                    .collect::<Vec<_>>()
+                    .join(", ");
+                println!(
+                    "Warning: {names} found on the current PATH, but not with the service's stored PATH. Reinstall the service with `stemma machine service install` to fix it."
+                );
+            }
             Ok(())
         }
     }

@@ -20,6 +20,8 @@ pub struct Status {
     pub workshop: bool,
     pub connected: Option<bool>,
     pub logs: String,
+    /// Installed now, but unavailable with the service's saved search path.
+    pub stale_agents: Vec<String>,
 }
 
 fn supported() -> anyhow::Result<()> {
@@ -247,7 +249,20 @@ pub async fn status() -> anyhow::Result<Status> {
     {
         connected = Some(machines.iter().any(|m| m.id == config.id && m.online));
     }
+    let stale_agents = if installed {
+        let text = std::fs::read_to_string(path()?)?;
+        let stored = stored_path(&text, cfg!(target_os = "macos"))
+            .context("Cannot read the service's stored PATH; reinstall the service")?;
+        let runners = config
+            .as_ref()
+            .map(|c| c.runners.clone())
+            .unwrap_or_default();
+        stale_agents(&runners, &stored, std::env::var_os("PATH").as_deref()).await
+    } else {
+        Vec::new()
+    };
     Ok(Status {
+        stale_agents,
         installed,
         running,
         personal: config.as_ref().is_some_and(|c| c.personal),
@@ -262,6 +277,58 @@ pub async fn status() -> anyhow::Result<Status> {
             "journalctl --user -u stemma-machine".into()
         },
     })
+}
+
+async fn stale_agents(
+    configured: &crate::config::Runners,
+    stored: &str,
+    current: Option<&std::ffi::OsStr>,
+) -> Vec<String> {
+    let (service, now) = tokio::join!(
+        crate::detect::installed(configured, Some(std::ffi::OsStr::new(stored))),
+        crate::detect::installed(configured, current),
+    );
+    now.into_iter()
+        .filter(|agent| !service.contains(agent))
+        .collect()
+}
+
+/// Read the environment entry written by our installer, including escaped paths.
+fn stored_path(text: &str, macos: bool) -> Option<String> {
+    if macos {
+        let value = text
+            .split_once("<key>PATH</key><string>")?
+            .1
+            .split_once("</string>")?
+            .0;
+        Some(
+            value
+                .replace("&apos;", "'")
+                .replace("&quot;", "\"")
+                .replace("&gt;", ">")
+                .replace("&lt;", "<")
+                .replace("&amp;", "&"),
+        )
+    } else {
+        let value = text
+            .lines()
+            .find_map(|line| line.strip_prefix("Environment=\"PATH="))?
+            .strip_suffix('"')?;
+        let mut result = String::new();
+        let mut chars = value.chars();
+        while let Some(c) = chars.next() {
+            result.push(if c == '\\' {
+                match chars.next()? {
+                    'n' => '\n',
+                    'r' => '\r',
+                    c => c,
+                }
+            } else {
+                c
+            });
+        }
+        Some(result.replace("%%", "%"))
+    }
 }
 
 fn xml(value: &str) -> String {
@@ -321,6 +388,85 @@ pub fn unit(stemma: &Path, config: &Path, search: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn reads_saved_paths_without_losing_escaping() {
+        let search = "/a & b:<bin>:'quoted':\"double\":/100%/back\\slash";
+        assert_eq!(
+            stored_path(
+                &plist(
+                    Path::new("/stemma"),
+                    Path::new("/config"),
+                    search,
+                    Path::new("/logs")
+                ),
+                true
+            )
+            .as_deref(),
+            Some(search)
+        );
+        assert_eq!(
+            stored_path(
+                &unit(Path::new("/stemma"), Path::new("/config"), search),
+                false
+            )
+            .as_deref(),
+            Some(search)
+        );
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn warns_only_for_agents_missing_from_the_saved_path() {
+        use std::os::unix::fs::PermissionsExt;
+        let old = tempfile::tempdir().unwrap();
+        let new = tempfile::tempdir().unwrap();
+        for (dir, name) in [(old.path(), "claude"), (new.path(), "codex")] {
+            let path = dir.join(name);
+            std::fs::write(&path, "#!/bin/sh\nexit 0\n").unwrap();
+            std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o755)).unwrap();
+        }
+        let current = std::env::join_paths([old.path(), new.path()]).unwrap();
+        let configured = crate::config::Runners::default();
+        assert_eq!(
+            stale_agents(&configured, old.path().to_str().unwrap(), Some(&current)).await,
+            ["codex"]
+        );
+        assert!(
+            stale_agents(&configured, current.to_str().unwrap(), Some(&current))
+                .await
+                .is_empty()
+        );
+        assert!(
+            stale_agents(
+                &configured,
+                old.path().to_str().unwrap(),
+                Some(old.path().as_os_str())
+            )
+            .await
+            .is_empty()
+        );
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn checks_the_agents_interpreter_with_each_path() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = tempfile::tempdir().unwrap();
+        let agent = dir.path().join("agent");
+        let interpreter = dir.path().join("agent-interpreter");
+        std::fs::write(&agent, "#!/usr/bin/env agent-interpreter\n").unwrap();
+        std::fs::write(&interpreter, "#!/bin/sh\nexit 0\n").unwrap();
+        for path in [&agent, &interpreter] {
+            std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o755)).unwrap();
+        }
+        let configured =
+            toml::from_str(&format!("[codex]\ncommand = {:?}", agent.to_str().unwrap())).unwrap();
+        assert_eq!(
+            stale_agents(&configured, "/nonexistent", Some(dir.path().as_os_str())).await,
+            ["codex"]
+        );
+    }
 
     #[test]
     fn launch_agent_preserves_arguments_and_escapes_xml() {

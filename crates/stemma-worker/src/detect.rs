@@ -87,7 +87,12 @@ fn is_executable(path: &Path) -> bool {
 
 /// Whether a program runs: `program --version` ends well, in a while.
 pub async fn usable(program: &Path) -> bool {
+    usable_on(program, std::env::var_os("PATH").as_deref()).await
+}
+
+async fn usable_on(program: &Path, search: Option<&OsStr>) -> bool {
     let mut command = tokio::process::Command::new(program);
+    command.env("PATH", search.unwrap_or_default());
     command
         .arg("--version")
         .stdin(Stdio::null())
@@ -117,7 +122,7 @@ pub async fn installed(configured: &Runners, search: Option<&OsStr>) -> Vec<Stri
             continue;
         };
         if let Some(path) = find_program(&program, search)
-            && usable(&path).await
+            && usable_on(&path, search).await
         {
             found.push((*runner).to_owned());
         }

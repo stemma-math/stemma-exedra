@@ -202,7 +202,8 @@ fn fake_claude(dir: &Path, delay: u32) -> PathBuf {
         dir,
         "claude",
         &format!(
-            r#"printf '%s\n' "$@" > "$HERE/claude.args"
+            r#"if [ "$1" = "--version" ]; then echo 'Fake Claude 1.0'; exit 0; fi
+printf '%s\n' "$@" > "$HERE/claude.args"
 cat > "$HERE/claude.stdin"
 cp mcp.json "$HERE/mcp.json"
 echo '{{"type":"system","subtype":"init"}}'
