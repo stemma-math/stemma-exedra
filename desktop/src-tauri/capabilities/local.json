@@ -1,7 +1,7 @@
 {
   "identifier": "local",
-  "description": "Only the bundled Stemma interface can use native commands. Hub content has no capabilities.",
-  "local": true,
+  "description": "Local capabilities are disabled because Tauri treats hub as local. Runtime grants these permissions only to the exact interface origin.",
+  "local": false,
   "windows": ["main"],
   "permissions": [
     "allow-snapshot",

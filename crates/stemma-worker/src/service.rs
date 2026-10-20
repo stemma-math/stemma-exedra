@@ -236,8 +236,8 @@ pub fn remove_machine() -> anyhow::Result<()> {
 }
 
 pub async fn status() -> anyhow::Result<Status> {
-    let installed = path()?.is_file();
-    let running = running()?;
+    let installed = manages_config()?;
+    let running = installed && running()?;
     let config = MachineConfig::load_from(&machine::path()?)?;
     let mut connected = None;
     if let Some(config) = &config

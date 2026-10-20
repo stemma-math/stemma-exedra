@@ -5,22 +5,24 @@ import type { Listener } from "../events.ts";
 import { connection } from "../transport.svelte.ts";
 
 export async function subscribe(group: string, send: Listener): Promise<() => void> {
+  const subscription = crypto.randomUUID();
   const unlisten = await listen<{
+    subscription: string;
     group: string;
     event: GroupEvent | { type: "resync" } | { type: "connection"; connected: boolean };
   }>("hub-event", ({ payload }) => {
-    if (payload.group !== group) return;
+    if (payload.subscription !== subscription || payload.group !== group) return;
     if (payload.event.type === "connection") connection.online = payload.event.connected;
     else send(payload.event);
   });
   try {
-    await invoke("subscribe", { group });
+    await invoke("subscribe", { group, subscription });
   } catch (error) {
     unlisten();
     throw error;
   }
   return () => {
     unlisten();
-    void invoke("unsubscribe", { group });
+    void invoke("unsubscribe", { subscription });
   };
 }

@@ -29,19 +29,26 @@ fn credentials() -> anyhow::Result<(String, String)> {
     Ok((base, config.token.context("Sign in to your hub")?))
 }
 
-fn allowed(request: &Request<Vec<u8>>) -> bool {
+fn allowed(request: &Request<Vec<u8>>, local_origin: &tauri::Url) -> bool {
     let uri = request.uri();
     let origin = request
         .headers()
         .get(header::ORIGIN)
         .and_then(|v| v.to_str().ok());
-    let from_app =
-        origin.is_some_and(|o| o.parse().is_ok_and(|url| super::trusted_machine_url(&url)));
+    let from_app = origin.is_some_and(|o| {
+        o.parse()
+            .is_ok_and(|url| super::page::same_origin(&url, local_origin))
+    });
     let path = uri.path();
     let resource = path.contains("/attachments/") || path.ends_with("/pdf");
-    uri.scheme_str() == Some("hub") && uri.authority().is_some_and(|a| a.as_str() == "localhost")
+    matches!((uri.scheme_str(), uri.authority().map(|a| a.as_str())),
+        (Some("hub"), Some("localhost")) | (Some("http"), Some("hub.localhost")))
         && path.starts_with("/api/v1/")
-        && !path.contains('%') && !path.contains("..") && !path.contains('\\')
+        && path.split('/').all(|part| {
+            percent_encoding::percent_decode_str(part).decode_utf8().is_ok_and(|part| {
+                part != "." && part != ".." && !part.contains(['/', '\\']) && !part.chars().any(char::is_control)
+            })
+        })
         // Untrusted documents may display resources, but cannot read the API or mutate it.
         && (from_app || (resource && matches!(*request.method(), Method::GET | Method::HEAD)))
 }
@@ -75,14 +82,17 @@ fn response(status: u16, body: Vec<u8>, origin: Option<&str>) -> Response<Vec<u8
     builder.body(body).expect("valid proxy response")
 }
 
-pub async fn proxy(request: Request<Vec<u8>>) -> Response<Vec<u8>> {
+pub async fn proxy(request: Request<Vec<u8>>, local_origin: &tauri::Url) -> Response<Vec<u8>> {
     let origin = request
         .headers()
         .get(header::ORIGIN)
         .and_then(|v| v.to_str().ok())
-        .filter(|o| o.parse().is_ok_and(|url| super::trusted_machine_url(&url)))
+        .filter(|o| {
+            o.parse()
+                .is_ok_and(|url| super::page::same_origin(&url, local_origin))
+        })
         .map(str::to_owned);
-    if !allowed(&request) {
+    if !allowed(&request, local_origin) {
         return response(403, b"Hub access denied".to_vec(), None);
     }
     if request.method() == Method::OPTIONS {
@@ -116,6 +126,14 @@ async fn forward(
     request: Request<Vec<u8>>,
 ) -> anyhow::Result<(u16, reqwest::header::HeaderMap, Vec<u8>)> {
     let (base, token) = credentials()?;
+    forward_to(request, &base, &token).await
+}
+
+async fn forward_to(
+    request: Request<Vec<u8>>,
+    base: &str,
+    token: &str,
+) -> anyhow::Result<(u16, reqwest::header::HeaderMap, Vec<u8>)> {
     let path = request.uri().path_and_query().context("Missing path")?;
     let mut outgoing = client()?
         .request(request.method().clone(), format!("{base}{path}"))
@@ -137,14 +155,16 @@ async fn forward(
 
 #[derive(Clone, Serialize)]
 struct LiveEvent {
+    subscription: String,
     group: String,
     event: serde_json::Value,
 }
 
-fn send(window: &WebviewWindow, group: &str, event: serde_json::Value) {
+fn send(window: &WebviewWindow, subscription: &str, group: &str, event: serde_json::Value) {
     let _ = window.emit(
         "hub-event",
         LiveEvent {
+            subscription: subscription.into(),
             group: group.into(),
             event,
         },
@@ -158,7 +178,11 @@ pub fn stop(app: &tauri::AppHandle) {
 }
 
 #[tauri::command]
-pub async fn subscribe(window: WebviewWindow, group: String) -> super::Result<()> {
+pub async fn subscribe(
+    window: WebviewWindow,
+    group: String,
+    subscription: String,
+) -> super::Result<()> {
     super::local(&window)?;
     if group.is_empty()
         || !group
@@ -171,10 +195,10 @@ pub async fn subscribe(window: WebviewWindow, group: String) -> super::Result<()
     let client = client().map_err(super::error)?;
     let app = window.app_handle().clone();
     let mut streams = app.state::<Streams>().inner().lock().unwrap();
-    if streams.contains_key(&group) {
+    if streams.contains_key(&subscription) {
         return Ok(());
     }
-    let key = group.clone();
+    let key = subscription.clone();
     let task = tauri::async_runtime::spawn(async move {
         let mut connected = false;
         loop {
@@ -192,19 +216,30 @@ pub async fn subscribe(window: WebviewWindow, group: String) -> super::Result<()
                     match event.event.as_str() {
                         "ready" => {
                             if connected {
-                                send(&window, &group, serde_json::json!({"type":"resync"}));
+                                send(
+                                    &window,
+                                    &subscription,
+                                    &group,
+                                    serde_json::json!({"type":"resync"}),
+                                );
                             }
                             connected = true;
                             send(
                                 &window,
+                                &subscription,
                                 &group,
                                 serde_json::json!({"type":"connection", "connected":true}),
                             );
                         }
-                        "resync" => send(&window, &group, serde_json::json!({"type":"resync"})),
+                        "resync" => send(
+                            &window,
+                            &subscription,
+                            &group,
+                            serde_json::json!({"type":"resync"}),
+                        ),
                         "message" => {
                             if let Ok(event) = serde_json::from_str(&event.data) {
-                                send(&window, &group, event);
+                                send(&window, &subscription, &group, event);
                             }
                         }
                         _ => {}
@@ -213,6 +248,7 @@ pub async fn subscribe(window: WebviewWindow, group: String) -> super::Result<()
             }
             send(
                 &window,
+                &subscription,
                 &group,
                 serde_json::json!({"type":"connection", "connected":false}),
             );
@@ -224,14 +260,14 @@ pub async fn subscribe(window: WebviewWindow, group: String) -> super::Result<()
 }
 
 #[tauri::command]
-pub fn unsubscribe(window: WebviewWindow, group: String) -> super::Result<()> {
+pub fn unsubscribe(window: WebviewWindow, subscription: String) -> super::Result<()> {
     super::local(&window)?;
     if let Some(task) = window
         .app_handle()
         .state::<Streams>()
         .lock()
         .unwrap()
-        .remove(&group)
+        .remove(&subscription)
     {
         task.abort();
     }
@@ -244,14 +280,15 @@ mod tests {
     #[test]
     fn only_local_app_can_read_and_write_api() {
         for method in ["GET", "POST", "PUT", "DELETE", "OPTIONS"] {
-            for origin in ["tauri://localhost", "http://tauri.localhost"] {
+            {
+                let origin = "http://127.0.0.1:12345";
                 let req = Request::builder()
                     .method(method)
                     .uri("hub://localhost/api/v1/me")
                     .header(header::ORIGIN, origin)
                     .body(Vec::new())
                     .unwrap();
-                assert!(allowed(&req));
+                assert!(allowed(&req, &"http://127.0.0.1:12345".parse().unwrap()));
             }
             for origin in [
                 "hub://localhost",
@@ -265,7 +302,7 @@ mod tests {
                     .header(header::ORIGIN, origin)
                     .body(Vec::new())
                     .unwrap();
-                assert!(!allowed(&req));
+                assert!(!allowed(&req, &"http://127.0.0.1:12345".parse().unwrap()));
             }
         }
         for uri in [
@@ -276,24 +313,29 @@ mod tests {
         ] {
             let req = Request::builder()
                 .uri(uri)
-                .header(header::ORIGIN, "tauri://localhost")
+                .header(header::ORIGIN, "http://127.0.0.1:12345")
                 .body(Vec::new())
                 .unwrap();
-            assert!(!allowed(&req), "{uri}");
+            assert!(
+                !allowed(&req, &"http://127.0.0.1:12345".parse().unwrap()),
+                "{uri}"
+            );
         }
     }
     #[test]
     fn documents_are_sandboxed_and_cannot_mutate() {
         let uri = "hub://localhost/api/v1/groups/algebra/attachments/1";
         assert!(allowed(
-            &Request::builder().uri(uri).body(Vec::new()).unwrap()
+            &Request::builder().uri(uri).body(Vec::new()).unwrap(),
+            &"http://127.0.0.1:12345".parse().unwrap()
         ));
         assert!(!allowed(
             &Request::builder()
                 .method("POST")
                 .uri(uri)
                 .body(Vec::new())
-                .unwrap()
+                .unwrap(),
+            &"http://127.0.0.1:12345".parse().unwrap()
         ));
         let reply = response(200, Vec::new(), None);
         assert_eq!(
@@ -306,5 +348,85 @@ mod tests {
                 .contains_key(header::ACCESS_CONTROL_ALLOW_ORIGIN)
         );
         assert!(!reply.headers().contains_key(header::SET_COOKIE));
+    }
+    #[tokio::test]
+    async fn proxy_preserves_bytes_and_ranges_and_never_follows_redirects() {
+        use axum::{Router, response::IntoResponse, routing::any};
+        let app = Router::new().fallback(any(|request: axum::extract::Request| async move {
+            assert_eq!(
+                request.headers()[header::AUTHORIZATION],
+                "Bearer native-secret"
+            );
+            assert!(!request.headers().contains_key(header::COOKIE));
+            if request.uri().path().ends_with("redirect") {
+                return (
+                    axum::http::StatusCode::FOUND,
+                    [(header::LOCATION, "http://evil.test/")],
+                )
+                    .into_response();
+            }
+            assert_eq!(
+                request.headers()[header::CONTENT_TYPE],
+                "multipart/form-data; boundary=upload"
+            );
+            assert_eq!(request.headers()[header::RANGE], "bytes=0-9");
+            let bytes = axum::body::to_bytes(request.into_body(), 1024)
+                .await
+                .unwrap();
+            assert_eq!(&bytes[..], b"\0binary\r\nupload\xff");
+            (
+                axum::http::StatusCode::PARTIAL_CONTENT,
+                [
+                    (header::CONTENT_TYPE, "application/pdf"),
+                    (header::CONTENT_RANGE, "bytes 0-9/10"),
+                ],
+                b"%PDF-test".to_vec(),
+            )
+                .into_response()
+        }));
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let base = format!("http://{}", listener.local_addr().unwrap());
+        let task = tokio::spawn(async move {
+            axum::serve(listener, app).await.unwrap();
+        });
+        let request = Request::builder()
+            .method("POST")
+            .uri("hub://localhost/api/v1/upload")
+            .header(header::CONTENT_TYPE, "multipart/form-data; boundary=upload")
+            .header(header::RANGE, "bytes=0-9")
+            .header(header::COOKIE, "must-not-forward=this")
+            .body(b"\0binary\r\nupload\xff".to_vec())
+            .unwrap();
+        let (status, headers, body) = forward_to(request, &base, "native-secret").await.unwrap();
+        assert_eq!(status, 206);
+        assert_eq!(headers[header::CONTENT_RANGE], "bytes 0-9/10");
+        assert_eq!(body, b"%PDF-test");
+        let request = Request::builder()
+            .uri("hub://localhost/api/v1/redirect")
+            .body(Vec::new())
+            .unwrap();
+        assert!(forward_to(request, &base, "native-secret").await.is_err());
+        task.abort();
+    }
+
+    #[test]
+    fn unicode_identifiers_work_but_encoded_traversal_does_not() {
+        for (path, expected) in [
+            ("/api/v1/groups/a/library/%CE%B1.%CE%B2", true),
+            ("/api/v1/%2e%2e/me", false),
+            ("/api/v1/a%2fb", false),
+            ("/api/v1/a%5cb", false),
+        ] {
+            let request = Request::builder()
+                .uri(format!("hub://localhost{path}"))
+                .header(header::ORIGIN, "http://127.0.0.1:12345")
+                .body(Vec::new())
+                .unwrap();
+            assert_eq!(
+                allowed(&request, &"http://127.0.0.1:12345".parse().unwrap()),
+                expected,
+                "{path}"
+            );
+        }
     }
 }

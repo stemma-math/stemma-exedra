@@ -30,8 +30,17 @@
 </script>
 
 <div class="public-frame">
-  <stemma-light bind:this={light} preset="hero" progress="1" class="public-frame__light"></stemma-light>
+  <stemma-light
+    bind:this={light}
+    preset="hero"
+    progress="1"
+    class="public-frame__light"
+  ></stemma-light>
   <div class="public-frame__content">
-    {#if front}{@render children()}{:else}<AccountFrame>{@render children()}</AccountFrame>{/if}
+    {#if front}
+      {@render children()}
+    {:else}
+      <AccountFrame>{@render children()}</AccountFrame>
+    {/if}
   </div>
 </div>

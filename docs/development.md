@@ -30,10 +30,12 @@ includes its native clippy and tests. On Linux, install
 
 `web/` builds both interfaces. `pnpm --dir web build` checks that the browser
 bundle contains no desktop UI or Tauri modules. `build:desktop` bundles the same
-routes with local sign-in and settings into `desktop/dist`. The app never loads
-a remote frontend: Rust adds the native device token to `hub://localhost` requests
+routes with local sign-in and settings into `desktop/dist`. The app serves its bundle on a private loopback origin. Rust adds the native device token to `hub://localhost` requests
 and forwards live events. Attachments and PDFs use that separate, sandboxed origin;
-only the bundled main window has native capabilities. Its CSP permits local scripts
+only the bundled main window at that exact origin has native capabilities.
+Tauri treats registered custom schemes as local, so local capabilities are disabled;
+the loopback origin receives an explicit capability. Its port stays stable for
+local preferences; startup refuses an occupied port. Its CSP permits local scripts
 only, with an external bootstrap. Markdown disables HTML and trusted KaTeX features
 and only accepts web and mail links.
 

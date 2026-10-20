@@ -15,6 +15,7 @@ use tauri::menu::{Menu, MenuItem, MenuItemKind, PredefinedMenuItem};
 use tauri::{Emitter, Manager, State, WebviewWindow};
 use transport::{subscribe, unsubscribe};
 
+mod page;
 mod transport;
 use tokio::sync::Mutex;
 
@@ -25,24 +26,10 @@ fn error(error: impl std::fmt::Display) -> String {
     error.to_string()
 }
 
-// Remote hub pages never receive native machine access, even if they try
-// invoking an application command directly.
-fn trusted_machine_url(url: &tauri::Url) -> bool {
-    let origin = url.origin().ascii_serialization();
-    let local_origin =
-        (url.scheme() == "tauri" && url.host_str() == Some("localhost") && url.port().is_none())
-            || origin == "http://tauri.localhost";
-    let dev_origin = cfg!(debug_assertions) && origin == "http://127.0.0.1:1420";
-    local_origin || dev_origin
-}
-
-fn machine_page(label: &str, url: &tauri::Url) -> bool {
-    label == "main" && trusted_machine_url(url)
-}
-
 fn local(window: &WebviewWindow) -> Result<()> {
     let url = window.url().map_err(error)?;
-    if !machine_page(window.label(), &url) {
+    let origin = window.app_handle().state::<page::Origin>();
+    if window.label() != "main" || !page::same_origin(&url, &origin.0) {
         return Err("Local machine access denied".into());
     }
     Ok(())
@@ -131,7 +118,11 @@ async fn snapshot(window: WebviewWindow) -> Result<Snapshot> {
     } else {
         false
     };
-    let service = service::status().await.map_err(error)?;
+    let mut service = service::status().await.map_err(error)?;
+    if machine.is_none() {
+        service.running = false;
+        service.connected = None;
+    }
     let personal = service.personal;
     let workshop = service.workshop;
     Ok(Snapshot {
@@ -182,7 +173,7 @@ async fn login(
     }
     stemma_client::sign_in::password(&url, &username, &password, "desktop", None)
         .await
-        .map_err(error)?;
+        .map_err(|e| format!("{e:#}"))?;
     transport::stop(window.app_handle());
     Ok(())
 }
@@ -357,14 +348,26 @@ fn main() {
     tauri::Builder::default()
         .manage(Mutex::new(()))
         .manage(transport::Streams::default())
-        .register_asynchronous_uri_scheme_protocol("hub", |_context, request, responder| {
+        .register_asynchronous_uri_scheme_protocol("hub", |context, request, responder| {
+            let origin = context.app_handle().state::<page::Origin>().0.clone();
             tauri::async_runtime::spawn(async move {
-                responder.respond(transport::proxy(request).await);
+                responder.respond(transport::proxy(request, &origin).await);
             });
         })
         .setup(|app| {
-            tauri::WebviewWindowBuilder::from_config(app, &app.config().app.windows[0])?
-                .on_navigation(trusted_machine_url)
+            let origin = if cfg!(debug_assertions) {
+                // A different host from devUrl: it must be Remote to Tauri's ACL too.
+                "http://localhost:1420/".parse()?
+            } else {
+                tauri::async_runtime::block_on(page::serve(app.handle().clone()))?
+            };
+            app.add_capability(page::capability(&origin).to_string())?;
+            app.manage(page::Origin(origin.clone()));
+            let allowed_origin = origin.clone();
+            let mut window = app.config().app.windows[0].clone();
+            window.url = tauri::WebviewUrl::External(origin);
+            tauri::WebviewWindowBuilder::from_config(app, &window)?
+                .on_navigation(move |url| page::same_origin(url, &allowed_origin))
                 .build()?;
             let menu = Menu::default(app.handle())?;
             let item = MenuItem::with_id(app, "settings", "Settings…", true, Some("CmdOrCtrl+,"))?;
@@ -423,36 +426,10 @@ mod tests {
     }
 
     #[test]
-    fn remote_content_cannot_be_a_machine_page() {
-        for url in [
-            "https://stemma.example.org",
-            "https://tauri.localhost",
-            "http://localhost:8080",
-            "http://tauri.localhost.evil.test",
-            "file:///tmp/page.html",
-            "http://tauri.localhost:8080/",
-            "hub://localhost/api/v1/groups/a/attachments/1",
-            "http://hub.localhost/api/v1/groups/a/papers/p/pdf",
-        ] {
-            let url = url.parse().unwrap();
-            assert!(!super::trusted_machine_url(&url), "{url}");
-            for label in ["main", "machine", "hub"] {
-                assert!(!super::machine_page(label, &url), "{label}: {url}");
-            }
-        }
-        for url in [
-            "tauri://localhost",
-            "tauri://localhost/",
-            "tauri://localhost/index.html?settings",
-        ] {
-            assert!(super::trusted_machine_url(&url.parse().unwrap()));
-        }
-    }
-    #[test]
     fn capabilities_and_csp_are_local_only() {
         let cap: serde_json::Value =
             serde_json::from_str(include_str!("../capabilities/local.json")).unwrap();
-        assert_eq!(cap["local"], true);
+        assert_eq!(cap["local"], false);
         assert_eq!(cap["windows"], serde_json::json!(["main"]));
         assert!(cap.get("remote").is_none());
         let config: serde_json::Value =
@@ -465,9 +442,5 @@ mod tests {
             assert!(csp.contains("frame-src hub: http://hub.localhost;"));
             assert!(csp.contains("object-src 'none'"));
         }
-        assert!(!super::machine_page(
-            "machine",
-            &"tauri://localhost".parse().unwrap()
-        ));
     }
 }
