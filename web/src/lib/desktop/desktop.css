@@ -22,6 +22,26 @@ html[data-desktop] .shell__main {
 }
 html[data-desktop] body {
   background: var(--surface-subtle);
+  cursor: default;
+  -webkit-user-select: none;
+  user-select: none;
+}
+/* In the app, the interface is not text to select; what people wrote, and
+ * what one may want to copy, still is. */
+html[data-desktop]
+:is(
+  .document,
+  .message__text,
+  .identifier,
+  .copy-block,
+  pre,
+  code,
+  input,
+  textarea,
+  [contenteditable]
+) {
+  -webkit-user-select: text;
+  user-select: text;
 }
 .desktop-drag {
   position: fixed;
