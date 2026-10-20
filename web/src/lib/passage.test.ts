@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { passage } from "./passage.ts";
+import { milliseconds, passage } from "./passage.ts";
 
 describe("the passage", () => {
   it("withdraws the front early and reveals the account late, in either direction", () => {
@@ -16,5 +16,14 @@ describe("the passage", () => {
       insideOpacity: 0.5,
       insideRise: 0,
     });
+  });
+});
+
+describe("a CSS time", () => {
+  it("reads seconds as the built stylesheet writes them, and milliseconds", () => {
+    expect(milliseconds("1.6s", 0)).toBe(1600);
+    expect(milliseconds(" .18s", 0)).toBe(180);
+    expect(milliseconds("1600ms", 0)).toBe(1600);
+    expect(milliseconds("", 1600)).toBe(1600);
   });
 });

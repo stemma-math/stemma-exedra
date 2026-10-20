@@ -14,3 +14,9 @@ export function passage(progress: number, reduced: boolean) {
     insideRise: reduced ? 0 : 1 - come,
   };
 }
+
+/** A CSS time in milliseconds: the built stylesheet writes `1600ms` as `1.6s`. */
+export function milliseconds(time: string, fallback: number): number {
+  const match = /^\s*(-?[\d.]+)(m?s)\s*$/.exec(time);
+  return match ? Number.parseFloat(match[1]) * (match[2] === "s" ? 1000 : 1) : fallback;
+}

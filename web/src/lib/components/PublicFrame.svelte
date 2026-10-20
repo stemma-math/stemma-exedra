@@ -4,7 +4,7 @@
   import { onNavigate } from "$app/navigation";
   import { page } from "$app/state";
   import type { StemmaLight } from "@stemma-math/design-elements/light.js";
-  import { passage } from "../passage.ts";
+  import { milliseconds, passage } from "../passage.ts";
   import AccountFrame from "./AccountFrame.svelte";
   import Front from "./Front.svelte";
 
@@ -21,9 +21,9 @@
     cancel();
     const from = progress;
     const styles = getComputedStyle(document.documentElement);
-    const duration = Number.parseFloat(
-      styles.getPropertyValue(reduced ? "--dur-ui" : "--dur-long"),
-    );
+    const duration = reduced
+      ? milliseconds(styles.getPropertyValue("--dur-ui"), 180)
+      : milliseconds(styles.getPropertyValue("--dur-long"), 1600);
     const since = performance.now();
     moving = true;
     return new Promise((resolve) => {
