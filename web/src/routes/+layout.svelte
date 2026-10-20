@@ -6,6 +6,7 @@
   import favicon32 from "@stemma-math/design/icons/favicon-32.png?url";
   import favicon from "@stemma-math/design/icons/favicon.svg?url";
 
+  import Ask from "#lib/components/Ask.svelte";
   import PublicFrame from "#lib/components/PublicFrame.svelte";
   import { goto } from "$app/navigation";
   import { page } from "$app/state";
@@ -54,5 +55,6 @@
     </div>
   {/if}
 
+  <Ask />
   <stemma-toast-region label="Notifications"></stemma-toast-region>
 </div>

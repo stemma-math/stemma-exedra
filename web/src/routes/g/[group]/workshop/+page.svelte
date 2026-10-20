@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { ask } from "#lib/ask.svelte.ts";
   import { api, approverName, type ConsumptionDay, RUNNER_NAMES, type Task, type TaskState } from "#lib/api.ts";
   import { canApprove, canReject } from "#lib/approvals.ts";
   import Glyph from "#lib/components/Glyph.svelte";
@@ -74,9 +75,9 @@
 
   async function decide(task: Task, approve: boolean) {
     const question = approve
-      ? `Approve the changes of w${task.number}?`
-      : `Reject the changes of w${task.number}? Nothing goes in.`;
-    if (!confirm(question)) return;
+      ? { title: `Approve the changes of w${task.number}?`, action: "Approve" }
+      : { title: `Reject the changes of w${task.number}?`, text: "Nothing goes in.", action: "Reject", danger: true };
+    if (!(await ask(question))) return;
     try {
       if (approve) await api.approveTask(group.slug, task.number);
       else await api.rejectTask(group.slug, task.number);

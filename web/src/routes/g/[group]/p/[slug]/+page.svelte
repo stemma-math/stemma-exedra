@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { ask as askFirst } from "#lib/ask.svelte.ts";
   import { hubUrl } from "#lib/transport.svelte.ts";
   import { goto } from "$app/navigation";
   import { page } from "$app/state";
@@ -83,7 +84,9 @@
   }
 
   async function removeAuthor(username: string) {
-    if (!paper || !confirm(`Take ${username} from the authors of p/${paper.slug}?`)) return;
+    if (!paper) return;
+    const yes = await askFirst({ title: `Take ${username} from the authors of p/${paper.slug}?`, action: "Take", danger: true });
+    if (!yes) return;
     try {
       await api.removeAuthor(group.slug, paper.slug, username);
       await load();

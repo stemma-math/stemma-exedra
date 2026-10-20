@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { ask } from "#lib/ask.svelte.ts";
   import { page } from "$app/state";
   import { addressPath, parseAddress } from "#lib/address.ts";
   import { ApiError, api, approverName, type TaskPage } from "#lib/api.ts";
@@ -81,9 +82,14 @@
   async function review(approve: boolean) {
     if (!task) return;
     const question = approve
-      ? `Approve the changes of w${task.number}?`
-      : `Reject the changes of w${task.number}? Nothing goes in the library.`;
-    if (!confirm(question)) return;
+      ? { title: `Approve the changes of w${task.number}?`, action: "Approve" }
+      : {
+          title: `Reject the changes of w${task.number}?`,
+          text: "Nothing goes in the library.",
+          action: "Reject",
+          danger: true,
+        };
+    if (!(await ask(question))) return;
     try {
       if (approve) await api.approveTask(group.slug, task.number);
       else await api.rejectTask(group.slug, task.number);
@@ -94,7 +100,15 @@
   }
 
   async function cancel() {
-    if (!task || !confirm(`Cancel w${task.number}? Nothing it did is kept.`)) return;
+    if (!task) return;
+    const yes = await ask({
+      title: `Cancel w${task.number}?`,
+      text: "Nothing it did is kept.",
+      action: `Cancel w${task.number}`,
+      dismiss: "Keep it",
+      danger: true,
+    });
+    if (!yes) return;
     try {
       await api.cancelTask(group.slug, task.number);
       await load();

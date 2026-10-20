@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { ask } from "#lib/ask.svelte.ts";
   import {
     api,
     isolationName,
@@ -61,7 +62,13 @@
   }
 
   async function remove(machine: WorkshopMachine) {
-    if (!confirm(`Take “${machine.name}” from the workshop? Its jobs wait for another machine.`)) return;
+    const yes = await ask({
+      title: `Take “${machine.name}” from the workshop?`,
+      text: "Its jobs wait for another machine.",
+      action: "Take it",
+      danger: true,
+    });
+    if (!yes) return;
     try {
       await api.removeWorkshopMachine(group, machine.id);
       await load();

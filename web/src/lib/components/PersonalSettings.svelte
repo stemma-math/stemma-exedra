@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { ask } from "#lib/ask.svelte.ts";
   import { api, type ApiToken, type CreatedToken } from "#lib/api.ts";
   import MachineSettings from "./MachineSettings.svelte";
   import PersonalAgentSettings from "./PersonalAgentSettings.svelte";
@@ -51,7 +52,13 @@
   }
 
   async function revoke(token: ApiToken) {
-    if (!confirm(`Revoke the token “${token.name}”? Whatever uses it stops working.`)) return;
+    const yes = await ask({
+      title: `Revoke the token “${token.name}”?`,
+      text: "Whatever uses it stops working.",
+      action: "Revoke",
+      danger: true,
+    });
+    if (!yes) return;
     try {
       await api.revokeToken(token.id);
       tokens = tokens.filter((t) => t.id !== token.id);

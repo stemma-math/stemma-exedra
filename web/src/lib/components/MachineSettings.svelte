@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { ask } from "#lib/ask.svelte.ts";
   import { api, isolationName, type Machine, RUNNER_NAMES } from "#lib/api.ts";
   import { exactly, when } from "#lib/format.ts";
   import { toastError } from "#lib/toast.ts";
@@ -39,8 +40,13 @@
   }
 
   async function revoke(machine: Machine) {
-    if (!confirm(`Revoke the machine “${machine.name}”? It is disconnected, and your jobs wait for another.`))
-      return;
+    const yes = await ask({
+      title: `Revoke the machine “${machine.name}”?`,
+      text: "It is disconnected, and your jobs wait for another.",
+      action: "Revoke",
+      danger: true,
+    });
+    if (!yes) return;
     try {
       await api.revokeMachine(machine.id);
       machines = machines.filter((m) => m.id !== machine.id);

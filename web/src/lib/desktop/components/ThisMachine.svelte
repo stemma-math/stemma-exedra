@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { ask } from "#lib/ask.svelte.ts";
   import AgentAvatar from "../../components/AgentAvatar.svelte";
   import { RUNNER_NAMES, type Snapshot } from "../api.ts";
   import type { MachineControls } from "../machine.svelte.ts";
@@ -28,8 +29,15 @@
       "The service is on.",
     );
   }
-  function remove() {
-    if (confirm("Remove this machine and stop the service?"))
+  async function remove() {
+    if (
+      await ask({
+        title: "Remove this machine?",
+        text: "Its service stops.",
+        action: "Remove",
+        danger: true,
+      })
+    )
       controls.save({ kind: "remove" }, "Machine removed.");
   }
 </script>

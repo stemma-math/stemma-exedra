@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { ask } from "#lib/ask.svelte.ts";
   import { hubUrl } from "#lib/transport.svelte.ts";
   import { api, type Message } from "#lib/api.ts";
   import { exactly, fileSize, when } from "#lib/format.ts";
@@ -54,7 +55,13 @@
   }
 
   async function remove() {
-    if (!confirm(`Delete message #${message.number}? Its number stays, with nothing in it.`)) return;
+    const yes = await ask({
+      title: `Delete message #${message.number}?`,
+      text: "Its number stays, with nothing in it.",
+      action: "Delete",
+      danger: true,
+    });
+    if (!yes) return;
     try {
       onchange(await api.deleteMessage(group, thread, message.number));
     } catch (error) {

@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { ask } from "#lib/ask.svelte.ts";
   import AgentAvatar from "./AgentAvatar.svelte";
   import { api, type PersonalAgent, RUNNER_NAMES, RUNNERS } from "#lib/api.ts";
   import { toastError } from "#lib/toast.ts";
@@ -55,9 +56,9 @@
 
   async function remove(agent: PersonalAgent) {
     const question = agent.default
-      ? `Put @${agent.handle} back as it was?`
-      : `Remove @${agent.handle}? What it wrote stays.`;
-    if (!confirm(question)) return;
+      ? { title: `Put @${agent.handle} back as it was?`, action: "Put it back" }
+      : { title: `Remove @${agent.handle}?`, text: "What it wrote stays.", action: "Remove" };
+    if (!(await ask({ ...question, danger: true }))) return;
     try {
       await api.deleteMyAgent(agent.handle);
       await load();

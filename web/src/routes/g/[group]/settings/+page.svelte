@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { ask } from "#lib/ask.svelte.ts";
   import { goto } from "$app/navigation";
   import { api, type CreatedInvitation, type Invitation, type Member, type Role } from "#lib/api.ts";
   import { exactly, when } from "#lib/format.ts";
@@ -76,9 +77,9 @@
   async function remove(member: Member) {
     const leaving = member.id === session.me?.id;
     const question = leaving
-      ? `Leave ${group.name}?`
-      : `Remove ${member.display_name} from ${group.name}? What they wrote stays.`;
-    if (!confirm(question)) return;
+      ? { title: `Leave ${group.name}?`, action: "Leave" }
+      : { title: `Remove ${member.display_name} from ${group.name}?`, text: "What they wrote stays.", action: "Remove" };
+    if (!(await ask({ ...question, danger: true }))) return;
     try {
       await api.removeMember(group.slug, member.id);
       if (leaving) {
