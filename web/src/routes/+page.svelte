@@ -1,11 +1,11 @@
 <script lang="ts">
+  import { page } from "$app/state";
   import { goto } from "$app/navigation";
   import { api } from "#lib/api.ts";
   import { homeOf, session } from "#lib/session.svelte.ts";
   import { onMount } from "svelte";
-  import type { StemmaLight } from "@stemma-math/design-elements/light.js";
+  import { doorway } from "#lib/doorway.svelte.ts";
 
-  let light = $state<StemmaLight>();
   let entering = $state(false);
 
   async function enter(event: MouseEvent) {
@@ -14,8 +14,7 @@
     if (entering) return;
     entering = true;
     const href = (event.currentTarget as HTMLAnchorElement).href;
-    await light?.withdraw();
-    await goto(href);
+    await doorway.enter(href);
     entering = false;
   }
 
@@ -39,12 +38,11 @@
 
 {#if !session.me}
   <main class="doorway">
-    <stemma-light bind:this={light} preset="hero" class="doorway__light"></stemma-light>
     <div class="front" class:front--entering={entering}>
       <div class="front__brand">
         <stemma-mark animated appearance="dark"></stemma-mark>
         <h1 class="wordmark">Stemma</h1>
-        <p>Where a research group does mathematics by talking.</p>
+        <p class="label">Where a research group does mathematics by talking.</p>
       </div>
       {#if setupNeeded}
         <p class="message message--info">
@@ -52,11 +50,12 @@
         </p>
       {:else}
         <div class="front__actions">
-          <a class="button button--primary" href="/login" onclick={enter}>Log in</a>
-          <a class="button" href="/signup" onclick={enter}>Create account</a>
+          <a class="button button--primary" href="/login" onclick={enter}>Enter Stemma</a>
+          <a class="button" href="/signup" onclick={enter}>Create an account</a>
         </div>
-        <p class="front__note">An account is made with an invitation from one of a group's admins.</p>
+
       {/if}
+      <footer class="front__host identifier">{page.url.host}</footer>
     </div>
   </main>
 {/if}

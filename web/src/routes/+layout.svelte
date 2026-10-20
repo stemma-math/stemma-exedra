@@ -6,6 +6,7 @@
   import favicon32 from "@stemma-math/design/icons/favicon-32.png?url";
   import favicon from "@stemma-math/design/icons/favicon.svg?url";
 
+  import PublicFrame from "#lib/components/PublicFrame.svelte";
   import { goto } from "$app/navigation";
   import { page } from "$app/state";
   import { loadSession, session } from "#lib/session.svelte.ts";
@@ -46,7 +47,7 @@
   {#if __STEMMA_DESKTOP__}
     {#if Desktop}<Desktop>{@render children()}</Desktop>{/if}
   {:else if session.loaded && (session.me || isPublic)}
-    {@render children()}
+    {#if !session.me && isPublic}<PublicFrame>{@render children()}</PublicFrame>{:else}{@render children()}{/if}
   {:else}
     <div class="page page--centered" aria-busy="true">
       <span class="spinner" role="status" aria-label="Loading"></span>

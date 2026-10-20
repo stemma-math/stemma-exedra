@@ -1,6 +1,6 @@
 <script lang="ts">
-  import { onMount } from "svelte";
-  import type { StemmaLight } from "@stemma-math/design-elements/light.js";
+  import { goto } from "$app/navigation";
+  import { homeOf } from "../../session.svelte.ts";
   import { login } from "../api.ts";
   import type { MachineControls } from "../machine.svelte.ts";
 
@@ -9,11 +9,6 @@
   }
 
   let { controls }: Props = $props();
-  let light = $state<StemmaLight>();
-
-  onMount(() => {
-    if (light) light.progress = 1;
-  });
 
   function signIn(event: Event) {
     event.preventDefault();
@@ -22,6 +17,7 @@
         try {
           await login(controls.url, controls.username, controls.password);
           await controls.load();
+          if (controls.data?.me) await goto(homeOf(controls.data.me), { replaceState: true });
         } finally {
           controls.password = "";
         }
@@ -33,13 +29,7 @@
 </script>
 
 <main class="entrance" aria-busy={controls.busy}>
-  <stemma-light
-    preset="still"
-    bind:this={light}
-    class="entrance__light"
-    aria-hidden="true"
-  ></stemma-light>
-  <div class="entrance__drag" data-tauri-drag-region></div>
+  <stemma-light preset="still" class="entrance__light" aria-hidden="true"></stemma-light>
   <section class="card panel stack entrance__card">
     <header class="row">
       <stemma-mark></stemma-mark>
@@ -82,6 +72,5 @@
         {controls.busy ? "Connecting…" : "Sign in"}
       </button>
     </form>
-
   </section>
 </main>

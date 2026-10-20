@@ -61,16 +61,13 @@
   }
 </script>
 
-<svelte:head><title>Create account · Stemma</title></svelte:head>
+<svelte:head><title>Create an account · Stemma</title></svelte:head>
 
 <main class="page page--centered">
   <div class="sign-in">
-    <a class="sign-in__brand" href="/" aria-label="Stemma">
-      <stemma-mark></stemma-mark>
-      <span class="wordmark">Stemma</span>
-    </a>
+
     <form class="card card--raised card__body form" onsubmit={submit}>
-      <h1>Create account</h1>
+      <h1>Create an account</h1>
       <div class="field">
         <label class="field__label" for="invitation">Invitation</label>
         <input

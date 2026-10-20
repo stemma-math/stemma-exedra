@@ -38,6 +38,7 @@
       includes = [
         "web/*.json"
         "web/*.ts"
+        "web/scripts/*.mjs"
         "web/src/**/*.ts"
         "web/src/**/*.svelte"
         "web/src/**/*.css"

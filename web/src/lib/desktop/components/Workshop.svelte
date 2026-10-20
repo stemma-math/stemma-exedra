@@ -29,14 +29,24 @@
             )}
         />
       </label>
-      <p class="quiet">Lend this machine to the group’s workshop. The workshop starts when you lend it and stops when no groups use it.</p>
+      <p class="quiet">
+        Lend this machine to the group’s workshop. The workshop starts when you lend it and stops
+        when no groups use it.
+      </p>
     </section>
   {/each}
   {#if !data.image_ready}
     <section class="message message--warning stack stack--tight" role="status">
       <div class="setting__row">
         <span>The workshop’s image is not ready on this machine.</span>
-        <button class="button" disabled={controls.busy || !data.registered} onclick={() => controls.prepare()}>Prepare the image</button>
+        <button
+          type="button"
+          class="button"
+          disabled={controls.busy || !data.registered}
+          onclick={() => controls.prepare()}
+        >
+          Prepare the image
+        </button>
       </div>
       {#if controls.preparing}
         <progress class="progress" aria-label="Preparing the workshop image"></progress>

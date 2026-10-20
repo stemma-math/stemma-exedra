@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { onMount, tick } from "svelte";
   import { afterNavigate } from "$app/navigation";
   import { page } from "$app/state";
   import { ApiError, api, type Group } from "#lib/api.ts";
@@ -16,6 +17,17 @@
   let missing = $state(false);
   /** Whether the sidebar is open over the page, on a narrow screen. */
   let drawer = $state(false);
+  let narrow = $state(false);
+  let sidebar = $state<HTMLElement>();
+  let menuButton = $state<HTMLButtonElement>();
+  onMount(() => {
+    const query = matchMedia("(max-width: 48rem)");
+    const update = () => { narrow = query.matches; };
+    update(); query.addEventListener("change", update);
+    return () => query.removeEventListener("change", update);
+  });
+  async function openDrawer() { drawer = true; await tick(); sidebar?.querySelector<HTMLElement>("a, button")?.focus(); }
+  async function closeDrawer() { drawer = false; await tick(); menuButton?.focus(); }
 
   setGroupContext({
     get group() {
@@ -53,7 +65,7 @@
   });
 
   function onkeydown(event: KeyboardEvent) {
-    if (event.key === "Escape" && drawer) drawer = false;
+    if (event.key === "Escape" && drawer) void closeDrawer();
   }
 </script>
 
@@ -67,25 +79,26 @@
   </main>
 {:else if group && group.slug === slug}
   <div class={["shell", drawer && "is-open"]}>
-    <header class="shell__bar">
+    <header class="shell__bar" inert={drawer && narrow}>
       <button
+        bind:this={menuButton}
         type="button"
         class="button button--quiet button--icon"
         aria-label="Open the menu"
         aria-expanded={drawer}
         aria-controls="sidebar"
-        onclick={() => (drawer = true)}
+        onclick={openDrawer}
       >
         <Glyph name="menu" />
       </button>
       <a class="shell__title" href="/g/{group.slug}">{group.name}</a>
     </header>
-    <aside class="sidebar" id="sidebar" aria-label="{group.name}, its places">
+    <aside bind:this={sidebar} inert={narrow && !drawer} class="sidebar brand-light" id="sidebar" aria-label="{group.name}, its places">
       <Sidebar {group} />
     </aside>
     <!-- TODO(design): drawer scrim, https://github.com/stemma-math/design/issues/18. -->
-    <button type="button" class="shell__scrim" aria-label="Close the menu" tabindex="-1" onclick={() => (drawer = false)}></button>
-    <div class="shell__main">
+    <button type="button" class="shell__scrim" aria-label="Close the menu" tabindex="-1" onclick={closeDrawer}></button>
+    <div class="shell__main" inert={drawer && narrow}>
       {@render children()}
     </div>
   </div>

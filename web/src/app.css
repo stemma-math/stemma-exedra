@@ -4,11 +4,6 @@
  * @stemma-math/design: these rules only place its components and use its
  * tokens for space, rules and surfaces. */
 
-:root {
-  --measure: 46rem;
-  --page-wide: 72rem;
-}
-
 html,
 body {
   min-height: 100%;
@@ -23,7 +18,7 @@ body {
 /* ── A group: the sidebar beside its pages ────────────────────────── */
 
 .shell {
-  --sidebar-width: 16rem;
+  --sidebar-width: calc(var(--space-16) * 4);
   display: grid;
   grid-template-columns: var(--sidebar-width) minmax(0, 1fr);
   min-height: 100vh;
@@ -42,7 +37,6 @@ body {
   position: sticky;
   top: 0;
   height: 100vh;
-  background: var(--surface-subtle);
   border-right: 1px solid var(--divider);
 }
 
@@ -60,14 +54,6 @@ body {
   padding: var(--space-3);
 }
 
-.sidebar__top {
-  border-bottom: 1px solid var(--divider);
-}
-
-.sidebar__foot {
-  border-top: 1px solid var(--divider);
-}
-
 .sidebar__top stemma-menu {
   display: block;
   width: 100%;
@@ -76,11 +62,6 @@ body {
 .sidebar__switcher {
   width: 100%;
   justify-content: flex-start;
-}
-
-.sidebar__mark {
-  width: 1.5em;
-  flex-shrink: 0;
 }
 
 .sidebar__name {
@@ -135,15 +116,6 @@ body {
 
 .sidebar__empty {
   padding: var(--space-1) var(--space-3);
-}
-
-.sidebar__person {
-  padding-block: var(--button-inline);
-}
-
-.sidebar__foot > .sidebar__item {
-  flex: 1;
-  min-width: 0;
 }
 
 @media (max-width: 48rem) {
@@ -209,12 +181,6 @@ body {
   color: var(--on-dark-1);
 }
 
-.doorway__light {
-  position: absolute;
-  inset: 0;
-  z-index: -1;
-}
-
 .front {
   display: flex;
   flex-direction: column;
@@ -258,17 +224,12 @@ body {
   gap: var(--space-3);
 }
 
-.front__note {
-  max-width: var(--measure);
-  margin: 0;
-}
-
 /* ── Pages ──────────────────────────────────────────────────────────── */
 
 .page {
   box-sizing: border-box;
   width: 100%;
-  max-width: var(--page-wide);
+  max-width: calc(var(--space-16) * 18);
   margin: 0 auto;
   padding: var(--space-6);
 }
@@ -312,7 +273,7 @@ body {
 
 .sign-in {
   width: 100%;
-  max-width: 24rem;
+  max-width: calc(var(--space-16) * 6);
 }
 
 .sign-in__brand {
@@ -326,7 +287,7 @@ body {
 }
 
 .sign-in__brand stemma-mark {
-  width: 3rem;
+  width: var(--space-12);
 }
 
 .sign-in__brand--inline {
@@ -335,7 +296,7 @@ body {
 }
 
 .sign-in__brand--inline stemma-mark {
-  width: 1.75rem;
+  width: var(--space-6);
 }
 
 .sign-in__aside {
@@ -431,7 +392,7 @@ stemma-toast-region {
   right: var(--space-4);
   bottom: var(--space-4);
   z-index: 20;
-  max-width: 24rem;
+  max-width: calc(var(--space-16) * 6);
 }
 
 @media (max-width: 40rem) {
@@ -673,3 +634,63 @@ stemma-toast-region {
     --columns: minmax(0, 1fr);
   }
 }
+
+/* TODO(design): a brand-surface context, https://github.com/stemma-math/design/issues/20.
+ * These are design's
+ * on-dark tokens, mapped until design supplies that context. */
+.sidebar {
+  --ink-1: var(--on-dark-1);
+  --ink-2: var(--on-dark-2);
+  --ink-3: var(--on-dark-3);
+  --ink-4: var(--on-dark-4);
+  --surface-page: var(--on-dark-raised);
+  --surface-card: var(--on-dark-fill);
+  --surface-subtle: var(--on-dark-active);
+  --surface-field: var(--on-dark-raised);
+  --fill-muted: var(--on-dark-fill);
+  --border: var(--on-dark-line);
+  --border-strong: var(--on-dark-line);
+  --divider: var(--on-dark-line);
+  --accent-text: var(--on-dark-1);
+  --neutral-text: var(--on-dark-2);
+  --link: var(--on-dark-2);
+  background: none;
+}
+.sidebar__head { padding: var(--space-5) var(--space-5) var(--space-3); }
+.sidebar__head p { margin: var(--space-2) 0 0; }
+.sidebar__brand, .account-frame__brand { display: flex; align-items: center; gap: var(--space-3); color: inherit; text-decoration: none; }
+.sidebar__brand stemma-mark { width: var(--space-8); }
+.sidebar__brand .wordmark { font-size: var(--step-6); }
+.sidebar__top { border: 0; padding-top: 0; }
+.sidebar__switcher { padding: var(--space-3); white-space: normal; }
+.sidebar__name { text-align: left; gap: var(--space-1); }
+.sidebar__action { padding-inline: var(--space-3); }
+.sidebar__action .button { width: 100%; }
+.sidebar__foot { align-items: stretch; border: 0; padding: var(--space-3); }
+.sidebar__foot stemma-theme-switch { align-self: center; }
+.sidebar__user { display: flex; align-items: center; gap: var(--space-1); padding: var(--space-2); }
+.sidebar__person { flex: 1; min-width: 0; padding: 0; justify-content: start; }
+.sidebar__person :where(.chip) { align-self: start; }
+.sidebar__connection { display: flex; flex-direction: column; align-items: start; gap: var(--space-1); padding: var(--space-3); }
+.sidebar__connection .quiet { white-space: normal; }
+.truncate { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.account-frame { display: flex; flex: 1; flex-direction: column; min-height: 100dvh; }
+.account-frame__head { display: flex; justify-content: space-between; align-items: center; gap: var(--space-3); padding: var(--space-4) var(--space-8); }
+.account-frame__brand stemma-mark { width: var(--space-6); }
+.account-frame__body { display: flex; flex: 1; }
+.account-frame__foot { display: flex; flex-wrap: wrap; align-items: center; gap: var(--space-5); padding: var(--space-4) var(--space-6); }
+.front__host { margin-top: var(--space-3); color: var(--on-dark-3); }
+@media (max-width: 40rem) {
+  .account-frame__head { padding: var(--space-3); flex-wrap: wrap; }
+  .account-frame__foot { gap: var(--space-3); }
+  .front { padding-bottom: 0; }
+  .sidebar__switcher .avatar { flex-shrink: 0; }
+}
+
+.public-frame { position: relative; isolation: isolate; min-height: 100dvh; }
+.public-frame__light { position: fixed; inset: 0; z-index: -1; pointer-events: none; }
+.public-frame__content { min-height: 100dvh; }
+
+/* TODO(design): smaller avatar, https://github.com/stemma-math/design/issues/17.
+ * Sidebar chat rows use the spacing scale until the avatar has a small variant. */
+.sidebar__item .agent-avatar { width: var(--space-6); height: var(--space-6); }

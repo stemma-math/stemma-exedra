@@ -46,10 +46,7 @@
 
 <main class="page page--centered">
   <div class="sign-in">
-    <a class="sign-in__brand" href="/" aria-label="Stemma">
-      <stemma-mark></stemma-mark>
-      <span class="wordmark">Stemma</span>
-    </a>
+
     <form class="card card--raised card__body form" onsubmit={submit}>
       <h1>Log in</h1>
 

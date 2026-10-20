@@ -7,6 +7,11 @@
   import { session, signOut } from "#lib/session.svelte.ts";
   import { folded, type Section, toggle } from "#lib/sidebar.svelte.ts";
   import { applyThreadEvent } from "#lib/threads.ts";
+  import { initials } from "#lib/format.ts";
+  import { connection } from "#lib/transport.svelte.ts";
+  import { desktopUI } from "#lib/desktop-ui.svelte.ts";
+  import { ROLE_NAMES } from "#lib/roles.ts";
+  import AgentAvatar from "./AgentAvatar.svelte";
   import Avatar from "./Avatar.svelte";
   import Glyph from "./Glyph.svelte";
 
@@ -16,6 +21,7 @@
   let papers = $state<Paper[]>([]);
   let chats = $state<Thread[]>([]);
 
+  const host = $derived(connection.hub ? new URL(connection.hub).host : page.url.host);
   const base = $derived(`/g/${group.slug}`);
   const path = $derived(page.url.pathname);
   const query = $derived(page.url.searchParams.get("q") ?? "");
@@ -89,11 +95,15 @@
 {/snippet}
 
 <div class="sidebar__inner">
+  <header class="sidebar__head" data-window-drag>
+    <a class="sidebar__brand" href={base}><stemma-mark appearance="dark"></stemma-mark><span class="wordmark">Stemma</span></a>
+    <p class="identifier sidebar__text quiet" title={host}>{host}</p>
+  </header>
   <div class="sidebar__top">
     <stemma-menu>
-      <button type="button" class="button button--quiet sidebar__switcher" aria-label="Switch group, now {group.name}">
-        <stemma-mark class="sidebar__mark"></stemma-mark>
-        <span class="sidebar__name">{group.name}</span>
+      <button type="button" class="button sidebar__switcher" aria-label="Switch group, now {group.name}">
+        <span class="avatar avatar--square avatar--brand" aria-hidden="true">{initials(group.name)}</span>
+        <span class="sidebar__name stack stack--tight"><span class="sidebar__text" title={group.name}>{group.name}</span><span class="identifier quiet sidebar__text" title={group.slug}>{group.slug}</span></span>
         <Glyph name="chevron-up-down" small />
       </button>
       <div class="menu">
@@ -109,7 +119,11 @@
     </stemma-menu>
   </div>
 
+  <div class="sidebar__action"><a class="button button--primary" href="{base}/forum/new"><Glyph name="add" small /> New thread</a></div>
+  <!-- TODO(design): navigation item, https://github.com/stemma-math/design/issues/16.
+       Quiet buttons stand in for sidebar navigation. -->
   <nav class="sidebar__scroll" aria-label={group.name}>
+    <p class="label sidebar__empty">The group</p>
     <ul class="plain-list sidebar__list">
       <li>
         <a class="button button--quiet sidebar__item" href={base} aria-current={current(base, true)}>
@@ -190,7 +204,7 @@
                 href="{base}/t/{chat.number}"
                 aria-current={current(`${base}/t/${chat.number}`)}
               >
-                <span class="sidebar__text">{chat.title}</span>
+                <AgentAvatar name={chat.resident_agent ?? "Agent"} runner={chat.resident_runner} appearance="dark" /><span class="sidebar__text">{chat.title}</span>
               </a>
             </li>
           {/each}
@@ -204,15 +218,27 @@
     </section>
   </nav>
 
-  {#if session.me}
-    <div class="sidebar__foot">
-      <a class="button button--quiet sidebar__item sidebar__person" href="{base}/me" aria-current={current(`${base}/me`)}>
-        <Avatar user={session.me} />
-        <span class="sidebar__text">{session.me.display_name}</span>
-      </a>
-      <button type="button" class="button button--quiet button--icon sidebar__signout" aria-label="Log out" onclick={logOut}>
-        <Glyph name="log-out" />
-      </button>
-    </div>
-  {/if}
+  <div class="sidebar__foot stack stack--tight">
+    <stemma-theme-switch></stemma-theme-switch>
+    {#if __STEMMA_DESKTOP__}
+      <div class="card panel sidebar__connection" role="status">
+        <span class="chip" class:chip--success={connection.online}>{connection.online ? "Connected" : "Reconnecting"}</span>
+        <span class="quiet">{connection.pending ? "Sending…" : connection.online ? "Everything is sent" : "Waiting for the hub"}</span>
+        <span class="quiet">{desktopUI.serviceRunning ? desktopUI.serviceConnected ? "Machine online" : "Machine connecting" : "Machine service off"}</span>
+      </div>
+    {/if}
+    {#if session.me}
+      <div class="card sidebar__user">
+        <a class="button button--quiet sidebar__person" href="{base}/me" aria-current={current(`${base}/me`)}>
+          <Avatar user={session.me} />
+          <span class="stack stack--tight sidebar__text"><span class="sidebar__text" title={session.me.display_name}>{session.me.display_name}</span><span class="chip">{ROLE_NAMES[group.role]}</span></span>
+        </a>
+        {#if __STEMMA_DESKTOP__}
+          <button type="button" class="button button--quiet button--icon" aria-label="Settings" onclick={() => desktopUI.openSettings()}><Glyph name="settings" /></button>
+        {:else}
+          <button type="button" class="button button--quiet button--icon" aria-label="Log out" onclick={logOut}><Glyph name="log-out" /></button>
+        {/if}
+      </div>
+    {/if}
+  </div>
 </div>

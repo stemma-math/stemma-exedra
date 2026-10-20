@@ -111,11 +111,12 @@
     <div class="row">
       <div class="field grow">
         <label class="field__label" for="agent-runner-{machine.id}">Runner</label>
+        <span class="row"><AgentAvatar name={RUNNER_NAMES[runner] ?? runner} {runner} />
         <select id="agent-runner-{machine.id}" class="input" bind:value={runner}>
           {#each RUNNERS as option (option)}
             <option value={option}>{RUNNER_NAMES[option]}</option>
           {/each}
-        </select>
+        </select></span>
       </div>
       <div class="field grow">
         <label class="field__label" for="agent-model-{machine.id}">Model</label>

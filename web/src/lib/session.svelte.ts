@@ -1,5 +1,6 @@
 // The person signed in, shared by every page.
 
+import { desktopUI } from "./desktop-ui.svelte.ts";
 import { type Me, api } from "./api";
 
 export const session = $state<{ me: Me | null; loaded: boolean }>({ me: null, loaded: false });
@@ -22,7 +23,8 @@ export function setSession(me: Me | null) {
 
 /** Signs out of the hub, here. */
 export async function signOut() {
-  await api.signOut().catch(() => {});
+  if (__STEMMA_DESKTOP__) await desktopUI.signOut();
+  else await api.signOut().catch(() => {});
   setSession(null);
 }
 

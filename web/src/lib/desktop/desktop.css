@@ -69,12 +69,7 @@ html[data-desktop] body {
 .setting__row > :not(.grow):not(.truncate) {
   flex-shrink: 0;
 }
-.truncate {
-  min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
+
 .checklist {
   margin: 0;
   padding: 0;
@@ -112,4 +107,17 @@ html[data-desktop] body {
   grid-template-columns: auto minmax(0, 1fr);
   gap: var(--space-2);
   align-items: start;
+}
+
+html[data-desktop] .sidebar,
+.entrance {
+  box-sizing: border-box;
+}
+.desktop-settings > .dialog__actions {
+  margin: 0;
+  padding: var(--space-4) var(--space-6);
+}
+.desktop-settings.is-setup .settings {
+  height: auto;
+  max-height: 70dvh;
 }

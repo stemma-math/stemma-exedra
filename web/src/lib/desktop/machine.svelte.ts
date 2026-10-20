@@ -23,6 +23,8 @@ export class MachineControls {
   files = $state("");
 
   async load() {
+    const preserveOffers =
+      JSON.stringify(this.agents) !== JSON.stringify(this.data?.machine?.workshop_agents ?? []);
     this.data = await snapshot();
     this.url = this.data.hub ?? "";
     this.username = this.data.username ?? "";
@@ -30,7 +32,8 @@ export class MachineControls {
     this.folder = this.data.work_dir;
     this.runtime = this.data.runtime;
     this.image = this.data.image;
-    this.agents = structuredClone($state.snapshot(this.data.machine?.workshop_agents ?? []));
+    if (!preserveOffers)
+      this.agents = structuredClone($state.snapshot(this.data.machine?.workshop_agents ?? []));
     const key = `stemma-machine-setup:${this.data.hub}:${this.data.username}`;
     if (this.data.me && !this.data.registered) localStorage.setItem(key, "pending");
     if (

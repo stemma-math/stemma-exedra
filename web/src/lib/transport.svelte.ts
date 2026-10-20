@@ -1,3 +1,5 @@
+import { untrack } from "svelte";
+
 /** All hub addresses and requests pass here, in both builds. */
 export const desktop = __STEMMA_DESKTOP__;
 export const connection = $state({ online: false, pending: 0, hub: "" });
@@ -15,7 +17,9 @@ export function hubUrl(path: string): string {
 }
 
 export async function hubFetch(path: string, options: RequestInit): Promise<Response> {
-  connection.pending++;
+  untrack(() => {
+    connection.pending++;
+  });
   try {
     const response = await fetch(hubUrl(path), {
       ...options,
@@ -27,6 +31,8 @@ export async function hubFetch(path: string, options: RequestInit): Promise<Resp
     connection.online = false;
     throw error;
   } finally {
-    connection.pending--;
+    untrack(() => {
+      connection.pending--;
+    });
   }
 }

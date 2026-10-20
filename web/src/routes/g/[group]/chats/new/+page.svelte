@@ -1,4 +1,5 @@
 <script lang="ts">
+  import AgentAvatar from "#lib/components/AgentAvatar.svelte";
   import { goto } from "$app/navigation";
   import { page } from "$app/state";
   import { api, type Effort, type PersonalAgent } from "#lib/api.ts";
@@ -79,6 +80,7 @@
     <div class="chat-options">
       <div class="field">
         <label class="field__label" for="chat-agent">Agent</label>
+        {#if agent}<span class="row"><AgentAvatar name={agent.display_name} runner={agent.runner} /><span>{agent.display_name}</span></span>{/if}
         <select id="chat-agent" class="input" bind:value={handle}>
           {#each agents as profile (profile.handle)}
             <option value={profile.handle}>{agentLabel(profile)}</option>

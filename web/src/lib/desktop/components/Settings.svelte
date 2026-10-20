@@ -26,7 +26,10 @@
         type="button"
         class="button button--quiet"
         aria-current={page === name ? "page" : undefined}
-        onclick={() => (page = name)}
+        onclick={() => {
+          page = name;
+          controls.settingUp = false;
+        }}
       >
         {name}
       </button>
@@ -34,7 +37,9 @@
   </nav>
   <main class="settings__pane stack" aria-busy={controls.busy}>
     <header class="row">
-      <h1 class="grow">{page === "This machine" && controls.settingUp ? "Set up this machine" : page}</h1>
+      <h1 class="grow">
+        {page === "This machine" && controls.settingUp ? "Set up this machine" : page}
+      </h1>
       <button
         type="button"
         class="button button--small"
@@ -75,7 +80,6 @@
         <section class="setting stack stack--tight">
           <div class="setting__row">
             <h2 class="label">Hub</h2>
-
           </div>
           <p class="quiet truncate" title={data.hub ?? ""}>
             {data.hub ?? "Sign in from Stemma’s main window."}
