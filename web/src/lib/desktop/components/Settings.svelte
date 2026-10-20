@@ -5,7 +5,7 @@
   import Workshop from "./Workshop.svelte";
 
   let { controls }: { controls: MachineControls } = $props();
-  const pages = ["This machine", "Workshop", "Account"] as const;
+  const pages = ["This machine", "Workshop", "Appearance", "Account"] as const;
   let page = $state<(typeof pages)[number]>("This machine");
 
   async function logOut() {
@@ -69,6 +69,11 @@
         <ThisMachine {controls} {data} />
       {:else if page === "Workshop"}
         <Workshop {controls} {data} />
+      {:else if page === "Appearance"}
+        <section class="setting stack stack--tight">
+          <h2 class="label">Theme</h2>
+          <stemma-theme-switch fill></stemma-theme-switch>
+        </section>
       {:else}
         <section class="setting stack stack--tight">
           <h2 class="label">Signed in as</h2>

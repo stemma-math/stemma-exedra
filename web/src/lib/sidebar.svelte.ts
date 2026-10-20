@@ -14,8 +14,8 @@ function stored(): Record<string, boolean> {
 
 export const folded = $state<Record<string, boolean>>(stored());
 
-export function toggle(section: Section) {
-  folded[section] = !folded[section];
+export function setFolded(section: Section, value: boolean) {
+  folded[section] = value;
   try {
     localStorage.setItem(KEY, JSON.stringify(folded));
   } catch {

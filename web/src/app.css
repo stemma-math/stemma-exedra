@@ -6,13 +6,16 @@
 
 html,
 body {
-  min-height: 100%;
+  height: 100%;
+  overflow: hidden;
+  overscroll-behavior: none;
 }
 
 .app {
   display: flex;
   flex-direction: column;
-  min-height: 100vh;
+  height: 100dvh;
+  min-height: 0;
 }
 
 /* ── A group: the sidebar beside its pages ────────────────────────── */
@@ -21,7 +24,8 @@ body {
   --sidebar-width: calc(var(--space-16) * 4);
   display: grid;
   grid-template-columns: var(--sidebar-width) minmax(0, 1fr);
-  min-height: 100vh;
+  height: 100dvh;
+  min-height: 0;
 }
 
 .shell__bar,
@@ -31,12 +35,15 @@ body {
 
 .shell__main {
   min-width: 0;
+  min-height: 0;
+  overflow: auto;
+  overscroll-behavior: none;
 }
 
 .sidebar {
-  position: sticky;
-  top: 0;
-  height: 100vh;
+  min-height: 0;
+  overflow: hidden;
+  height: 100%;
   border-right: 1px solid var(--divider);
 }
 
@@ -44,6 +51,7 @@ body {
   display: flex;
   flex-direction: column;
   height: 100%;
+  min-height: 0;
 }
 
 .sidebar__top,
@@ -75,7 +83,9 @@ body {
 
 .sidebar__scroll {
   flex: 1;
+  min-height: 0;
   overflow-y: auto;
+  overscroll-behavior: none;
   padding: var(--space-3);
 }
 
@@ -90,26 +100,17 @@ body {
   margin-top: var(--space-5);
 }
 
-.sidebar__heading {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  margin-bottom: var(--space-1);
-}
-
-.sidebar__toggle {
-  min-width: 0;
-  justify-content: flex-start;
-}
-
 .sidebar__empty {
   padding: var(--space-1) var(--space-3);
 }
 
 @media (max-width: 48rem) {
   .shell {
-    display: block;
+    display: flex;
+    flex-direction: column;
   }
+
+  .shell__main { flex: 1; }
 
   .shell__bar {
     position: sticky;
@@ -135,6 +136,7 @@ body {
     inset: 0 auto 0 0;
     z-index: 30;
     width: min(var(--sidebar-width), 85vw);
+    height: 100dvh;
     box-shadow: var(--shadow-float);
     transform: translateX(-105%);
     transition: transform var(--dur-ui) var(--ease-out);
@@ -621,27 +623,6 @@ stemma-toast-region {
   }
 }
 
-/* TODO(design): a brand-surface context, https://github.com/stemma-math/design/issues/20.
- * These are design's
- * on-dark tokens, mapped until design supplies that context. */
-.sidebar {
-  --ink-1: var(--on-dark-1);
-  --ink-2: var(--on-dark-2);
-  --ink-3: var(--on-dark-3);
-  --ink-4: var(--on-dark-4);
-  --surface-page: var(--on-dark-raised);
-  --surface-card: var(--on-dark-fill);
-  --surface-subtle: var(--on-dark-active);
-  --surface-field: var(--on-dark-raised);
-  --fill-muted: var(--on-dark-fill);
-  --border: var(--on-dark-line);
-  --border-strong: var(--on-dark-line);
-  --divider: var(--on-dark-line);
-  --accent-text: var(--on-dark-1);
-  --neutral-text: var(--on-dark-2);
-  --link: var(--on-dark-2);
-  background: none;
-}
 .sidebar__head { padding: var(--space-5) var(--space-5) var(--space-3); }
 .sidebar__head p { margin: var(--space-2) 0 0; }
 .sidebar__brand, .account-frame__brand { display: flex; align-items: center; gap: var(--space-3); color: inherit; text-decoration: none; }
@@ -650,14 +631,12 @@ stemma-toast-region {
 .sidebar__top { border: 0; padding-top: 0; }
 .sidebar__switcher { padding: var(--space-3); white-space: normal; }
 .sidebar__name { text-align: left; gap: var(--space-1); }
-.sidebar__action { padding-inline: var(--space-3); }
-.sidebar__action .button { width: 100%; }
 .sidebar__foot { align-items: stretch; border: 0; padding: var(--space-3); }
-.sidebar__foot stemma-theme-switch { align-self: center; }
+.sidebar__foot stemma-theme-switch { width: 100%; }
 .sidebar__user { display: flex; align-items: center; gap: var(--space-1); padding: var(--space-2); }
-.sidebar__person { flex: 1; min-width: 0; padding: 0; justify-content: start; }
+.sidebar__person { flex: 1; min-width: 0; justify-content: start; }
 .sidebar__person :where(.chip) { align-self: start; }
-.sidebar__connection { display: flex; flex-direction: column; align-items: start; gap: var(--space-1); padding: var(--space-3); }
+.sidebar__connection { display: flex; flex-wrap: nowrap; justify-content: space-between; gap: var(--space-2); }
 .sidebar__connection .quiet { white-space: normal; }
 .truncate { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .account-frame { display: flex; flex: 1; flex-direction: column; min-height: 100dvh; }
@@ -678,3 +657,6 @@ stemma-toast-region {
 .public-frame__content { min-height: 100dvh; }
 
 
+
+/* Pages outside the group shell own their scroll area too. */
+.app > .page { overflow: auto; overscroll-behavior: none; }

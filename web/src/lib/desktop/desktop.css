@@ -13,11 +13,12 @@ html[data-desktop] .sidebar {
   padding-top: var(--space-8);
 }
 html[data-desktop] .shell__main {
-  margin: var(--space-2) var(--space-2) var(--space-2) 0;
+  margin: 0;
   padding-top: var(--space-8);
-  border-radius: var(--radius-lg);
+  border-radius: 0;
   background: var(--surface-page);
   overflow: auto;
+  overscroll-behavior: none;
 }
 html[data-desktop] body {
   background: var(--surface-subtle);
@@ -31,6 +32,8 @@ html[data-desktop] body {
 .desktop-settings {
   width: min(calc(var(--space-16) * 14), calc(100vw - var(--space-12)));
   max-width: none;
+  overflow: hidden;
+  overscroll-behavior: none;
 }
 .settings {
   display: grid;
@@ -40,11 +43,14 @@ html[data-desktop] body {
 }
 .settings__nav {
   padding: var(--space-5) var(--space-3);
-  align-self: start;
+  overflow: auto;
+  overscroll-behavior: none;
 }
 .settings__pane {
   min-width: 0;
+  min-height: 0;
   overflow: auto;
+  overscroll-behavior: none;
   padding: var(--space-5) var(--space-6);
   gap: var(--space-5);
 }
@@ -117,4 +123,8 @@ html[data-desktop] .sidebar,
 .desktop-settings.is-setup .settings {
   height: auto;
   max-height: 70dvh;
+}
+
+.settings__pane > * {
+  flex-shrink: 0;
 }

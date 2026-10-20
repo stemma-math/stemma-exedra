@@ -93,7 +93,7 @@
       </button>
       <a class="shell__title" href="/g/{group.slug}">{group.name}</a>
     </header>
-    <aside bind:this={sidebar} inert={narrow && !drawer} class="sidebar brand-light" id="sidebar" aria-label="{group.name}, its places">
+    <aside bind:this={sidebar} inert={narrow && !drawer} class="sidebar brand-light brand-surface" id="sidebar" aria-label="{group.name}, its places">
       <Sidebar {group} />
     </aside>
     <button type="button" class="scrim shell__scrim" aria-label="Close the menu" tabindex="-1" onclick={closeDrawer}></button>

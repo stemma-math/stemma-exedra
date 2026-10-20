@@ -87,7 +87,7 @@
   {#if session.me?.hub_admin}
     <section class="card">
       <form class="card__body form" onsubmit={create}>
-        <h2>New group</h2>
+        <h2 id="new-group">New group</h2>
         <div class="field">
           <label class="field__label" for="group-name">Name</label>
           <input id="group-name" class="input" bind:value={name} required maxlength="80" />
