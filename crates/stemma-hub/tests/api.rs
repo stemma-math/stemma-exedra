@@ -2587,6 +2587,18 @@ async fn webhooks_must_be_signed() {
     assert_eq!(send(Some(signed), "issues").await, StatusCode::NO_CONTENT);
 }
 
+async fn desktop_fetch(hub: &TestHub, path: &str) -> Reply {
+    hub.send(
+        &Client::default(),
+        Request::builder()
+            .uri(path)
+            .header(header::USER_AGENT, "Mozilla/5.0 StemmaDesktop/0.1.1")
+            .body(Body::empty())
+            .unwrap(),
+    )
+    .await
+}
+
 #[tokio::test]
 async fn browser_handoffs_are_personal_single_use_and_short_lived() {
     let hub = TestHub::new().await;
@@ -2623,8 +2635,23 @@ async fn browser_handoffs_are_personal_single_use_and_short_lived() {
         hub.get(&bob, "/me").await.json()["id"].as_i64().unwrap()
     );
     let path = format!("/login/handoff?code={code}&next=/groups");
-    let anonymous = Client::default();
-    let (a, b) = tokio::join!(hub.fetch(&anonymous, &path), hub.fetch(&anonymous, &path));
+    // A browser must neither sign in nor consume the app's code.
+    for agent in [None, Some("Mozilla/5.0")] {
+        let mut request = Request::builder().uri(&path);
+        if let Some(agent) = agent {
+            request = request.header(header::USER_AGENT, agent);
+        }
+        let reply = hub
+            .send(&Client::default(), request.body(Body::empty()).unwrap())
+            .await;
+        assert!(!reply.headers.contains_key(header::SET_COOKIE));
+        assert!(
+            String::from_utf8(reply.body)
+                .unwrap()
+                .contains("handoff=expired")
+        );
+    }
+    let (a, b) = tokio::join!(desktop_fetch(&hub, &path), desktop_fetch(&hub, &path));
     let (success, used) = if a.headers.contains_key(header::SET_COOKIE) {
         (a, b)
     } else {
@@ -2658,9 +2685,7 @@ async fn browser_handoffs_are_personal_single_use_and_short_lived() {
         .await
         .unwrap();
     for code in [code.as_str(), "unknown"] {
-        let reply = hub
-            .fetch(&Client::default(), &format!("/login/handoff?code={code}"))
-            .await;
+        let reply = desktop_fetch(&hub, &format!("/login/handoff?code={code}")).await;
         assert!(!reply.headers.contains_key(header::SET_COOKIE));
         assert!(
             String::from_utf8(reply.body)
@@ -2682,18 +2707,11 @@ async fn browser_handoffs_are_personal_single_use_and_short_lived() {
             .append_pair("code", &code)
             .append_pair("next", next)
             .finish();
-        let reply = hub
-            .fetch(&Client::default(), &format!("/login/handoff?{query}"))
-            .await;
+        let reply = desktop_fetch(&hub, &format!("/login/handoff?{query}")).await;
         assert_eq!(reply.status, StatusCode::UNPROCESSABLE_ENTITY, "{next}");
         assert!(!reply.headers.contains_key(header::SET_COOKIE));
     }
-    let reply = hub
-        .fetch(
-            &Client::default(),
-            &format!("/login/handoff?code={code}&next=/"),
-        )
-        .await;
+    let reply = desktop_fetch(&hub, &format!("/login/handoff?code={code}&next=/")).await;
     assert!(reply.headers.contains_key(header::SET_COOKIE));
 }
 

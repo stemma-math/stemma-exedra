@@ -54,6 +54,7 @@ fn relative(path: &str) -> bool {
 pub async fn exchange(
     State(state): State<AppState>,
     Query(query): Query<Destination>,
+    headers: HeaderMap,
 ) -> ApiResult<Response> {
     let next = query.next.as_deref().unwrap_or("/");
     if !relative(next) {
@@ -63,13 +64,21 @@ pub async fn exchange(
     }
     // DELETE RETURNING makes concurrent exchanges single-use too. Creating the
     // session uses the same cookie code as password login.
-    let user: Option<i64> = sqlx::query_scalar(
-        "DELETE FROM login_handoffs WHERE code_hash = ? AND expires_at > ? RETURNING user_id",
-    )
-    .bind(secret::token_hash(&query.code))
-    .bind(db::now())
-    .fetch_optional(&state.db)
-    .await?;
+    let desktop = headers
+        .get(header::USER_AGENT)
+        .and_then(|value| value.to_str().ok())
+        .is_some_and(|value| value.contains("StemmaDesktop/"));
+    let user: Option<i64> = if desktop {
+        sqlx::query_scalar(
+            "DELETE FROM login_handoffs WHERE code_hash = ? AND expires_at > ? RETURNING user_id",
+        )
+        .bind(secret::token_hash(&query.code))
+        .bind(db::now())
+        .fetch_optional(&state.db)
+        .await?
+    } else {
+        None
+    };
     let (headers, target) = if let Some(user) = user {
         (auth::start_session(&state, user).await?, next.to_owned())
     } else {
