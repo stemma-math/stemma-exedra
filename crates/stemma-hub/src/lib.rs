@@ -85,9 +85,25 @@ pub async fn run(config: Config) -> anyhow::Result<()> {
         .await
         .with_context(|| format!("listening on {}", state.config.listen))?;
     tracing::info!("Stemma hub listening on http://{}", state.config.listen);
-    axum::serve(listener, app(state))
-        .with_graceful_shutdown(shutdown())
-        .await?;
+    let stopping = state.shutdown.clone();
+    let server = axum::serve(listener, app(state.clone()))
+        .with_graceful_shutdown(stopping.clone().cancelled_owned());
+    let drain = async {
+        server.await?;
+        state.sockets.close();
+        state.sockets.wait().await;
+        Ok::<_, std::io::Error>(())
+    };
+    tokio::pin!(drain);
+    tokio::select! {
+        result = &mut drain => { result?; return Ok(()); }
+        _ = shutdown() => {}
+    }
+    stopping.cancel();
+    match tokio::time::timeout(std::time::Duration::from_secs(5), drain).await {
+        Ok(result) => result?,
+        Err(_) => tracing::warn!("Shutdown grace period ended"),
+    }
     Ok(())
 }
 

@@ -610,6 +610,9 @@ pub async fn queue_build(state: &AppState, group_id: i64, requester_id: i64) -> 
 /// Hands the queued jobs to the machines that can run them, oldest first,
 /// and tells everyone how the queued ones are.
 pub async fn dispatch(state: &AppState) -> ApiResult<()> {
+    if state.shutdown.is_cancelled() {
+        return Ok(());
+    }
     let mut workers = state.workers.lock().await;
     let queued: Vec<JobRow> = sqlx::query_as(concat!(
         job_query!(),

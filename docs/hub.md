@@ -3,6 +3,9 @@
 `stemma hub` runs the server: the web app, the API under `/api/v1`, and a
 SQLite database with the attachments in a data directory.
 
+SIGTERM or Ctrl-C stops new connections, ends event streams and closes machine
+connections normally. Requests have up to five seconds to finish before exit.
+
 ## With Docker
 
 `docker/compose.yaml` runs the hub beside [Forgejo](https://forgejo.org):

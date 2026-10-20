@@ -39,6 +39,10 @@ pub async fn stream(
     let opening = futures_util::stream::once(std::future::ready(Ok(SseEvent::default()
         .event("ready")
         .data(""))));
-    Ok(Sse::new(opening.chain(events))
-        .keep_alive(KeepAlive::new().interval(Duration::from_secs(20))))
+    Ok(Sse::new(
+        opening
+            .chain(events)
+            .take_until(state.shutdown.clone().cancelled_owned()),
+    )
+    .keep_alive(KeepAlive::new().interval(Duration::from_secs(20))))
 }

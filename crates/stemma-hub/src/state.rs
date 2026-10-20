@@ -17,6 +17,10 @@ pub type AppState = Arc<Hub>;
 /// The running hub.
 pub struct Hub {
     pub db: SqlitePool,
+    /// Ends long-lived responses before the HTTP server drains.
+    pub shutdown: tokio_util::sync::CancellationToken,
+    /// Upgraded connections outlive their HTTP requests.
+    pub sockets: tokio_util::task::TaskTracker,
     pub config: Config,
     /// Every group's live updates; each listener keeps its group's.
     pub events: broadcast::Sender<GroupEvent>,
@@ -55,6 +59,8 @@ impl Hub {
         };
         Ok(Hub {
             db,
+            shutdown: tokio_util::sync::CancellationToken::new(),
+            sockets: tokio_util::task::TaskTracker::new(),
             config,
             events,
             setup_token: Mutex::new(None),

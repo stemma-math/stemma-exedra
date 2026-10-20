@@ -14,7 +14,7 @@ use axum::extract::ws::{Message as WsMessage, WebSocket, WebSocketUpgrade};
 use axum::extract::{Path, State};
 use axum::http::{HeaderMap, StatusCode};
 use axum::response::Response;
-use futures_util::{SinkExt, StreamExt};
+use futures_util::StreamExt;
 use stemma_core::api::{
     CreateMachine, CreatedMachine, Isolation, Machine, UpdateMachine, User, WorkshopAgent,
 };
@@ -274,7 +274,9 @@ pub async fn connect(
     upgrade: WebSocketUpgrade,
 ) -> ApiResult<Response> {
     let machine = authenticate(&state, &headers).await?;
+    let tracked = state.sockets.token();
     Ok(upgrade.on_upgrade(move |socket| async move {
+        let _tracked = tracked;
         let id = machine.id;
         if let Err(error) = serve(state, machine, socket).await {
             tracing::warn!(worker = id, %error, "machine connection ended");
@@ -290,7 +292,12 @@ async fn send(socket: &mut WebSocket, message: &HubMessage) -> anyhow::Result<()
 
 async fn serve(state: AppState, machine: MachineRow, mut socket: WebSocket) -> anyhow::Result<()> {
     // The first message says what the machine can do.
-    let hello = match tokio::time::timeout(Duration::from_secs(15), socket.next()).await {
+    let first = tokio::select! {
+        biased;
+        _ = state.shutdown.cancelled() => { close(&mut socket).await; return Ok(()); }
+        first = tokio::time::timeout(Duration::from_secs(15), socket.next()) => first,
+    };
+    let hello = match first {
         Ok(Some(Ok(WsMessage::Text(text)))) => match serde_json::from_str(&text) {
             Ok(WorkerMessage::Hello(hello)) => hello,
             _ => anyhow::bail!("the machine did not start with a hello"),
@@ -358,7 +365,7 @@ async fn serve(state: AppState, machine: MachineRow, mut socket: WebSocket) -> a
     .map_err(|e| anyhow::anyhow!(e.message))?;
 
     let ended = talk(&state, machine.id, &mut socket, &mut outbox).await;
-    let _ = socket.close().await;
+    close(&mut socket).await;
     sqlx::query("UPDATE workers SET last_seen_at = ? WHERE id = ?")
         .bind(db::now())
         .bind(machine.id)
@@ -369,6 +376,18 @@ async fn serve(state: AppState, machine: MachineRow, mut socket: WebSocket) -> a
         .map_err(|e| anyhow::anyhow!(e.message))?;
     tracing::info!(worker = machine.id, "machine disconnected");
     ended
+}
+
+/// Send a normal close, bounded even if the peer stops reading.
+async fn close(socket: &mut WebSocket) {
+    let _ = tokio::time::timeout(
+        Duration::from_secs(1),
+        socket.send(WsMessage::Close(Some(axum::extract::ws::CloseFrame {
+            code: axum::extract::ws::close_code::NORMAL,
+            reason: "Connection closed".into(),
+        }))),
+    )
+    .await;
 }
 
 /// Passes messages both ways until the machine goes, or is replaced.
@@ -382,6 +401,8 @@ async fn talk(
     let mut heard = Instant::now();
     loop {
         tokio::select! {
+            biased;
+            _ = state.shutdown.cancelled() => return Ok(()),
             out = outbox.recv() => match out {
                 Some(message) => send(socket, &message).await?,
                 // Replaced by a newer connection, or revoked.
