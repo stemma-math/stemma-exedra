@@ -1754,7 +1754,7 @@ async fn a_lost_registration_stops_cleanly_and_registers_again_with_its_settings
     let state = std::fs::read_to_string(path.with_extension("state.json")).unwrap();
     assert!(!state.contains(&config.token));
     // Even an explicit second launch does not retry the rejected token.
-    tokio::time::timeout(Duration::from_millis(100), machine::run(&path))
+    tokio::time::timeout(Duration::from_secs(3), machine::run(&path))
         .await
         .unwrap()
         .unwrap();

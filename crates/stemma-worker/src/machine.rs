@@ -196,7 +196,11 @@ pub async fn run(path: &Path) -> anyhow::Result<()> {
     })?;
     // One process serves a machine: the lock sits beside its configuration,
     // not in its configurable checkout folder.
-    let _lock = lock(&path.with_extension("lock"))?;
+    let _lock = lock(
+        &path.with_extension("lock"),
+        std::time::Duration::from_secs(2),
+    )
+    .await?;
     if !config.personal && !config.workshop_enabled {
         tracing::info!("Both machine modes are off");
         return Ok(());
@@ -299,15 +303,27 @@ pub fn record_stopped(
     Ok(())
 }
 
-fn lock(path: &Path) -> anyhow::Result<std::fs::File> {
+/// Waits up to `patience` for the lock: a process that is just stopping, or a
+/// child forked at that moment and not yet running its program, holds it briefly.
+async fn lock(path: &Path, patience: std::time::Duration) -> anyhow::Result<std::fs::File> {
     let file = std::fs::OpenOptions::new()
         .read(true)
         .write(true)
         .create(true)
         .truncate(false)
         .open(path)?;
-    file.try_lock().context("Another process is already serving this machine; stop it before running `stemma machine run`")?;
-    Ok(file)
+    let deadline = tokio::time::Instant::now() + patience;
+    loop {
+        match file.try_lock() {
+            Ok(()) => return Ok(file),
+            Err(std::fs::TryLockError::WouldBlock) if tokio::time::Instant::now() < deadline => {
+                tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+            }
+            Err(error) => return Err(anyhow::Error::from(error).context(
+                "Another process is already serving this machine; stop it before running `stemma machine run`",
+            )),
+        }
+    }
 }
 
 async fn shutdown() {
@@ -334,15 +350,22 @@ fn enabled() -> bool {
 mod tests {
     use super::*;
 
-    #[test]
-    fn only_one_process_can_serve_and_exit_releases_the_lock() {
+    #[tokio::test]
+    async fn only_one_process_can_serve_and_exit_releases_the_lock() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("machine.lock");
-        let first = lock(&path).unwrap();
-        let error = lock(&path).unwrap_err();
+        let patience = std::time::Duration::from_millis(100);
+        let first = lock(&path, patience).await.unwrap();
+        let error = lock(&path, patience).await.unwrap_err();
         assert!(error.to_string().contains("already serving this machine"));
+        // A lock released while waiting is taken.
+        let waiting = tokio::spawn({
+            let path = path.clone();
+            async move { lock(&path, std::time::Duration::from_secs(2)).await }
+        });
+        tokio::time::sleep(patience).await;
         drop(first);
-        assert!(lock(&path).is_ok());
+        assert!(waiting.await.unwrap().is_ok());
     }
 
     #[test]
