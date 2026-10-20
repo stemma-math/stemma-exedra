@@ -89,6 +89,7 @@ body {
   overflow: hidden;
   text-align: left;
   text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .sidebar__scroll {
@@ -100,20 +101,20 @@ body {
 .sidebar__list {
   display: flex;
   flex-direction: column;
-  gap: 2px;
+  gap: var(--space-1);
 }
 
 /* Each place a quiet button, the one shown marked as current. */
 .sidebar__item {
   width: 100%;
   justify-content: flex-start;
-  font-weight: 400;
 }
 
 .sidebar__text {
   min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .sidebar__section {
@@ -128,11 +129,16 @@ body {
 }
 
 .sidebar__toggle {
-  padding-inline: var(--space-1);
+  min-width: 0;
+  justify-content: flex-start;
 }
 
 .sidebar__empty {
   padding: var(--space-1) var(--space-3);
+}
+
+.sidebar__person {
+  padding-block: var(--button-inline);
 }
 
 .sidebar__foot > .sidebar__item {

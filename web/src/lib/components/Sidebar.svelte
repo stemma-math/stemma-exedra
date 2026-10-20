@@ -78,7 +78,7 @@
       onclick={() => toggle(section)}
     >
       <Glyph name={folded[section] ? "chevron-right" : "chevron-down"} small />
-      <span class="label">{label}</span>
+      <span class="label sidebar__text">{label}</span>
     </button>
     {#if add}
       <a class="button button--quiet button--icon button--small" href={add.href} aria-label={add.label}>
@@ -206,7 +206,7 @@
 
   {#if session.me}
     <div class="sidebar__foot">
-      <a class="button button--quiet sidebar__item" href="{base}/me" aria-current={current(`${base}/me`)}>
+      <a class="button button--quiet sidebar__item sidebar__person" href="{base}/me" aria-current={current(`${base}/me`)}>
         <Avatar user={session.me} />
         <span class="sidebar__text">{session.me.display_name}</span>
       </a>
