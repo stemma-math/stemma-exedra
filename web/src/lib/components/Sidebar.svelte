@@ -196,8 +196,12 @@
   <div class="sidebar__foot stack stack--tight">
     {#if __STEMMA_DESKTOP__}
       <div class="sidebar__connection" role="status">
-        <span class="label quiet">{connection.online ? "Connected" : "Offline"}</span>
-        <span class="label quiet">{desktopUI.machineNotKnown ? "Not known to the hub" : desktopUI.serviceConnected ? "Machine on" : "Machine off"}</span>
+        <span class="chip chip--{connection.online ? 'success' : 'warning'}">{connection.online ? "Connected" : "Offline"}</span>
+        {#if desktopUI.machineNotKnown}
+          <span class="chip chip--warning">Not known to the hub</span>
+        {:else}
+          <span class="chip" class:chip--success={desktopUI.serviceConnected}>{desktopUI.serviceConnected ? "Machine on" : "Machine off"}</span>
+        {/if}
       </div>
     {:else}
       <stemma-theme-switch fill></stemma-theme-switch>

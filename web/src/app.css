@@ -631,8 +631,7 @@ stemma-toast-region {
 .sidebar__user { display: flex; align-items: center; gap: var(--space-1); padding: var(--space-2); }
 .sidebar__person { flex: 1; min-width: 0; justify-content: start; }
 .sidebar__person :where(.chip) { align-self: start; }
-.sidebar__connection { display: flex; flex-wrap: nowrap; justify-content: space-between; gap: var(--space-2); }
-.sidebar__connection .quiet { white-space: normal; }
+.sidebar__connection { display: flex; flex-wrap: wrap; gap: var(--space-2); padding-inline: var(--space-1); }
 .truncate { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .account-frame { display: flex; flex: 1; flex-direction: column; min-height: 100%; }
 .account-frame__head { display: flex; justify-content: space-between; align-items: center; gap: var(--space-3); padding: var(--space-4) var(--space-8); }
