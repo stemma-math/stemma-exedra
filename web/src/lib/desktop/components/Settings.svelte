@@ -18,22 +18,24 @@
 </script>
 
 <div class="settings" data-density="compact">
-  <nav class="settings__nav stack stack--tight" aria-label="Settings">
-    <!-- TODO(design): navigation item, https://github.com/stemma-math/design/issues/16.
-         Use the design's selected button until the navigation item is available. -->
-    {#each pages as name (name)}
-      <button
-        type="button"
-        class="button button--quiet"
-        aria-current={page === name ? "page" : undefined}
-        onclick={() => {
-          page = name;
-          controls.settingUp = false;
-        }}
-      >
-        {name}
-      </button>
-    {/each}
+  <nav class="settings__nav" aria-label="Settings">
+    <ul class="nav-list">
+      {#each pages as name (name)}
+        <li>
+          <button
+            type="button"
+            class="nav-item"
+            aria-current={page === name ? "page" : undefined}
+            onclick={() => {
+              page = name;
+              controls.settingUp = false;
+            }}
+          >
+            <span class="nav-item__label">{name}</span>
+          </button>
+        </li>
+      {/each}
+    </ul>
   </nav>
   <main class="settings__pane stack" aria-busy={controls.busy}>
     <header class="row">

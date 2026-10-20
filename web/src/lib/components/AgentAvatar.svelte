@@ -6,11 +6,12 @@
     name,
     runner = null,
     appearance = null,
-  }: { name: string; runner?: string | null; appearance?: "light" | "dark" | null } = $props();
+    small = false,
+  }: { name: string; runner?: string | null; appearance?: "light" | "dark" | null; small?: boolean } = $props();
   const mark = $derived(agentMark(runner, name));
 </script>
 
-<span class="avatar" class:agent-avatar={Boolean(mark)} title={name} aria-hidden="true">
+<span class="avatar" class:avatar--small={small} class:agent-avatar={Boolean(mark)} title={name} aria-hidden="true">
   {#if mark === "claude"}
     <img src="/agents/claude.svg" alt="" />
   {:else if mark && appearance}
@@ -33,6 +34,10 @@
     box-sizing: border-box;
     object-fit: contain;
     padding: var(--space-2);
+  }
+
+  .avatar--small.agent-avatar > img {
+    padding: var(--space-1);
   }
 
   .agent-mark--dark {

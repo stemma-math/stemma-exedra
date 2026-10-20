@@ -31,6 +31,12 @@
   },
   "bundle": {
     "active": false,
-    "icon": ["../../web/node_modules/@stemma-math/design/icons/apple-touch-icon.png"]
+    "icon": [
+      "../../web/node_modules/@stemma-math/design/icons/app/icon-32.png",
+      "../../web/node_modules/@stemma-math/design/icons/app/icon-128.png",
+      "../../web/node_modules/@stemma-math/design/icons/app/icon-256.png",
+      "../../web/node_modules/@stemma-math/design/icons/app/icon.icns",
+      "../../web/node_modules/@stemma-math/design/icons/app/icon.ico"
+    ]
   }
 }

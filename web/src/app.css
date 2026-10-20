@@ -79,18 +79,6 @@ body {
   padding: var(--space-3);
 }
 
-.sidebar__list {
-  display: flex;
-  flex-direction: column;
-  gap: var(--space-1);
-}
-
-/* Each place a quiet button, the one shown marked as current. */
-.sidebar__item {
-  width: 100%;
-  justify-content: flex-start;
-}
-
 .sidebar__text {
   min-width: 0;
   overflow: hidden;
@@ -163,8 +151,6 @@ body {
     display: block;
     padding: 0;
     border: 0;
-    /* TODO(design): scrim, https://github.com/stemma-math/design/issues/18; use the dialog backdrop until available. */
-    background: color-mix(in srgb, var(--navy-950) 45%, transparent);
   }
 }
 
@@ -691,6 +677,4 @@ stemma-toast-region {
 .public-frame__light { position: fixed; inset: 0; z-index: -1; pointer-events: none; }
 .public-frame__content { min-height: 100dvh; }
 
-/* TODO(design): smaller avatar, https://github.com/stemma-math/design/issues/17.
- * Sidebar chat rows use the spacing scale until the avatar has a small variant. */
-.sidebar__item .agent-avatar { width: var(--space-6); height: var(--space-6); }
+

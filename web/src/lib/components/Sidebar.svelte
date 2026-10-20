@@ -120,29 +120,27 @@
   </div>
 
   <div class="sidebar__action"><a class="button button--primary" href="{base}/forum/new"><Glyph name="add" small /> New thread</a></div>
-  <!-- TODO(design): navigation item, https://github.com/stemma-math/design/issues/16.
-       Quiet buttons stand in for sidebar navigation. -->
   <nav class="sidebar__scroll" aria-label={group.name}>
     <p class="label sidebar__empty">The group</p>
-    <ul class="plain-list sidebar__list">
+    <ul class="nav-list">
       <li>
-        <a class="button button--quiet sidebar__item" href={base} aria-current={current(base, true)}>
-          <Glyph name="home" /> Dashboard
+        <a class="nav-item" href={base} aria-current={current(base, true)}>
+          <Glyph name="home" /><span class="nav-item__label">Dashboard</span>
         </a>
       </li>
       <li>
-        <a class="button button--quiet sidebar__item" href="{base}/workshop" aria-current={current(`${base}/workshop`) ?? current(`${base}/w`)}>
-          <Glyph name="sparkles" /> Workshop
+        <a class="nav-item" href="{base}/workshop" aria-current={current(`${base}/workshop`) ?? current(`${base}/w`)}>
+          <Glyph name="sparkles" /><span class="nav-item__label">Workshop</span>
         </a>
       </li>
       <li>
-        <a class="button button--quiet sidebar__item" href="{base}/lib" aria-current={current(`${base}/lib`)}>
-          <Glyph name="book" /> Library
+        <a class="nav-item" href="{base}/lib" aria-current={current(`${base}/lib`)}>
+          <Glyph name="book" /><span class="nav-item__label">Library</span>
         </a>
       </li>
       <li>
-        <a class="button button--quiet sidebar__item" href="{base}/settings" aria-current={current(`${base}/settings`)}>
-          <Glyph name="settings" /> Settings
+        <a class="nav-item" href="{base}/settings" aria-current={current(`${base}/settings`)}>
+          <Glyph name="settings" /><span class="nav-item__label">Settings</span>
         </a>
       </li>
     </ul>
@@ -154,17 +152,17 @@
         asksForWork(group.role) ? { href: `${base}/p/new`, label: "New paper" } : null,
       )}
       {#if !folded.papers}
-        <ul class="plain-list sidebar__list" id="sidebar-papers">
+        <ul class="nav-list" id="sidebar-papers">
           {#each papers as paper (paper.slug)}
             <li>
               <a
-                class="button button--quiet sidebar__item"
+                class="nav-item"
                 href="{base}/p/{paper.slug}"
                 aria-current={current(`${base}/p/${paper.slug}`)}
                 title="p/{paper.slug}"
               >
                 <Glyph name="document" />
-                <span class="sidebar__text">{paper.title}</span>
+                <span class="nav-item__label">{paper.title}</span>
               </a>
             </li>
           {:else}
@@ -177,15 +175,15 @@
     <section class="sidebar__section">
       {@render heading("forum", "Forum", { href: `${base}/forum/new`, label: "New thread" })}
       {#if !folded.forum}
-        <ul class="plain-list sidebar__list" id="sidebar-forum">
+        <ul class="nav-list" id="sidebar-forum">
           {#each forum as place (place.label)}
             <li>
               <a
-                class="button button--quiet sidebar__item"
+                class="nav-item"
                 href={place.href}
                 aria-current={path === `${base}/forum` && query === place.q ? "page" : undefined}
               >
-                <span class="sidebar__text">{place.label}</span>
+                <span class="nav-item__label">{place.label}</span>
               </a>
             </li>
           {/each}
@@ -196,21 +194,21 @@
     <section class="sidebar__section">
       {@render heading("chats", "Chats", { href: `${base}/chats/new`, label: "New chat" })}
       {#if !folded.chats}
-        <ul class="plain-list sidebar__list" id="sidebar-chats">
+        <ul class="nav-list" id="sidebar-chats">
           {#each chats as chat (chat.number)}
             <li>
               <a
-                class="button button--quiet sidebar__item"
+                class="nav-item"
                 href="{base}/t/{chat.number}"
                 aria-current={current(`${base}/t/${chat.number}`)}
               >
-                <AgentAvatar name={chat.resident_agent ?? "Agent"} runner={chat.resident_runner} appearance="dark" /><span class="sidebar__text">{chat.title}</span>
+                <AgentAvatar name={chat.resident_agent ?? "Agent"} runner={chat.resident_runner} appearance="dark" small /><span class="nav-item__label">{chat.title}</span>
               </a>
             </li>
           {/each}
           <li>
-            <a class="button button--quiet sidebar__item" href="{base}/chats" aria-current={current(`${base}/chats`, true)}>
-              <span class="sidebar__text quiet">Every chat</span>
+            <a class="nav-item" href="{base}/chats" aria-current={current(`${base}/chats`, true)}>
+              <span class="nav-item__label quiet">Every chat</span>
             </a>
           </li>
         </ul>

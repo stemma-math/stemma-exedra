@@ -96,8 +96,7 @@
     <aside bind:this={sidebar} inert={narrow && !drawer} class="sidebar brand-light" id="sidebar" aria-label="{group.name}, its places">
       <Sidebar {group} />
     </aside>
-    <!-- TODO(design): drawer scrim, https://github.com/stemma-math/design/issues/18. -->
-    <button type="button" class="shell__scrim" aria-label="Close the menu" tabindex="-1" onclick={closeDrawer}></button>
+    <button type="button" class="scrim shell__scrim" aria-label="Close the menu" tabindex="-1" onclick={closeDrawer}></button>
     <div class="shell__main" inert={drawer && narrow}>
       {@render children()}
     </div>

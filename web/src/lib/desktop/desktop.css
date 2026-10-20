@@ -42,9 +42,6 @@ html[data-desktop] body {
   padding: var(--space-5) var(--space-3);
   align-self: start;
 }
-.settings__nav .button {
-  justify-content: start;
-}
 .settings__pane {
   min-width: 0;
   overflow: auto;
