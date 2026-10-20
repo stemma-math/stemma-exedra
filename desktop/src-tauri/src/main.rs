@@ -4,7 +4,6 @@ use anyhow::Context as _;
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 use std::path::PathBuf;
-use std::sync::Mutex as StdMutex;
 use stemma_client::{Hub, config::ClientConfig};
 use stemma_core::api::{Machine, Me, WorkshopAgent};
 use stemma_worker::{
@@ -13,7 +12,10 @@ use stemma_worker::{
     machine, service,
 };
 use tauri::menu::{Menu, MenuItem, MenuItemKind, PredefinedMenuItem};
-use tauri::{Manager, State, WebviewWindow};
+use tauri::{Emitter, Manager, State, WebviewWindow};
+use transport::{subscribe, unsubscribe};
+
+mod transport;
 use tokio::sync::Mutex;
 
 type Shared<'a> = State<'a, Mutex<()>>;
@@ -31,11 +33,11 @@ fn trusted_machine_url(url: &tauri::Url) -> bool {
         (url.scheme() == "tauri" && url.host_str() == Some("localhost") && url.port().is_none())
             || origin == "http://tauri.localhost";
     let dev_origin = cfg!(debug_assertions) && origin == "http://127.0.0.1:1420";
-    (local_origin || dev_origin) && matches!(url.path(), "" | "/" | "/index.html")
+    local_origin || dev_origin
 }
 
 fn machine_page(label: &str, url: &tauri::Url) -> bool {
-    matches!(label, "main" | "machine") && trusted_machine_url(url)
+    label == "main" && trusted_machine_url(url)
 }
 
 fn local(window: &WebviewWindow) -> Result<()> {
@@ -165,9 +167,7 @@ async fn login(
     stemma_client::sign_in::password(&url, &username, &password, "desktop", None)
         .await
         .map_err(error)?;
-    if control::load().is_err() {
-        settings(window.app_handle()).map_err(error)?;
-    }
+    transport::stop(window.app_handle());
     Ok(())
 }
 
@@ -300,83 +300,12 @@ fn ensure_serving() -> anyhow::Result<()> {
     service::install(&stemma)
 }
 
-#[derive(Default)]
-struct Navigation {
-    entrance: Option<tauri::Url>,
-    origin: Option<String>,
-}
-
-type NavigationState = StdMutex<Navigation>;
-
-fn drag_capability(url: &tauri::Url) -> serde_json::Value {
-    serde_json::json!({
-        "identifier": "hub-drag",
-        "description": "The selected hub can only drag the main window.",
-        "local": false,
-        "windows": ["main"],
-        "remote": { "urls": [format!("{}/*", url.origin().ascii_serialization())] },
-        "permissions": ["core:window:allow-start-dragging"]
-    })
-}
-
-fn settings(app: &tauri::AppHandle) -> tauri::Result<()> {
-    if let Some(window) = app.get_webview_window("machine") {
-        window.show()?;
-        return window.set_focus();
-    }
-    tauri::WebviewWindowBuilder::from_config(app, &app.config().app.windows[1])?
-        .on_navigation(trusted_machine_url)
-        .build()?;
-    Ok(())
-}
-
 #[tauri::command]
-async fn open_hub(window: WebviewWindow, app: tauri::AppHandle) -> Result<()> {
-    local(&window)?;
-    let hub = hub().map_err(error)?;
-    let handoff = hub.login_handoff().await.map_err(error)?;
-    let mut url: tauri::Url = format!("{}/login/handoff", hub.base())
-        .parse()
-        .map_err(error)?;
-    url.query_pairs_mut()
-        .append_pair("code", &handoff.code)
-        .append_pair("next", "/");
-    // No device token enters the webview. App commands have explicit local
-    // permissions as well as the URL guard; the hub gets only window dragging.
-    app.add_capability(drag_capability(&url).to_string())
-        .map_err(error)?;
-    app.state::<NavigationState>().lock().unwrap().origin =
-        Some(url.origin().ascii_serialization());
-    app.get_webview_window("main")
-        .ok_or("Missing main window")?
-        .navigate(url)
-        .map_err(error)?;
-    Ok(())
-}
-
-#[tauri::command]
-async fn sign_out(
-    window: WebviewWindow,
-    app: tauri::AppHandle,
-    state: Shared<'_>,
-) -> Result<Option<String>> {
+async fn sign_out(window: WebviewWindow, state: Shared<'_>) -> Result<Option<String>> {
     local(&window)?;
     let _guard = state.lock().await;
-    let warning = stemma_client::sign_in::logout().await.map_err(error)?;
-    let main = app
-        .get_webview_window("main")
-        .ok_or("Missing main window")?;
-    main.clear_all_browsing_data().map_err(error)?;
-    let entrance = {
-        let navigation = app.state::<NavigationState>();
-        let mut navigation = navigation.lock().unwrap();
-        navigation.origin = None;
-        navigation.entrance.clone().ok_or("Missing entrance")?
-    };
-    main.navigate(entrance).map_err(error)?;
-    main.show().map_err(error)?;
-    main.set_focus().map_err(error)?;
-    Ok(warning)
+    transport::stop(window.app_handle());
+    stemma_client::sign_in::logout().await.map_err(error)
 }
 
 /// An app opened from the Finder or the Dock gets a bare `PATH`, without
@@ -396,26 +325,16 @@ fn main() {
     use_login_path();
     tauri::Builder::default()
         .manage(Mutex::new(()))
-        .manage(NavigationState::default())
+        .manage(transport::Streams::default())
+        .register_asynchronous_uri_scheme_protocol("hub", |_context, request, responder| {
+            tauri::async_runtime::spawn(async move {
+                responder.respond(transport::proxy(request).await);
+            });
+        })
         .setup(|app| {
-            let handle = app.handle().clone();
-            let main = tauri::WebviewWindowBuilder::from_config(app, &app.config().app.windows[0])?
-                .user_agent(concat!(
-                    "Mozilla/5.0 AppleWebKit/605.1.15 StemmaDesktop/",
-                    env!("CARGO_PKG_VERSION")
-                ))
-                .on_navigation(move |url| {
-                    trusted_machine_url(url)
-                        || handle
-                            .state::<NavigationState>()
-                            .lock()
-                            .unwrap()
-                            .origin
-                            .as_ref()
-                            == Some(&url.origin().ascii_serialization())
-                })
+            tauri::WebviewWindowBuilder::from_config(app, &app.config().app.windows[0])?
+                .on_navigation(trusted_machine_url)
                 .build()?;
-            app.state::<NavigationState>().lock().unwrap().entrance = Some(main.url()?);
             let menu = Menu::default(app.handle())?;
             let item = MenuItem::with_id(app, "settings", "Settings…", true, Some("CmdOrCtrl+,"))?;
             if let Some(MenuItemKind::Submenu(submenu)) = menu.items()?.first() {
@@ -425,14 +344,17 @@ fn main() {
             Ok(())
         })
         .on_menu_event(|app, event| {
-            if event.id().as_ref() == "settings"
-                && let Err(error) = settings(app)
-            {
-                eprintln!("Could not open Settings: {error}");
+            if event.id().as_ref() == "settings" {
+                let _ = app.emit_to("main", "open-settings", ());
             }
         })
         .invoke_handler(tauri::generate_handler![
-            snapshot, login, action, open_hub, sign_out
+            snapshot,
+            login,
+            action,
+            sign_out,
+            subscribe,
+            unsubscribe
         ])
         .run(tauri::generate_context!())
         .expect("running Stemma");
@@ -478,8 +400,8 @@ mod tests {
             "http://tauri.localhost.evil.test",
             "file:///tmp/page.html",
             "http://tauri.localhost:8080/",
-            "http://127.0.0.1:1420/remote.html",
-            "tauri://localhost/remote.html",
+            "hub://localhost/api/v1/groups/a/attachments/1",
+            "http://hub.localhost/api/v1/groups/a/papers/p/pdf",
         ] {
             let url = url.parse().unwrap();
             assert!(!super::trusted_machine_url(&url), "{url}");
@@ -496,44 +418,25 @@ mod tests {
         }
     }
     #[test]
-    fn hub_capability_grants_only_dragging_at_one_origin() {
-        let url = "https://hub.example.org:8443/login/handoff?code=private"
-            .parse()
-            .unwrap();
-        let capability = super::drag_capability(&url);
-        assert_eq!(capability["local"], false);
-        assert_eq!(capability["windows"], serde_json::json!(["main"]));
-        assert_eq!(
-            capability["remote"]["urls"],
-            serde_json::json!(["https://hub.example.org:8443/*"])
-        );
-        assert_eq!(
-            capability["permissions"],
-            serde_json::json!(["core:window:allow-start-dragging"])
-        );
-        for (source, commands) in [
-            (
-                include_str!("../capabilities/entrance.json"),
-                vec![
-                    "allow-snapshot",
-                    "allow-login",
-                    "allow-open-hub",
-                    "core:window:allow-start-dragging",
-                ],
-            ),
-            (
-                include_str!("../capabilities/machine.json"),
-                vec![
-                    "allow-snapshot",
-                    "allow-action",
-                    "allow-sign-out",
-                    "allow-open-hub",
-                ],
-            ),
-        ] {
-            let local: serde_json::Value = serde_json::from_str(source).unwrap();
-            assert!(local.get("remote").is_none());
-            assert_eq!(local["permissions"], serde_json::json!(commands));
+    fn capabilities_and_csp_are_local_only() {
+        let cap: serde_json::Value =
+            serde_json::from_str(include_str!("../capabilities/local.json")).unwrap();
+        assert_eq!(cap["local"], true);
+        assert_eq!(cap["windows"], serde_json::json!(["main"]));
+        assert!(cap.get("remote").is_none());
+        let config: serde_json::Value =
+            serde_json::from_str(include_str!("../tauri.conf.json")).unwrap();
+        assert_eq!(config["app"]["windows"].as_array().unwrap().len(), 1);
+        for key in ["csp", "devCsp"] {
+            let csp = config["app"]["security"][key].as_str().unwrap();
+            assert!(csp.contains("script-src 'self';"));
+            assert!(!csp.contains("unsafe-eval"));
+            assert!(csp.contains("frame-src hub: http://hub.localhost;"));
+            assert!(csp.contains("object-src 'none'"));
         }
+        assert!(!super::machine_page(
+            "machine",
+            &"tauri://localhost".parse().unwrap()
+        ));
     }
 }

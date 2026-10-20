@@ -53,7 +53,6 @@ lint:
     pnpm --dir web lint
     pnpm --dir web check
     pnpm --dir desktop lint
-    pnpm --dir desktop check
 
 # Run the Rust and web tests.
 [group('checks')]

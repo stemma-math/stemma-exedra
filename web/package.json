@@ -7,14 +7,16 @@
   "type": "module",
   "scripts": {
     "dev": "vite dev",
-    "build": "vite build",
+    "build": "vite build && node scripts/check-browser.mjs",
     "preview": "vite preview",
     "check": "svelte-kit sync && svelte-check --tsconfig ./tsconfig.json --fail-on-warnings",
     "lint": "biome lint --error-on-warnings .",
     "format": "biome format --write .",
     "format:check": "biome format .",
     "test": "vitest run",
-    "prepare": "svelte-kit sync || echo ''"
+    "prepare": "svelte-kit sync || echo ''",
+    "dev:desktop": "STEMMA_DESKTOP=1 vite dev --host 127.0.0.1 --port 1420 --strictPort",
+    "build:desktop": "STEMMA_DESKTOP=1 vite build"
   },
   "devDependencies": {
     "@biomejs/biome": "2.5.15",

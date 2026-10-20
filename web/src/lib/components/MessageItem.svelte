@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { hubUrl } from "#lib/transport.svelte.ts";
   import { api, type Message } from "#lib/api.ts";
   import { exactly, fileSize, when } from "#lib/format.ts";
   import { toastError } from "#lib/toast.ts";
@@ -146,8 +147,8 @@
       {#each images as image (image.id)}
         <li>
           <figure class="post__image">
-            <a href={image.url} target="_blank" rel="noopener">
-              <img src={image.url} alt={image.name} loading="lazy" />
+            <a href={hubUrl(image.url)} target="_blank" rel="noopener">
+              <img src={hubUrl(image.url)} alt={image.name} loading="lazy" />
             </a>
             <figcaption class="quiet">{image.name}</figcaption>
           </figure>
@@ -155,7 +156,7 @@
       {/each}
       {#each files as file (file.id)}
         <li>
-          <a class="post__attachment" href={file.url} download={file.name}>
+          <a class="post__attachment" href={hubUrl(file.url)} download={file.name}>
             <Glyph name="download" small />
             <span class="identifier">{file.name}</span>
             <span class="quiet">{fileSize(file.size)}</span>

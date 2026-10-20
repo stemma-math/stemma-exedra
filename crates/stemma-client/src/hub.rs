@@ -179,11 +179,6 @@ impl Hub {
 
     // ── Accounts ──────────────────────────────────────────────────────
 
-    /// Only the code reaches the browser, never this client's device token.
-    pub async fn login_handoff(&self) -> Result<stemma_core::api::LoginHandoff> {
-        self.post("/me/login-handoff", &()).await
-    }
-
     pub async fn me(&self) -> Result<Me> {
         self.get("/me", &[]).await
     }

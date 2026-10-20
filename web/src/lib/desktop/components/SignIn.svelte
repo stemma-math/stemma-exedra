@@ -1,7 +1,7 @@
 <script lang="ts">
   import { onMount } from "svelte";
   import type { StemmaLight } from "@stemma-math/design-elements/light.js";
-  import { login, openHub } from "../api.ts";
+  import { login } from "../api.ts";
   import type { MachineControls } from "../machine.svelte.ts";
 
   interface Props {
@@ -21,7 +21,7 @@
       async () => {
         try {
           await login(controls.url, controls.username, controls.password);
-          await openHub();
+          await controls.load();
         } finally {
           controls.password = "";
         }
@@ -82,15 +82,6 @@
         {controls.busy ? "Connecting…" : "Sign in"}
       </button>
     </form>
-    {#if controls.data?.me}
-      <button
-        type="button"
-        class="button"
-        disabled={controls.busy}
-        onclick={() => controls.run(openHub, "", false)}
-      >
-        Try opening Stemma again
-      </button>
-    {/if}
+
   </section>
 </main>

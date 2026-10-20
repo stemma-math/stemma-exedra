@@ -1,3 +1,5 @@
+import { hubFetch, hubUrl } from "./transport.svelte.ts";
+
 // The hub's API, version 1. The types mirror `stemma-core`'s `api` module.
 
 export interface User {
@@ -454,9 +456,8 @@ const PREFIX = "/api/v1";
 async function request<T>(method: string, path: string, body?: unknown): Promise<T> {
   let response: Response;
   try {
-    response = await fetch(PREFIX + path, {
+    response = await hubFetch(PREFIX + path, {
       method,
-      credentials: "same-origin",
       headers: body === undefined ? {} : { "content-type": "application/json" },
       body: body === undefined ? undefined : JSON.stringify(body),
     });
@@ -634,9 +635,8 @@ export const api = {
     form.append("file", file, file.name);
     let response: Response;
     try {
-      response = await fetch(`${PREFIX}${g(group)}/attachments`, {
+      response = await hubFetch(`${PREFIX}${g(group)}/attachments`, {
         method: "POST",
-        credentials: "same-origin",
         body: form,
       });
     } catch {
@@ -645,5 +645,5 @@ export const api = {
     return parse<Attachment>(response);
   },
 
-  eventsUrl: (group: string) => `${PREFIX}${g(group)}/events`,
+  eventsUrl: (group: string) => hubUrl(`${PREFIX}${g(group)}/events`),
 };

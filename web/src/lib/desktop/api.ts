@@ -1,7 +1,7 @@
 import { invoke } from "@tauri-apps/api/core";
-import type { Machine, Me, WorkshopAgent } from "../../web/src/lib/api.ts";
+import type { Machine, Me, WorkshopAgent } from "../api.ts";
 
-export { RUNNER_NAMES, RUNNERS } from "../../web/src/lib/api.ts";
+export { RUNNER_NAMES, RUNNERS } from "../api.ts";
 export type { WorkshopAgent };
 export interface Credentials {
   env?: string[];
@@ -38,5 +38,4 @@ export const snapshot = () => invoke<Snapshot>("snapshot");
 export const action = (action: object) => invoke<void>("action", { action });
 export const login = (url: string, username: string, password: string) =>
   invoke<void>("login", { url, username, password });
-export const openHub = () => invoke<void>("open_hub");
 export const signOut = () => invoke<string | null>("sign_out");

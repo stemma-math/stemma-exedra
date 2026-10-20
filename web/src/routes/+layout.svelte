@@ -10,6 +10,9 @@
   import { page } from "$app/state";
   import { loadSession, session } from "#lib/session.svelte.ts";
   import { onMount } from "svelte";
+  import type { Component, Snippet } from "svelte";
+  import { applyStoredTheme } from "@stemma-math/design-elements/theme-switch.js";
+  let Desktop = $state<Component<{children: Snippet}> | null>(null);
 
   let { children } = $props();
 
@@ -17,10 +20,16 @@
   const PUBLIC = ["/login", "/signup", "/setup", "/invite/"];
   const isPublic = $derived(page.url.pathname === "/" || PUBLIC.some((p) => page.url.pathname.startsWith(p)));
 
-  onMount(loadSession);
+  onMount(() => {
+    applyStoredTheme();
+    if (__STEMMA_DESKTOP__) {
+      document.documentElement.dataset.desktop = "";
+      void import("#lib/desktop/Desktop.svelte").then((module) => { Desktop = module.default; });
+    } else void loadSession();
+  });
 
   $effect(() => {
-    if (session.loaded && !session.me && !isPublic) {
+    if (!__STEMMA_DESKTOP__ && session.loaded && !session.me && !isPublic) {
       const next = page.url.pathname + page.url.search + page.url.hash;
       goto(`/login?next=${encodeURIComponent(next)}`, { replaceState: true });
     }
@@ -33,14 +42,10 @@
   <link rel="apple-touch-icon" href={touchIcon} />
 </svelte:head>
 
-<!-- The hub requests only startDragging; native machine commands stay local. -->
-<div class="desktop-titlebar" aria-hidden="true" onpointerdown={(event) => {
-  if (event.button === 0 && event.isPrimary && document.documentElement.hasAttribute("data-desktop")) {
-    void import("@tauri-apps/api/window").then(({ getCurrentWindow }) => getCurrentWindow().startDragging());
-  }
-}}></div>
 <div class="app">
-  {#if session.loaded && (session.me || isPublic)}
+  {#if __STEMMA_DESKTOP__}
+    {#if Desktop}<Desktop>{@render children()}</Desktop>{/if}
+  {:else if session.loaded && (session.me || isPublic)}
     {@render children()}
   {:else}
     <div class="page page--centered" aria-busy="true">

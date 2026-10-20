@@ -25,20 +25,30 @@ STEMMA_TEST_FORGEJO=http://127.0.0.1:3000 cargo test -p stemma-hub --test forgej
 With the CLI installed, `pnpm --dir desktop tauri dev` starts the desktop app;
 `pnpm --dir desktop tauri build` builds it on macOS (Xcode command line tools).
 Its Rust crate is a separate Cargo project with its own lockfile. `just check`
-includes its native clippy and tests, and its frontend lint and types. On Linux,
-install [Tauri v2's prerequisites](https://v2.tauri.app/start/prerequisites/#linux)
-first; CI checks the native crate separately on Ubuntu.
-The main window exchanges a one-use, sixty-second code for its browser session;
-the device token stays native. The selected hub origin can only start window
-dragging. Machine commands are restricted to the local entrance and settings,
-with native URL checks as well as Tauri permissions. No release packaging yet.
+includes its native clippy and tests. On Linux, install
+[Tauri v2's prerequisites](https://v2.tauri.app/start/prerequisites/#linux) first.
+
+`web/` builds both interfaces. `pnpm --dir web build` checks that the browser
+bundle contains no desktop UI or Tauri modules. `build:desktop` bundles the same
+routes with local sign-in and settings into `desktop/dist`. The app never loads
+a remote frontend: Rust adds the native device token to `hub://localhost` requests
+and forwards live events. Attachments and PDFs use that separate, sandboxed origin;
+only the bundled main window has native capabilities. Its CSP permits local scripts
+only, with an external bootstrap. Markdown disables HTML and trusted KaTeX features
+and only accepts web and mail links.
+
+Build a macOS application with:
+
+```sh
+pnpm --dir desktop tauri build --config '{"bundle":{"active":true,"targets":["app"]}}'
+```
 
 ## Layout
 
 - `crates/`: the binary (`stemma`), the hub, the worker, the client and its
   MCP tools, what they share (`stemma-core`), and the fake forge.
 - `web/`: the web app, in SvelteKit, styled with `@stemma-math/design`.
-- `desktop/`: the Svelte desktop UI and Tauri crate (`src-tauri/`).
+- `desktop/`: the Tauri crate (`src-tauri/`) and its build configuration.
 - `docker/`: the hub's image and compose file, and the workshop's image.
 - `workshop/architectures/`, `latex/template/`, `lean/`.
 

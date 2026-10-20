@@ -14,7 +14,6 @@ pub mod db;
 pub mod error;
 pub mod forge;
 pub mod git;
-pub mod handoff;
 pub mod jobs;
 pub mod library;
 pub mod oidc;
@@ -40,7 +39,6 @@ pub use state::{AppState, Hub};
 /// The hub's HTTP application.
 pub fn app(state: AppState) -> Router {
     let hook = Router::new()
-        .route("/login/handoff", get(handoff::exchange))
         .route(forge::HOOK_PATH, post(forge::hook::receive))
         .with_state(state.clone());
     api::router(state.clone())

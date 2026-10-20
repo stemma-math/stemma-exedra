@@ -36,7 +36,6 @@ pub fn router(state: AppState) -> Router {
         .route("/health", get(account::health))
         .route("/setup", get(account::setup_state).post(account::setup))
         .route("/session", post(account::sign_in).delete(account::sign_out))
-        .route("/me/login-handoff", post(crate::handoff::issue))
         .route("/me", get(account::me).patch(account::update_me))
         .route("/me/password", post(account::change_password))
         .route(

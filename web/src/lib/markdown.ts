@@ -2,6 +2,7 @@
 // typeset as MathML in the design system's math face, and `[[…]]`
 // references to threads, messages, declarations and tasks.
 
+import { hubUrl } from "./transport.svelte.ts";
 import katex from "katex";
 import MarkdownIt from "markdown-it";
 import type { StateBlock, StateInline } from "markdown-it";
@@ -13,6 +14,16 @@ export interface RenderEnv {
 }
 
 const md = new MarkdownIt({ html: false, linkify: true, breaks: true });
+// An allow-list also excludes app/native schemes (tauri, ipc, hub, file).
+md.validateLink = (url) => !/^[a-z][a-z0-9+.-]*:/i.test(url) || /^(https?|mailto):/i.test(url);
+const defaultImage = md.renderer.rules.image;
+md.renderer.rules.image = (tokens, i, options, env, self) => {
+  const src = String(tokens[i].attrGet("src") ?? "");
+  if (src.startsWith("/api/v1/")) tokens[i].attrSet("src", hubUrl(src));
+  return defaultImage
+    ? defaultImage(tokens, i, options, env, self)
+    : self.renderToken(tokens, i, options);
+};
 
 md.inline.ruler.after("escape", "math_inline", mathInline);
 md.inline.ruler.before("link", "reference", reference);

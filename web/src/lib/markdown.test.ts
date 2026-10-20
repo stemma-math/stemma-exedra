@@ -52,6 +52,35 @@ describe("markdown", () => {
     expect(html).not.toContain("<b>");
   });
 
+  it("refuses executable and native URL schemes, including encoded ones", () => {
+    for (const url of [
+      "javascript:alert(1)",
+      "JaVaScRiPt:alert(1)",
+      "javascript&#58;alert(1)",
+      "vbscript:run",
+      "data:text/html,test",
+      "file:///etc/passwd",
+      "tauri://localhost",
+      "ipc://localhost",
+      "hub://localhost/api/v1/me",
+    ]) {
+      expect(render(`[link](${url})`)).not.toContain("<a");
+    }
+  });
+
+  it("keeps KaTeX untrusted", () => {
+    for (const tex of [
+      "\\href{javascript:alert(1)}{click}",
+      "\\htmlClass{evil}{x}",
+      "\\includegraphics{https://evil.test/a.svg}",
+    ]) {
+      const html = render(`$${tex}$`);
+      expect(html).not.toContain("href=");
+      expect(html).not.toContain('<span class="evil"');
+      expect(html).not.toContain("<img");
+    }
+  });
+
   it("opens outside links on their own", () => {
     expect(render("https://example.org")).toContain('target="_blank"');
     expect(render("[here](/g/geometry/t/1)")).not.toContain("target");

@@ -5,14 +5,7 @@
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <meta name="color-scheme" content="light dark" />
     <title>Stemma</title>
-    <script>
-      if (/\bStemmaDesktop\//.test(navigator.userAgent)) document.documentElement.dataset.desktop = "";
-      // The appearance chosen in the settings, before the page paints.
-      try {
-        const theme = localStorage.getItem("stemma-theme");
-        if (theme === "light" || theme === "dark") document.documentElement.dataset.theme = theme;
-      } catch {}
-    </script>
+
     %sveltekit.head%
   </head>
   <body>

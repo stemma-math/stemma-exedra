@@ -33,8 +33,8 @@ request, and reports in the thread.
 
 ## Desktop
 
-The desktop app signs in locally, then opens your hub in the same window.
-**Stemma → Settings…** (⌘,) opens three pages: **This machine** (status,
+The desktop app bundles the web interface and signs in locally.
+**Stemma → Settings…** (⌘,) opens a dialog with three pages: **This machine** (status,
 service, your agents and repository folder), **Workshop** (lending, offers and
 daily limits, with isolation and container sign-in under **Advanced**), and
 **Account**. After the first sign-in, an unregistered machine opens a short

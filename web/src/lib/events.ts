@@ -1,11 +1,12 @@
 // Live updates: one event stream per group, shared by whatever listens.
 
+import { connection } from "./transport.svelte.ts";
 import { api, type GroupEvent } from "./api";
 
 export type Listener = (event: GroupEvent | { type: "resync" }) => void;
 
 interface Stream {
-  source: EventSource;
+  source: { close(): void };
   listeners: Set<Listener>;
 }
 
@@ -31,10 +32,32 @@ export function listen(group: string, listener: Listener): () => void {
 
 function open(group: string): Stream {
   const listeners = new Set<Listener>();
-  const source = new EventSource(api.eventsUrl(group));
+
   const send = (event: GroupEvent | { type: "resync" }) => {
     for (const listener of listeners) listener(event);
   };
+  if (__STEMMA_DESKTOP__) {
+    let closed = false;
+    let stop: (() => void) | undefined;
+    void import("./desktop/events.ts")
+      .then(async ({ subscribe }) => {
+        stop = await subscribe(group, send);
+        if (closed) stop();
+      })
+      .catch(() => {
+        connection.online = false;
+      });
+    return {
+      source: {
+        close() {
+          closed = true;
+          stop?.();
+        },
+      },
+      listeners,
+    };
+  }
+  const source = new EventSource(api.eventsUrl(group));
   let opened = false;
   // After the first time, being ready again means having been away: what
   // happened meanwhile was missed.

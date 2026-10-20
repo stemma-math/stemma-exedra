@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { openHub, signOut } from "../api.ts";
+  import { signOut } from "../api.ts";
   import type { MachineControls } from "../machine.svelte.ts";
   import ThisMachine from "./ThisMachine.svelte";
   import Workshop from "./Workshop.svelte";
@@ -75,14 +75,7 @@
         <section class="setting stack stack--tight">
           <div class="setting__row">
             <h2 class="label">Hub</h2>
-            <button
-              type="button"
-              class="button"
-              disabled={controls.busy || !data.me}
-              onclick={() => controls.run(openHub, "Hub opened.", false)}
-            >
-              Open hub
-            </button>
+
           </div>
           <p class="quiet truncate" title={data.hub ?? ""}>
             {data.hub ?? "Sign in from Stemma’s main window."}

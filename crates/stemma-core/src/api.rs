@@ -1474,9 +1474,3 @@ pub enum Event {
         paper: Box<Paper>,
     },
 }
-
-/// A short-lived, one-use code for signing a browser into the hub.
-#[derive(Clone, Debug, Serialize, Deserialize)]
-pub struct LoginHandoff {
-    pub code: String,
-}

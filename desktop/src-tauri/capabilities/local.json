@@ -1,0 +1,17 @@
+{
+  "identifier": "local",
+  "description": "Only the bundled Stemma interface can use native commands. Hub content has no capabilities.",
+  "local": true,
+  "windows": ["main"],
+  "permissions": [
+    "allow-snapshot",
+    "allow-login",
+    "allow-action",
+    "allow-sign-out",
+    "allow-subscribe",
+    "allow-unsubscribe",
+    "core:event:allow-listen",
+    "core:event:allow-unlisten",
+    "core:window:allow-start-dragging"
+  ]
+}

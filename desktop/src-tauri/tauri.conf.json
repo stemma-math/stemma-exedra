@@ -20,26 +20,17 @@
         "titleBarStyle": "Overlay",
         "hiddenTitle": true,
         "dragDropEnabled": false,
-        "create": false
-      },
-      {
-        "label": "machine",
-        "title": "Stemma \u2014 Settings",
-        "url": "index.html?settings",
-        "width": 820,
-        "height": 640,
-        "minWidth": 680,
-        "minHeight": 480,
-        "create": false
+        "create": false,
+        "url": "index.html"
       }
     ],
     "security": {
-      "csp": "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' asset: data:; font-src 'self'; connect-src ipc: http://ipc.localhost",
-      "devCsp": "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' asset: data:; font-src 'self'; connect-src ipc: http://ipc.localhost ws://127.0.0.1:1420"
+      "csp": "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' hub: http://hub.localhost data:; font-src 'self'; connect-src 'self' hub: http://hub.localhost ipc: http://ipc.localhost; frame-src hub: http://hub.localhost; object-src 'none'; base-uri 'none'; form-action 'none'",
+      "devCsp": "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' hub: http://hub.localhost data:; font-src 'self'; connect-src 'self' ws://127.0.0.1:1420 hub: http://hub.localhost ipc: http://ipc.localhost; frame-src hub: http://hub.localhost; object-src 'none'; base-uri 'none'; form-action 'none'"
     }
   },
   "bundle": {
     "active": false,
-    "icon": ["../node_modules/@stemma-math/design/icons/apple-touch-icon.png"]
+    "icon": ["../../web/node_modules/@stemma-math/design/icons/apple-touch-icon.png"]
   }
 }

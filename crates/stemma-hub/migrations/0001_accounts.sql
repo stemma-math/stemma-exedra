@@ -26,13 +26,6 @@ CREATE TABLE sessions (
 
 CREATE INDEX sessions_user ON sessions (user_id);
 
--- A device hands a browser one code, valid for sixty seconds and used once.
-CREATE TABLE login_handoffs (
-    code_hash TEXT PRIMARY KEY,
-    user_id INTEGER NOT NULL REFERENCES users (id) ON DELETE CASCADE,
-    expires_at INTEGER NOT NULL
-);
-
 CREATE TABLE groups (
     id INTEGER PRIMARY KEY,
     slug TEXT NOT NULL UNIQUE,

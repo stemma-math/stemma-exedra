@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { hubUrl } from "#lib/transport.svelte.ts";
   import { goto } from "$app/navigation";
   import { page } from "$app/state";
   import { api, type Member, type PaperPage } from "#lib/api.ts";
@@ -66,7 +67,7 @@
   );
 
   // The browser's own PDF viewer shows it; a new build's PDF is a new address.
-  const pdfUrl = $derived(paper?.pdf ? `${paper.pdf.url}?build=${paper.pdf.build}` : "");
+  const pdfUrl = $derived(paper?.pdf ? `${hubUrl(paper.pdf.url)}?build=${paper.pdf.build}` : "");
   const cloneUrl = $derived(paper ? `${location.origin}${paper.clone_path}` : "");
 
   async function addAuthor(event: SubmitEvent) {
@@ -137,9 +138,8 @@
 
     <div class="row">
       {#if paper.forge_url}
-        <a class="button" href={paper.forge_url} target="_blank" rel="noreferrer">
-          <Glyph name="link" /> Repository
-        </a>
+        <stemma-copy-button value={paper.forge_url} label="Copy repository address"></stemma-copy-button>
+        <span class="identifier truncate" title={paper.forge_url}>{paper.forge_url}</span>
       {/if}
       <a class="button" href="/g/{group.slug}/p/{paper.slug}/edit"><Glyph name="edit" /> Editor</a>
       {#if asksForWork(group.role)}
@@ -170,7 +170,7 @@
     {/if}
 
     {#if paper.pdf}
-      <iframe class="paper-pdf card" src={pdfUrl} title="The PDF of p/{paper.slug}"></iframe>
+      <iframe sandbox="" class="paper-pdf card" src={pdfUrl} title="The PDF of p/{paper.slug}"></iframe>
       <p class="quiet">
         Compiled from <span class="identifier">{paper.pdf.commit.slice(0, 10)}</span>,
         <time datetime={paper.pdf.built_at}>{exactly(paper.pdf.built_at)}</time>, {fileSize(paper.pdf.size)}.
