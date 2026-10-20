@@ -7,7 +7,7 @@ use std::time::{Duration, Instant};
 
 use anyhow::Context as _;
 use futures_util::{SinkExt, StreamExt};
-use stemma_core::api::PREFIX;
+use stemma_core::api::{JobKind, PREFIX};
 use stemma_core::protocol::{
     Hello, HubMessage, Outcome, PROTOCOL_VERSION, Usage, WORKER_PATH, WorkerMessage,
 };
@@ -144,7 +144,7 @@ async fn session(context: &Arc<Context>, token: &str) -> Ended {
         Ok(Err(reason)) => return Ended::Refused(anyhow::anyhow!("the hub refused: {reason}")),
         Err(error) => return Ended::Dropped(error),
     }
-    let ended = work(context, &mut socket).await;
+    let ended = work(context, &mut socket, RunningJobs::default()).await;
     let _ = socket.close(None).await;
     Ended::Dropped(ended)
 }
@@ -169,11 +169,22 @@ async fn welcome(
 
 /// Aborting the service must also abort jobs; dropping a JoinHandle detaches it.
 #[derive(Default)]
-struct RunningJobs(HashMap<i64, JoinHandle<()>>);
+struct RunningJobs(HashMap<i64, (JobKind, JoinHandle<()>)>);
+
+impl RunningJobs {
+    fn accepts(&self, id: i64, kind: JobKind, concurrency: u32) -> bool {
+        let paper = kind == JobKind::PaperBuild
+            || self
+                .0
+                .values()
+                .any(|(kind, _)| *kind == JobKind::PaperBuild);
+        !self.0.contains_key(&id) && self.0.len() < concurrency as usize + usize::from(paper)
+    }
+}
 
 impl Drop for RunningJobs {
     fn drop(&mut self) {
-        for task in self.0.values() {
+        for (_, task) in self.0.values() {
             task.abort();
         }
     }
@@ -181,10 +192,9 @@ impl Drop for RunningJobs {
 
 /// Runs the hub's jobs until the connection ends; then stops them, for the
 /// hub queues them again.
-async fn work(context: &Arc<Context>, socket: &mut Socket) -> anyhow::Error {
+async fn work(context: &Arc<Context>, socket: &mut Socket, mut jobs: RunningJobs) -> anyhow::Error {
     let (progress, mut progress_out) = mpsc::unbounded_channel::<(i64, String)>();
     let (finished, mut finished_out) = mpsc::unbounded_channel::<(i64, Outcome, Usage)>();
-    let mut jobs = RunningJobs::default();
     let mut heard = Instant::now();
     let mut check = tokio::time::interval(Duration::from_secs(15));
 
@@ -202,18 +212,27 @@ async fn work(context: &Arc<Context>, socket: &mut Socket) -> anyhow::Error {
                     Ok(HubMessage::Job(spec)) => {
                         let id = spec.id;
                         tracing::info!(job = id, kind = spec.kind().as_str(), "job received");
+                        if !jobs.accepts(id, spec.kind(), context.config.concurrency) {
+                            let message = WorkerMessage::Finished {
+                                job: id,
+                                outcome: Outcome::Failed { error: "This machine is at its job limit".into() },
+                                usage: Usage::default(),
+                            };
+                            if let Err(error) = send(socket, &message).await { break error; }
+                            continue;
+                        }
+                        let kind = spec.kind();
                         let context = context.clone();
                         let progress = Progress::new(id, progress.clone());
                         let finished = finished.clone();
                         let task = tokio::spawn(async move {
-                            // The hub accounts for normal slots and the extra paper slot.
                             let (outcome, usage) = job::run(context, *spec, progress).await;
                             let _ = finished.send((id, outcome, usage));
                         });
-                        jobs.0.insert(id, task);
+                        jobs.0.insert(id, (kind, task));
                     }
                     Ok(HubMessage::Cancel { job }) => {
-                        if let Some(task) = jobs.0.remove(&job) {
+                        if let Some((_, task)) = jobs.0.remove(&job) {
                             tracing::info!(job, "job cancelled");
                             task.abort();
                         }
@@ -276,7 +295,7 @@ pub fn has_lean() -> bool {
 
 #[cfg(test)]
 mod tests {
-    use super::socket_url;
+    use super::{JobKind, socket_url};
 
     #[tokio::test]
     async fn dropping_the_connection_cancels_its_jobs() {
@@ -286,9 +305,84 @@ mod tests {
             std::future::pending::<()>().await;
         });
         let mut jobs = super::RunningJobs::default();
-        jobs.0.insert(1, task);
+        jobs.0.insert(1, (JobKind::Reply, task));
         drop(jobs);
         assert!(received.await.is_err());
+    }
+
+    #[tokio::test]
+    async fn enforces_normal_and_paper_slots() {
+        let mut jobs = super::RunningJobs::default();
+        let task = || tokio::spawn(std::future::pending());
+        assert!(jobs.accepts(1, JobKind::Reply, 1));
+        jobs.0.insert(1, (JobKind::Reply, task()));
+        assert!(!jobs.accepts(2, JobKind::Reply, 1));
+        assert!(jobs.accepts(2, JobKind::PaperBuild, 1));
+        jobs.0.insert(2, (JobKind::PaperBuild, task()));
+        assert!(!jobs.accepts(3, JobKind::PaperBuild, 1));
+        assert!(!jobs.accepts(3, JobKind::Reply, 1));
+        jobs.0.remove(&1).unwrap().1.abort();
+        assert!(jobs.accepts(3, JobKind::Reply, 1));
+        assert!(!jobs.accepts(2, JobKind::PaperBuild, 1));
+    }
+
+    #[tokio::test]
+    async fn reports_excess_dispatch_as_failed_without_running_it() {
+        use futures_util::{SinkExt, StreamExt};
+        use stemma_core::protocol::{HubMessage, Outcome, WorkerMessage};
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let hub = tokio::spawn(async move {
+            let (stream, _) = listener.accept().await.unwrap();
+            let mut socket = tokio_tungstenite::accept_async(stream).await.unwrap();
+            let spec = serde_json::from_value(serde_json::json!({
+                "id": 3, "group": {"slug": "geometry", "name": "Geometry"}, "token": "unused",
+                "work": {"kind": "paper_build", "build": 1, "paper": "notes", "repository": "/unused",
+                         "commit": "unused", "main": "main.tex", "upload": "/unused"}
+            })).unwrap();
+            socket
+                .send(super::WsMessage::Text(
+                    serde_json::to_string(&HubMessage::Job(Box::new(spec)))
+                        .unwrap()
+                        .into(),
+                ))
+                .await
+                .unwrap();
+            let reply = socket.next().await.unwrap().unwrap().into_text().unwrap();
+            assert!(matches!(
+                serde_json::from_str::<WorkerMessage>(&reply).unwrap(),
+                WorkerMessage::Finished {
+                    job: 3,
+                    outcome: Outcome::Failed { .. },
+                    ..
+                }
+            ));
+            socket.close(None).await.unwrap();
+        });
+        let (mut socket, _) = tokio_tungstenite::connect_async(format!("ws://{address}"))
+            .await
+            .unwrap();
+        let dir = tempfile::tempdir().unwrap();
+        let context = std::sync::Arc::new(crate::job::Context {
+            config: toml::from_str("hub = 'http://unused'\nconcurrency = 1").unwrap(),
+            hub: "http://unused".into(),
+            stemma: dir.path().join("unused"),
+            work_dir: dir.path().to_owned(),
+            checkouts: Default::default(),
+            isolator: None,
+        });
+        let mut jobs = super::RunningJobs::default();
+        for (id, kind) in [(1, JobKind::Reply), (2, JobKind::PaperBuild)] {
+            jobs.0
+                .insert(id, (kind, tokio::spawn(std::future::pending())));
+        }
+        tokio::time::timeout(std::time::Duration::from_secs(2), async {
+            super::work(&context, &mut socket, jobs).await;
+            hub.await.unwrap();
+        })
+        .await
+        .unwrap();
+        assert_eq!(std::fs::read_dir(dir.path()).unwrap().count(), 0);
     }
 
     #[test]
