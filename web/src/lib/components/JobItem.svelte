@@ -47,7 +47,7 @@
           This answer seems to contain a secret: a token or a key. It is not posted until you choose.
         </span>
       </div>
-      <!-- TODO(design): an inline mark for a secret in a text. -->
+      <!-- TODO(design): an inline mark for a secret in a text, stemma-math/design#40. -->
       <pre class="held-answer">{#each job.held as part, index (index)}{#if part.secret}<strong class="held-answer__secret" title="This seems to be {part.secret}">{part.text}</strong>{:else}{part.text}{/if}{/each}</pre>
       <div class="row">
         <button type="button" class="button button--primary button--small" onclick={() => onpublish(job, true)}>Publish hidden</button>
