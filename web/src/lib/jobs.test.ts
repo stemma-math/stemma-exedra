@@ -41,7 +41,7 @@ describe("jobs", () => {
   it("keeps a held answer until it is published or discarded", () => {
     let jobs = applyJob([], job(1, "held"));
     expect(jobs.map((j) => j.state)).toEqual(["held"]);
-    expect(jobStatus(jobs[0])).toBe("Claude's answer is held");
+    expect(jobStatus(jobs[0])).toBe("Claude answered");
     jobs = applyJob(jobs, job(1, "done"));
     expect(jobs).toEqual([]);
   });

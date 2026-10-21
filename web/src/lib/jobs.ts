@@ -26,7 +26,7 @@ export function jobStatus(job: Job): string {
     case "queued":
       return `${job.agent_name} will answer`;
     case "held":
-      return `${job.agent_name}'s answer is held`;
+      return `${job.agent_name} answered`;
     case "failed":
       return `${job.agent_name} could not answer`;
     default:
