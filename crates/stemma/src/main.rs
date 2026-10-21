@@ -9,7 +9,7 @@ mod settings;
 use std::io::{BufRead, IsTerminal};
 use std::path::PathBuf;
 
-use clap::{Args, Parser, Subcommand};
+use clap::{Args, CommandFactory, FromArgMatches, Parser, Subcommand};
 use stemma_core::api::{NewAccount, runners};
 use stemma_hub::Config;
 use tracing_subscriber::EnvFilter;
@@ -143,7 +143,10 @@ async fn main() -> anyhow::Result<()> {
     let policy = stemma_design_terminal::Output::detect(stemma_design_terminal::Stream::Stderr);
     policy.apply_to_console(stemma_design_terminal::Stream::Stderr);
     cliclack::set_theme(stemma_design_terminal::themes::cliclack::Theme::new(policy));
-    let cli = Cli::parse();
+    let matches = Cli::command()
+        .help_template(output::help(HELP))
+        .get_matches();
+    let cli = Cli::from_arg_matches(&matches)?;
     // Standard output is for what commands print, and for MCP's messages:
     // logs go to standard error, and the client commands log only problems.
     let default = match cli.command {

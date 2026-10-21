@@ -44,3 +44,21 @@ pub fn text(text: &str) {
         }
     }
 }
+
+pub fn help(template: &str) -> String {
+    let out = stdout();
+    template
+        .split_inclusive('\n')
+        .map(|line| {
+            if line.trim_end().ends_with(':') {
+                return format!("{}\n", out.paint(Role::Strong, line.trim_end()));
+            }
+            if line.starts_with("  ")
+                && let Some((command, description)) = line.trim_start().split_once(' ')
+            {
+                return format!("  {} {description}", out.paint(Role::Identifier, command));
+            }
+            line.to_owned()
+        })
+        .collect()
+}
