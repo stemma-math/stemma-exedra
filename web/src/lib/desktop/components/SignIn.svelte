@@ -54,15 +54,18 @@
       <h1 class="wordmark">Stemma</h1>
     </header>
     <p class="quiet">Where a research group does mathematics by talking.</p>
-    {#if controls.data?.service.signed_out}
-      <p class="chip chip--warning">Signed out</p>
-    {/if}
     <h2>Sign in to your hub</h2>
     {#if controls.error}
       <p class="message message--danger" role="alert">{controls.error}</p>
-    {/if}
-    {#if controls.data?.hub_error}
-      <p class="message message--warning">{controls.data.hub_error}</p>
+    {:else if controls.data?.hub && controls.data.service.signed_out}
+      <!-- Signed in once, and no longer: say so; a first sign-in needs no word. -->
+      <p class="message message--warning">
+        This computer was signed out of its hub. Sign in again.
+      </p>
+    {:else if controls.data?.hub && controls.data.hub_error}
+      <p class="message message--warning">
+        Could not reach {controls.data.hub}: {controls.data.hub_error}
+      </p>
     {/if}
     <form class="stack" onsubmit={signIn}>
       <label class="field">

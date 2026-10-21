@@ -1,6 +1,7 @@
 <script lang="ts">
   import type { SettingsPage } from "#lib/settings.svelte.ts";
   import type { MachineControls } from "../machine.svelte.ts";
+  import Glyph from "#lib/components/Glyph.svelte";
   import ThisMachine from "./ThisMachine.svelte";
 
   let { controls, page }: { controls: MachineControls; page: SettingsPage } = $props();
@@ -12,12 +13,14 @@
   </h1>
   <button
     type="button"
-    class="button button--small"
+    class="button button--quiet button--icon"
+    aria-label="Refresh"
     disabled={controls.busy}
     onclick={() => controls.refresh()}
   >
-    Refresh
+    <Glyph name="sync" />
   </button>
+  <stemma-tooltip>Refresh</stemma-tooltip>
 </header>
 {#if controls.error}
   <p class="message message--danger" role="alert">{controls.error}</p>
@@ -37,5 +40,5 @@
     <ThisMachine {controls} {data} />
   {/if}
 {:else if !controls.busy}
-  <p class="quiet">Could not read this machine’s settings. Try Refresh.</p>
+  <p class="quiet">Could not read this machine’s settings. Refresh to try again.</p>
 {/if}
