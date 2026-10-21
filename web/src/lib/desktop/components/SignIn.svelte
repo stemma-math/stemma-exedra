@@ -54,6 +54,9 @@
       <h1 class="wordmark">Stemma</h1>
     </header>
     <p class="quiet">Where a research group does mathematics by talking.</p>
+    {#if controls.data?.service.signed_out}
+      <p class="chip chip--warning">Signed out</p>
+    {/if}
     <h2>Sign in to your hub</h2>
     {#if controls.error}
       <p class="message message--danger" role="alert">{controls.error}</p>

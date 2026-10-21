@@ -10,7 +10,6 @@ use axum::{
     extract::State,
     http::{Request, Response, StatusCode, header},
 };
-use tauri::Manager;
 
 pub struct Origin(pub tauri::Url);
 
@@ -30,7 +29,7 @@ pub fn capability(origin: &tauri::Url) -> serde_json::Value {
 pub async fn serve(app: tauri::AppHandle) -> anyhow::Result<tauri::Url> {
     // Keep the origin stable across launches, so theme and navigation survive.
     // Never connect to an occupied address: this process must own its listener.
-    let folder = app.path().app_local_data_dir()?;
+    let folder = stemma_client::config::Paths::discover()?.state;
     let path = folder.join("interface-port");
     let port: u16 = std::fs::read_to_string(&path)
         .ok()

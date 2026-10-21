@@ -1,6 +1,6 @@
 <script lang="ts">
   import { ask } from "#lib/ask.svelte.ts";
-  import { api, type ApiToken, type CreatedToken } from "#lib/api.ts";
+  import { api, type ApiToken, type CreatedToken, RUNNER_NAMES } from "#lib/api.ts";
   import { exactly, when } from "#lib/format.ts";
   import { connection } from "#lib/transport.svelte.ts";
   import { toastError } from "#lib/toast.ts";
@@ -87,7 +87,7 @@
               <span class="identifier quiet">{token.prefix}…</span>
             </span>
             <span class="quiet" title={exactly(token.created_at)}>Created {when(token.created_at)}</span>
-            {#if token.connected}<span class="chip chip--success">Agents on</span><span class="quiet">{token.runners.join(", ")}</span>{/if}
+            {#if token.connected}<span class="row"><span class="chip chip--success">Agents on</span></span><span class="quiet">{token.runners.map((runner) => RUNNER_NAMES[runner] ?? runner).join(", ")}</span>{/if}
             {#if token.expires_at}
               <span class="quiet">A session's, until {exactly(token.expires_at)}</span>
             {/if}

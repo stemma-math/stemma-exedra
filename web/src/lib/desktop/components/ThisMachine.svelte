@@ -18,8 +18,52 @@
     "container.files": "Container sign-in files",
     "container.command": "Command in the container",
   };
-  const valueText = (setting: Explained) =>
-    Array.isArray(setting.value) ? JSON.stringify(setting.value) : String(setting.value);
+  const order = [
+    "enabled",
+    "priority",
+    "concurrency",
+    "isolation",
+    "image",
+    "workspace",
+    "command",
+    "model",
+    "args",
+    "timeout_minutes",
+    "container.command",
+    "container.env",
+    "container.files",
+  ];
+  const isolated = $derived(
+    data.settings.find((s) => s.key === "agents.isolation")?.value !== "none",
+  );
+  function fields(section: string) {
+    return data.settings
+      .filter(
+        (setting) =>
+          (section === "agents"
+            ? setting.key.split(".").length === 2
+            : setting.key.startsWith(`${section}.`)) &&
+          (isolated || (!setting.key.includes(".container.") && setting.key !== "agents.image")),
+      )
+      .sort(
+        (a, b) =>
+          order.indexOf(a.key.slice(section.length + 1)) -
+          order.indexOf(b.key.slice(section.length + 1)),
+      );
+  }
+  function valueText(setting: Explained): string {
+    if (setting.key.endsWith(".container.files") && Array.isArray(setting.value)) {
+      return `[${setting.value
+        .map(
+          (file) =>
+            `{ ${Object.entries(file as Record<string, string>)
+              .map(([key, value]) => `${key} = ${JSON.stringify(value)}`)
+              .join(", ")} }`,
+        )
+        .join(", ")}]`;
+    }
+    return Array.isArray(setting.value) ? JSON.stringify(setting.value) : String(setting.value);
+  }
   function save(setting: Explained, value: string) {
     return controls.save({ kind: "set", key: setting.key, value, group: controls.scope || null });
   }
@@ -28,7 +72,7 @@
 <label class="field">
   Scope
   <select
-    class="select"
+    class="input"
     bind:value={controls.scope}
     onchange={() => controls.refresh()}
     disabled={controls.busy}
@@ -67,11 +111,7 @@
             ? "Codex"
             : "OpenCode"}
     </h2>
-    {#each data.settings.filter((setting) =>
-      section === "agents"
-        ? setting.key.split(".").length === 2
-        : setting.key.startsWith(`${section}.`),
-    ) as setting (setting.key)}
+    {#each fields(section) as setting (setting.key)}
       {@const key = setting.key.slice(section.length + 1)}
       {@const locked = setting.source.kind === "environment"}
       <div class="stack stack--tight">
@@ -89,7 +129,7 @@
           {:else if key === "isolation"}
             <select
               id={setting.key}
-              class="select"
+              class="input"
               value={valueText(setting)}
               disabled={locked || controls.busy}
               onchange={(event) => save(setting, event.currentTarget.value)}

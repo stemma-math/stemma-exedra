@@ -27,7 +27,8 @@ the service: sign in again, then start it. There is no machine registration.
 The service connects with that same personal token. The hub keeps its
 capabilities only while connected. A person's job goes to a connected
 computer that has its runner, accepts agents for its group and has room:
-highest group priority first, then most recently connected. Otherwise it
+highest group priority first, then most recently connected. Group overrides
+for concurrency and runner commands also affect eligibility and capacity. Otherwise it
 waits, with “Waiting for one of Ada's machines”; the requester can cancel it.
 Changes to settings are reread every two seconds and announced without
 reconnecting. Invalid edits are reported while the last valid capabilities
@@ -40,7 +41,7 @@ On Linux and macOS, including the desktop app:
 | Folder | Selection, highest first | Contents |
 | --- | --- | --- |
 | Configuration | `STEMMA_CONFIG_DIR`, `$XDG_CONFIG_HOME/stemma`, `~/.config/stemma` | `config.toml`, `credentials.toml` |
-| State | `STEMMA_STATE_DIR`, `$XDG_STATE_HOME/stemma`, `~/.local/state/stemma` | `group`, `machine.lock`, group locks, `jobs/`, `logs/` |
+| State | `STEMMA_STATE_DIR`, `$XDG_STATE_HOME/stemma`, `~/.local/state/stemma` | `group`, `machine.lock`, group locks, `jobs/`, `logs/`, the app's local port |
 | Data | `STEMMA_DATA_DIR`, `$XDG_DATA_HOME/stemma`, `~/.local/share/stemma` | `groups/<slug>/` |
 
 On Windows, configuration uses `%APPDATA%\stemma`, and state and data use
