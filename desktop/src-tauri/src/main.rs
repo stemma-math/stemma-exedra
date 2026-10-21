@@ -456,7 +456,12 @@ mod tests {
             assert!(csp.contains("script-src 'self';"));
             assert!(!csp.contains("unsafe-eval"));
             assert!(csp.contains("frame-src hub: http://hub.localhost;"));
-            assert!(csp.contains("object-src 'none'"));
+            assert_eq!(
+                csp.split(';')
+                    .map(str::trim)
+                    .find(|directive| directive.starts_with("object-src ")),
+                Some("object-src hub: http://hub.localhost"),
+            );
         }
     }
 }

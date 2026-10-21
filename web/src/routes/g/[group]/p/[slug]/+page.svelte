@@ -173,7 +173,24 @@
     {/if}
 
     {#if paper.pdf}
-      <iframe sandbox="" class="paper-pdf card" src={pdfUrl} title="The PDF of p/{paper.slug}"></iframe>
+      <!-- No sandbox: it disables native PDF viewers. The browser loads a same-origin
+           hub response with application/pdf and nosniff, never HTML. In the app,
+           hub resources have a separate origin with no native capabilities. -->
+      {#if __STEMMA_DESKTOP__}
+        <object class="paper-pdf card" data={pdfUrl} type="application/pdf" title="The PDF of p/{paper.slug}">
+          <div class="card__body stack">
+            <p class="quiet">This browser cannot show the PDF here.</p>
+            <p><a class="button" href={pdfUrl} target="_blank" rel="noreferrer">Open the PDF</a></p>
+          </div>
+        </object>
+      {:else if navigator.pdfViewerEnabled}
+        <iframe class="paper-pdf card" src={pdfUrl} title="The PDF of p/{paper.slug}"></iframe>
+      {:else}
+        <div class="card card__body stack">
+          <p class="quiet">This browser cannot show the PDF here.</p>
+          <p><a class="button" href={pdfUrl} target="_blank" rel="noreferrer">Open the PDF</a></p>
+        </div>
+      {/if}
       <p class="quiet">
         Compiled from <span class="identifier">{paper.pdf.commit.slice(0, 10)}</span>,
         <time datetime={paper.pdf.built_at}>{exactly(paper.pdf.built_at)}</time>, {fileSize(paper.pdf.size)}.

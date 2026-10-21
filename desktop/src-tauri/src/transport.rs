@@ -112,6 +112,7 @@ pub async fn proxy(request: Request<Vec<u8>>, local_origin: &tauri::Url) -> Resp
                     reply.headers_mut().insert(key, value.clone());
                 }
             }
+            pdf_policy(&mut reply);
             reply
         }
         Err(_) => response(
@@ -119,6 +120,24 @@ pub async fn proxy(request: Request<Vec<u8>>, local_origin: &tauri::Url) -> Resp
             br#"{"error":{"code":"offline","message":"Could not reach the hub"}}"#.to_vec(),
             origin.as_deref(),
         ),
+    }
+}
+
+/// Native PDF viewers cannot render a sandboxed response. Only the exact PDF
+/// MIME type gets this exception: nosniff is always set, and this resource origin
+/// has neither native capabilities nor permission to read or mutate the API.
+fn pdf_policy(reply: &mut Response<Vec<u8>>) {
+    if reply
+        .headers()
+        .get(header::CONTENT_TYPE)
+        .is_some_and(|v| v == "application/pdf")
+    {
+        reply.headers_mut().insert(
+            header::CONTENT_SECURITY_POLICY,
+            header::HeaderValue::from_static(
+                "default-src 'none'; base-uri 'none'; form-action 'none'",
+            ),
+        );
     }
 }
 
@@ -349,6 +368,33 @@ mod tests {
         );
         assert!(!reply.headers().contains_key(header::SET_COOKIE));
     }
+    #[test]
+    fn only_typed_pdfs_allow_the_native_viewer() {
+        for kind in [
+            "application/pdf",
+            "text/html",
+            "image/svg+xml",
+            "application/octet-stream",
+        ] {
+            let mut reply = response(200, b"%PDF-test".to_vec(), None);
+            reply
+                .headers_mut()
+                .insert(header::CONTENT_TYPE, kind.parse().unwrap());
+            pdf_policy(&mut reply);
+            assert_eq!(reply.headers()["X-Content-Type-Options"], "nosniff");
+            let csp = reply.headers()[header::CONTENT_SECURITY_POLICY]
+                .to_str()
+                .unwrap();
+            assert_eq!(csp.contains("sandbox"), kind != "application/pdf");
+            assert!(csp.contains("default-src 'none'"));
+            assert!(
+                !reply
+                    .headers()
+                    .contains_key(header::ACCESS_CONTROL_ALLOW_ORIGIN)
+            );
+        }
+    }
+
     #[tokio::test]
     async fn proxy_preserves_bytes_and_ranges_and_never_follows_redirects() {
         use axum::{Router, response::IntoResponse, routing::any};

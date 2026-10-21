@@ -33,8 +33,11 @@ includes its native clippy and tests. On Linux, install
 `web/` builds both interfaces. `pnpm --dir web build` checks that the browser
 bundle contains no desktop UI or Tauri modules. `build:desktop` bundles the same
 routes with local sign-in and settings into `desktop/dist`. The app serves its bundle on a private loopback origin. Rust adds the native device token to `hub://localhost` requests
-and forwards live events. Attachments and PDFs use that separate, sandboxed origin;
-only the bundled main window at that exact origin has native capabilities.
+and forwards live events. Attachments and PDFs use a separate origin with no
+native capabilities or permission to read or mutate the API. Attachments are
+sandboxed; responses typed as `application/pdf`, with `nosniff`, omit the sandbox
+so the native PDF viewer can render them. Only the bundled main window at its
+exact loopback origin has native capabilities.
 Tauri treats registered custom schemes as local, so local capabilities are disabled;
 the loopback origin receives an explicit capability. Its port stays stable for
 local preferences; startup refuses an occupied port. Its CSP permits local scripts

@@ -306,6 +306,21 @@ async fn pdf(hub: &Hub, person: &Person) -> (StatusCode, Option<String>, Vec<u8>
         .await
         .unwrap();
     let status = response.status();
+    if status == StatusCode::OK {
+        let headers = response.headers();
+        assert_eq!(headers["content-type"], "application/pdf");
+        assert_eq!(headers["x-content-type-options"], "nosniff");
+        assert_eq!(
+            headers["content-disposition"],
+            "inline; filename=\"notes.pdf\""
+        );
+        assert_eq!(headers["cache-control"], "private, no-cache");
+        assert!(
+            !headers
+                .get("content-security-policy")
+                .is_some_and(|csp| csp.to_str().unwrap().contains("sandbox"))
+        );
+    }
     let kind = response
         .headers()
         .get("content-type")

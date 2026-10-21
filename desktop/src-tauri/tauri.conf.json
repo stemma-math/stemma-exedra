@@ -25,8 +25,8 @@
       }
     ],
     "security": {
-      "csp": "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' hub: http://hub.localhost data:; font-src 'self'; connect-src 'self' hub: http://hub.localhost ipc: http://ipc.localhost; frame-src hub: http://hub.localhost; object-src 'none'; base-uri 'none'; form-action 'none'",
-      "devCsp": "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' hub: http://hub.localhost data:; font-src 'self'; connect-src 'self' ws://127.0.0.1:1420 hub: http://hub.localhost ipc: http://ipc.localhost; frame-src hub: http://hub.localhost; object-src 'none'; base-uri 'none'; form-action 'none'"
+      "csp": "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' hub: http://hub.localhost data:; font-src 'self'; connect-src 'self' hub: http://hub.localhost ipc: http://ipc.localhost; frame-src hub: http://hub.localhost; object-src hub: http://hub.localhost; base-uri 'none'; form-action 'none'",
+      "devCsp": "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' hub: http://hub.localhost data:; font-src 'self'; connect-src 'self' ws://127.0.0.1:1420 hub: http://hub.localhost ipc: http://ipc.localhost; frame-src hub: http://hub.localhost; object-src hub: http://hub.localhost; base-uri 'none'; form-action 'none'"
     }
   },
   "bundle": {
