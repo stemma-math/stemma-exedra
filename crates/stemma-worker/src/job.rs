@@ -1,6 +1,4 @@
-//! Running one job: its folder, its prompt, and the runner that does it;
-//! for a library's build, Lean; for a paper's, LaTeX; for a task of the
-//! workshop, the runner and one of them (see [`crate::workshop`]).
+//! Running a personal reply in group scratch, with private launch files in state.
 
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -15,8 +13,8 @@ use tokio::sync::mpsc;
 
 use crate::config::WorkerConfig;
 use crate::isolation::{HostSandbox, Isolator};
+use crate::runners;
 use crate::runners::{Answer, Work as RunnerWork};
-use crate::{library, papers, runners, workshop};
 
 /// Stemma's instructions to an agent answering in a thread.
 pub const REPLY_INSTRUCTIONS: &str = include_str!("../prompts/reply.md");
@@ -29,10 +27,7 @@ pub struct Context {
     /// The `stemma` binary, for the agents' MCP server.
     pub stemma: PathBuf,
     pub work_dir: PathBuf,
-    /// A lock per group on its warm checkout of the library, which builds
-    /// and tasks share.
-    pub checkouts: std::sync::Mutex<std::collections::HashMap<String, Arc<tokio::sync::Mutex<()>>>>,
-    /// How it isolates the workshop's jobs; none if it cannot, and then it
+    /// How it isolates agent jobs; none if it cannot, and then it
     /// runs none.
     pub isolator: Option<Isolator>,
 }
@@ -44,16 +39,6 @@ impl Context {
             hub: self.hub.clone(),
             stemma: self.stemma.clone(),
         }
-    }
-
-    /// The lock on a group's warm checkout of the library.
-    pub fn checkout_lock(&self, group: &str) -> Arc<tokio::sync::Mutex<()>> {
-        self.checkouts
-            .lock()
-            .expect("not poisoned")
-            .entry(group.to_owned())
-            .or_default()
-            .clone()
     }
 }
 
@@ -103,12 +88,6 @@ pub fn describe_call(name: &str, args: &serde_json::Value) -> String {
             Some(address) => format!("Reading {address}"),
             None => "Reading a paper".into(),
         },
-        "list_tasks" | "task_status" => "Looking at the workshop's tasks".into(),
-        "create_task" => match arg("title") {
-            Some(title) => format!("Handing “{title}” to the workshop"),
-            None => "Handing a task to the workshop".into(),
-        },
-        // What harnesses do on their own, for the workshop.
         "Bash" | "bash" | "shell" => match arg("command") {
             Some(command) => {
                 let command: String = command.chars().take(80).collect();
@@ -255,9 +234,6 @@ pub async fn run(context: Arc<Context>, job: JobSpec, progress: Progress) -> (Ou
                     })
                 })
         }
-        Work::LibraryBuild(build) => library::build(&context, &job, build, &progress).await,
-        Work::PaperBuild(compile) => papers::build(&context, &job, compile, &progress).await,
-        Work::TaskRun(run) => workshop::run(&context, &job, run, &progress, &mut usage).await,
     };
     let outcome = outcome.unwrap_or_else(|error| {
         tracing::warn!(job = job.id, error = format!("{error:#}"), "a job failed");
@@ -278,13 +254,57 @@ async fn ask(
 ) -> anyhow::Result<Answer> {
     let dir = JobDir::create(&context.work_dir, job)?;
     progress.say("Thinking");
-    // A person's own agent, answering them, runs on their machine.
+    let paths = stemma_client::config::Paths::discover()?;
+    let settings = stemma_client::config::Settings::load()?;
+    let hub = stemma_client::Hub::new(&context.hub, Some(job.token.clone()))?;
+    let workspace =
+        crate::workspace::Workspace::open(&settings, &paths, &hub, &job.group.slug, &job.token)
+            .await?;
+    let scratch = crate::workspace::Scratch::create(&workspace.path, job.id)?;
     let host = context.host();
+    let mut container = None;
+    let mut contained_program = None;
+    if let Some(Isolator::Containers(containers)) = &context.isolator {
+        use crate::isolation::{Mount, ROOT, owner_of};
+        let (env, files) = containers.sign_in(&agent.runner, dirs::home_dir().as_deref())?;
+        let mut mounts = vec![
+            Mount::Bind {
+                source: workspace.path.clone(),
+                target: ROOT.into(),
+                read_only: false,
+            },
+            Mount::Bind {
+                source: dir.path.clone(),
+                target: dir.path.clone(),
+                read_only: true,
+            },
+        ];
+        mounts.extend(files);
+        let spec = containers.spec(
+            job.id,
+            owner_of(&workspace.path),
+            mounts,
+            env,
+            Duration::from_secs(
+                60 * cli_runner(context, &agent.runner)?
+                    .timeout_minutes
+                    .unwrap_or(15)
+                    + 60,
+            ),
+        );
+        container = Some(containers.start(&spec, &workspace.path).await?);
+        contained_program = containers.program(&agent.runner);
+    }
+    let sandbox: &dyn crate::isolation::Sandbox = match &container {
+        Some(container) => container,
+        None => &host,
+    };
     let work = RunnerWork {
-        dir: &dir.path,
-        sandbox: &host,
-        contained_program: None,
-        edits: false,
+        dir: &scratch.0,
+        root: &workspace.path,
+        sandbox,
+        contained_program,
+        edits: true,
         max_turns: None,
     };
     let name = &agent.display_name;

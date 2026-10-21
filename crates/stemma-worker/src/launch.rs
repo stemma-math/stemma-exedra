@@ -14,7 +14,7 @@
 //!   with their agent, which `stemma claude`, `stemma codex` and
 //!   `stemma opencode` open.
 //! - [`Mode::Job`], headless: a job of a machine or a worker, which
-//!   answers in a thread or works on a task of the workshop.
+//!   answers in a thread and checks its answer in the workspace.
 //!
 //! For each runner:
 //!
@@ -53,7 +53,8 @@ pub enum Mode<'a> {
     Job {
         /// The folder it works in, as it sees it.
         dir: &'a Path,
-        /// Whether it edits files and runs commands there, as for a task.
+        root: &'a Path,
+        /// Whether it edits files and runs commands there, as for a reply.
         edits: bool,
         /// Whether it runs in a container of its own, which is then its
         /// sandbox, rather than the runner's own.
@@ -154,8 +155,6 @@ fn write(prepared: &mut Prepared, path: PathBuf, contents: &[u8]) -> anyhow::Res
 fn push(args: &mut Vec<String>, items: &[&str]) {
     args.extend(items.iter().map(|item| (*item).to_owned()));
 }
-
-/// Claude Code's own tools a task's run may use.
 const CLAUDE_WORK_TOOLS: &[&str] = &["Bash", "Read", "Edit", "MultiEdit", "Write", "Glob", "Grep"];
 
 fn claude_code(launch: &Launch, prepared: &mut Prepared) -> anyhow::Result<()> {
@@ -193,6 +192,7 @@ fn claude_code(launch: &Launch, prepared: &mut Prepared) -> anyhow::Result<()> {
         }
         Mode::Job {
             edits,
+            root,
             max_turns,
             allowed,
             ..
@@ -207,7 +207,15 @@ fn claude_code(launch: &Launch, prepared: &mut Prepared) -> anyhow::Result<()> {
                 push(args, &["--tools", ""]);
             }
             push(args, &["--allowedTools", &tools.join(",")]);
-            push(args, &["--permission-mode", "dontAsk"]);
+            push(
+                args,
+                &[
+                    "--permission-mode",
+                    "dontAsk",
+                    "--add-dir",
+                    &root.display().to_string(),
+                ],
+            );
             push(args, &["--append-system-prompt", launch.instructions]);
             if let Some(turns) = max_turns {
                 push(args, &["--max-turns", &turns.to_string()]);
@@ -259,6 +267,7 @@ fn codex(launch: &Launch, prepared: &mut Prepared) {
     let args = &mut prepared.args;
     if let Mode::Job {
         dir,
+        root,
         edits,
         contained,
         ..
@@ -271,19 +280,27 @@ fn codex(launch: &Launch, prepared: &mut Prepared) {
             (true, false) => "workspace-write",
             (false, _) => "read-only",
         };
-        let file = launch.files_seen.join("answer.md");
+        let file = dir.join("answer.md");
         push(
             args,
             &["exec", "--skip-git-repo-check", "--ephemeral", "--json"],
         );
         push(args, &["--sandbox", sandbox, "--color", "never"]);
-        push(args, &["--cd", &dir.display().to_string()]);
+        push(
+            args,
+            &[
+                "--cd",
+                &dir.display().to_string(),
+                "--add-dir",
+                &root.display().to_string(),
+            ],
+        );
         push(
             args,
             &["--output-last-message", &file.display().to_string()],
         );
         push(args, &["-c", "approval_policy=\"never\""]);
-        answer = Some(launch.files.join("answer.md"));
+        answer = Some(file);
     }
     for value in configuration {
         push(args, &["-c", &value]);
@@ -319,7 +336,11 @@ fn opencode(launch: &Launch, prepared: &mut Prepared) -> anyhow::Result<()> {
         Mode::Session { allowed } | Mode::Job { allowed, .. } => allowed,
     };
     let mut permission = serde_json::Map::new();
-    if let Mode::Job { edits, .. } = &launch.mode {
+    if let Mode::Job { edits, root, .. } = &launch.mode {
+        permission.insert(
+            "external_directory".into(),
+            json!({root.display().to_string(): "allow"}),
+        );
         config["autoupdate"] = json!(false);
         config["share"] = json!("disabled");
         permission.insert("*".into(), json!("deny"));
@@ -432,6 +453,7 @@ mod tests {
         let files = tempfile::tempdir().unwrap();
         let mcp = mcp();
         let mode = Mode::Job {
+            root: Path::new("/workspace"),
             dir: files.path(),
             edits: false,
             contained: false,
@@ -476,6 +498,7 @@ mod tests {
         assert!(prepared.files.is_empty());
 
         let mode = Mode::Job {
+            root: Path::new("/workspace"),
             dir: files.path(),
             edits: true,
             contained: false,
@@ -492,7 +515,8 @@ mod tests {
         // container is its sandbox.
         let seen = Path::new("/stemma/jobs/7");
         let mode = Mode::Job {
-            dir: Path::new("/stemma/tasks/w3"),
+            root: Path::new("/workspace"),
+            dir: Path::new("/stemma/scratch/7"),
             edits: true,
             contained: true,
             max_turns: None,
@@ -507,10 +531,13 @@ mod tests {
         assert!(
             prepared
                 .args
-                .contains(&"/stemma/jobs/7/answer.md".to_owned())
+                .contains(&"/stemma/scratch/7/answer.md".to_owned())
         );
-        assert!(prepared.args.contains(&"/stemma/tasks/w3".to_owned()));
-        assert_eq!(prepared.answer, Some(files.path().join("answer.md")));
+        assert!(prepared.args.contains(&"/stemma/scratch/7".to_owned()));
+        assert_eq!(
+            prepared.answer,
+            Some(Path::new("/stemma/scratch/7/answer.md").into())
+        );
     }
 
     #[test]
@@ -518,7 +545,8 @@ mod tests {
         let files = tempfile::tempdir().unwrap();
         let mcp = mcp();
         let mode = Mode::Job {
-            dir: Path::new("/stemma/tasks/w3"),
+            root: Path::new("/workspace"),
+            dir: Path::new("/stemma/scratch/7"),
             edits: true,
             contained: true,
             max_turns: None,
@@ -594,6 +622,7 @@ mod tests {
                 files.path(),
                 &mcp,
                 Mode::Job {
+                    root: Path::new("/workspace"),
                     dir: files.path(),
                     edits: false,
                     contained: false,

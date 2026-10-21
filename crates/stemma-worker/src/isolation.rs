@@ -1,37 +1,4 @@
-//! Where the workshop's jobs run: each in a container of its own.
-//!
-//! The workshop runs work that other people ask for, with an agent that
-//! runs commands; so a machine runs each of its jobs (a task, or a build
-//! of a library) in a container of its own, with Docker or Podman, and
-//! the image `docker/workshop/Dockerfile` describes: Lean, the agents'
-//! programs, git and `stemma`. The container is given only what the job
-//! works on, at the same place under `/stemma` as under the machine's
-//! work folder:
-//!
-//! - a task's worktree, read-write; the library's shared Lake packages
-//!   (Mathlib), read-only; and the job's folder, with its token and the
-//!   agent's configuration, read-write;
-//! - for a build, the group's checkout, read-write, with its `.git`
-//!   hidden.
-//!
-//! It runs as the machine's user (never root), with no capabilities and
-//! no new privileges, with limits on memory, CPUs and processes, for as
-//! long as the job may take; and is removed when the job ends, whatever
-//! the end. The agent's sign-in enters it as its owner configured, per
-//! runner: environment variables passed by name, so that their values are
-//! on no command line, and files mounted read-only. Nothing of it reaches
-//! the hub.
-//!
-//! Where containers are not available, the machine's owner may choose,
-//! explicitly, to run the workshop's jobs on the machine itself
-//! ([`Isolation::Host`]); and with neither, the machine runs none.
-//! People's own jobs, and their sessions, run on the machine: they are
-//! their own.
-//!
-//! The step runner ([`crate::workshop`]) and the builds
-//! ([`crate::library`]) run every command through a [`Sandbox`]: the
-//! machine itself ([`HostSandbox`]), or a [`Container`], whose command
-//! line each runtime ([`Engine`]: [`Docker`], [`Podman`]) builds.
+//! Optional containers for personal replies. Only the workspace and the runner sign-in enter a container.
 
 use std::collections::BTreeMap;
 use std::ffi::OsStr;
@@ -53,9 +20,9 @@ pub const ROOT: &str = "/stemma";
 /// The home of the container's user.
 pub const HOME: &str = "/home/stemma";
 
-/// The workshop's image, as `stemma machine workshop image` tags it.
+/// The agents' image, as `stemma machine image` tags it.
 pub fn default_image() -> String {
-    format!("stemma-workshop:{}", env!("CARGO_PKG_VERSION"))
+    format!("stemma-agents:{}", env!("CARGO_PKG_VERSION"))
 }
 
 /// How long a runtime has to answer whether it works.
@@ -63,7 +30,7 @@ const RUNTIME_WAIT: Duration = Duration::from_secs(30);
 
 // ── Configuration ─────────────────────────────────────────────────────
 
-/// How a machine isolates the workshop's jobs, as its owner configures it
+/// How a machine isolates agent jobs, as its owner configures it
 /// (`[isolation]` in its configuration).
 #[derive(Clone, Debug, Default, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
@@ -75,7 +42,7 @@ pub struct IsolationConfig {
     /// The runtime's program, if not `docker` or `podman` on the path.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub command: Option<String>,
-    /// The image; `stemma-workshop:<this version>` if absent.
+    /// The image; `stemma-agents:<this version>` if absent.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub image: Option<String>,
     /// The most memory a job's container may use: `8g` if absent.
@@ -102,7 +69,7 @@ pub struct IsolationConfig {
     pub agents: BTreeMap<String, AgentSignIn>,
 }
 
-/// Which runtime runs the workshop's jobs.
+/// Which runtime runs agent jobs.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Deserialize, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Runtime {
@@ -655,7 +622,7 @@ impl Sandbox for Container {
 
 // ── What a machine isolates with ──────────────────────────────────────
 
-/// How a machine runs the workshop's jobs, as found when it starts.
+/// How a machine runs agent jobs, as found when it starts.
 #[derive(Clone, Debug)]
 pub enum Isolator {
     /// On the machine itself, unisolated: its owner's choice.
@@ -664,7 +631,7 @@ pub enum Isolator {
     Containers(Arc<Containers>),
 }
 
-/// A machine's containers for the workshop: its runtime, image, limits and
+/// A machine's containers for the agents: its runtime, image, limits and
 /// how agents sign in inside.
 #[derive(Debug)]
 pub struct Containers {
@@ -794,7 +761,7 @@ pub async fn find_engine(
     }
 }
 
-/// How a machine runs the workshop's jobs, as `config` says and what it
+/// How a machine runs agent jobs, as `config` says and what it
 /// finds on `search` (a list of folders, as `PATH` has them): on itself,
 /// if its owner chose so; else in containers, with a runtime that works
 /// and has the image. If it can do neither, why.
@@ -817,13 +784,13 @@ pub async fn resolve(
         };
         return Err(format!(
             "{wanted} is not installed or does not work here (`info` fails), and the machine's \
-             owner did not choose to run the workshop's jobs on it unisolated"
+             owner did not choose to run agent jobs on it unisolated"
         ));
     };
     let image = config.image();
     if !has_image(engine.program(), &image).await {
         return Err(format!(
-            "{} has no image {image}: build it with `stemma machine workshop image`",
+            "{} has no image {image}: build it with `stemma machine image`",
             engine.program().display()
         ));
     }
@@ -928,7 +895,7 @@ mod tests {
     fn spec() -> ContainerSpec {
         ContainerSpec {
             name: "stemma-job-7-0000abcd".into(),
-            image: "stemma-workshop:1.0.0".into(),
+            image: "stemma-agents:1.0.0".into(),
             user: (501, 20),
             mounts: vec![
                 Mount::Bind {
@@ -1012,7 +979,7 @@ mod tests {
             [
                 "--workdir",
                 "/stemma",
-                "stemma-workshop:1.0.0",
+                "stemma-agents:1.0.0",
                 "sleep",
                 "600"
             ]
@@ -1196,7 +1163,7 @@ mod tests {
             "case \"$1\" in info) exit 0;; image) [ -f \"$(dirname \"$0\")/image\" ];; esac",
         );
         let error = resolve(&auto, hub, Some(&search)).await.unwrap_err();
-        assert!(error.contains("stemma machine workshop image"), "{error}");
+        assert!(error.contains("stemma machine image"), "{error}");
         std::fs::write(bin.path().join("image"), "").unwrap();
         let Ok(Isolator::Containers(found)) = resolve(&auto, hub, Some(&search)).await else {
             panic!("Podman, with its image");

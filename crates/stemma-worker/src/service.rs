@@ -6,7 +6,7 @@ use std::process::{Command, Output};
 use anyhow::Context as _;
 use serde::Serialize;
 
-use crate::machine::{self, MachineConfig};
+use stemma_client::config::{Credentials, Paths};
 
 const LABEL: &str = "org.stemma.machine";
 const UNIT: &str = "stemma-machine.service";
@@ -15,10 +15,8 @@ const UNIT: &str = "stemma-machine.service";
 pub struct Status {
     pub installed: bool,
     pub running: bool,
-    pub personal: bool,
-    pub workshop: bool,
     pub connected: Option<bool>,
-    pub stopped: Option<machine::Stopped>,
+    pub signed_out: bool,
     pub logs: String,
     /// Installed now, but unavailable with the service's saved search path.
     pub stale_agents: Vec<String>,
@@ -53,10 +51,7 @@ fn path() -> anyhow::Result<PathBuf> {
 }
 
 fn log_path() -> anyhow::Result<PathBuf> {
-    match std::env::var_os("STEMMA_SERVICE_DIR") {
-        Some(root) => Ok(PathBuf::from(root).join("machine.log")),
-        None => Ok(home()?.join("Library/Logs/Stemma/machine.log")),
-    }
+    Ok(Paths::discover()?.state.join("logs/machine.log"))
 }
 
 fn output(program: &str, args: &[&str]) -> anyhow::Result<Output> {
@@ -115,7 +110,7 @@ pub fn install(stemma: &Path) -> anyhow::Result<()> {
         stemma.is_absolute() && stemma.is_file(),
         "Use an absolute path to the stemma CLI"
     );
-    let config = std::path::absolute(machine::path()?)?;
+    let config = std::path::absolute(Paths::discover()?.config)?;
     let search = std::env::var("PATH").unwrap_or_default();
     let path = path()?;
     std::fs::create_dir_all(path.parent().context("Service directory")?)?;
@@ -125,7 +120,17 @@ pub fn install(stemma: &Path) -> anyhow::Result<()> {
         }
         let logs = log_path()?;
         std::fs::create_dir_all(logs.parent().context("Log directory")?)?;
-        std::fs::write(&path, plist(stemma, &config, &search, &logs))?;
+        let paths = Paths::discover()?;
+        let mut text = plist(stemma, &config, &search, &logs);
+        let extra = environment(&paths)?
+            .into_iter()
+            .map(|(key, value)| format!("<key>{}</key><string>{}</string>", xml(&key), xml(&value)))
+            .collect::<String>();
+        text = text.replace(
+            "</dict>\n<key>StandardOutPath",
+            &format!("{extra}</dict>\n<key>StandardOutPath"),
+        );
+        std::fs::write(&path, text)?;
         command(
             "launchctl",
             &[
@@ -135,7 +140,24 @@ pub fn install(stemma: &Path) -> anyhow::Result<()> {
             ],
         )
     } else {
-        std::fs::write(&path, unit(stemma, &config, &search))?;
+        let paths = Paths::discover()?;
+        let logs = log_path()?;
+        std::fs::create_dir_all(logs.parent().context("Log directory")?)?;
+        let extra = environment(&paths)?
+            .into_iter()
+            .map(|(key, value)| format!("Environment={}\n", quoted(&format!("{key}={value}"))))
+            .collect::<String>();
+        let text = unit(stemma, &config, &search)
+            .replace("Restart=on-failure", &format!("{extra}Restart=on-failure"));
+        let text = text.replace(
+            "Restart=on-failure",
+            &format!(
+                "StandardOutput=append:{}\nStandardError=append:{}\nRestart=on-failure",
+                logs.display(),
+                logs.display()
+            ),
+        );
+        std::fs::write(&path, text)?;
         command("systemctl", &["--user", "daemon-reload"])?;
         command("systemctl", &["--user", "enable", UNIT])?;
         command("systemctl", &["--user", "restart", UNIT])
@@ -162,7 +184,7 @@ pub fn start() -> anyhow::Result<()> {
     let path = path()?;
     anyhow::ensure!(
         path.is_file(),
-        "Install the service first: `stemma machine service install`"
+        "Install the service first: `stemma machine start`"
     );
     if cfg!(target_os = "macos") {
         if !loaded()? {
@@ -206,17 +228,17 @@ fn manages_config() -> anyhow::Result<bool> {
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(false),
         Err(error) => return Err(error.into()),
     };
-    let config = std::path::absolute(machine::path()?)?;
+    let config = std::path::absolute(Paths::discover()?.config)?;
     Ok(if cfg!(target_os = "macos") {
         text.contains(&format!(
-            "<key>STEMMA_MACHINE_CONFIG</key><string>{}</string>",
+            "<key>STEMMA_CONFIG_DIR</key><string>{}</string>",
             xml(&config.to_string_lossy())
         ))
     } else {
         text.lines().any(|line| {
             line == format!(
                 "Environment={}",
-                quoted(&format!("STEMMA_MACHINE_CONFIG={}", config.display()))
+                quoted(&format!("STEMMA_CONFIG_DIR={}", config.display()))
             )
         })
     })
@@ -226,10 +248,6 @@ fn manages_config() -> anyhow::Result<bool> {
 pub fn reload() -> anyhow::Result<()> {
     if !manages_config()? {
         return Ok(());
-    }
-    let config = crate::control::load()?;
-    if !config.personal && !config.workshop_enabled {
-        return stop();
     }
     if cfg!(target_os = "macos") {
         if loaded()? {
@@ -241,121 +259,45 @@ pub fn reload() -> anyhow::Result<()> {
     Ok(())
 }
 
-/// Removing a registration also removes its service, if installed.
-pub fn remove_machine() -> anyhow::Result<()> {
-    if manages_config()? {
-        uninstall()?;
-    }
-    Ok(())
-}
-
 pub async fn status() -> anyhow::Result<Status> {
     let installed = manages_config()?;
     let running = installed && running()?;
-    let config = MachineConfig::load_from(&machine::path()?)?;
-    let mut connected = None;
-    let mut stopped = config
-        .as_ref()
-        .map(|c| machine::stopped(&machine::path()?, c))
-        .transpose()?
-        .flatten();
-    if let Some(config) = &config {
-        match tokio::time::timeout(
-            std::time::Duration::from_secs(2),
-            crate::control::identity(config),
-        )
+    let credentials = Credentials::load()?.with_env();
+    let mut signed_out = credentials.token.is_none();
+    let connected = if credentials.token.is_some() {
+        match tokio::time::timeout(std::time::Duration::from_secs(2), async {
+            let hub = credentials.hub()?;
+            let me = hub.me().await?;
+            let token = hub.token_identity().await?;
+            let _ = me;
+            Ok::<_, anyhow::Error>(token.connected)
+        })
         .await
         {
-            Ok(Ok(machine)) => connected = Some(machine.online),
-            Ok(Err(error))
-                if error.downcast_ref::<machine::Stopped>()
-                    == Some(&machine::Stopped::NotKnown) =>
-            {
-                stopped = Some(machine::Stopped::NotKnown);
-                connected = Some(false);
-                machine::record_stopped(&machine::path()?, config, &machine::Stopped::NotKnown)?;
+            Ok(Ok(online)) => Some(online),
+            Ok(Err(error)) => {
+                if error
+                    .downcast_ref::<stemma_client::ApiError>()
+                    .and_then(|e| e.status())
+                    == Some(reqwest::StatusCode::UNAUTHORIZED)
+                {
+                    signed_out = true;
+                }
+                Some(false)
             }
-            _ => {}
+            Err(_) => Some(false),
         }
-    }
-    let stale_agents = if installed {
-        let text = std::fs::read_to_string(path()?)?;
-        let stored = stored_path(&text, cfg!(target_os = "macos"))
-            .context("Cannot read the service's stored PATH; reinstall the service")?;
-        let runners = config
-            .as_ref()
-            .map(|c| c.runners.clone())
-            .unwrap_or_default();
-        stale_agents(&runners, &stored, std::env::var_os("PATH").as_deref()).await
     } else {
-        Vec::new()
+        Some(false)
     };
     Ok(Status {
-        stale_agents,
         installed,
         running,
-        personal: config.as_ref().is_some_and(|c| c.personal),
-        workshop: config.as_ref().is_some_and(|c| c.workshop_enabled),
         connected,
-        stopped,
-        logs: if cfg!(target_os = "macos") {
-            log_path()?.display().to_string()
-        } else {
-            "journalctl --user -u stemma-machine".into()
-        },
+        signed_out,
+        logs: log_path()?.display().to_string(),
+        stale_agents: Vec::new(),
     })
-}
-
-async fn stale_agents(
-    configured: &crate::config::Runners,
-    stored: &str,
-    current: Option<&std::ffi::OsStr>,
-) -> Vec<String> {
-    let (service, now) = tokio::join!(
-        crate::detect::installed(configured, Some(std::ffi::OsStr::new(stored))),
-        crate::detect::installed(configured, current),
-    );
-    now.into_iter()
-        .filter(|agent| !service.contains(agent))
-        .collect()
-}
-
-/// Read the environment entry written by our installer, including escaped paths.
-fn stored_path(text: &str, macos: bool) -> Option<String> {
-    if macos {
-        let value = text
-            .split_once("<key>PATH</key><string>")?
-            .1
-            .split_once("</string>")?
-            .0;
-        Some(
-            value
-                .replace("&apos;", "'")
-                .replace("&quot;", "\"")
-                .replace("&gt;", ">")
-                .replace("&lt;", "<")
-                .replace("&amp;", "&"),
-        )
-    } else {
-        let value = text
-            .lines()
-            .find_map(|line| line.strip_prefix("Environment=\"PATH="))?
-            .strip_suffix('"')?;
-        let mut result = String::new();
-        let mut chars = value.chars();
-        while let Some(c) = chars.next() {
-            result.push(if c == '\\' {
-                match chars.next()? {
-                    'n' => '\n',
-                    'r' => '\r',
-                    c => c,
-                }
-            } else {
-                c
-            });
-        }
-        Some(result.replace("%%", "%"))
-    }
 }
 
 fn xml(value: &str) -> String {
@@ -382,7 +324,7 @@ pub fn plist(stemma: &Path, config: &Path, search: &str, logs: &Path) -> String 
 <key>RunAtLoad</key><true/>
 <key>KeepAlive</key><dict><key>SuccessfulExit</key><false/></dict>
 <key>ThrottleInterval</key><integer>10</integer>
-<key>EnvironmentVariables</key><dict><key>PATH</key><string>{search}</string><key>STEMMA_MACHINE_CONFIG</key><string>{config}</string></dict>
+<key>EnvironmentVariables</key><dict><key>PATH</key><string>{search}</string><key>STEMMA_CONFIG_DIR</key><string>{config}</string></dict>
 <key>StandardOutPath</key><string>{logs}</string>
 <key>StandardErrorPath</key><string>{logs}</string>
 </dict></plist>
@@ -405,123 +347,26 @@ fn quoted(value: &str) -> String {
 pub fn unit(stemma: &Path, config: &Path, search: &str) -> String {
     // ExecStart also expands dollar variables; $$ is a literal dollar there.
     let stemma = quoted(&stemma.to_string_lossy()).replace('$', "$$");
-    let config = quoted(&format!("STEMMA_MACHINE_CONFIG={}", config.display()));
+    let config = quoted(&format!("STEMMA_CONFIG_DIR={}", config.display()));
     let search = quoted(&format!("PATH={search}"));
     format!(
         "[Unit]\nDescription=Stemma machine\n\n[Service]\nExecStart={stemma} machine run\nEnvironment={config}\nEnvironment={search}\nRestart=on-failure\nRestartSec=10\n\n[Install]\nWantedBy=default.target\n"
     )
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn reads_saved_paths_without_losing_escaping() {
-        let search = "/a & b:<bin>:'quoted':\"double\":/100%/back\\slash";
-        assert_eq!(
-            stored_path(
-                &plist(
-                    Path::new("/stemma"),
-                    Path::new("/config"),
-                    search,
-                    Path::new("/logs")
-                ),
-                true
-            )
-            .as_deref(),
-            Some(search)
-        );
-        assert_eq!(
-            stored_path(
-                &unit(Path::new("/stemma"), Path::new("/config"), search),
-                false
-            )
-            .as_deref(),
-            Some(search)
-        );
-    }
-
-    #[cfg(unix)]
-    #[tokio::test]
-    async fn warns_only_for_agents_missing_from_the_saved_path() {
-        use std::os::unix::fs::PermissionsExt;
-        let old = tempfile::tempdir().unwrap();
-        let new = tempfile::tempdir().unwrap();
-        for (dir, name) in [(old.path(), "claude"), (new.path(), "codex")] {
-            let path = dir.join(name);
-            std::fs::write(&path, "#!/bin/sh\nexit 0\n").unwrap();
-            std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o755)).unwrap();
+/// Save nonsecret settings overrides with the service; credentials stay in their own file.
+fn environment(paths: &Paths) -> anyhow::Result<Vec<(String, String)>> {
+    let mut variables = vec![
+        ("STEMMA_STATE_DIR".into(), paths.state.display().to_string()),
+        ("STEMMA_DATA_DIR".into(), paths.data.display().to_string()),
+    ];
+    for setting in stemma_client::config::Settings::load()?.explain(None, &Default::default())? {
+        if let stemma_client::config::Source::Environment(name) = setting.source {
+            variables.push((name.clone(), std::env::var(name)?));
         }
-        let current = std::env::join_paths([old.path(), new.path()]).unwrap();
-        let configured = crate::config::Runners::default();
-        assert_eq!(
-            stale_agents(&configured, old.path().to_str().unwrap(), Some(&current)).await,
-            ["codex"]
-        );
-        assert!(
-            stale_agents(&configured, current.to_str().unwrap(), Some(&current))
-                .await
-                .is_empty()
-        );
-        assert!(
-            stale_agents(
-                &configured,
-                old.path().to_str().unwrap(),
-                Some(old.path().as_os_str())
-            )
-            .await
-            .is_empty()
-        );
     }
-
-    #[cfg(unix)]
-    #[tokio::test]
-    async fn checks_the_agents_interpreter_with_each_path() {
-        use std::os::unix::fs::PermissionsExt;
-        let dir = tempfile::tempdir().unwrap();
-        let agent = dir.path().join("agent");
-        let interpreter = dir.path().join("agent-interpreter");
-        std::fs::write(&agent, "#!/usr/bin/env agent-interpreter\n").unwrap();
-        std::fs::write(&interpreter, "#!/bin/sh\nexit 0\n").unwrap();
-        for path in [&agent, &interpreter] {
-            std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o755)).unwrap();
-        }
-        let configured =
-            toml::from_str(&format!("[codex]\ncommand = {:?}", agent.to_str().unwrap())).unwrap();
-        assert_eq!(
-            stale_agents(&configured, "/nonexistent", Some(dir.path().as_os_str())).await,
-            ["codex"]
-        );
+    if let Ok(hub) = std::env::var("STEMMA_HUB") {
+        variables.push(("STEMMA_HUB".into(), hub));
     }
-
-    #[test]
-    fn launch_agent_preserves_arguments_and_escapes_xml() {
-        let text = plist(
-            Path::new("/Applications/Stemma tools/stemma"),
-            Path::new("/Users/A & B/machine.toml"),
-            "/bin:/my tools",
-            Path::new("/my logs/machine.log"),
-        );
-        assert!(text.contains("<string>/Applications/Stemma tools/stemma</string><string>machine</string><string>run</string>"));
-        assert!(text.contains("/Users/A &amp; B/machine.toml"));
-        assert!(text.contains("<key>RunAtLoad</key><true/>"));
-        assert!(text.contains("<key>SuccessfulExit</key><false/>"));
-        assert!(text.contains("<string>/my logs/machine.log</string>"));
-    }
-
-    #[test]
-    fn systemd_unit_quotes_paths_and_escapes_expansions() {
-        let text = unit(
-            Path::new("/my tools/100%/$stemma"),
-            Path::new("/my config/machine.toml"),
-            "/bin:/my tools",
-        );
-        assert!(text.contains("ExecStart=\"/my tools/100%%/$$stemma\" machine run"));
-        assert!(text.contains("Environment=\"STEMMA_MACHINE_CONFIG=/my config/machine.toml\""));
-        assert!(text.contains("Environment=\"PATH=/bin:/my tools\""));
-        assert!(text.contains("Restart=on-failure"));
-        assert!(text.contains("WantedBy=default.target"));
-        assert_eq!(quoted("/a\"b\\c\n"), "\"/a\\\"b\\\\c\\n\"");
-    }
+    Ok(variables)
 }

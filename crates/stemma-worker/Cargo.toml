@@ -12,6 +12,7 @@ anyhow.workspace = true
 dirs.workspace = true
 futures-util.workspace = true
 rand.workspace = true
+reqwest.workspace = true
 rustls.workspace = true
 rustls-platform-verifier.workspace = true
 serde.workspace = true
@@ -19,6 +20,8 @@ serde_json.workspace = true
 sha2.workspace = true
 stemma-client.workspace = true
 stemma-core.workspace = true
+tempfile.workspace = true
+thiserror.workspace = true
 tokio = { workspace = true, features = ["net", "process", "time"] }
 tokio-tungstenite.workspace = true
 toml.workspace = true
@@ -26,11 +29,9 @@ tracing.workspace = true
 
 [dev-dependencies]
 axum.workspace = true
-reqwest.workspace = true
 sqlx.workspace = true
 stemma-fake-forge.workspace = true
 stemma-hub.workspace = true
-tempfile.workspace = true
 
 [lints]
 workspace = true

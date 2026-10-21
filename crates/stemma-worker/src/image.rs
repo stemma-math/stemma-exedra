@@ -1,5 +1,5 @@
-//! The workshop's image, which `stemma machine workshop image` builds:
-//! `docker/workshop/Dockerfile` in Stemma's repository, embedded in the
+//! The agents' image, which `stemma machine image` builds:
+//! `docker/agents/Dockerfile` in Stemma's repository, embedded in the
 //! binary, with Lean, the agents' programs, git, and `stemma` of this
 //! version, for the agents' tools inside.
 
@@ -11,10 +11,10 @@ use anyhow::Context as _;
 use crate::isolation::Engine;
 
 /// The image's description.
-pub const DOCKERFILE: &str = include_str!("../../../docker/workshop/Dockerfile");
+pub const DOCKERFILE: &str = include_str!("../../../docker/agents/Dockerfile");
 
 /// What the image runs first, as the job's user.
-pub const ENTRYPOINT: &str = include_str!("../../../docker/workshop/entrypoint.sh");
+pub const ENTRYPOINT: &str = include_str!("../../../docker/agents/entrypoint.sh");
 
 /// The toolchain of a new group's library, which the image has unless told
 /// otherwise.
@@ -73,7 +73,7 @@ pub fn build_args(build: &Build, context: &Path) -> Vec<String> {
         "build".into(),
         "--file".into(),
         context
-            .join("docker/workshop/Dockerfile")
+            .join("docker/agents/Dockerfile")
             .display()
             .to_string(),
         "--tag".into(),
@@ -90,7 +90,7 @@ pub fn build_args(build: &Build, context: &Path) -> Vec<String> {
 
 /// Writes the build's folder: the image's description and what it copies.
 pub fn write_context(dir: &Path) -> anyhow::Result<()> {
-    let folder = dir.join("docker/workshop");
+    let folder = dir.join("docker/agents");
     std::fs::create_dir_all(&folder)?;
     std::fs::write(folder.join("Dockerfile"), DOCKERFILE)?;
     std::fs::write(folder.join("entrypoint.sh"), ENTRYPOINT)?;
@@ -128,7 +128,7 @@ mod tests {
     #[test]
     fn builds_this_versions_image() {
         let build = Build {
-            tag: "stemma-workshop:1.2.3".into(),
+            tag: "stemma-agents:1.2.3".into(),
             source: Source::Git,
             toolchain: "leanprover/lean4:v4.35.0\n".into(),
             version: "1.2.3".into(),
@@ -139,9 +139,9 @@ mod tests {
             [
                 "build",
                 "--file",
-                "/tmp/x/docker/workshop/Dockerfile",
+                "/tmp/x/docker/agents/Dockerfile",
                 "--tag",
-                "stemma-workshop:1.2.3",
+                "stemma-agents:1.2.3",
                 "--build-arg",
                 "STEMMA_VERSION=1.2.3",
                 "--build-arg",
@@ -153,7 +153,7 @@ mod tests {
         );
         let dir = tempfile::tempdir().unwrap();
         write_context(dir.path()).unwrap();
-        assert!(dir.path().join("docker/workshop/entrypoint.sh").is_file());
+        assert!(dir.path().join("docker/agents/entrypoint.sh").is_file());
         // The image has every runner, and `stemma`, whose versions are
         // explicit.
         for wanted in [

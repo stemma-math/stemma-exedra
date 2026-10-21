@@ -1,16 +1,15 @@
-# The workshop's image: where a workshop machine runs each of the
-# workshop's jobs, in a container of its own. It has git and curl, elan
+# The agents' image: where personal replies run in isolated containers. It has git and curl, elan
 # with a Lean toolchain, a selection of TeX Live with latexmk for the
 # papers, the agents' programs (Claude Code, Codex and OpenCode) and
 # `stemma` of the machine's version, for the agents' tools (`stemma mcp`).
 # Every version is explicit, below, and may be changed with `--build-arg`.
 #
-# `stemma machine workshop image` builds it, tagged
-# `stemma-workshop:<version>`. From the repository's root,
+# `stemma machine image` builds it, tagged
+# `stemma-agents:<version>`. From the repository's root,
 # this builds it with `stemma` built from the repository:
 #
-#     docker build -f docker/workshop/Dockerfile --build-arg STEMMA_SOURCE=local \
-#         --build-arg STEMMA_VERSION=<version> -t stemma-workshop:<version> .
+#     docker build -f docker/agents/Dockerfile --build-arg STEMMA_SOURCE=local \
+#         --build-arg STEMMA_VERSION=<version> -t stemma-agents:<version> .
 #
 # Where `stemma` comes from, as STEMMA_SOURCE says (a macOS binary does not
 # run in a Linux container):
@@ -53,8 +52,7 @@ COPY Cargo.toml Cargo.lock ./
 COPY crates/ crates/
 COPY lean/ lean/
 COPY latex/ latex/
-COPY workshop/ workshop/
-COPY docker/workshop/ docker/workshop/
+COPY docker/agents/ docker/agents/
 RUN cargo build --release --locked --bin stemma \
     && install -m 755 target/release/stemma /usr/local/bin/stemma
 
@@ -67,7 +65,7 @@ ARG ELAN_VERSION=4.2.4
 ARG CLAUDE_CODE_VERSION=2.1.302
 ARG CODEX_VERSION=0.163.0
 ARG OPENCODE_VERSION=1.19.3
-LABEL org.opencontainers.image.title="Stemma's workshop" \
+LABEL org.opencontainers.image.title="Stemma's agents" \
       org.opencontainers.image.source="https://github.com/stemma-math/stemma-exedra" \
       org.stemma.version="$STEMMA_VERSION" \
       org.stemma.lean-toolchain="$LEAN_TOOLCHAIN" \
@@ -116,7 +114,7 @@ RUN npm install --global \
     && npm cache clean --force
 
 COPY --from=stemma /usr/local/bin/stemma /usr/local/bin/stemma
-COPY docker/workshop/entrypoint.sh /usr/local/bin/stemma-entrypoint
+COPY docker/agents/entrypoint.sh /usr/local/bin/stemma-entrypoint
 
 # The job runs as the machine's user, whatever its id: its home, and where
 # the agents keep their state, are anyone's in the container, which lasts

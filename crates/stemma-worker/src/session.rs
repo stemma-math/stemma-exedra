@@ -14,7 +14,7 @@ use std::path::{Path, PathBuf};
 
 use anyhow::Context as _;
 use stemma_client::Hub;
-use stemma_core::api::{Group, PersonalAgent, User, runners};
+use stemma_core::api::{AgentProfile, Group, User, runners};
 
 use crate::launch::{self, Launch, Mcp, Mode, Prepared};
 
@@ -29,9 +29,6 @@ pub const SESSION_MINUTES: u32 = 16 * 60;
 pub struct Options {
     /// One of [`runners::ALL`].
     pub runner: String,
-    /// The handle of one of the person's agents with that runner; their
-    /// default one for it if absent.
-    pub agent: Option<String>,
     /// The group; the only one they are in if absent.
     pub group: Option<String>,
     /// More arguments for the agent, after its own.
@@ -50,12 +47,13 @@ pub struct Options {
 /// A session, open: its agent ready to run.
 pub struct Session {
     pub prepared: Prepared,
-    pub agent: PersonalAgent,
+    pub agent: AgentProfile,
     pub person: User,
     pub group: Group,
     /// The session's private folder, with its token and files.
     pub dir: PathBuf,
     token_id: i64,
+    pub workspace: crate::workspace::Workspace,
 }
 
 impl Session {
@@ -76,7 +74,18 @@ impl Session {
             },
         }
         .clone();
-        let agent = pick(hub, &options).await?;
+        let agent = AgentProfile::default_of_runner(&options.runner).context("unknown runner")?;
+        let settings = stemma_client::config::Settings::load()?;
+        let paths = stemma_client::config::Paths::discover()?;
+        let credentials = stemma_client::config::Credentials::load()?.with_env();
+        let workspace = crate::workspace::Workspace::open(
+            &settings,
+            &paths,
+            hub,
+            &group.slug,
+            credentials.token.as_deref().context("signed out")?,
+        )
+        .await?;
 
         let token = hub
             .create_expiring_token(
@@ -106,6 +115,7 @@ impl Session {
                 group,
                 dir,
                 token_id,
+                workspace,
             }),
             Err(error) => {
                 let _ = hub.revoke_token(token_id).await;
@@ -124,37 +134,13 @@ impl Session {
     }
 }
 
-/// The person's agent for the session.
-async fn pick(hub: &Hub, options: &Options) -> anyhow::Result<PersonalAgent> {
-    let runner = runners::name(&options.runner);
-    let handle = match &options.agent {
-        Some(handle) => handle.trim().trim_start_matches('@').to_lowercase(),
-        None => {
-            PersonalAgent::default_of_runner(&options.runner)
-                .with_context(|| format!("there is no runner {}", options.runner))?
-                .handle
-        }
-    };
-    let agents = hub.my_agents().await.context("reading your agents")?;
-    let agent = agents
-        .into_iter()
-        .find(|a| a.handle == handle)
-        .with_context(|| format!("you have no agent @{handle}: add it in your settings"))?;
-    anyhow::ensure!(
-        agent.runner == options.runner,
-        "@{handle} runs {}, not {runner}",
-        runners::name(&agent.runner)
-    );
-    Ok(agent)
-}
-
 /// Writes the session's folder and prepares the agent's launch.
 fn prepare(
     options: &Options,
     hub: &str,
     person: &User,
     group: &Group,
-    agent: &PersonalAgent,
+    agent: &AgentProfile,
     token: &str,
 ) -> anyhow::Result<(PathBuf, Prepared)> {
     let dir = private_dir(options.temp_dir.as_deref())?;
@@ -179,12 +165,28 @@ fn prepare(
                 agent.display_name.clone(),
             ],
         };
-        let mut args = agent.args.clone();
+        let config = crate::WorkerConfig::load(Some(&group.slug))?;
+        let runner = config
+            .runners
+            .get(&options.runner)
+            .context("unknown runner")?;
+        let workspace = stemma_client::config::Settings::load()?.workspace(&group.slug)?;
+        let mut args = match options.runner.as_str() {
+            runners::CODEX => vec![
+                "--sandbox".into(),
+                "workspace-write".into(),
+                "--cd".into(),
+                workspace.display().to_string(),
+            ],
+            runners::CLAUDE_CODE => vec!["--add-dir".into(), workspace.display().to_string()],
+            _ => vec![],
+        };
+        args.extend(runner.args.iter().cloned());
         args.extend(options.args.iter().cloned());
         launch::prepare(&Launch {
             runner: &options.runner,
-            program: options.program.as_deref(),
-            model: agent.model.as_deref(),
+            program: options.program.as_deref().or(runner.command.as_deref()),
+            model: runner.model.as_deref(),
             args: &args,
             instructions: &instructions,
             mcp: &mcp,
@@ -209,7 +211,10 @@ fn prepare(
 
 /// A new folder that only its owner may enter.
 fn private_dir(parent: Option<&Path>) -> anyhow::Result<PathBuf> {
-    let parent = parent.map_or_else(std::env::temp_dir, Path::to_owned);
+    let parent = parent
+        .map(Path::to_owned)
+        .unwrap_or(stemma_client::config::Paths::discover()?.state.join("jobs"));
+    std::fs::create_dir_all(&parent)?;
     let dir = parent.join(format!("stemma-session-{:016x}", rand::random::<u64>()));
     let mut builder = std::fs::DirBuilder::new();
     #[cfg(unix)]

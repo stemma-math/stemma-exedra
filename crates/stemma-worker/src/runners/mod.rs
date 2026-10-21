@@ -1,14 +1,4 @@
-//! The runners: how a worker gets an answer from an agent, or has one work
-//! on the library for the workshop.
-//!
-//! - `claude-code`, `codex` and `opencode` run those harnesses headless,
-//!   launched as [`crate::launch`] says, with the person's own sign-in (or,
-//!   for OpenCode, the keys of the providers it is configured with), and
-//!   give them Stemma's tools through `stemma mcp` with the job's token,
-//!   read-only: an agent answering in a thread, for someone who may ask for
-//!   work, may also hand a task to the workshop. For a task they work in a
-//!   worktree of the library, where they edit files and run commands,
-//!   Lean's among them.
+//! Runner-specific reply execution with read-only Stemma tools and a writable workspace.
 
 pub mod claude_code;
 pub mod codex;
@@ -33,11 +23,12 @@ pub struct Work<'a> {
     /// The folder it works in, on the machine: the job's own, or for a
     /// task, the worktree of the library.
     pub dir: &'a Path,
+    pub root: &'a Path,
     /// Where it runs: on the machine, or in the job's container.
     pub sandbox: &'a dyn Sandbox,
     /// Its program in the container, if not its usual name.
     pub contained_program: Option<String>,
-    /// Whether it edits files and runs commands there, as for a task.
+    /// Whether it edits files and runs commands there, as for a reply.
     pub edits: bool,
     /// The most steps it may take, for runners that count them.
     pub max_turns: Option<u32>,
@@ -54,23 +45,8 @@ pub(crate) fn tokens(value: &serde_json::Value) -> Option<u64> {
     value.as_u64()
 }
 
-/// Whether a job's agent may hand tasks to the workshop, as the hub says:
-/// one answering in a thread, for someone who may ask for work.
-pub fn hands_over(job: &JobSpec) -> bool {
-    job.hands_over
-}
-
-/// The Stemma tools a job's agent may use, by name: those that read, and
-/// if it may, what hands a task over, or what opens a thread.
-pub fn allowed_tools(job: &JobSpec) -> Vec<&'static str> {
-    let mut names = stemma_client::tools::read_only_names();
-    if hands_over(job) {
-        names.extend(stemma_client::tools::HANDS_OVER);
-    }
-    if job.opens_threads {
-        names.extend(stemma_client::tools::OPENS_THREADS);
-    }
-    names
+pub fn allowed_tools(_job: &JobSpec) -> Vec<&'static str> {
+    stemma_client::tools::read_only_names()
 }
 
 /// The arguments of `stemma mcp` for a job: its hub, its group, its token
@@ -83,7 +59,7 @@ pub fn mcp_args(
     agent: &AgentProfile,
     dir: &JobDir,
 ) -> Vec<String> {
-    let mut args: Vec<String> = vec![
+    let args: Vec<String> = vec![
         "mcp".into(),
         "--hub".into(),
         sandbox.hub().to_owned(),
@@ -95,12 +71,6 @@ pub fn mcp_args(
         agent.display_name.clone(),
         "--read-only".into(),
     ];
-    if hands_over(job) {
-        args.push("--hand-over".into());
-    }
-    if job.opens_threads {
-        args.push("--open-threads".into());
-    }
     args
 }
 
@@ -123,8 +93,7 @@ pub fn prepared(
         command: sandbox.stemma(),
         args: mcp_args(sandbox, job, agent, dir),
     };
-    let mut args = config.args.clone();
-    args.extend(agent.args.iter().cloned());
+    let args = config.args.clone();
     // The machine's own program for it is not the container's.
     let program = if contained {
         work.contained_program.as_deref()
@@ -133,10 +102,11 @@ pub fn prepared(
     };
     let files_seen = sandbox.path(&dir.path);
     let dir_seen = sandbox.path(work.dir);
-    launch::prepare(&Launch {
+    let root_seen = sandbox.path(work.root);
+    let mut prepared = launch::prepare(&Launch {
         runner: &agent.runner,
         program,
-        model: agent.model.as_deref().or(config.model.as_deref()),
+        model: config.model.as_deref(),
         args: &args,
         instructions: &prompt.system,
         mcp: &mcp,
@@ -144,12 +114,17 @@ pub fn prepared(
         files_seen: &files_seen,
         mode: Mode::Job {
             dir: &dir_seen,
+            root: &root_seen,
             edits: work.edits,
             contained,
             max_turns: work.max_turns,
             allowed: allowed_tools(job).into_iter().map(str::to_owned).collect(),
         },
-    })
+    })?;
+    if prepared.answer.is_some() {
+        prepared.answer = Some(work.dir.join("answer.md"));
+    }
+    Ok(prepared)
 }
 
 /// How a command ended.
