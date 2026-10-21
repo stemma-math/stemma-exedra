@@ -193,4 +193,6 @@ pub struct GroupAgents {
     pub priority: i64,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub concurrency: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub runners: Option<Vec<String>>,
 }

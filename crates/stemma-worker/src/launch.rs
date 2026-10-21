@@ -106,7 +106,7 @@ impl Prepared {
     /// The command, to run.
     pub fn command(&self) -> tokio::process::Command {
         let mut command = tokio::process::Command::new(&self.program);
-        command.args(&self.args);
+        command.args(&self.args).env_remove("STEMMA_TOKEN");
         for (key, value) in &self.env {
             command.env(key, value);
         }

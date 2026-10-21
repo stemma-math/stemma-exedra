@@ -7,6 +7,8 @@ use stemma_core::api::runners;
 #[derive(Clone, Debug)]
 pub struct WorkerConfig {
     pub hub: String,
+    pub settings: Settings,
+    pub paths: Paths,
     pub concurrency: u32,
     pub runners: Runners,
     pub isolation: IsolationConfig,
@@ -65,6 +67,8 @@ impl WorkerConfig {
         }
         Ok(Self {
             hub: credentials.hub.clone().unwrap_or_default(),
+            settings: settings.clone(),
+            paths: paths.clone(),
             concurrency: get("agents.concurrency")?.as_integer().unwrap() as u32,
             runners,
             isolation,

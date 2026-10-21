@@ -21,8 +21,10 @@ pub async fn run(stemma: std::path::PathBuf) -> anyhow::Result<()> {
     let token = credentials
         .token
         .context("This computer is signed out. Run stemma login.")?;
-    let context =
-        std::sync::Arc::new(crate::Context::start(crate::WorkerConfig::load(None)?, stemma).await?);
+    let context = std::sync::Arc::new(crate::Context::new(
+        crate::WorkerConfig::load(None)?,
+        stemma,
+    )?);
     tokio::select! {
         served = crate::connection::serve(context, token) => match served {
             Err(error) if error.downcast_ref::<Stopped>().is_some() => { tracing::warn!("{error}"); Ok(()) },

@@ -51,7 +51,19 @@ impl Workers {
     pub fn runners(&self, token: i64) -> Vec<String> {
         self.connected
             .get(&token)
-            .map(|w| w.runners.clone())
+            .map(|w| {
+                let mut runners = w.runners.clone();
+                for group in w.groups.values() {
+                    if let Some(found) = &group.runners {
+                        for runner in found {
+                            if !runners.contains(runner) {
+                                runners.push(runner.clone());
+                            }
+                        }
+                    }
+                }
+                runners
+            })
             .unwrap_or_default()
     }
     pub fn is_online(&self, token: i64) -> bool {
@@ -64,7 +76,11 @@ impl Workers {
             .filter(|(_, w)| {
                 w.owner_id == job.requester_id
                     && w.scope(&job.group_slug).enabled
-                    && w.runners.contains(&job.runner)
+                    && w.scope(&job.group_slug)
+                        .runners
+                        .as_ref()
+                        .unwrap_or(&w.runners)
+                        .contains(&job.runner)
                     && w.running.len()
                         < w.scope(&job.group_slug)
                             .concurrency
@@ -101,6 +117,7 @@ struct JobRow {
     runner: String,
     state: String,
     worker_id: Option<i64>,
+    machine_name: Option<String>,
     token_id: Option<i64>,
     progress: Option<String>,
     error: Option<String>,
@@ -114,11 +131,12 @@ macro_rules! job_query {
     () => {
         "SELECT j.id, j.group_id, j.kind, j.thread_id, t.number AS thread_number,
         j.trigger_message, j.requester_id, u.username, u.display_name, j.agent_handle,
-        j.runner, j.state, j.worker_id, j.token_id, j.progress, j.error,
+        j.runner, j.state, j.worker_id, w.name AS machine_name, j.token_id, j.progress, j.error,
         j.answer, j.created_at, j.updated_at, g.slug AS group_slug
          FROM jobs j LEFT JOIN threads t ON t.id = j.thread_id
               JOIN users u ON u.id = j.requester_id
-              JOIN groups g ON g.id = j.group_id"
+              JOIN groups g ON g.id = j.group_id
+              LEFT JOIN api_tokens w ON w.id = j.worker_id"
     };
 }
 
@@ -153,6 +171,7 @@ impl JobRow {
         let (agent, agent_name) = (profile.handle, profile.display_name);
         Job {
             id: self.id,
+            machine: self.machine_name.clone(),
             kind: self.kind(),
             thread: self.thread_number.map(|n| n as u32),
             trigger: self.trigger_message.map(|n| n as u32),

@@ -1826,6 +1826,7 @@ async fn computer(
                 enabled: true,
                 priority,
                 concurrency: None,
+                runners: None,
             },
             groups: Default::default(),
             concurrency: 1,
@@ -1934,6 +1935,7 @@ async fn personal_tokens_route_by_group_priority_capacity_and_connection_time() 
             enabled: true,
             priority: 0,
             concurrency: None,
+            runners: None,
         },
         groups: std::collections::BTreeMap::from([(
             "geometry".into(),
@@ -1941,6 +1943,7 @@ async fn personal_tokens_route_by_group_priority_capacity_and_connection_time() 
                 enabled: false,
                 priority: 99,
                 concurrency: None,
+                runners: None,
             },
         )]),
     };

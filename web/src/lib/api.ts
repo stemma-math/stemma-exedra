@@ -150,6 +150,7 @@ export type JobKind = "reply";
 
 export interface Job {
   id: number;
+  machine?: string | null;
   kind: JobKind;
   thread: number | null;
   trigger: number | null;

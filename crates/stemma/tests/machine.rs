@@ -129,6 +129,7 @@ while [ "$#" -gt 0 ]; do
   shift
 done
 cat >/dev/null
+test -z "${STEMMA_TOKEN:-}"
 test -d "$root/library/.git"
 root=$(cd "$root" && pwd -P)
 case "$PWD" in "$root"/scratch/*) ;; *) exit 3 ;; esac
@@ -226,6 +227,74 @@ printf 'ephemeral\n' > "$root/library/check.txt"
             .unwrap()
             .count(),
         0
+    );
+    // A runner disappearing changes Hello on the same connection, and queued work
+    // starts when a valid edit makes it available again.
+    let connections = state.connections.load(std::sync::atomic::Ordering::Relaxed);
+    std::fs::write(
+        config_dir.join("config.toml"),
+        "[agents.codex]\ncommand = '/missing/codex'\n",
+    )
+    .unwrap();
+    tokio::time::timeout(Duration::from_secs(10), async {
+        while state
+            .workers
+            .lock()
+            .await
+            .runners(token.token.id)
+            .contains(&"codex".into())
+        {
+            tokio::time::sleep(Duration::from_millis(40)).await;
+        }
+    })
+    .await
+    .expect("capabilities reload without reconnecting");
+    requester
+        .post_message(
+            "algebra",
+            thread.thread.number,
+            &stemma_core::api::PostMessage {
+                body: "@codex once more".into(),
+                reply_to: None,
+                agent: None,
+                attachments: vec![],
+            },
+        )
+        .await
+        .unwrap();
+    let queued: i64 = sqlx::query_scalar("SELECT count(*) FROM jobs WHERE state = 'queued'")
+        .fetch_one(&state.db)
+        .await
+        .unwrap();
+    assert_eq!(queued, 1);
+    std::fs::write(
+        config_dir.join("config.toml"),
+        format!(
+            "[agents.codex]\ncommand = {}\n[groups.algebra.agents]\npriority = 'high'\n",
+            serde_json::to_string(&runner.display().to_string()).unwrap()
+        ),
+    )
+    .unwrap();
+    tokio::time::timeout(Duration::from_secs(10), async {
+        loop {
+            if requester
+                .thread("algebra", thread.thread.number)
+                .await
+                .unwrap()
+                .messages
+                .len()
+                == 4
+            {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+    })
+    .await
+    .expect("restoring a runner dispatches waiting work");
+    assert_eq!(
+        state.connections.load(std::sync::atomic::Ordering::Relaxed),
+        connections
     );
     requester.revoke_token(token.token.id).await.unwrap();
     let status = tokio::time::timeout(Duration::from_secs(8), child.wait())

@@ -511,7 +511,10 @@ impl Sandbox for HostSandbox {
         dir: &Path,
     ) -> Command {
         let mut command = Command::new(program);
-        command.args(args).current_dir(dir);
+        command
+            .args(args)
+            .current_dir(dir)
+            .env_remove("STEMMA_TOKEN");
         for (key, value) in env {
             command.env(key, value);
         }

@@ -877,6 +877,8 @@ impl JobKind {
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Job {
     pub id: i64,
+    /// The running computer's personal-token name.
+    pub machine: Option<String>,
     pub kind: JobKind,
     /// The thread of the message that asked for it, if one did.
     pub thread: Option<u32>,

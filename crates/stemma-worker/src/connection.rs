@@ -186,6 +186,9 @@ async fn work(context: &Arc<Context>, socket: &mut Socket, mut jobs: RunningJobs
     let mut heard = Instant::now();
     let mut check = tokio::time::interval(Duration::from_secs(2));
     let mut last_hello = String::new();
+    let mut settings =
+        stemma_client::config::Settings::load().unwrap_or_else(|_| context.config.settings.clone());
+    let mut modification = None;
 
     loop {
         tokio::select! {
@@ -201,7 +204,9 @@ async fn work(context: &Arc<Context>, socket: &mut Socket, mut jobs: RunningJobs
                     Ok(HubMessage::Job(spec)) => {
                         let id = spec.id;
                         tracing::info!(job = id, kind = spec.kind().as_str(), "job received");
-                        if !jobs.accepts(id, spec.kind(), crate::config::WorkerConfig::load(Some(&spec.group.slug)).map(|c| c.concurrency).unwrap_or(context.config.concurrency)) {
+                        let credentials = stemma_client::config::Credentials { hub: Some(context.hub.clone()), ..Default::default() };
+                        let config = match crate::config::WorkerConfig::resolve(&settings, &context.config.paths, &credentials, Some(&spec.group.slug)) { Ok(c) => c, Err(error) => { break error; } };
+                        if !jobs.accepts(id, spec.kind(), config.concurrency) {
                             let message = WorkerMessage::Finished {
                                 job: id,
                                 outcome: Outcome::Failed { error: "This machine is at its job limit".into() },
@@ -211,8 +216,14 @@ async fn work(context: &Arc<Context>, socket: &mut Socket, mut jobs: RunningJobs
                             continue;
                         }
                         let kind = spec.kind();
-                        let config = match crate::config::WorkerConfig::load(Some(&spec.group.slug)) { Ok(c) => c, Err(error) => { break error; } };
-                        let context = match Context::start(config, context.stemma.clone()).await { Ok(c) => Arc::new(c), Err(error) => { break error; } };
+                        let context = match Context::start(config, context.stemma.clone()).await {
+                            Ok(c) => Arc::new(c),
+                            Err(error) => {
+                                let message = WorkerMessage::Finished { job: id, outcome: Outcome::Failed { error: format!("{error:#}") }, usage: Usage::default() };
+                                if let Err(error) = send(socket, &message).await { break error; }
+                                continue;
+                            }
+                        };
                         let progress = Progress::new(id, progress.clone());
                         let finished = finished.clone();
                         let task = tokio::spawn(async move {
@@ -249,15 +260,23 @@ async fn work(context: &Arc<Context>, socket: &mut Socket, mut jobs: RunningJobs
                 }
             }
             _ = check.tick() => {
-                match hello().await {
-                    Ok(hello) => {
-                        let serialized = serde_json::to_string(&hello).unwrap();
-                        if serialized != last_hello {
-                            if let Err(error) = send(socket, &WorkerMessage::Hello(hello)).await { break error; }
-                            last_hello = serialized;
-                        }
+                let observed = std::fs::metadata(&settings.path).and_then(|m| m.modified()).ok();
+                if observed != modification {
+                    modification = observed;
+                    match stemma_client::config::Settings::load() {
+                        Ok(updated) => match hello_from(&updated).await {
+                            Ok(hello) => {
+                                let serialized = serde_json::to_string(&hello).unwrap();
+                                if serialized != last_hello {
+                                    if let Err(error) = send(socket, &WorkerMessage::Hello(hello)).await { break error; }
+                                    last_hello = serialized;
+                                }
+                                settings = updated;
+                            }
+                            Err(error) => tracing::warn!(%error, "could not reload capabilities"),
+                        },
+                        Err(error) => tracing::warn!(%error, "configuration is invalid; keeping the last valid settings"),
                     }
-                    Err(error) => tracing::warn!(%error, "configuration is invalid; keeping the last valid capabilities"),
                 }
                 if heard.elapsed() > SILENCE_LIMIT {
                     break anyhow::anyhow!("the hub went silent");
@@ -270,6 +289,14 @@ async fn work(context: &Arc<Context>, socket: &mut Socket, mut jobs: RunningJobs
 /// Current live capabilities; the same resolution supplies jobs and the app.
 pub async fn hello() -> anyhow::Result<Hello> {
     let settings = stemma_client::config::Settings::load()?;
+    hello_from(&settings).await
+}
+
+async fn hello_from(settings: &stemma_client::config::Settings) -> anyhow::Result<Hello> {
+    let paths = stemma_client::config::Paths::discover()?;
+    let credentials = stemma_client::config::Credentials::load()?.with_env();
+    let resolve =
+        |group| crate::config::WorkerConfig::resolve(settings, &paths, &credentials, group);
     let scope = |group| -> anyhow::Result<stemma_core::protocol::GroupAgents> {
         Ok(stemma_core::protocol::GroupAgents {
             enabled: settings
@@ -278,6 +305,7 @@ pub async fn hello() -> anyhow::Result<Hello> {
                 .as_bool()
                 .unwrap(),
             priority: settings.priority(group)?,
+            runners: None,
             concurrency: Some(
                 settings
                     .get("agents.concurrency", group)?
@@ -288,28 +316,22 @@ pub async fn hello() -> anyhow::Result<Hello> {
         })
     };
     let agents = scope(None)?;
+    let config = resolve(None)?;
+    let found = available(&config).await;
     let mut groups = std::collections::BTreeMap::new();
     for slug in settings.groups() {
-        let group = scope(Some(slug))?;
+        let mut group = scope(Some(slug))?;
+        let configured = resolve(Some(slug))?;
+        let available = available(&configured).await;
+        if available != found {
+            group.runners = Some(available);
+        }
         if group.enabled != agents.enabled
             || group.priority != agents.priority
             || group.concurrency != agents.concurrency
+            || group.runners.is_some()
         {
             groups.insert(slug.clone(), group);
-        }
-    }
-    let config = crate::config::WorkerConfig::load(None)?;
-    let mut found =
-        crate::detect::installed(&config.runners, std::env::var_os("PATH").as_deref()).await;
-    // Group-specific runner commands may be available even if the general one is not.
-    for slug in settings.groups() {
-        let group = crate::config::WorkerConfig::load(Some(slug))?;
-        for runner in
-            crate::detect::installed(&group.runners, std::env::var_os("PATH").as_deref()).await
-        {
-            if !found.contains(&runner) {
-                found.push(runner);
-            }
         }
     }
     Ok(Hello {
@@ -320,4 +342,23 @@ pub async fn hello() -> anyhow::Result<Hello> {
         agents,
         groups,
     })
+}
+
+async fn available(config: &crate::config::WorkerConfig) -> Vec<String> {
+    match crate::isolation::resolve(
+        &config.isolation,
+        &config.hub,
+        std::env::var_os("PATH").as_deref(),
+    )
+    .await
+    {
+        Ok(crate::isolation::Isolator::Host) => {
+            crate::detect::installed(&config.runners, std::env::var_os("PATH").as_deref()).await
+        }
+        Ok(crate::isolation::Isolator::Containers(_)) => config.runner_names(),
+        Err(reason) => {
+            tracing::warn!(%reason, "agents cannot run with this isolation configuration");
+            Vec::new()
+        }
+    }
 }

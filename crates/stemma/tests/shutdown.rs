@@ -110,6 +110,7 @@ async fn signals_drain_streams_and_machines_and_exit_successfully() {
                         enabled: true,
                         priority: 0,
                         concurrency: None,
+                        runners: None,
                     },
                     groups: Default::default(),
                     concurrency: 1,

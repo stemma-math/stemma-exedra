@@ -18,7 +18,7 @@
   <div class="post__head">
     <span class="post__author">{jobStatus(job)}</span>
     <span class="post__attribution">
-      for {job.requester.display_name}{#if job.trigger}, to <a class="post__number" href="#{job.trigger}">#{job.trigger}</a>{/if}
+      for {job.requester.display_name}{#if job.machine}, on {job.machine}{/if}{#if job.trigger}, to <a class="post__number" href="#{job.trigger}">#{job.trigger}</a>{/if}
     </span>
     {#if canCancel}
       <span class="post__actions">

@@ -254,11 +254,11 @@ async fn ask(
 ) -> anyhow::Result<Answer> {
     let dir = JobDir::create(&context.work_dir, job)?;
     progress.say("Thinking");
-    let paths = stemma_client::config::Paths::discover()?;
-    let settings = stemma_client::config::Settings::load()?;
+    let paths = &context.config.paths;
+    let settings = &context.config.settings;
     let hub = stemma_client::Hub::new(&context.hub, Some(job.token.clone()))?;
     let workspace =
-        crate::workspace::Workspace::open(&settings, &paths, &hub, &job.group.slug, &job.token)
+        crate::workspace::Workspace::open(settings, paths, &hub, &job.group.slug, &job.token)
             .await?;
     let scratch = crate::workspace::Scratch::create(&workspace.path, job.id)?;
     let host = context.host();
