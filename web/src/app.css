@@ -702,15 +702,9 @@ html .app .shell.is-resizing *::after {
 }
 
 
-/* A held answer, as its requester reads it before choosing: as written,
- * with what seems to be a secret marked.
- * TODO(design): an inline mark for a secret in a text, stemma-math/design#40. */
+/* A held answer, as its requester reads it before choosing: as written. */
 .held-answer {
   margin: 0;
   white-space: pre-wrap;
   overflow-wrap: anywhere;
-}
-
-.held-answer__secret {
-  color: var(--danger-text);
 }
