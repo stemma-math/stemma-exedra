@@ -1,36 +1,54 @@
 //! A person's private conversation with one of their agents: what
 //! `stemma claude`, `stemma codex` and `stemma opencode` open.
 //!
-//! The agent runs interactively, with its unmodified program and the
-//! person's own sign-in, launched as [`crate::launch`] says: Stemma makes a
-//! token for the session, which lasts at most [`SESSION_MINUTES`] and is
-//! revoked when the agent exits; writes, in a private folder of its own,
-//! that token and what the agent reads its tools from (`stemma mcp`, with
-//! that token, in the group); and gives the agent Stemma's instructions,
-//! in `prompts/session.md`. Nothing is installed into the agent's own
-//! configuration, and the folder goes when the session ends.
+//! The agent runs interactively, as the person and with everything their
+//! agent normally has, in the folder they are in (or, asked to, in the
+//! group's workspace), launched as [`crate::launch`] says. Stemma makes an
+//! agent's token for the session (one group; reading it, and posting and
+//! opening threads there as the agent), revoked when the agent exits;
+//! writes, in a private folder of its own, that token and what the agent
+//! reads its tools from (`stemma mcp`, with that token); and gives the
+//! agent Stemma's instructions, in `prompts/session.md`.
+//!
+//! The agent is kept off the person's own sign-in: it runs with
+//! `STEMMA_CONFIG_DIR` at the session's folder, which has no credentials,
+//! and without `STEMMA_TOKEN` or `STEMMA_HUB`, so the `stemma` command
+//! there is signed out; its instructions say to use Stemma's tools only;
+//! and Claude Code is also told not to run `stemma`. An agent that insists
+//! can still read the person's files, since it runs as them. Nothing is
+//! installed into the agent's own configuration, and the folder goes when
+//! the session ends.
 
 use std::path::{Path, PathBuf};
 
 use anyhow::Context as _;
 use stemma_client::Hub;
-use stemma_core::api::{AgentProfile, Group, User, runners};
+use stemma_core::api::{AgentProfile, Group, User};
 
 use crate::launch::{self, Launch, Mcp, Mode, Prepared};
 
 /// Stemma's instructions to an agent in a person's session.
 pub const SESSION_INSTRUCTIONS: &str = include_str!("../prompts/session.md");
 
-/// The most a session's token lasts, in minutes: a long day.
-pub const SESSION_MINUTES: u32 = 16 * 60;
+/// What a session in the group's workspace is also told.
+const WORKSPACE_INSTRUCTIONS: &str = "
+You work in the group's workspace, which Stemma manages: `library/` and
+`papers/<slug>/` are clones of the group's repositories at `main`, brought
+up to date when a session or an answer starts, and anything else here may
+go. Check your reasoning there (`lake build`, `latexmk`), and keep
+{person}'s lasting work elsewhere.
+";
 
 /// What to open.
 #[derive(Clone, Debug)]
 pub struct Options {
-    /// One of [`runners::ALL`].
+    /// One of [`stemma_core::api::runners::ALL`].
     pub runner: String,
     /// The group; the only one they are in if absent.
     pub group: Option<String>,
+    /// Whether to work in the group's workspace, brought up to date, rather
+    /// than where the person is.
+    pub workspace: bool,
     /// More arguments for the agent, after its own.
     pub args: Vec<String>,
     /// The `stemma` binary, for the agent's MCP server.
@@ -53,7 +71,8 @@ pub struct Session {
     /// The session's private folder, with its token and files.
     pub dir: PathBuf,
     token_id: i64,
-    pub workspace: crate::workspace::Workspace,
+    /// The group's workspace, when the session works there.
+    pub workspace: Option<crate::workspace::Workspace>,
 }
 
 impl Session {
@@ -75,27 +94,25 @@ impl Session {
         }
         .clone();
         let agent = AgentProfile::default_of_runner(&options.runner).context("unknown runner")?;
-        let settings = stemma_client::config::Settings::load()?;
-        let paths = stemma_client::config::Paths::discover()?;
-        let credentials = stemma_client::config::Credentials::load()?.with_env();
-        let workspace = crate::workspace::Workspace::open(
-            &settings,
-            &paths,
-            hub,
-            &group.slug,
-            credentials.token.as_deref().context("signed out")?,
-        )
-        .await?;
-
-        let token = hub
-            .create_expiring_token(
-                &format!(
-                    "{}, a session on {}",
-                    runners::name(&options.runner),
-                    options.host
-                ),
-                SESSION_MINUTES,
+        let workspace = if options.workspace {
+            let settings = stemma_client::config::Settings::load()?;
+            let paths = stemma_client::config::Paths::discover()?;
+            let credentials = stemma_client::config::Credentials::load()?.with_env();
+            Some(
+                crate::workspace::Workspace::open(
+                    &settings,
+                    &paths,
+                    hub,
+                    &group.slug,
+                    credentials.token.as_deref().context("signed out")?,
+                )
+                .await?,
             )
+        } else {
+            None
+        };
+        let token = hub
+            .create_agent_token(&group.slug, &options.runner, &options.host)
             .await
             .context("making the session's token")?;
         let token_id = token.token.id;
@@ -147,10 +164,18 @@ fn prepare(
     let prepared = (|| {
         let token_file = dir.join("token");
         write_private(&token_file, token.as_bytes())?;
+        let workspace = if options.workspace {
+            WORKSPACE_INSTRUCTIONS
+        } else {
+            ""
+        };
         let instructions = SESSION_INSTRUCTIONS
+            .replace("{workspace}", workspace)
             .replace("{agent}", &agent.display_name)
             .replace("{person}", &person.display_name)
-            .replace("{group}", &group.name);
+            .replace("{group}", &group.name)
+            .trim_end()
+            .to_owned();
         let mcp = Mcp {
             command: options.stemma.clone(),
             args: vec![
@@ -170,20 +195,9 @@ fn prepare(
             .runners
             .get(&options.runner)
             .context("unknown runner")?;
-        let workspace = stemma_client::config::Settings::load()?.workspace(&group.slug)?;
-        let mut args = match options.runner.as_str() {
-            runners::CODEX => vec![
-                "--sandbox".into(),
-                "workspace-write".into(),
-                "--cd".into(),
-                workspace.display().to_string(),
-            ],
-            runners::CLAUDE_CODE => vec!["--add-dir".into(), workspace.display().to_string()],
-            _ => vec![],
-        };
-        args.extend(runner.args.iter().cloned());
+        let mut args = runner.args.clone();
         args.extend(options.args.iter().cloned());
-        launch::prepare(&Launch {
+        let mut prepared = launch::prepare(&Launch {
             runner: &options.runner,
             program: options.program.as_deref().or(runner.command.as_deref()),
             model: runner.model.as_deref(),
@@ -198,7 +212,12 @@ fn prepare(
                     .map(str::to_owned)
                     .collect(),
             },
-        })
+        })?;
+        // The `stemma` command, run by the agent, finds no sign-in here.
+        prepared
+            .env
+            .push(("STEMMA_CONFIG_DIR".into(), dir.display().to_string()));
+        Ok(prepared)
     })();
     match prepared {
         Ok(prepared) => Ok((dir, prepared)),

@@ -106,7 +106,12 @@ impl Prepared {
     /// The command, to run.
     pub fn command(&self) -> tokio::process::Command {
         let mut command = tokio::process::Command::new(&self.program);
-        command.args(&self.args).env_remove("STEMMA_TOKEN");
+        // The person's sign-in reaches no agent: Stemma's tools get theirs
+        // by arguments.
+        command
+            .args(&self.args)
+            .env_remove("STEMMA_TOKEN")
+            .env_remove("STEMMA_HUB");
         for (key, value) in &self.env {
             command.env(key, value);
         }
@@ -188,6 +193,8 @@ fn claude_code(launch: &Launch, prepared: &mut Prepared) -> anyhow::Result<()> {
             if !allowed.is_empty() {
                 push(args, &["--allowedTools", &stemma_tools(allowed).join(",")]);
             }
+            // Stemma through its tools, never through the command.
+            push(args, &["--disallowedTools", "Bash(stemma:*)"]);
             push(args, &["--append-system-prompt", launch.instructions]);
         }
         Mode::Job {
@@ -409,6 +416,26 @@ mod tests {
     }
 
     #[test]
+    fn no_agent_inherits_the_persons_sign_in() {
+        let prepared = Prepared {
+            program: "claude".into(),
+            args: Vec::new(),
+            env: vec![("STEMMA_CONFIG_DIR".into(), "/session".into())],
+            files: Vec::new(),
+            answer: None,
+        };
+        let command = prepared.command();
+        let envs: Vec<_> = command.as_std().get_envs().collect();
+        for name in ["STEMMA_TOKEN", "STEMMA_HUB"] {
+            assert!(envs.contains(&(std::ffi::OsStr::new(name), None)), "{name}");
+        }
+        assert!(envs.contains(&(
+            std::ffi::OsStr::new("STEMMA_CONFIG_DIR"),
+            Some(std::ffi::OsStr::new("/session"))
+        )));
+    }
+
+    #[test]
     fn claude_code_in_a_session() {
         let files = tempfile::tempdir().unwrap();
         let mcp = mcp();
@@ -434,6 +461,8 @@ mod tests {
                 &mcp_file,
                 "--allowedTools",
                 "mcp__stemma__read_thread,mcp__stemma__search",
+                "--disallowedTools",
+                "Bash(stemma:*)",
                 "--append-system-prompt",
                 "Be precise.",
                 "--model",

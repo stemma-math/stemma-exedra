@@ -227,8 +227,7 @@ async fn libraries_are_made_cloned_and_pushed_without_building() {
         .unwrap();
     assert_eq!(dumb.status(), 404);
 
-    // A job's token clones; it pushes only once it is a task's, and then
-    // only to the task's branch.
+    // A job's token clones, and never pushes.
     let (ada_id, group_id): (i64, i64) =
         sqlx::query_as("SELECT u.id, g.id FROM users u, groups g WHERE u.username = 'ada'")
             .fetch_one(&hub.state.db)
@@ -238,7 +237,6 @@ async fn libraries_are_made_cloned_and_pushed_without_building() {
         &hub.state.db,
         ada_id,
         group_id,
-        None,
         "Lean",
         stemma_hub::db::now() + 60_000,
     )
@@ -248,6 +246,26 @@ async fn libraries_are_made_cloned_and_pushed_without_building() {
     let cloned = git(work.path(), &["clone", "-q", &url, "job"]);
     assert!(cloned.status.success(), "{cloned:?}");
     let checkout = work.path().join("job");
+    std::fs::write(checkout.join("NOTES.md"), "Notes.\n").unwrap();
+    git(&checkout, &["add", "NOTES.md"]);
+    git(&checkout, &["commit", "-qm", "Notes"]);
+    let pushed = git(&checkout, &["push", "-q", "origin", "main"]);
+    assert!(!pushed.status.success());
+
+    // Nor does an agent's session token, which still clones.
+    let (_, session, _) = stemma_hub::auth::create_agent_token(
+        &hub.state.db,
+        ada_id,
+        group_id,
+        "Claude",
+        "a session",
+    )
+    .await
+    .unwrap();
+    let url = format!("http://agent:{session}@{host}/git/geometry/library.git");
+    let cloned = git(work.path(), &["clone", "-q", &url, "agent"]);
+    assert!(cloned.status.success(), "{cloned:?}");
+    let checkout = work.path().join("agent");
     std::fs::write(checkout.join("NOTES.md"), "Notes.\n").unwrap();
     git(&checkout, &["add", "NOTES.md"]);
     git(&checkout, &["commit", "-qm", "Notes"]);

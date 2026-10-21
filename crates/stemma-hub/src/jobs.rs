@@ -353,7 +353,6 @@ async fn start(state: &AppState, job: &JobRow, worker_id: i64) -> ApiResult<JobS
         &state.db,
         job.requester_id,
         job.group_id,
-        None,
         &job.profile()?.display_name,
         db::now() + JOB_TOKEN_MILLIS,
     )

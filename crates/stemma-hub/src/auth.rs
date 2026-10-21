@@ -1,4 +1,11 @@
-//! Sessions, personal and launcher tokens, and group-scoped job tokens. Job tokens cannot push or open threads.
+//! Browser sessions and API tokens.
+//!
+//! A personal token (a device's or a script's) can do whatever its owner
+//! can. Agents hold tokens of their own, limited to one group: a job's
+//! token, for an answer, only reads it; an agent's token, for a person's
+//! session with their agent, reads it and posts or opens threads there,
+//! always as the agent. Neither pushes, attaches files, or reaches the
+//! account, its tokens or the group's settings.
 
 use axum::extract::{FromRequestParts, OptionalFromRequestParts};
 use axum::http::header::{AUTHORIZATION, COOKIE, SET_COOKIE};
@@ -25,7 +32,7 @@ pub struct Viewer {
     pub hub_admin: bool,
     /// Whether the request came with an API token, not a session.
     pub with_token: bool,
-    /// A person's token, excluding jobs, launchers and browser sessions.
+    /// A device's or a script's token: not an agent's, nor a browser session.
     pub personal_token: bool,
     pub scope: Scope,
 }
@@ -35,12 +42,12 @@ pub struct Viewer {
 pub enum Scope {
     /// Whatever the person can: a session or a personal token.
     Full,
-    /// A job's token.
-    Job(JobScope),
+    /// An agent's token: a job's or a session's.
+    Agent(AgentScope),
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub struct JobScope {
+pub struct AgentScope {
     /// The token's own id, which its job records.
     pub token_id: i64,
     pub group_id: i64,
@@ -49,6 +56,8 @@ pub struct JobScope {
     /// The agent its posts are written by.
     pub agent: String,
     pub can_post: bool,
+    /// A session's token, which may also open threads; else a job's.
+    pub session: bool,
 }
 
 impl Viewer {
@@ -60,18 +69,18 @@ impl Viewer {
         }
     }
 
-    pub fn job(&self) -> Option<&JobScope> {
+    pub fn agent(&self) -> Option<&AgentScope> {
         match &self.scope {
             Scope::Full => None,
-            Scope::Job(job) => Some(job),
+            Scope::Agent(agent) => Some(agent),
         }
     }
 
-    /// Fails for a job's token: what follows needs the person.
+    /// Fails for an agent's token: what follows needs the person.
     pub fn require_full(&self) -> Result<(), ApiError> {
         match self.scope {
             Scope::Full => Ok(()),
-            Scope::Job(_) => Err(ApiError::forbidden("A job's token cannot do this")),
+            Scope::Agent(_) => Err(ApiError::forbidden("An agent's token cannot do this")),
         }
     }
 }
@@ -165,14 +174,17 @@ async fn authenticate(headers: &HeaderMap, state: &AppState) -> Result<Option<Vi
         .execute(&state.db)
         .await?;
         let scope = match (row.kind.as_str(), row.group_id) {
-            ("job", Some(group_id)) => Scope::Job(JobScope {
+            (kind @ ("job" | "agent"), Some(group_id)) => Scope::Agent(AgentScope {
                 token_id: row.token_id,
                 group_id,
                 thread_id: row.thread_id,
                 agent: row.agent.unwrap_or_else(|| "Agent".into()),
                 can_post: row.can_post,
+                session: kind == "agent",
             }),
-            ("job", None) => return Err(ApiError::internal("a job token without a group")),
+            ("job" | "agent", None) => {
+                return Err(ApiError::internal("an agent's token without a group"));
+            }
             _ => Scope::Full,
         };
         let mut viewer = row.user.viewer(true, scope);
@@ -224,13 +236,11 @@ pub fn bearer_token(headers: &HeaderMap) -> Option<&str> {
 }
 
 /// A token for a job, acting for `user_id` in `group_id` until
-/// `expires_at`; it posts only in `post_in`, a thread, if given. Returns
-/// its id and secret.
+/// `expires_at`: it only reads the group. Returns its id and secret.
 pub async fn create_job_token(
     db: &sqlx::SqlitePool,
     user_id: i64,
     group_id: i64,
-    post_in: Option<i64>,
     agent: &str,
     expires_at: i64,
 ) -> Result<(i64, String), ApiError> {
@@ -238,8 +248,8 @@ pub async fn create_job_token(
     let prefix: String = secret.chars().take(JOB_TOKEN_PREFIX.len() + 6).collect();
     let id = sqlx::query(
         "INSERT INTO api_tokens (user_id, name, token_hash, prefix, created_at, kind, group_id,
-                                 thread_id, agent, can_post, expires_at)
-         VALUES (?, ?, ?, ?, ?, 'job', ?, ?, ?, ?, ?)",
+                                 agent, can_post, expires_at)
+         VALUES (?, ?, ?, ?, ?, 'job', ?, ?, 0, ?)",
     )
     .bind(user_id)
     .bind(format!("{agent}, for a job"))
@@ -247,14 +257,48 @@ pub async fn create_job_token(
     .bind(&prefix)
     .bind(db::now())
     .bind(group_id)
-    .bind(post_in)
     .bind(agent)
-    .bind(post_in.is_some())
     .bind(expires_at)
     .execute(db)
     .await?
     .last_insert_rowid();
     Ok((id, secret))
+}
+
+/// How long an agent's session token lasts, in milliseconds: a long day.
+pub const AGENT_TOKEN_MILLIS: i64 = 16 * 60 * 60 * 1000;
+
+/// A token for `agent`'s session with `user_id`, in `group_id`: it reads
+/// the group, and posts and opens threads there as the agent. Returns its
+/// id and secret.
+pub async fn create_agent_token(
+    db: &sqlx::SqlitePool,
+    user_id: i64,
+    group_id: i64,
+    agent: &str,
+    name: &str,
+) -> Result<(i64, String, i64), ApiError> {
+    let secret = secret::token(API_TOKEN_PREFIX);
+    let prefix: String = secret.chars().take(API_TOKEN_PREFIX.len() + 6).collect();
+    let now = db::now();
+    let expires_at = now + AGENT_TOKEN_MILLIS;
+    let id = sqlx::query(
+        "INSERT INTO api_tokens (user_id, name, token_hash, prefix, created_at, kind, group_id,
+                                 agent, can_post, expires_at)
+         VALUES (?, ?, ?, ?, ?, 'agent', ?, ?, 1, ?)",
+    )
+    .bind(user_id)
+    .bind(name)
+    .bind(secret::token_hash(&secret))
+    .bind(&prefix)
+    .bind(now)
+    .bind(group_id)
+    .bind(agent)
+    .bind(expires_at)
+    .execute(db)
+    .await?
+    .last_insert_rowid();
+    Ok((id, secret, expires_at))
 }
 
 /// The value of a cookie in the request.

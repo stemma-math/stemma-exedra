@@ -6,8 +6,8 @@ use axum::extract::{Path, State};
 use axum::http::{HeaderMap, StatusCode};
 use axum::response::IntoResponse;
 use stemma_core::api::{
-    ApiToken, ChangePassword, CreateToken, CreatedToken, Health, Me, NewAccount, Setup, SetupState,
-    SignIn, UpdateMe,
+    ApiToken, ChangePassword, CreateAgentToken, CreateToken, CreatedToken, Health, Me, NewAccount,
+    Setup, SetupState, SignIn, UpdateMe,
 };
 
 use super::{Json, required_text};
@@ -154,7 +154,7 @@ pub async fn sign_out(
 /// The person signed in. A job's token sees only its job's group.
 pub async fn me(State(state): State<AppState>, viewer: Viewer) -> ApiResult<Json<Me>> {
     let mut me = me_of(&state, viewer.id).await?;
-    if let Some(job) = viewer.job() {
+    if let Some(job) = viewer.agent() {
         let slug: String = sqlx::query_scalar("SELECT slug FROM groups WHERE id = ?")
             .bind(job.group_id)
             .fetch_one(&state.db)
@@ -292,10 +292,9 @@ pub async fn create_token(
 ) -> ApiResult<(StatusCode, Json<CreatedToken>)> {
     viewer.require_full()?;
     if viewer.with_token && !viewer.personal_token {
-        return Err(ApiError::forbidden("An agent session cannot mint tokens"));
-    }
-    if body.launcher && body.expires_in_minutes.is_none() {
-        return Err(ApiError::invalid("An agent session token must expire"));
+        return Err(ApiError::forbidden(
+            "Only a device's token or a browser session makes tokens",
+        ));
     }
     let name = required_text(&body.name, "The name", 80)?;
     let secret = secret::token(API_TOKEN_PREFIX);
@@ -316,11 +315,7 @@ pub async fn create_token(
     .bind(&prefix)
     .bind(now)
     .bind(expires_at)
-    .bind(if body.launcher {
-        "launcher"
-    } else {
-        "personal"
-    })
+    .bind("personal")
     .execute(&state.db)
     .await?
     .last_insert_rowid();
@@ -337,6 +332,46 @@ pub async fn create_token(
     Ok((StatusCode::CREATED, Json(CreatedToken { token, secret })))
 }
 
+/// Makes a token for a session with one of the viewer's agents, in one
+/// of their groups (see [`auth::create_agent_token`]).
+pub async fn create_agent_token(
+    State(state): State<AppState>,
+    viewer: Viewer,
+    Json(body): Json<CreateAgentToken>,
+) -> ApiResult<(StatusCode, Json<CreatedToken>)> {
+    viewer.require_full()?;
+    if viewer.with_token && !viewer.personal_token {
+        return Err(ApiError::forbidden(
+            "Only a device's token or a browser session makes tokens",
+        ));
+    }
+    let group = super::Membership::of(&state, &viewer, &body.group).await?;
+    let profile = stemma_core::api::AgentProfile::default_of_runner(&body.runner)
+        .ok_or_else(|| ApiError::invalid(format!("There is no runner {}", body.runner)))?;
+    let host = required_text(&body.host, "The computer's name", 80)?;
+    let name = format!("{}, a session on {host}", profile.display_name);
+    let (id, secret, expires_at) = auth::create_agent_token(
+        &state.db,
+        viewer.id,
+        group.group_id,
+        &profile.display_name,
+        &name,
+    )
+    .await?;
+    let prefix: String = secret.chars().take(API_TOKEN_PREFIX.len() + 6).collect();
+    let token = ApiToken {
+        id,
+        name,
+        prefix,
+        created_at: db::from_millis(db::now()),
+        last_used_at: None,
+        expires_at: Some(db::from_millis(expires_at)),
+        connected: false,
+        runners: Vec::new(),
+    };
+    Ok((StatusCode::CREATED, Json(CreatedToken { token, secret })))
+}
+
 pub async fn revoke_token(
     State(state): State<AppState>,
     viewer: Viewer,
@@ -345,7 +380,7 @@ pub async fn revoke_token(
     viewer.require_full()?;
     let done = sqlx::query(
         "UPDATE api_tokens SET revoked_at = ?
-         WHERE id = ? AND user_id = ? AND kind IN ('personal', 'launcher') AND revoked_at IS NULL",
+         WHERE id = ? AND user_id = ? AND kind IN ('personal', 'agent') AND revoked_at IS NULL",
     )
     .bind(db::now())
     .bind(id)

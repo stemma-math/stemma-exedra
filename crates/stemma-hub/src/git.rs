@@ -58,8 +58,8 @@ pub fn allowed(scope: &Scope, role: Role, service: Service) -> Result<(), &'stat
     if service == Service::Fetch {
         return Ok(());
     }
-    if matches!(scope, Scope::Job(_)) {
-        return Err("A job's token cannot push");
+    if matches!(scope, Scope::Agent(_)) {
+        return Err("An agent's token cannot push");
     }
     if !role.can_write() {
         return Err("Guests cannot push to the group's repositories");

@@ -989,8 +989,11 @@ async fn agents_post_for_people_with_their_tokens() {
     assert_eq!(reply.status, StatusCode::UNPROCESSABLE_ENTITY);
 }
 
+/// What a job's token and an agent's session token reach: their group,
+/// to read; for a session, to post and open discussions as its agent; and
+/// nothing of the account, its tokens, or the group's settings.
 #[tokio::test]
-async fn job_tokens_read_one_group_and_post_only_where_allowed() {
+async fn agent_tokens_reach_only_what_their_tools_offer() {
     let hub = TestHub::new().await;
     let ada = hub.admin_with_group().await;
     hub.post(
@@ -1005,96 +1008,242 @@ async fn job_tokens_read_one_group_and_post_only_where_allowed() {
         json!({"title": "Gluing", "body": "First"}),
     )
     .await;
-    hub.post(&ada, "/groups/geometry/threads", json!({"title": "Other"}))
-        .await;
-    let (group_id, thread_id): (i64, i64) = sqlx::query_as(
-        "SELECT g.id, t.id FROM groups g JOIN threads t ON t.group_id = g.id
-         WHERE g.slug = 'geometry' AND t.number = 1",
+    let group_id: i64 = sqlx::query_scalar("SELECT id FROM groups WHERE slug = 'geometry'")
+        .fetch_one(&hub.state.db)
+        .await
+        .unwrap();
+    let (_, secret) = stemma_hub::auth::create_job_token(
+        &hub.state.db,
+        1,
+        group_id,
+        "Claude",
+        stemma_hub::db::now() + 60_000,
     )
-    .fetch_one(&hub.state.db)
     .await
     .unwrap();
-    let job = |post_in| {
-        let db = hub.state.db.clone();
-        async move {
-            let (_, secret) = stemma_hub::auth::create_job_token(
-                &db,
-                1,
-                group_id,
-                post_in,
-                "Claude",
-                stemma_hub::db::now() + 60_000,
-            )
-            .await
-            .unwrap();
-            Client {
-                cookie: None,
-                token: Some(secret),
-            }
-        }
+    let job = Client {
+        cookie: None,
+        token: Some(secret),
     };
-
-    let reader = job(None).await;
-    let me = hub.get(&reader, "/me").await.json();
-    assert_eq!(me["groups"].as_array().unwrap().len(), 1);
-    assert_eq!(me["groups"][0]["slug"], "geometry");
-    let groups = hub.get(&reader, "/groups").await.json();
-    assert_eq!(groups.as_array().unwrap().len(), 1, "{groups}");
-    assert_eq!(groups[0]["slug"], "geometry");
-    assert_eq!(
-        hub.get(&reader, "/groups/geometry/threads/1").await.status,
-        StatusCode::OK
-    );
-    assert_eq!(
-        hub.get(&reader, "/groups/algebra/threads").await.status,
-        StatusCode::NOT_FOUND
-    );
-    for (path, body) in [
-        ("/me/tokens", json!({"name": "more"})),
-        (
-            "/groups/geometry/threads",
-            json!({"title": "New", "body": "Hi"}),
-        ),
-        ("/groups/geometry/invitations", json!({})),
+    let device = with_token(&hub, &ada).await;
+    let reply = hub
+        .post(
+            &device,
+            "/me/agent-tokens",
+            json!({"group": "geometry", "runner": "claude-code", "host": "laptop"}),
+        )
+        .await;
+    assert_eq!(reply.status, StatusCode::CREATED, "{:?}", reply.json());
+    assert_eq!(reply.json()["name"], "Claude, a session on laptop");
+    assert!(reply.json()["expires_at"].is_string());
+    let session = Client {
+        cookie: None,
+        token: Some(reply.json()["secret"].as_str().unwrap().to_owned()),
+    };
+    let session_id = reply.json()["id"].as_i64().unwrap();
+    // Not for a group one is not in, nor for a runner there is not.
+    for body in [
+        json!({"group": "topology", "runner": "claude-code", "host": "laptop"}),
+        json!({"group": "geometry", "runner": "api", "host": "laptop"}),
     ] {
-        let reply = hub.post(&reader, path, body).await;
-        assert_eq!(reply.status, StatusCode::FORBIDDEN, "{path}");
+        let reply = hub.post(&device, "/me/agent-tokens", body).await;
+        assert!(reply.status.is_client_error(), "{:?}", reply.json());
     }
-    let reply = hub
-        .post(
-            &reader,
-            "/groups/geometry/threads/1/messages",
-            json!({"body": "Hello"}),
-        )
-        .await;
-    assert_eq!(reply.status, StatusCode::FORBIDDEN);
 
-    let poster = job(Some(thread_id)).await;
+    use StatusCode as S;
+    let chat = json!({"title": "Ask", "kind": "chat", "resident_agent": "claude"});
+    // Method, path, body; then what a job's and a session's token get.
+    let table: Vec<(Method, String, Option<Value>, S, S)> = vec![
+        (Method::GET, "/me".into(), None, S::OK, S::OK),
+        (Method::GET, "/groups".into(), None, S::OK, S::OK),
+        (
+            Method::GET,
+            "/groups/geometry/threads/1".into(),
+            None,
+            S::OK,
+            S::OK,
+        ),
+        (
+            Method::GET,
+            "/groups/geometry/search?q=Gluing".into(),
+            None,
+            S::OK,
+            S::OK,
+        ),
+        (
+            Method::GET,
+            "/groups/algebra/threads".into(),
+            None,
+            S::NOT_FOUND,
+            S::NOT_FOUND,
+        ),
+        (
+            Method::GET,
+            "/groups/geometry/members".into(),
+            None,
+            S::OK,
+            S::OK,
+        ),
+        (
+            Method::GET,
+            "/groups/geometry/invitations".into(),
+            None,
+            S::FORBIDDEN,
+            S::FORBIDDEN,
+        ),
+        (
+            Method::POST,
+            "/groups/geometry/threads/1/messages".into(),
+            Some(json!({"body": "Hello"})),
+            S::FORBIDDEN,
+            S::CREATED,
+        ),
+        (
+            Method::POST,
+            "/groups/geometry/threads/1/messages".into(),
+            Some(json!({"body": "Look", "attachments": [1]})),
+            S::FORBIDDEN,
+            S::FORBIDDEN,
+        ),
+        (
+            Method::POST,
+            "/groups/geometry/threads".into(),
+            Some(json!({"title": "New", "body": "Hi"})),
+            S::FORBIDDEN,
+            S::CREATED,
+        ),
+        (
+            Method::POST,
+            "/groups/geometry/threads".into(),
+            Some(chat),
+            S::FORBIDDEN,
+            S::FORBIDDEN,
+        ),
+        (
+            Method::PATCH,
+            "/groups/geometry/threads/1".into(),
+            Some(json!({"title": "Renamed"})),
+            S::FORBIDDEN,
+            S::FORBIDDEN,
+        ),
+        (
+            Method::PATCH,
+            "/groups/geometry/threads/1/messages/1".into(),
+            Some(json!({"body": "Changed"})),
+            S::FORBIDDEN,
+            S::FORBIDDEN,
+        ),
+        (
+            Method::DELETE,
+            "/groups/geometry/threads/1/messages/1".into(),
+            None,
+            S::FORBIDDEN,
+            S::FORBIDDEN,
+        ),
+        (
+            Method::POST,
+            "/groups/geometry/papers".into(),
+            Some(json!({"slug": "notes", "title": "Notes"})),
+            S::FORBIDDEN,
+            S::FORBIDDEN,
+        ),
+        (
+            Method::POST,
+            "/groups/geometry/invitations".into(),
+            Some(json!({})),
+            S::FORBIDDEN,
+            S::FORBIDDEN,
+        ),
+        (
+            Method::PATCH,
+            "/groups/geometry/members/1".into(),
+            Some(json!({"role": "member"})),
+            S::FORBIDDEN,
+            S::FORBIDDEN,
+        ),
+        (
+            Method::POST,
+            "/groups".into(),
+            Some(json!({"slug": "logic", "name": "Logic"})),
+            S::FORBIDDEN,
+            S::FORBIDDEN,
+        ),
+        (
+            Method::PATCH,
+            "/me".into(),
+            Some(json!({"display_name": "Eve"})),
+            S::FORBIDDEN,
+            S::FORBIDDEN,
+        ),
+        (
+            Method::POST,
+            "/me/password".into(),
+            Some(json!({"current": "analytical", "new": "something new"})),
+            S::FORBIDDEN,
+            S::FORBIDDEN,
+        ),
+        (
+            Method::GET,
+            "/me/tokens".into(),
+            None,
+            S::FORBIDDEN,
+            S::FORBIDDEN,
+        ),
+        (
+            Method::POST,
+            "/me/tokens".into(),
+            Some(json!({"name": "more"})),
+            S::FORBIDDEN,
+            S::FORBIDDEN,
+        ),
+        (
+            Method::POST,
+            "/me/agent-tokens".into(),
+            Some(json!({"group": "geometry", "runner": "codex", "host": "x"})),
+            S::FORBIDDEN,
+            S::FORBIDDEN,
+        ),
+        (
+            Method::DELETE,
+            format!("/me/tokens/{session_id}"),
+            None,
+            S::FORBIDDEN,
+            S::FORBIDDEN,
+        ),
+    ];
+    for (method, path, body, for_job, for_session) in table {
+        for (who, client, expected) in [("job", &job, for_job), ("session", &session, for_session)]
+        {
+            let reply = hub.call(client, method.clone(), &path, body.clone()).await;
+            assert_eq!(reply.status, expected, "{who}: {method} {path}");
+        }
+    }
+
+    // A session's agent posts and opens threads as itself.
+    let thread = hub.get(&ada, "/groups/geometry/threads/1").await.json();
+    let last = thread["messages"]
+        .as_array()
+        .unwrap()
+        .last()
+        .unwrap()
+        .clone();
+    assert_eq!(last["agent"], "Claude");
+    assert_eq!(last["agent_runner"], "claude-code");
+    assert_eq!(last["author"]["username"], "ada");
+    let opened = hub.get(&ada, "/groups/geometry/threads/2").await.json();
+    assert_eq!(opened["messages"][0]["agent"], "Claude");
+
+    // Its person revokes it from the device that made it.
     let reply = hub
-        .post(
-            &poster,
-            "/groups/geometry/threads/1/messages",
-            json!({"body": "Hello", "agent": "Someone else"}),
+        .call(
+            &device,
+            Method::DELETE,
+            &format!("/me/tokens/{session_id}"),
+            None,
         )
         .await;
-    assert_eq!(reply.status, StatusCode::CREATED);
-    assert_eq!(reply.json()["agent"], "Claude");
-    let reply = hub
-        .post(
-            &poster,
-            "/groups/geometry/threads/1/messages",
-            json!({"body": "Look", "attachments": [1]}),
-        )
-        .await;
-    assert_eq!(reply.status, StatusCode::FORBIDDEN);
-    let reply = hub
-        .post(
-            &poster,
-            "/groups/geometry/threads/2/messages",
-            json!({"body": "Hello"}),
-        )
-        .await;
-    assert_eq!(reply.status, StatusCode::FORBIDDEN);
+    assert_eq!(reply.status, S::NO_CONTENT);
+    assert_eq!(hub.get(&session, "/me").await.status, S::UNAUTHORIZED);
 }
 
 #[tokio::test]

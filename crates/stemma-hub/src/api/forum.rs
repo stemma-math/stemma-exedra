@@ -123,8 +123,21 @@ pub async fn create_thread(
 ) -> ApiResult<(StatusCode, Json<ThreadPage>)> {
     let group = Membership::of(&state, &viewer, &slug).await?;
     let title = required_text(&body.title, "The title", 200)?;
-    viewer.require_full()?;
-    let agent: Option<String> = None;
+    // A session's agent opens discussions, as itself; a job's never does.
+    let agent = match viewer.agent() {
+        None => None,
+        Some(scope) if scope.session && body.kind == ThreadKind::Discussion => {
+            Some(scope.agent.clone())
+        }
+        Some(_) => {
+            return Err(ApiError::forbidden(
+                "This agent's token cannot open this thread",
+            ));
+        }
+    };
+    if viewer.agent().is_some() && !body.attachments.is_empty() {
+        return Err(ApiError::forbidden("An agent's token cannot attach files"));
+    }
     let (resident_agent, resident_runner) = match (body.kind, body.resident_agent) {
         (_, None) => (None, None),
         (ThreadKind::Chat, Some(agent)) => {
@@ -312,11 +325,13 @@ pub async fn post_message(
 ) -> ApiResult<(StatusCode, Json<Message>)> {
     let group = Membership::of(&state, &viewer, &slug).await?;
     let row = find_thread(&state, group.group_id, number).await?;
-    let agent = match viewer.job() {
-        Some(job) if job.can_post && job.thread_id == Some(row.id) => Some(job.agent.clone()),
+    let agent = match viewer.agent() {
+        Some(scope) if scope.can_post && scope.thread_id.is_none_or(|id| id == row.id) => {
+            Some(scope.agent.clone())
+        }
         Some(_) => {
             return Err(ApiError::forbidden(
-                "This job's token cannot post in this thread",
+                "This agent's token cannot post in this thread",
             ));
         }
         None => match body.agent.as_deref().map(str::trim) {
@@ -327,9 +342,9 @@ pub async fn post_message(
             None => None,
         },
     };
-    // A job's uploads would be its requester's, waiting for their message.
-    if viewer.job().is_some() && !body.attachments.is_empty() {
-        return Err(ApiError::forbidden("A job's token cannot attach files"));
+    // An agent's uploads would be its person's, waiting for their message.
+    if viewer.agent().is_some() && !body.attachments.is_empty() {
+        return Err(ApiError::forbidden("An agent's token cannot attach files"));
     }
     if body.body.trim().is_empty() && body.attachments.is_empty() {
         return Err(ApiError::invalid("A message needs words or a file"));
@@ -367,7 +382,13 @@ async fn attribution_runner(
     viewer: &Viewer,
     agent: Option<&str>,
 ) -> ApiResult<Option<String>> {
-    if let Some(job) = viewer.job() {
+    if let Some(scope) = viewer.agent().filter(|scope| scope.session) {
+        return Ok(stemma_core::api::AgentProfile::defaults()
+            .into_iter()
+            .find(|agent| agent.display_name == scope.agent)
+            .map(|agent| agent.runner));
+    }
+    if let Some(job) = viewer.agent() {
         let runner: Option<String> =
             sqlx::query_scalar("SELECT runner FROM jobs WHERE token_id = ?")
                 .bind(job.token_id)

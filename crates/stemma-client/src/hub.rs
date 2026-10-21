@@ -6,9 +6,10 @@ use reqwest::{Method, StatusCode};
 use serde::Serialize;
 use serde::de::DeserializeOwned;
 use stemma_core::api::{
-    ApiToken, CreatePaper, CreateThread, CreateToken, CreatedToken, DeclarationPage,
-    DeclarationSummary, ErrorBody, LibraryState, Me, Message, PREFIX, Paper, PaperFileText,
-    PaperPage, PaperSource, PostMessage, SearchHit, SignIn, Thread, ThreadKind, ThreadPage,
+    ApiToken, CreateAgentToken, CreatePaper, CreateThread, CreateToken, CreatedToken,
+    DeclarationPage, DeclarationSummary, ErrorBody, LibraryState, Me, Message, PREFIX, Paper,
+    PaperFileText, PaperPage, PaperSource, PostMessage, SearchHit, SignIn, Thread, ThreadKind,
+    ThreadPage,
 };
 
 /// An error the hub answered with, or not reaching it.
@@ -176,20 +177,26 @@ impl Hub {
     pub async fn create_token(&self, name: &str) -> Result<CreatedToken> {
         let body = CreateToken {
             name: name.into(),
-            launcher: false,
             expires_in_minutes: None,
         };
         self.post("/me/tokens", &body).await
     }
 
-    /// A token that stops working by itself after `minutes`.
-    pub async fn create_expiring_token(&self, name: &str, minutes: u32) -> Result<CreatedToken> {
-        let body = CreateToken {
-            name: name.into(),
-            launcher: true,
-            expires_in_minutes: Some(minutes),
+    /// A token for a session with the person's agent of `runner`, in
+    /// `group`, on the computer `host`: it reads the group, and posts and
+    /// opens threads there as the agent, for a long day at most.
+    pub async fn create_agent_token(
+        &self,
+        group: &str,
+        runner: &str,
+        host: &str,
+    ) -> Result<CreatedToken> {
+        let body = CreateAgentToken {
+            group: group.into(),
+            runner: runner.into(),
+            host: host.into(),
         };
-        self.post("/me/tokens", &body).await
+        self.post("/me/agent-tokens", &body).await
     }
 
     pub async fn token_identity(&self) -> Result<ApiToken> {

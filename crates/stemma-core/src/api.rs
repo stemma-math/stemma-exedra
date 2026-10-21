@@ -112,13 +112,20 @@ pub struct ApiToken {
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct CreateToken {
     pub name: String,
-    /// An agent session's token; cannot mint tokens or browser sessions.
-    #[serde(default)]
-    pub launcher: bool,
-    /// How long it lasts, in minutes; until revoked if absent. The
-    /// launcher's tokens last a session.
+    /// How long it lasts, in minutes; until revoked if absent.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub expires_in_minutes: Option<u32>,
+}
+
+/// A token for a session with one of the person's agents, in one group:
+/// it reads the group, and posts and opens threads there as the agent.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct CreateAgentToken {
+    pub group: String,
+    /// One of [`runners::ALL`]: whose agent the session is with.
+    pub runner: String,
+    /// The computer the session runs on, for the token's name.
+    pub host: String,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]

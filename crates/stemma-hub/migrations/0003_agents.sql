@@ -8,7 +8,7 @@ CREATE TABLE api_tokens (
     created_at INTEGER NOT NULL,
     last_used_at INTEGER,
     revoked_at INTEGER,
-    kind TEXT NOT NULL DEFAULT 'personal' CHECK (kind IN ('personal', 'launcher', 'job')),
+    kind TEXT NOT NULL DEFAULT 'personal' CHECK (kind IN ('personal', 'agent', 'job')),
     group_id INTEGER REFERENCES groups (id) ON DELETE CASCADE,
     thread_id INTEGER REFERENCES threads (id) ON DELETE CASCADE,
     agent TEXT,

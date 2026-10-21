@@ -41,6 +41,7 @@ pub fn router(state: AppState) -> Router {
             get(account::list_tokens).post(account::create_token),
         )
         .route("/me/tokens/{id}", delete(account::revoke_token))
+        .route("/me/agent-tokens", post(account::create_agent_token))
         .route("/invitations/{token}", get(groups::invitation_info))
         .route(
             "/invitations/{token}/accept",
@@ -185,7 +186,7 @@ impl Membership {
         let (group_id, slug, name, created_at, role) =
             row.ok_or_else(|| ApiError::not_found("Group"))?;
         let role = Role::parse(&role).unwrap_or(Role::Guest);
-        let role = match viewer.job() {
+        let role = match viewer.agent() {
             Some(job) if job.group_id != group_id => return Err(ApiError::not_found("Group")),
             Some(_) if role == Role::Admin => Role::Member,
             _ => role,
