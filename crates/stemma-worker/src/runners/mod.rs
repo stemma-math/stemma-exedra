@@ -120,6 +120,10 @@ pub fn prepared(
     if prepared.answer.is_some() {
         prepared.answer = Some(work.dir.join("answer.md"));
     }
+    // The `stemma` command, run by the agent, finds no sign-in.
+    prepared
+        .env
+        .push(("STEMMA_CONFIG_DIR".into(), files_seen.display().to_string()));
     Ok(prepared)
 }
 

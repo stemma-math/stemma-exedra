@@ -207,8 +207,7 @@ async fn load_job(state: &AppState, job_id: i64) -> ApiResult<Option<JobRow>> {
         .await?)
 }
 
-/// Tells the job's group how it is now: and for a build or a task, how
-/// that is.
+/// Tells the job's group how it is now. Never with a held answer's text.
 async fn publish(state: &AppState, workers: &Workers, job_id: i64) -> ApiResult<()> {
     let Some(row) = load_job(state, job_id).await? else {
         return Ok(());
@@ -218,10 +217,9 @@ async fn publish(state: &AppState, workers: &Workers, job_id: i64) -> ApiResult<
     Ok(())
 }
 
-/// The jobs of a thread worth showing: those on their way, and those that
-/// failed in the last day and nobody dismissed.
 /// The thread's jobs on their way, held, or failed lately, as `viewer_id`
-/// sees them: a held answer's text only for its requester.
+/// sees them, failed ones for a day: a held answer's text only for its
+/// requester.
 pub async fn of_thread(state: &AppState, thread_id: i64, viewer_id: i64) -> ApiResult<Vec<Job>> {
     let rows: Vec<JobRow> = sqlx::query_as(concat!(
         job_query!(),
@@ -247,14 +245,6 @@ pub async fn of_thread(state: &AppState, thread_id: i64, viewer_id: i64) -> ApiR
         .collect())
 }
 
-/// Why a job waits, if it does: for a build's or a task's page.
-pub async fn note_of(state: &AppState, job_id: i64) -> ApiResult<Option<String>> {
-    let Some(row) = load_job(state, job_id).await? else {
-        return Ok(None);
-    };
-    let workers = state.workers.lock().await;
-    Ok(row.to_api(&workers).note)
-}
 pub async fn summon(
     state: &AppState,
     group: &Membership,

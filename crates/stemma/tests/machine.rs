@@ -55,7 +55,7 @@ fn settings_round_trip_and_removed_commands_fail() {
 
 #[cfg(unix)]
 #[tokio::test(flavor = "multi_thread")]
-async fn foreground_service_uses_the_personal_token_and_managed_workspace() {
+async fn foreground_service_answers_from_the_workspace_reading_only() {
     use serde_json::json;
     use std::{os::unix::fs::PermissionsExt, sync::Arc, time::Duration};
     let temp = tempfile::tempdir().unwrap();
@@ -120,22 +120,23 @@ async fn foreground_service_uses_the_personal_token_and_managed_workspace() {
 set -eu
 if [ "${1:-}" = --version ]; then echo 'codex test'; exit 0; fi
 answer=''
-root=''
+sandbox=''
 while [ "$#" -gt 0 ]; do
   case "$1" in
     --output-last-message) shift; answer="$1" ;;
-    --add-dir) shift; root="$1" ;;
+    --sandbox) shift; sandbox="$1" ;;
   esac
   shift
 done
 cat >/dev/null
 test -z "${STEMMA_TOKEN:-}"
-test -d "$root/library/.git"
-root=$(cd "$root" && pwd -P)
-case "$PWD" in "$root"/scratch/*) ;; *) exit 3 ;; esac
+test -z "${STEMMA_HUB:-}"
+test ! -e "$STEMMA_CONFIG_DIR/credentials.toml"
+test "$sandbox" = read-only
+case "$PWD" in */groups/algebra/scratch/*) ;; *) exit 3 ;; esac
+test -d ../../library/.git
 test -n "$answer"
-printf 'Checked in the workspace.\n' > "$answer"
-printf 'ephemeral\n' > "$root/library/check.txt"
+printf 'Read in the workspace.\n' > "$answer"
 "#,
     )
     .unwrap();
@@ -198,7 +199,7 @@ printf 'ephemeral\n' > "$root/library/check.txt"
                 .unwrap();
             if page.messages.len() == 2 {
                 assert_eq!(page.messages[1].agent.as_deref(), Some("Codex"));
-                assert_eq!(page.messages[1].body, "Checked in the workspace.");
+                assert_eq!(page.messages[1].body, "Read in the workspace.");
                 break;
             }
             tokio::time::sleep(Duration::from_millis(50)).await;
@@ -213,8 +214,8 @@ printf 'ephemeral\n' > "$root/library/check.txt"
     });
     assert!(
         temp.path()
-            .join("data/groups/algebra/library/check.txt")
-            .is_file()
+            .join("data/groups/algebra/library/.git")
+            .is_dir()
     );
     assert_eq!(
         std::fs::read_dir(temp.path().join("state/jobs"))

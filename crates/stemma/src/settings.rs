@@ -14,6 +14,15 @@ pub struct ConfigArgs {
     /// Print structured output without colour.
     #[arg(long, global = true)]
     json: bool,
+    /// List every key, the containers' too when there is no isolation.
+    #[arg(long)]
+    all: bool,
+}
+
+/// Whether a listing shows `key`: the containers' keys only with isolation,
+/// unless all are asked for.
+fn listed(key: &str, isolated: bool, all: bool) -> bool {
+    all || isolated || !(key.contains(".container.") || key == "agents.image")
 }
 
 #[derive(Subcommand)]
@@ -54,7 +63,16 @@ pub fn config(args: ConfigArgs) -> anyhow::Result<()> {
                 Some(ConfigCommand::Get { key }) => {
                     vec![settings.get(&key, args.group.as_deref())?]
                 }
-                _ => settings.explain(args.group.as_deref(), &Default::default())?,
+                _ => {
+                    let values = settings.explain(args.group.as_deref(), &Default::default())?;
+                    let isolated = values
+                        .iter()
+                        .any(|v| v.key == "agents.isolation" && v.value.as_str() != Some("none"));
+                    values
+                        .into_iter()
+                        .filter(|v| listed(&v.key, isolated, args.all))
+                        .collect()
+                }
             };
             if args.json {
                 println!("{}", serde_json::to_string_pretty(&values)?);
@@ -119,4 +137,18 @@ pub async fn group(args: GroupArgs) -> anyhow::Result<()> {
         }
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::listed;
+
+    #[test]
+    fn containers_keys_are_listed_with_isolation_or_all() {
+        assert!(listed("agents.claude.model", false, false));
+        assert!(!listed("agents.claude.container.env", false, false));
+        assert!(!listed("agents.image", false, false));
+        assert!(listed("agents.claude.container.env", true, false));
+        assert!(listed("agents.image", false, true));
+    }
 }

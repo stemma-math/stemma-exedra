@@ -43,6 +43,70 @@ async fn program(name: &str, command: &str, remedy: &str) -> Check {
     }
 }
 
+/// Whether `handle`'s agent can sign in inside a container: the variables
+/// and files it is given, set and present here.
+fn container_sign_in(settings: &Settings, group: Option<&str>, handle: &str) -> Check {
+    let list = |key: &str| {
+        settings
+            .get(&format!("agents.{handle}.container.{key}"), group)
+            .ok()
+            .and_then(|v| v.value.as_array().cloned())
+            .unwrap_or_default()
+    };
+    let variables: Vec<String> = list("env")
+        .iter()
+        .filter_map(|v| v.as_str().map(str::to_owned))
+        .collect();
+    let files: Vec<String> = list("files")
+        .iter()
+        .filter_map(|f| f.get("from").and_then(|v| v.as_str()).map(str::to_owned))
+        .collect();
+    let name = format!(
+        "{} in a container",
+        match handle {
+            "claude" => "Claude Code",
+            "codex" => "Codex",
+            _ => "OpenCode",
+        }
+    );
+    let how = match handle {
+        "claude" => {
+            "Run claude setup-token, set CLAUDE_CODE_OAUTH_TOKEN where the service runs, and \
+             stemma config set agents.claude.container.env CLAUDE_CODE_OAUTH_TOKEN."
+        }
+        "codex" => {
+            "stemma config set agents.codex.container.files \"[{ from = '~/.codex/auth.json' }]\"."
+        }
+        _ => {
+            "Give it its providers' keys: stemma config set agents.opencode.container.env \
+             with their variables' names."
+        }
+    };
+    if variables.is_empty() && files.is_empty() {
+        return check(&name, false, "No sign-in for its container", how);
+    }
+    let missing: Vec<String> = variables
+        .iter()
+        .filter(|v| std::env::var_os(v).is_none())
+        .map(|v| format!("{v} is not set"))
+        .chain(files.iter().filter_map(|f| {
+            let path = stemma_client::config::expand_home(f).ok()?;
+            (!path.is_file()).then(|| format!("{} is missing", path.display()))
+        }))
+        .collect();
+    let given = variables
+        .iter()
+        .chain(&files)
+        .cloned()
+        .collect::<Vec<_>>()
+        .join(", ");
+    if missing.is_empty() {
+        check(&name, true, given, "")
+    } else {
+        check(&name, false, missing.join(", "), how)
+    }
+}
+
 pub async fn run(group: Option<&str>) -> Vec<Check> {
     let mut checks = Vec::new();
     let settings = Settings::load();
@@ -87,6 +151,8 @@ pub async fn run(group: Option<&str>) -> Vec<Check> {
             ),
         },
     );
+    // The runners this computer has, which its containers need a sign-in for.
+    let mut found = Vec::new();
     for handle in ["claude", "codex", "opencode"] {
         let command = settings
             .as_ref()
@@ -94,18 +160,20 @@ pub async fn run(group: Option<&str>) -> Vec<Check> {
             .and_then(|s| s.get(&format!("agents.{handle}.command"), group).ok())
             .and_then(|v| v.value.as_str().map(str::to_owned))
             .unwrap_or_else(|| handle.into());
-        checks.push(
-            program(
-                stemma_core::api::runners::name(if handle == "claude" {
-                    "claude-code"
-                } else {
-                    handle
-                }),
-                &command,
-                &format!("Install {handle}, sign in to it, or set agents.{handle}.command."),
-            )
-            .await,
-        );
+        let checked = program(
+            stemma_core::api::runners::name(if handle == "claude" {
+                "claude-code"
+            } else {
+                handle
+            }),
+            &command,
+            &format!("Install {handle}, sign in to it, or set agents.{handle}.command."),
+        )
+        .await;
+        if matches!(checked.status, Status::Success) {
+            found.push(handle);
+        }
+        checks.push(checked);
     }
     for (tool, purpose) in [
         ("elan", "Lean toolchains"),
@@ -145,6 +213,9 @@ pub async fn run(group: Option<&str>) -> Vec<Check> {
                 image,
                 "Build the image with stemma machine image.",
             ));
+            for handle in &found {
+                checks.push(container_sign_in(settings, group, handle));
+            }
         }
         let folder = group.map(|g| settings.workspace(g)).unwrap_or_else(|| {
             settings

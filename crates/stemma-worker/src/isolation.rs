@@ -1,4 +1,15 @@
-//! Optional containers for personal replies. Only the workspace and the runner sign-in enter a container.
+//! Where a person's agent answers, when its owner chooses isolation: a
+//! container of its own, with Docker or Podman, from the agents' image
+//! (`docker/agents/Dockerfile`: Lean, LaTeX, the agents' programs, git and
+//! `stemma`). Inside, the agent has no limits; what it is given of the
+//! computer is only the group's workspace, read-write, the job's folder,
+//! read-only, and the agent's own sign-in, as configured per runner:
+//! variables passed by name, so that their values are on no command line,
+//! and files mounted read-only. Stemma's own settings never enter it.
+//!
+//! It runs as the computer's user (never root), with no capabilities and
+//! no new privileges, with limits on memory, CPUs and processes, for as
+//! long as the job may take, and is removed when the job ends.
 
 use std::collections::BTreeMap;
 use std::ffi::OsStr;
@@ -511,10 +522,13 @@ impl Sandbox for HostSandbox {
         dir: &Path,
     ) -> Command {
         let mut command = Command::new(program);
+        // The person's sign-in reaches no agent: Stemma's tools get the
+        // job's by arguments.
         command
             .args(args)
             .current_dir(dir)
-            .env_remove("STEMMA_TOKEN");
+            .env_remove("STEMMA_TOKEN")
+            .env_remove("STEMMA_HUB");
         for (key, value) in env {
             command.env(key, value);
         }
@@ -902,8 +916,8 @@ mod tests {
             user: (501, 20),
             mounts: vec![
                 Mount::Bind {
-                    source: "/w/tasks/geometry-w3".into(),
-                    target: "/stemma/tasks/geometry-w3".into(),
+                    source: "/w/groups/geometry".into(),
+                    target: "/stemma/scratch/7".into(),
                     read_only: false,
                 },
                 Mount::Bind {
@@ -966,7 +980,7 @@ mod tests {
         position(&args, "HOME=/home/stemma");
         position(
             &args,
-            "type=bind,source=/w/tasks/geometry-w3,target=/stemma/tasks/geometry-w3",
+            "type=bind,source=/w/groups/geometry,target=/stemma/scratch/7",
         );
         position(
             &args,
@@ -1027,7 +1041,7 @@ mod tests {
                 "OPENCODE_CONFIG".into(),
                 "/stemma/jobs/7/opencode.json".into(),
             )],
-            Path::new("/stemma/tasks/geometry-w3"),
+            Path::new("/stemma/scratch/7"),
         );
         assert_eq!(
             args,
@@ -1035,7 +1049,7 @@ mod tests {
                 "exec",
                 "--interactive",
                 "--workdir",
-                "/stemma/tasks/geometry-w3",
+                "/stemma/scratch/7",
                 "--env",
                 "OPENCODE_CONFIG=/stemma/jobs/7/opencode.json",
                 "stemma-job-7",
