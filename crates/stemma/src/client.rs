@@ -157,6 +157,11 @@ pub async fn login(args: LoginArgs) -> anyhow::Result<()> {
     let hub = config.hub()?;
     let me = hub.me().await?;
     let url = hub.base();
+    if config::active_group(None)?.is_none()
+        && let Some(group) = me.groups.first()
+    {
+        config::Paths::discover()?.use_group(&group.slug)?;
+    }
     let group = config::active_group(None)?;
     println!("Signed in to {url} as {}.", me.user.username);
     match (&group, me.groups.len()) {

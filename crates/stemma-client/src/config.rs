@@ -39,6 +39,9 @@ impl Credentials {
     }
 
     pub fn load() -> anyhow::Result<Credentials> {
+        if std::env::var_os("STEMMA_HUB").is_some() && std::env::var_os("STEMMA_TOKEN").is_some() {
+            return Ok(Self::default().with_env());
+        }
         Self::load_from(&path()?)
     }
 
@@ -53,11 +56,14 @@ impl Credentials {
 
     /// The configuration with the environment's settings over it.
     pub fn with_env(mut self) -> Credentials {
-        let var = |name| std::env::var(name).ok().filter(|v: &String| !v.is_empty());
+        let var = |name| std::env::var(name).ok();
         if let Some(hub) = var("STEMMA_HUB") {
             self.hub = Some(hub);
         }
         if let Some(token) = var("STEMMA_TOKEN") {
+            if self.token.as_deref() != Some(&token) {
+                self.token_id = None;
+            }
             self.token = Some(token);
         }
         self
@@ -361,7 +367,8 @@ impl Settings {
                 }
                 let variable = format!("STEMMA_{}", key.replace('.', "_").to_uppercase());
                 if let Some(text) = self.env.get(&variable) {
-                    value = parse_value(key, text)?;
+                    value = parse_value(key, text)
+                        .with_context(|| format!("invalid value from {variable}"))?;
                     source = Source::Environment(variable);
                 }
                 if let Some(v) = options.get(key) {
@@ -481,9 +488,7 @@ pub fn priority(value: &Value) -> anyhow::Result<i64> {
             "high" => Ok(10),
             "normal" => Ok(0),
             "low" => Ok(-10),
-            _ => s
-                .parse()
-                .context("priority must be high, normal, low, or an integer"),
+            _ => anyhow::bail!("priority must be high, normal, low, or an integer"),
         },
         _ => anyhow::bail!("priority must be high, normal, low, or an integer"),
     }

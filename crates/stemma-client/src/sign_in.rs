@@ -11,7 +11,7 @@ pub async fn save(
     group: Option<String>,
 ) -> anyhow::Result<Credentials> {
     let url = normalize_url(hub)?;
-    let mut previous = Credentials::load()?;
+    let mut previous = Credentials::load_from(&crate::config::path()?)?;
     let client = Hub::new(&url, Some(token.clone()))?;
     let me = client.me().await.context("checking the token")?;
     let identity = client
@@ -38,7 +38,7 @@ pub async fn save(
         username: Some(me.user.username),
     };
     config.save()?;
-    if let Some(group) = group.or_else(|| me.groups.first().map(|g| g.slug.clone())) {
+    if let Some(group) = group {
         crate::config::Paths::discover()?.use_group(&group)?;
     }
     Ok(config)
