@@ -1,36 +1,36 @@
 <script lang="ts">
-  import { onMount, type Snippet } from "svelte";
+  import { onMount, type Snippet, untrack } from "svelte";
   import { listen } from "@tauri-apps/api/event";
-  import type { StemmaDialog } from "@stemma-math/design-elements/dialog.js";
   import { getCurrentWindow } from "@tauri-apps/api/window";
   import { desktopUI } from "../desktop-ui.svelte.ts";
   import { setSession } from "../session.svelte.ts";
+  import { openSettings, settingsUI } from "../settings.svelte.ts";
+  import { toast } from "../toast.ts";
+  import SettingsDialog from "../components/settings/SettingsDialog.svelte";
   import { connection } from "../transport.svelte.ts";
   import { snapshot, signOut } from "./api.ts";
   import { MachineControls } from "./machine.svelte.ts";
   import SignIn from "./components/SignIn.svelte";
-  import Settings from "./components/Settings.svelte";
+  import MachinePane from "./components/MachinePane.svelte";
   import "./desktop.css";
 
   let { children }: { children: Snippet } = $props();
   const controls = new MachineControls();
-  let dialog = $state<StemmaDialog>();
-  let open = $state(false);
   let setupShown = false;
 
-  function showSettings() {
-    void controls
-      .load()
-      .then(() => {
-        if (controls.data?.me) {
-          controls.settingUp = false;
-          open = true;
-        }
-      })
-      .catch((error) => {
-        controls.error = String(error);
+  // This machine's pages read its state afresh each time the settings open.
+  $effect(() => {
+    if (settingsUI.open)
+      untrack(() => {
+        void controls.load().catch((error) => {
+          controls.error = String(error);
+        });
       });
-  }
+  });
+  // The first-run setup lasts until one leaves its page or closes it.
+  $effect(() => {
+    if (!settingsUI.open || settingsUI.page !== "This machine") controls.settingUp = false;
+  });
 
   $effect(() => {
     if (controls.data) {
@@ -41,32 +41,24 @@
       desktopUI.machineNotKnown = controls.data.service.stopped?.kind === "not_known";
       if (controls.data.me && controls.settingUp && !setupShown) {
         setupShown = true;
-        open = true;
+        openSettings("This machine");
       }
       if (!controls.data.me) {
-        open = false;
+        settingsUI.open = false;
         setupShown = false;
       }
     }
   });
-  $effect(() => {
-    if (open && dialog && !dialog.isOpen)
-      void dialog.open().then(() => {
-        open = false;
-      });
-    else if (!open && dialog?.isOpen) dialog.close();
-  });
-
   onMount(() => {
-    desktopUI.openSettings = showSettings;
     desktopUI.signOut = () =>
       controls.run(async () => {
-        await signOut();
+        const warning = await signOut();
+        if (warning) toast(warning, "warning");
       }, "");
     void controls.refresh("");
-    const listening = listen("open-settings", showSettings);
+    const listening = listen("open-settings", () => openSettings());
     const timer = setInterval(() => {
-      if (!controls.busy && !open)
+      if (!controls.busy && !settingsUI.open)
         void snapshot()
           .then((data) => {
             controls.data = data;
@@ -76,7 +68,6 @@
     return () => {
       clearInterval(timer);
       void listening.then((stop) => stop());
-      desktopUI.openSettings = () => {};
     };
   });
 </script>
@@ -115,15 +106,12 @@
     {/if}
   </main>
 {/if}
-<stemma-dialog bind:this={dialog}>
-  <dialog
-    class="dialog desktop-settings"
-    class:is-setup={controls.settingUp}
-    aria-label={controls.settingUp ? "Set up this machine" : "Settings"}
-  >
-    <Settings {controls} />
-    <footer class="dialog__actions">
-      <button type="button" class="button" data-closes>Done</button>
-    </footer>
-  </dialog>
-</stemma-dialog>
+{#if controls.data?.me}
+  <SettingsDialog setup={controls.settingUp}>
+    {#snippet machine(
+      page,
+    )}
+      <MachinePane {controls} {page} />
+    {/snippet}
+  </SettingsDialog>
+{/if}

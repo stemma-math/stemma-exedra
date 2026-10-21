@@ -4,7 +4,9 @@
   import { api, type Group, type Paper, type Thread } from "#lib/api.ts";
   import { listen } from "#lib/events.ts";
   import { asksForWork } from "#lib/roles.ts";
+  import { ask } from "#lib/ask.svelte.ts";
   import { session, signOut } from "#lib/session.svelte.ts";
+  import { openSettings } from "#lib/settings.svelte.ts";
   import { folded, setFolded } from "#lib/sidebar.svelte.ts";
   import { applyThreadEvent } from "#lib/threads.ts";
   import { initials } from "#lib/format.ts";
@@ -66,6 +68,14 @@
   });
 
   async function logOut() {
+    if (__STEMMA_DESKTOP__) {
+      const yes = await ask({
+        title: "Log out?",
+        text: "This app and the command line on this machine are both signed out of the hub.",
+        action: "Log out",
+      });
+      if (!yes) return;
+    }
     await signOut();
     goto("/");
   }
@@ -212,21 +222,29 @@
           <span class="chip" class:chip--success={desktopUI.serviceConnected}>{desktopUI.serviceConnected ? "Machine on" : "Machine off"}</span>
         {/if}
       </div>
-    {:else}
-      <stemma-theme-switch fill></stemma-theme-switch>
     {/if}
     {#if session.me}
-      <div class="account">
-        <a class="account__person" href="{base}/me" aria-current={current(`${base}/me`)}>
+      <stemma-menu match-width>
+        <button type="button" class="account account--menu" aria-label="Your account, {session.me.display_name}">
           <Avatar user={session.me} />
-          <span class="account__details"><span class="account__name" title={session.me.display_name}>{session.me.display_name}</span><span class="account__meta">{ROLE_NAMES[group.role]}</span></span>
-        </a>
-        {#if __STEMMA_DESKTOP__}
-          <button type="button" class="button button--quiet button--icon account__action" aria-label="Settings" onclick={() => desktopUI.openSettings()}><Glyph name="settings" /></button>
-        {:else}
-          <button type="button" class="button button--quiet button--icon account__action" aria-label="Log out" onclick={logOut}><Glyph name="log-out" /></button>
-        {/if}
-      </div>
+          <span class="account__details"><span class="account__name" title={session.me.display_name}>{session.me.display_name}</span></span>
+          <Glyph name="chevron-down" class="account__chevron" small />
+        </button>
+        <div class="menu">
+          <div class="menu__header">
+            <Avatar user={session.me} />
+            <div class="menu__identity">
+              <span class="menu__name">{session.me.display_name}</span>
+              <span class="menu__meta">@{session.me.username} · {ROLE_NAMES[group.role]}</span>
+            </div>
+          </div>
+          <hr class="menu__separator" />
+          <button type="button" class="menu__item" onclick={() => openSettings("Profile")}><Glyph name="person" small /> Profile</button>
+          <button type="button" class="menu__item" onclick={() => openSettings()}><Glyph name="settings" small /> Settings</button>
+          <hr class="menu__separator" />
+          <button type="button" class="menu__item" onclick={logOut}><Glyph name="log-out" small /> Log out</button>
+        </div>
+      </stemma-menu>
     {/if}
   </div>
 </div>

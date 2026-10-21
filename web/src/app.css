@@ -667,7 +667,6 @@ stemma-toast-region {
 .sidebar__switcher { padding: var(--space-3); white-space: normal; }
 .sidebar__name { text-align: left; gap: var(--space-1); }
 .sidebar__foot { align-items: stretch; border: 0; padding: var(--space-3); }
-.sidebar__foot stemma-theme-switch { width: 100%; }
 .sidebar__connection { display: flex; flex-wrap: wrap; gap: var(--space-2); padding-inline: var(--space-1); }
 .truncate { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .account-frame { display: flex; flex: 1; flex-direction: column; min-height: 100%; }
@@ -694,6 +693,51 @@ stemma-toast-region {
 /* Pages outside the group shell own their scroll area too. */
 .app > .page { overflow: auto; overscroll-behavior: none; }
 
+/* ── The person's settings: one dialog, in the browser and the app ───── */
+.settings-dialog {
+  width: min(calc(var(--space-16) * 14), calc(100vw - var(--space-12)));
+  max-width: none;
+  overflow: hidden;
+  overscroll-behavior: none;
+}
+.settings-dialog > .dialog__actions { margin: 0; padding: var(--space-4) var(--space-6); }
+.settings {
+  display: grid;
+  grid-template-columns: max-content minmax(0, 1fr);
+  min-height: 0;
+  height: min(70dvh, calc(var(--space-16) * 10));
+}
+.settings-dialog.is-setup .settings { height: auto; max-height: 70dvh; }
+.settings__nav { padding: var(--space-5) var(--space-3); overflow: auto; overscroll-behavior: none; }
+.settings__group { margin: var(--space-5) 0 var(--space-2); padding-inline: var(--space-3); }
+.settings__pane {
+  min-width: 0;
+  min-height: 0;
+  overflow: auto;
+  overscroll-behavior: none;
+  padding: var(--space-5) var(--space-6);
+  gap: var(--space-5);
+}
+.settings__pane > * { flex-shrink: 0; }
+.setting { min-width: 0; }
+.setting__row { display: flex; align-items: center; justify-content: space-between; gap: var(--space-4); min-width: 0; }
+.setting__row > :not(.grow):not(.truncate) { flex-shrink: 0; }
+.stack > :is(h1, h2, h3, p),
+.setting__row > :is(h1, h2, h3),
+.row > :is(h1, h2, h3) { margin: 0; }
+
+/* On a phone, the dialog fills the screen and its pages sit in a row on top. */
+@media (max-width: 40rem) {
+  .settings-dialog { width: 100vw; height: 100dvh; max-height: none; margin: 0; border-radius: 0; }
+  .settings-dialog[open] { display: flex; flex-direction: column; }
+  .settings { flex: 1; grid-template-columns: minmax(0, 1fr); grid-template-rows: auto minmax(0, 1fr); height: auto; }
+  .settings__nav { display: flex; align-items: center; gap: var(--space-1); padding: var(--space-3); overflow-x: auto; }
+  .settings__nav .nav-list { display: flex; gap: var(--space-1); }
+  .settings__nav .nav-item { width: auto; white-space: nowrap; }
+  .settings__group { margin: 0 var(--space-2); white-space: nowrap; }
+  .settings__pane { padding: var(--space-4); }
+}
+
 /* Dragging temporarily overrides document selection and control transitions. */
 html .app .shell.is-resizing,
 html .app .shell.is-resizing * {
@@ -707,3 +751,4 @@ html .app .shell.is-resizing *::before,
 html .app .shell.is-resizing *::after {
   transition: none;
 }
+

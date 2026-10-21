@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { openSettings } from "#lib/settings.svelte.ts";
   import { goto } from "$app/navigation";
   import { api } from "#lib/api.ts";
   import { isSlug } from "#lib/address.ts";
@@ -55,7 +56,7 @@
       <span class="wordmark">Stemma</span>
     </a>
     <span class="row push">
-      <a class="button button--quiet" href="/settings"><Glyph name="settings" /> Personal settings</a>
+      <button type="button" class="button button--quiet" onclick={() => openSettings()}><Glyph name="settings" /> Settings</button>
       <button type="button" class="button button--quiet" onclick={leave}><Glyph name="log-out" /> Log out</button>
     </span>
   </header>

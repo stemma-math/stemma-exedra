@@ -49,58 +49,15 @@ html[data-desktop]
   z-index: 20;
   height: var(--space-8);
 }
-.desktop-settings {
-  width: min(calc(var(--space-16) * 14), calc(100vw - var(--space-12)));
-  max-width: none;
-  overflow: hidden;
-  overscroll-behavior: none;
-}
-.settings {
-  display: grid;
-  grid-template-columns: max-content minmax(0, 1fr);
-  min-height: 0;
-  height: min(70dvh, calc(var(--space-16) * 10));
-}
-.settings__nav {
-  padding: var(--space-5) var(--space-3);
-  overflow: auto;
-  overscroll-behavior: none;
-}
-.settings__pane {
-  min-width: 0;
-  min-height: 0;
-  overflow: auto;
-  overscroll-behavior: none;
-  padding: var(--space-5) var(--space-6);
-  gap: var(--space-5);
-}
-.setting {
-  min-width: 0;
-}
 .setting__limits {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
   gap: var(--space-4);
 }
-.setting__row {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: var(--space-4);
-  min-width: 0;
-}
-.setting__row > :not(.grow):not(.truncate) {
-  flex-shrink: 0;
-}
 
 .checklist {
   margin: 0;
   padding: 0;
-}
-.stack > :is(h1, h2, h3, p),
-.setting__row > :is(h1, h2, h3),
-.row > :is(h1, h2, h3) {
-  margin: 0;
 }
 .panel {
   padding: var(--space-5);
@@ -135,16 +92,4 @@ html[data-desktop]
 html[data-desktop] .sidebar,
 .entrance {
   box-sizing: border-box;
-}
-.desktop-settings > .dialog__actions {
-  margin: 0;
-  padding: var(--space-4) var(--space-6);
-}
-.desktop-settings.is-setup .settings {
-  height: auto;
-  max-height: 70dvh;
-}
-
-.settings__pane > * {
-  flex-shrink: 0;
 }

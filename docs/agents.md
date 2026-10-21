@@ -43,12 +43,18 @@ request, and reports in the thread.
 
 ## Desktop
 
-The desktop app bundles the web interface and signs in locally.
-**Stemma → Settings…** (⌘,) opens a dialog with four pages: **This machine** (status,
-service, your agents and repository folder), **Workshop** (lending, offers and
-daily limits, with isolation and container sign-in under **Advanced**), **Appearance** (the theme),
-and **Account**. After the first sign-in, an unregistered machine opens a short
-setup checklist. It shares the CLI's sign-in and machine configuration.
+Your own settings are one dialog, in the browser and the app, opened from the
+account menu at the sidebar's foot (**Profile** or **Settings**): **Profile**
+(your name and password), **Appearance** (the theme), **Agents**, **Machines**
+and **Tokens**.
+
+The desktop app bundles the web interface and signs in locally. Its settings
+dialog (also **Stemma → Settings…**, ⌘,) adds this machine's pages: **This
+machine** (status, service, your agents and repository folder) and **Workshop**
+(lending, offers and daily limits, with isolation and container sign-in under
+**Advanced**). After the first sign-in, an unregistered machine opens a short
+setup checklist. It shares the CLI's sign-in and machine configuration; logging
+out of the app logs the CLI out too.
 
 `stemma machine service install` installs and starts a per-user login service
 (launchd on macOS, systemd on Linux); `start`, `stop`, `status` and `uninstall`

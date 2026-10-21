@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { openSettings } from "#lib/settings.svelte.ts";
   import { ask } from "#lib/ask.svelte.ts";
   import { goto } from "$app/navigation";
   import { api, type CreatedInvitation, type Invitation, type Member, type Role } from "#lib/api.ts";
@@ -100,8 +101,9 @@
   <div class="stack stack--tight">
     <h1>Group settings</h1>
     <p class="quiet">
-      Who is in the group, with what role, and how others join. Your own settings are in your
-      <a href="/g/{group.slug}/me">personal settings</a>.
+      Who is in the group, with what role, and how others join. Your own are in
+      <button type="button" class="button button--link" onclick={() => openSettings()}>Settings</button>, from your
+      account at the sidebar's foot.
     </p>
   </div>
 

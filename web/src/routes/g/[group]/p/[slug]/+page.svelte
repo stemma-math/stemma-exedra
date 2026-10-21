@@ -280,7 +280,7 @@
       <dialog class="dialog" aria-labelledby="paper-clone-title">
         <div class="dialog__body">
           <h2 class="dialog__title" id="paper-clone-title">Work on it on your machine</h2>
-          <p class="dialog__text">Clone it with a personal token, from your personal settings, as the password:</p>
+          <p class="dialog__text">Clone it with a personal token, from Settings › Tokens, as the password:</p>
           <span class="row">
             <code class="identifier grow" id="paper-clone">git clone {cloneUrl}</code>
             <stemma-copy-button for="paper-clone" label="Copy the command"></stemma-copy-button>
