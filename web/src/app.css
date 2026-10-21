@@ -21,11 +21,51 @@ body {
 /* ── A group: the sidebar beside its pages ────────────────────────── */
 
 .shell {
-  --sidebar-width: calc(var(--space-16) * 4);
+  --sidebar-min-width: calc(var(--space-16) * 4);
+  --sidebar-width: clamp(var(--sidebar-min-width), calc(var(--sidebar-min-width) * var(--sidebar-scale, 1)), calc(var(--sidebar-min-width) * 4 / 3));
+  position: relative;
   display: grid;
   grid-template-columns: var(--sidebar-width) minmax(0, 1fr);
   height: 100dvh;
   min-height: 0;
+}
+
+.sidebar-resize {
+  position: absolute;
+  inset-block: 0;
+  left: calc(var(--sidebar-width) - var(--space-1));
+  z-index: 31;
+  width: var(--space-2);
+  cursor: col-resize;
+  touch-action: none;
+}
+
+.sidebar-resize::after {
+  position: absolute;
+  inset-block: 0;
+  left: var(--space-1);
+  content: "";
+  border-left: 1px solid transparent;
+}
+
+.sidebar-resize:hover::after,
+.sidebar-resize:focus-visible::after,
+.is-resizing .sidebar-resize::after {
+  border-color: var(--border-strong);
+}
+
+.shell.is-resizing :is(iframe, object) {
+  pointer-events: none;
+}
+
+/* Native PDF surfaces can consume pointer moves even with pointer capture.
+ * Cover them for the drag, leaving the handle above the shield. */
+.shell.is-resizing::after {
+  position: fixed;
+  inset: 0;
+  z-index: 30;
+  content: "";
+  cursor: col-resize;
 }
 
 .shell__bar,
@@ -628,9 +668,6 @@ stemma-toast-region {
 .sidebar__name { text-align: left; gap: var(--space-1); }
 .sidebar__foot { align-items: stretch; border: 0; padding: var(--space-3); }
 .sidebar__foot stemma-theme-switch { width: 100%; }
-.sidebar__user { display: flex; align-items: center; gap: var(--space-1); padding: var(--space-2); }
-.sidebar__person { flex: 1; min-width: 0; justify-content: start; }
-.sidebar__person :where(.chip) { align-self: start; }
 .sidebar__connection { display: flex; flex-wrap: wrap; gap: var(--space-2); padding-inline: var(--space-1); }
 .truncate { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .account-frame { display: flex; flex: 1; flex-direction: column; min-height: 100%; }
@@ -656,3 +693,17 @@ stemma-toast-region {
 
 /* Pages outside the group shell own their scroll area too. */
 .app > .page { overflow: auto; overscroll-behavior: none; }
+
+/* Dragging temporarily overrides document selection and control transitions. */
+html .app .shell.is-resizing,
+html .app .shell.is-resizing * {
+  -webkit-user-select: none;
+  user-select: none;
+  cursor: col-resize;
+  transition: none;
+}
+
+html .app .shell.is-resizing *::before,
+html .app .shell.is-resizing *::after {
+  transition: none;
+}

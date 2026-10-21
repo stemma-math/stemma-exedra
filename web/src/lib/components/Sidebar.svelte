@@ -91,10 +91,12 @@
           </a>
         {/each}
         <hr class="menu__separator" />
-        <a class="menu__item" href="/groups">All groups</a>
-        {#if session.me?.hub_admin}
-          <a class="menu__item" href="/groups#new-group"><Glyph name="add" small /> New group</a>
-        {/if}
+        <div class="menu__row">
+          <a class="menu__item" href="/groups">All groups</a>
+          {#if session.me?.hub_admin}
+            <a class="menu__item menu__action" href="/groups#new-group" aria-label="New group"><Glyph name="add" small /></a>
+          {/if}
+        </div>
       </div>
     </stemma-menu>
   </div>
@@ -126,7 +128,7 @@
 
     <div class="sidebar__section nav-section__head">
       <details class="nav-section" open={!folded.papers} ontoggle={(event) => setFolded("papers", !event.currentTarget.open)}>
-        <summary class="nav-section__heading">Working papers</summary>
+        <summary class="nav-section__heading"><span class="nav-item__label">Working papers</span></summary>
         <ul class="nav-list" id="sidebar-papers">
           {#each papers as paper (paper.slug)}
             <li>
@@ -145,9 +147,14 @@
           {/each}
         </ul>
       </details>
-      {#if asksForWork(group.role)}
-      <a class="button button--quiet button--icon nav-section__action" href="{base}/p/new" aria-label="New paper"><Glyph name="add" small /></a>
-      {/if}
+      <div class="nav-section__actions">
+        {#if asksForWork(group.role)}
+          <a class="button button--quiet button--icon nav-section__action" href="{base}/p/new" aria-label="New paper"><Glyph name="add" small /></a>
+          <stemma-tooltip>New paper</stemma-tooltip>
+        {/if}
+        <a class="button button--quiet button--icon nav-section__action" href="{base}/papers" aria-label="Every paper" aria-current={current(`${base}/papers`, true)}><Glyph name="arrow-right" small /></a>
+        <stemma-tooltip>Every paper</stemma-tooltip>
+      </div>
     </div>
 
     <div class="sidebar__section nav-section__head">
@@ -159,12 +166,14 @@
               <span class="nav-item__label">{thread.title}</span>
             </a></li>
           {/each}
-          <li><a class="nav-item" href="{base}/forum" aria-current={current(`${base}/forum`, true)}>
-            <span class="nav-item__label quiet">Every thread</span>
-          </a></li>
         </ul>
       </details>
-      <a class="button button--quiet button--icon nav-section__action" href="{base}/forum/new" aria-label="New thread"><Glyph name="add" small /></a>
+      <div class="nav-section__actions">
+        <a class="button button--quiet button--icon nav-section__action" href="{base}/forum/new" aria-label="New thread"><Glyph name="add" small /></a>
+        <stemma-tooltip>New thread</stemma-tooltip>
+        <a class="button button--quiet button--icon nav-section__action" href="{base}/forum" aria-label="Every thread" aria-current={current(`${base}/forum`, true)}><Glyph name="arrow-right" small /></a>
+        <stemma-tooltip>Every thread</stemma-tooltip>
+      </div>
     </div>
 
     <div class="sidebar__section nav-section__head">
@@ -182,14 +191,14 @@
               </a>
             </li>
           {/each}
-          <li>
-            <a class="nav-item" href="{base}/chats" aria-current={current(`${base}/chats`, true)}>
-              <span class="nav-item__label quiet">Every chat</span>
-            </a>
-          </li>
         </ul>
       </details>
-      <a class="button button--quiet button--icon nav-section__action" href="{base}/chats/new" aria-label="New chat"><Glyph name="add" small /></a>
+      <div class="nav-section__actions">
+        <a class="button button--quiet button--icon nav-section__action" href="{base}/chats/new" aria-label="New chat"><Glyph name="add" small /></a>
+        <stemma-tooltip>New chat</stemma-tooltip>
+        <a class="button button--quiet button--icon nav-section__action" href="{base}/chats" aria-label="Every chat" aria-current={current(`${base}/chats`, true)}><Glyph name="arrow-right" small /></a>
+        <stemma-tooltip>Every chat</stemma-tooltip>
+      </div>
     </div>
   </nav>
 
@@ -207,15 +216,15 @@
       <stemma-theme-switch fill></stemma-theme-switch>
     {/if}
     {#if session.me}
-      <div class="card sidebar__user">
-        <a class="button button--quiet sidebar__person" href="{base}/me" aria-current={current(`${base}/me`)}>
+      <div class="account">
+        <a class="account__person" href="{base}/me" aria-current={current(`${base}/me`)}>
           <Avatar user={session.me} />
-          <span class="stack stack--tight sidebar__text"><span class="sidebar__text" title={session.me.display_name}>{session.me.display_name}</span><span class="chip">{ROLE_NAMES[group.role]}</span></span>
+          <span class="account__details"><span class="account__name" title={session.me.display_name}>{session.me.display_name}</span><span class="account__meta">{ROLE_NAMES[group.role]}</span></span>
         </a>
         {#if __STEMMA_DESKTOP__}
-          <button type="button" class="button button--quiet button--icon" aria-label="Settings" onclick={() => desktopUI.openSettings()}><Glyph name="settings" /></button>
+          <button type="button" class="button button--quiet button--icon account__action" aria-label="Settings" onclick={() => desktopUI.openSettings()}><Glyph name="settings" /></button>
         {:else}
-          <button type="button" class="button button--quiet button--icon" aria-label="Log out" onclick={logOut}><Glyph name="log-out" /></button>
+          <button type="button" class="button button--quiet button--icon account__action" aria-label="Log out" onclick={logOut}><Glyph name="log-out" /></button>
         {/if}
       </div>
     {/if}

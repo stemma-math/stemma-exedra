@@ -5,6 +5,7 @@
   import { ApiError, api, type Group } from "#lib/api.ts";
   import Glyph from "#lib/components/Glyph.svelte";
   import Sidebar from "#lib/components/Sidebar.svelte";
+  import SidebarResize from "#lib/components/SidebarResize.svelte";
   import { listen } from "#lib/events.ts";
   import { setGroupContext } from "#lib/group.svelte.ts";
   import { forgetReferences } from "#lib/references.ts";
@@ -18,6 +19,8 @@
   /** Whether the sidebar is open over the page, on a narrow screen. */
   let drawer = $state(false);
   let narrow = $state(false);
+  let sidebarScale = $state(1);
+  let resizing = $state(false);
   let sidebar = $state<HTMLElement>();
   let menuButton = $state<HTMLButtonElement>();
   onMount(() => {
@@ -78,7 +81,7 @@
     <p><a href="/groups">Your groups</a></p>
   </main>
 {:else if group && group.slug === slug}
-  <div class={["shell", drawer && "is-open"]}>
+  <div class={["shell", drawer && "is-open", resizing && "is-resizing"]} style:--sidebar-scale={sidebarScale}>
     <header class="shell__bar" inert={drawer && narrow}>
       <button
         bind:this={menuButton}
@@ -96,6 +99,7 @@
     <aside bind:this={sidebar} inert={narrow && !drawer} class="sidebar brand-light brand-surface" id="sidebar" aria-label="{group.name}, its places">
       <Sidebar {group} />
     </aside>
+    {#if !narrow}<SidebarResize bind:scale={sidebarScale} bind:dragging={resizing} />{/if}
     <button type="button" class="scrim shell__scrim" aria-label="Close the menu" tabindex="-1" onclick={closeDrawer}></button>
     <div class="shell__main" inert={drawer && narrow}>
       {@render children()}
