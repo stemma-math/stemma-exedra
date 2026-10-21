@@ -6,6 +6,7 @@
   import Composer from "#lib/components/Composer.svelte";
   import JobItem from "#lib/components/JobItem.svelte";
   import MessageItem from "#lib/components/MessageItem.svelte";
+  import UnderConstruction from "#lib/components/UnderConstruction.svelte";
   import { listen } from "#lib/events.ts";
   import { exactly } from "#lib/format.ts";
   import { groupContext } from "#lib/group.svelte.ts";
@@ -139,6 +140,10 @@
 
 <svelte:head><title>{thread ? `${thread.title} · ` : ""}{group.name} · Stemma</title></svelte:head>
 
+<!-- Chats are under construction; discussions are not. -->
+{#if thread?.kind === "chat"}
+  <UnderConstruction back="/g/{group.slug}" label="Back to the dashboard" />
+{:else}
 <main class="page page--narrow">
   {#if missing}
     <h1>Thread not found</h1>
@@ -146,11 +151,7 @@
   {:else if thread}
     <nav class="breadcrumbs" aria-label="Where">
       <ol>
-        {#if thread.kind === "chat"}
-          <li><a href="/g/{group.slug}/chats">Chats</a></li>
-        {:else}
-          <li><a href="/g/{group.slug}/forum">Forum</a></li>
-        {/if}
+        <li><a href="/g/{group.slug}/forum">Forum</a></li>
         <li><span aria-current="page" class="identifier">t{thread.number}</span></li>
       </ol>
     </nav>
@@ -184,13 +185,6 @@
         </div>
       {/if}
       <p class="quiet">
-        {#if thread.kind === "chat"}
-          <span class="chip chip--info">
-            Chat{thread.resident_agent ? ` with @${thread.resident_agent}` : ""}{thread.resident_model
-              ? ` · ${thread.resident_model}`
-              : ""}{thread.resident_effort ? ` · ${thread.resident_effort} effort` : ""}
-          </span>
-        {/if}
         Started by {thread.created_by.display_name},
         <time datetime={thread.created_at}>{exactly(thread.created_at)}</time>{#if thread.anchor}{@const anchor = parseAddress(thread.anchor)},
           about <a class="identifier link" href={anchor ? addressPath(anchor, group.slug) : "#"}>{thread.anchor}</a>{/if}.
@@ -225,9 +219,9 @@
       oncancelreply={() => (replyTo = null)}
       onsubmit={post}
       {agents}
-      resident={thread.kind === "chat" ? thread.resident_agent : null}
     />
   {:else}
     <span class="spinner" role="status" aria-label="Loading"></span>
   {/if}
 </main>
+{/if}
