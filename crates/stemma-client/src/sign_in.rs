@@ -1,6 +1,6 @@
 //! Signing in and keeping the same credentials for the CLI and desktop.
 
-use crate::{Hub, config::ClientConfig, hub::normalize_url};
+use crate::{Hub, config::Credentials, hub::normalize_url};
 use anyhow::Context as _;
 
 /// Check credentials, replace this device's previous token, and save them.
@@ -9,9 +9,9 @@ pub async fn save(
     token: String,
     token_id: Option<i64>,
     group: Option<String>,
-) -> anyhow::Result<ClientConfig> {
+) -> anyhow::Result<Credentials> {
     let url = normalize_url(hub)?;
-    let mut previous = ClientConfig::load()?;
+    let mut previous = Credentials::load()?;
     let client = Hub::new(&url, Some(token.clone()))?;
     let me = client.me().await.context("checking the token")?;
     if let Some(group) = &group {
@@ -26,14 +26,16 @@ pub async fn save(
     {
         let _ = Hub::new(&url, Some(old))?.revoke_token(id).await;
     }
-    let config = ClientConfig {
+    let config = Credentials {
         hub: Some(url),
         token: Some(token),
         token_id,
         username: Some(me.user.username),
-        group: group.or_else(|| me.groups.first().map(|g| g.slug.clone())),
     };
     config.save()?;
+    if let Some(group) = group.or_else(|| me.groups.first().map(|g| g.slug.clone())) {
+        crate::config::Paths::discover()?.use_group(&group)?;
+    }
     Ok(config)
 }
 
@@ -44,13 +46,13 @@ pub async fn password(
     password: &str,
     device: &str,
     group: Option<String>,
-) -> anyhow::Result<ClientConfig> {
+) -> anyhow::Result<Credentials> {
     let mut client = Hub::new(&normalize_url(hub)?, None)?;
     client
         .sign_in(username, password)
         .await
         .context("signing in")?;
-    let created = client.create_token(&format!("stemma on {device}")).await?;
+    let created = client.create_token(device).await?;
     let _ = client.sign_out().await;
     save(hub, created.secret, Some(created.token.id), group).await
 }
@@ -59,7 +61,7 @@ pub async fn password(
 /// Returns a warning if the token must be revoked later from the web app.
 pub async fn logout() -> anyhow::Result<Option<String>> {
     let path = crate::config::path()?;
-    let config = ClientConfig::load_from(&path)?;
+    let config = Credentials::load_from(&path)?;
     let mut warning = None;
     if let (Some(url), Some(token), Some(id)) = (config.hub, config.token, config.token_id)
         && let Err(error) = Hub::new(&url, Some(token))?.revoke_token(id).await

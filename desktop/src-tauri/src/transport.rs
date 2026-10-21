@@ -8,7 +8,7 @@ use eventsource_stream::Eventsource;
 use futures_util::StreamExt;
 use reqwest::{Client, Method};
 use serde::Serialize;
-use stemma_client::config::ClientConfig;
+use stemma_client::config::Credentials;
 use tauri::http::{Request, Response, header};
 use tauri::{Emitter, Manager, WebviewWindow};
 
@@ -24,7 +24,7 @@ pub fn client() -> anyhow::Result<Client> {
 }
 
 fn credentials() -> anyhow::Result<(String, String)> {
-    let config = ClientConfig::load()?.with_env();
+    let config = Credentials::load()?.with_env();
     let base = config.hub()?.base().to_owned();
     Ok((base, config.token.context("Sign in to your hub")?))
 }

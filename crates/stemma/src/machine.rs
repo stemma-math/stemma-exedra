@@ -4,7 +4,7 @@
 
 use anyhow::Context as _;
 use clap::{Args, Subcommand};
-use stemma_client::config::ClientConfig;
+use stemma_client::config::Credentials;
 use stemma_core::api::{Isolation, Machine, WorkshopAgent, runners};
 use stemma_worker::isolation::{self, Isolator, Runtime};
 use stemma_worker::machine::{self, MachineConfig};
@@ -223,7 +223,7 @@ pub async fn machine(args: MachineArgs) -> anyhow::Result<()> {
     match args.command {
         MachineCommand::Add { name, preferred } => add(name, preferred).await,
         MachineCommand::RegisterAgain => {
-            let hub = ClientConfig::load()?.with_env().hub()?;
+            let hub = Credentials::load()?.with_env().hub()?;
             let config = stemma_worker::control::register_again(&hub).await?;
             service::install(&std::env::current_exe()?)?;
             stemma_worker::control::wait_online(&config).await?;
@@ -291,7 +291,7 @@ async fn workshop(command: WorkshopCommand) -> anyhow::Result<()> {
         } => return build_image(tag, toolchain, source).await,
         _ => {}
     }
-    let hub = ClientConfig::load()?.with_env().hub()?;
+    let hub = Credentials::load()?.with_env().hub()?;
     match command {
         WorkshopCommand::Credentials { .. }
         | WorkshopCommand::Isolation { .. }
@@ -547,7 +547,7 @@ async fn build_image(
 
 async fn add(name: Option<String>, preferred: bool) -> anyhow::Result<()> {
     let path = machine::path()?;
-    let hub = ClientConfig::load()?.with_env().hub()?;
+    let hub = Credentials::load()?.with_env().hub()?;
     let config =
         stemma_worker::control::register(&hub, &name.unwrap_or_else(hostname), preferred).await?;
     service::install(&std::env::current_exe()?)?;
@@ -583,7 +583,7 @@ async fn find(hub: &stemma_client::Hub, name: Option<&str>) -> anyhow::Result<Ma
 }
 
 async fn list() -> anyhow::Result<()> {
-    let hub = ClientConfig::load()?.with_env().hub()?;
+    let hub = Credentials::load()?.with_env().hub()?;
     let this = stemma_worker::control::this(&hub).await.ok().map(|m| m.id);
     let machines = hub.machines().await?;
     if machines.is_empty() {
@@ -608,7 +608,7 @@ async fn list() -> anyhow::Result<()> {
 }
 
 async fn prefer(name: Option<String>) -> anyhow::Result<()> {
-    let hub = ClientConfig::load()?.with_env().hub()?;
+    let hub = Credentials::load()?.with_env().hub()?;
     let found = find(&hub, name.as_deref()).await?;
     hub.prefer_machine(found.id, true).await?;
     println!("Your jobs go to “{}” first.", found.name);
@@ -618,7 +618,7 @@ async fn prefer(name: Option<String>) -> anyhow::Result<()> {
 async fn remove(name: Option<String>) -> anyhow::Result<()> {
     let path = machine::path()?;
     let this = MachineConfig::load_from(&path)?;
-    let hub = ClientConfig::load()?.with_env().hub()?;
+    let hub = Credentials::load()?.with_env().hub()?;
     match find(&hub, name.as_deref()).await {
         Ok(found) => {
             hub.revoke_machine(found.id).await?;

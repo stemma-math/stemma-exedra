@@ -4,7 +4,7 @@ use anyhow::Context as _;
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 use std::path::PathBuf;
-use stemma_client::{Hub, config::ClientConfig};
+use stemma_client::{Hub, config::Credentials};
 use stemma_core::api::{Machine, Me, WorkshopAgent};
 use stemma_worker::{
     control, detect, image,
@@ -35,7 +35,7 @@ fn local(window: &WebviewWindow) -> Result<()> {
     Ok(())
 }
 fn hub() -> anyhow::Result<Hub> {
-    ClientConfig::load()?.with_env().hub()
+    Credentials::load()?.with_env().hub()
 }
 
 #[derive(Serialize)]
@@ -64,7 +64,7 @@ struct Snapshot {
 #[tauri::command]
 async fn snapshot(window: WebviewWindow) -> Result<Snapshot> {
     local(&window)?;
-    let config = ClientConfig::load().map_err(error)?.with_env();
+    let config = Credentials::load().map_err(error)?.with_env();
     let machine =
         machine::MachineConfig::load_from(&machine::path().map_err(error)?).map_err(error)?;
     let settings = machine
@@ -171,7 +171,7 @@ async fn login(
         let target = Hub::new(&url, None).map_err(error)?;
         control::check_hub(&machine, &target).map_err(error)?;
         // A different account must not accidentally keep serving the old owner.
-        if ClientConfig::load().map_err(error)?.username.as_deref() != Some(&username) {
+        if Credentials::load().map_err(error)?.username.as_deref() != Some(&username) {
             return Err(
                 "Remove this machine from its current account before switching accounts".into(),
             );

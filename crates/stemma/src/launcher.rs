@@ -4,7 +4,7 @@
 
 use anyhow::Context as _;
 use clap::Args;
-use stemma_client::config::ClientConfig;
+use stemma_client::config::Credentials;
 use stemma_core::api::runners;
 use stemma_worker::session::{Options, Session};
 
@@ -27,12 +27,12 @@ pub struct LaunchArgs {
 /// Opens the person's agent of `runner`, waits until it exits, and says
 /// how it exited.
 pub async fn launch(runner: &str, args: LaunchArgs) -> anyhow::Result<i32> {
-    let config = ClientConfig::load()?.with_env();
+    let config = Credentials::load()?.with_env();
     let hub = config.hub()?;
     let options = Options {
         runner: runner.to_owned(),
         agent: args.agent,
-        group: args.group.or(config.group),
+        group: stemma_client::config::active_group(args.group)?,
         args: args.args,
         stemma: std::env::current_exe().context("finding the stemma binary")?,
         program: None,

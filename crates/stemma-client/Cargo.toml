@@ -16,10 +16,12 @@ rustls.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 stemma-core.workspace = true
+tempfile.workspace = true
 thiserror.workspace = true
 time.workspace = true
 tokio.workspace = true
 toml.workspace = true
+toml_edit.workspace = true
 tracing.workspace = true
 
 [dev-dependencies]
@@ -27,7 +29,6 @@ axum.workspace = true
 rmcp = { workspace = true, features = ["client"] }
 stemma-fake-forge.workspace = true
 stemma-hub.workspace = true
-tempfile.workspace = true
 
 [lints]
 workspace = true

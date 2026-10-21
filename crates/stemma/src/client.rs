@@ -7,7 +7,7 @@ use std::path::PathBuf;
 use anyhow::Context;
 use clap::Args;
 use serde_json::{Value, json};
-use stemma_client::config::{self, ClientConfig};
+use stemma_client::config::{self, Credentials};
 use stemma_client::mcp::StemmaServer;
 use stemma_client::tools::Toolbox;
 
@@ -239,7 +239,7 @@ pub async fn login(args: LoginArgs) -> anyhow::Result<()> {
     let hub = config.hub()?;
     let me = hub.me().await?;
     let url = hub.base();
-    let group = &config.group;
+    let group = config::active_group(None)?;
     println!("Signed in to {url} as {}.", me.user.username);
     match (&group, me.groups.len()) {
         (Some(group), 1) => println!("Your group is {group}."),
@@ -267,8 +267,11 @@ pub async fn logout() -> anyhow::Result<()> {
 
 /// The tools, as configured on this machine.
 fn toolbox(group: GroupArg) -> anyhow::Result<Toolbox> {
-    let config = ClientConfig::load()?.with_env();
-    Ok(Toolbox::new(config.hub()?, group.group.or(config.group)))
+    let config = Credentials::load()?.with_env();
+    Ok(Toolbox::new(
+        config.hub()?,
+        config::active_group(group.group)?,
+    ))
 }
 
 async fn run(
@@ -422,14 +425,14 @@ pub async fn task(args: TaskArgs) -> anyhow::Result<()> {
 }
 
 pub async fn mcp(args: McpArgs) -> anyhow::Result<()> {
-    let mut config = ClientConfig::load()?.with_env();
+    let mut config = Credentials::load()?.with_env();
     if let Some(hub) = args.hub {
         config.hub = Some(hub);
     }
     if let Some(path) = &args.token_file {
         config.token = Some(config::read_token_file(path)?);
     }
-    let toolbox = Toolbox::new(config.hub()?, args.group.group.or(config.group))
+    let toolbox = Toolbox::new(config.hub()?, config::active_group(args.group.group)?)
         .read_only(args.read_only)
         .hands_over(args.hand_over)
         .opens_threads(args.open_threads);
