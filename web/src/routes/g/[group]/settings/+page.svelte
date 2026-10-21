@@ -94,11 +94,11 @@
   }
 </script>
 
-<svelte:head><title>Settings · {group.name} · Stemma</title></svelte:head>
+<svelte:head><title>Group settings · {group.name} · Stemma</title></svelte:head>
 
 <main class="page page--narrow stack stack--loose">
   <div class="stack stack--tight">
-    <h1>Settings of {group.name}</h1>
+    <h1>Group settings</h1>
     <p class="quiet">
       Who is in the group, with what role, and how others join. Your own settings are in your
       <a href="/g/{group.slug}/me">personal settings</a>.

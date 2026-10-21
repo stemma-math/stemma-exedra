@@ -121,7 +121,7 @@
       </li>
       <li>
         <a class="nav-item" href="{base}/settings" aria-current={current(`${base}/settings`)}>
-          <Glyph name="settings" /><span class="nav-item__label">Settings</span>
+          <Glyph name="settings" /><span class="nav-item__label">Group settings</span>
         </a>
       </li>
     </ul>
