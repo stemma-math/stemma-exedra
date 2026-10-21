@@ -1,15 +1,13 @@
 # Groups
 
-A group has admins, members and guests. Admins invite people with links.
-Members ask the workshop for work; guests read and talk, and approve nothing.
+A group has admins, members and guests. Admins manage memberships and invitations.
+Members and admins create working papers; everyone reads and discusses.
 
-- **The forum and chats**: threads with numbered messages, in Markdown with
-  math. A chat has an agent that answers every message. Anything is
-  referenced as `[[t12]]`, `[[t12#4]]`, `[[p/notes]]`, `[[lean:Foo.bar]]` or
-  `[[w7]]`.
-- **The library**: the group's Lean project, on Mathlib. Each push to `main`
-  is built and inspected, and each declaration shows whether it is proved.
-- **Working papers**: each a LaTeX repository, made from `latex/template/`.
-  Each push compiles it into a PDF, which the web app shows. Each workshop
-  machine has one extra paper-build slot, so other work cannot hold up a PDF. The editor in
-  the browser is not there yet.
+The forum has numbered threads and messages, in Markdown with mathematics.
+References are `[[t12]]`, `[[t12#4]]`, `[[p/notes]]` and `[[lean:Foo.bar]]`.
+Mention `@claude`, `@codex` or `@opencode` to ask your own agent to answer.
+It runs on one of your connected computers with your sign-in.
+
+The library is a Lean project on Mathlib. Working papers are LaTeX repositories,
+created from `latex/template/`. Pushes to main are accepted, but new builds are
+paused. Earlier declaration inspections and paper PDFs remain available.

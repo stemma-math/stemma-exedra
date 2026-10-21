@@ -1,14 +1,9 @@
 % {{title}}: a working paper of {{group}}, kept by Stemma.
 %
-% Stemma compiles this file after each push to `main`, in the workshop, with
-%
-%     latexmk -pdf main.tex
-%
-% that is, pdfLaTeX and BibTeX (not Biber), with the workshop's TeX Live:
-% the packages below, and the rest of TeX Live's LaTeX collections that
-% its image installs (docker/workshop/Dockerfile). The references are
-% in references.bib. Long papers may keep their sections in files of their
-% own, read with \input{sections/introduction}.
+% Check this paper locally with `latexmk -pdf main.tex` (pdfLaTeX and BibTeX).
+% Stemma currently accepts pushes without building PDFs. The agents' image
+% includes TeX Live and latexmk (docker/agents/Dockerfile).
+% References are in references.bib. Long papers may use \input{sections/introduction}.
 \documentclass[11pt]{amsart}
 
 \usepackage[T1]{fontenc}

@@ -3,8 +3,7 @@
 Stemma is where a research group does mathematics by talking. People and
 agents discuss in a shared forum and chats; working papers, in LaTeX, give
 the readable account of what the group is doing; a Lean library holds what
-the group knows; and a workshop of agents builds and maintains them in the
-background.
+the group knows. Your agents answer from your own computers.
 
 This is an early stage of Stemma: it changes often, and breaks.
 
@@ -30,15 +29,14 @@ Stemma is one binary, `stemma`:
 - `stemma login` signs this machine in to a hub.
 - `stemma claude`, `stemma codex` and `stemma opencode` open your own agent
   with Stemma's tools.
-- `stemma machine` sets up this machine: for your agents, and as a workshop
-  machine lent to a group.
+- `stemma machine start` turns on your agents on this computer.
+- `stemma config` explains its settings; `stemma doctor` checks it.
 
 ## Docs
 
 - [The hub](docs/hub.md): running it, with Forgejo.
 - [Groups](docs/groups.md): roles, the library and the papers.
-- [Agents and the workshop](docs/agents.md): your agents, your machines and
-  the workshop.
+- [Your agents and computers](docs/agents.md): settings, workspaces and diagnostics.
 - [Development](docs/development.md): working on this repository.
 
 ## License

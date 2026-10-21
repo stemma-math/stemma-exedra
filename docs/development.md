@@ -12,13 +12,9 @@ Without Nix: Rust, Node.js with pnpm, just, git and, for Lean, elan.
 
 The tests use a stand-in for Forgejo (`crates/stemma-fake-forge`). The CLI machine
 test isolates service files and logs with `STEMMA_SERVICE_DIR` and substitutes
-the system service managers; it never installs a login service. Some tests are
-skipped without their environment:
+the system service managers; it never installs a login service. The real Forgejo check is opt-in:
 
 ```sh
-STEMMA_TEST_LEAN=1 cargo test -p stemma-worker --test end_to_end lean
-STEMMA_TEST_CONTAINER=docker STEMMA_TEST_IMAGE=<image> \
-    cargo test -p stemma-worker --test end_to_end container
 STEMMA_TEST_FORGEJO=http://127.0.0.1:3000 cargo test -p stemma-hub --test forgejo
 ```
 
@@ -56,8 +52,8 @@ pnpm --dir desktop tauri build --config '{"bundle":{"active":true,"targets":["ap
   MCP tools, what they share (`stemma-core`), and the fake forge.
 - `web/`: the web app, in SvelteKit, styled with `@stemma-math/design`.
 - `desktop/`: the Tauri crate (`src-tauri/`) and its build configuration.
-- `docker/`: the hub's image and compose file, and the workshop's image.
-- `workshop/architectures/`, `latex/template/`, `lean/`.
+- `docker/`: the hub's image and compose file, and the agents' image.
+- `latex/template/`, `lean/`.
 
 ## Releases
 
