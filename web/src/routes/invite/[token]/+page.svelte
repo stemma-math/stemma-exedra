@@ -45,7 +45,7 @@
   }
 </script>
 
-<svelte:head><title>Invitation · Stemma</title></svelte:head>
+<svelte:head><title>Invitation – Stemma</title></svelte:head>
 
 <main class="page page--centered">
   <div class="sign-in">

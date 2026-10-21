@@ -138,7 +138,7 @@
   }
 </script>
 
-<svelte:head><title>{thread ? `${thread.title} · ` : ""}{group.name} · Stemma</title></svelte:head>
+<svelte:head><title>{thread ? `${thread.title} – ` : ""}{group.name} – Stemma</title></svelte:head>
 
 <!-- Chats are under construction; discussions are not. -->
 {#if thread?.kind === "chat"}

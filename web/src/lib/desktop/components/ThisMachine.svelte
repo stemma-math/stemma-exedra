@@ -65,7 +65,11 @@
     <p class="quiet">Everything here can also be done later from Settings → This machine.</p>
     <ol class="checklist stack stack--tight">
       <li class="setting__row">
-        <span>1. Register this machine · {data.registered ? "Done" : "Not done"}</span
+        <span class="row grow"
+          >1. Register this machine
+          <span class="chip chip--small" class:chip--success={data.registered}
+            >{data.registered ? "Done" : "Not done"}</span
+          ></span
         ><button
           type="button"
           class="button button--small"
@@ -76,7 +80,11 @@
         </button>
       </li>
       <li class="setting__row">
-        <span>2. Your agents found · {found ? "Done" : "Not done"}</span
+        <span class="row grow"
+          >2. Your agents found
+          <span class="chip chip--small" class:chip--success={found}
+            >{found ? "Done" : "Not done"}</span
+          ></span
         ><button
           type="button"
           class="button button--small"
@@ -87,7 +95,11 @@
         </button>
       </li>
       <li class="setting__row">
-        <span>3. The service on · {data.service.running ? "Done" : "Not done"}</span
+        <span class="row grow"
+          >3. The service on
+          <span class="chip chip--small" class:chip--success={data.service.running}
+            >{data.service.running ? "Done" : "Not done"}</span
+          ></span
         ><button
           type="button"
           class="button button--small"

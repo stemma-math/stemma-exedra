@@ -30,7 +30,7 @@
   });
 </script>
 
-<svelte:head><title>Working papers · {group.name} · Stemma</title></svelte:head>
+<svelte:head><title>Working papers – {group.name} – Stemma</title></svelte:head>
 
 <main class="page stack">
   <div class="page__head">

@@ -19,7 +19,7 @@
             {/if}
           </span>
           <span class="quiet">
-            {thread.created_by.display_name} ·
+            {thread.created_by.display_name},
             {thread.last_message === 1 ? "1 message" : `${thread.last_message} messages`}
           </span>
         </span>

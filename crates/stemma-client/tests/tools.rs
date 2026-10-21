@@ -85,7 +85,7 @@ async fn the_tools_read_post_and_search() {
     let tools = Toolbox::new(Hub::new(&url, Some(token)).unwrap(), None);
     let listed = tools.call("list_threads", Value::Null, None).await.unwrap();
     assert!(
-        listed.starts_with("t1 · Compactification · 1 messages"),
+        listed.starts_with("t1 – Compactification – 1 messages"),
         "{listed}"
     );
 
@@ -104,9 +104,9 @@ async fn the_tools_read_post_and_search() {
         .call("read_thread", json!({"address": "[[t1#1–2]]"}), None)
         .await
         .unwrap();
-    assert!(read.contains("### t1#1 · Ada · "), "{read}");
+    assert!(read.contains("### t1#1 – Ada – "), "{read}");
     assert!(
-        read.contains("### t1#2 · Claude Code, for Ada · "),
+        read.contains("### t1#2 – Claude Code, for Ada – "),
         "{read}"
     );
     assert!(read.contains("reply to #1"));
@@ -119,7 +119,7 @@ async fn the_tools_read_post_and_search() {
         )
         .await
         .unwrap();
-    assert!(whole.starts_with("# t1 · Compactification"), "{whole}");
+    assert!(whole.starts_with("# t1 – Compactification"), "{whole}");
 
     let found = tools
         .call("search", json!({"query": "compact fibres"}), None)
@@ -159,7 +159,7 @@ async fn the_paper_tools_list_papers_and_read_their_source() {
 
     let listed = tools.call("list_papers", json!({}), None).await.unwrap();
     assert!(
-        listed.starts_with("- p/notes · Notes on gluing · by Ada · no PDF yet"),
+        listed.starts_with("- p/notes – Notes on gluing – by Ada – no PDF yet"),
         "{listed}"
     );
     // A paper's main file, with who writes it and its files.
@@ -168,7 +168,7 @@ async fn the_paper_tools_list_papers_and_read_their_source() {
         .await
         .unwrap();
     assert!(
-        read.starts_with("# p/notes · Notes on gluing\n\nBy Ada."),
+        read.starts_with("# p/notes – Notes on gluing\n\nBy Ada."),
         "{read}"
     );
     assert!(

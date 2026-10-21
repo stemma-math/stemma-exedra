@@ -235,7 +235,7 @@
             <Avatar user={session.me} />
             <div class="menu__identity">
               <span class="menu__name">{session.me.display_name}</span>
-              <span class="menu__meta">@{session.me.username} · {ROLE_NAMES[group.role]}</span>
+              <span class="menu__meta">@{session.me.username}, {ROLE_NAMES[group.role]}</span>
             </div>
           </div>
           <hr class="menu__separator" />

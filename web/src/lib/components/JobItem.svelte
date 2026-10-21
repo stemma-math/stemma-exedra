@@ -20,7 +20,7 @@
   <div class="post__head">
     <span class="post__author">{jobStatus(job)}</span>
     <span class="post__attribution">
-      for {job.requester.display_name}{#if job.trigger}, to <a class="post__number" href="#{job.trigger}">#{job.trigger}</a>{/if}{#if job.task && group}{" · "}<a class="identifier link" href="/g/{group}/w/{job.task}">w{job.task}</a>{/if}
+      for {job.requester.display_name}{#if job.trigger}, to <a class="post__number" href="#{job.trigger}">#{job.trigger}</a>{/if}{#if job.task && group}{", in "}<a class="identifier link" href="/g/{group}/w/{job.task}">w{job.task}</a>{/if}
     </span>
     {#if canCancel}
       <span class="post__actions">

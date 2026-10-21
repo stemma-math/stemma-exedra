@@ -6,6 +6,6 @@
   const group = $derived(context.group);
 </script>
 
-<svelte:head><title>New chat · {group.name} · Stemma</title></svelte:head>
+<svelte:head><title>New chat – {group.name} – Stemma</title></svelte:head>
 
 <UnderConstruction back="/g/{group.slug}" label="Back to the dashboard" />

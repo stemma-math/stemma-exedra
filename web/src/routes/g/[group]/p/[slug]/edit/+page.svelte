@@ -8,6 +8,6 @@
   const slug = $derived(page.params.slug ?? "");
 </script>
 
-<svelte:head><title>Editor · p/{slug} · {group.name} · Stemma</title></svelte:head>
+<svelte:head><title>Editor – p/{slug} – {group.name} – Stemma</title></svelte:head>
 
 <UnderConstruction back="/g/{group.slug}/p/{slug}" label="Back to the paper" />

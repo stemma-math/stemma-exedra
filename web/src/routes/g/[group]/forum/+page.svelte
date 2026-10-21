@@ -117,7 +117,7 @@
   }
 </script>
 
-<svelte:head><title>Forum · {group.name} · Stemma</title></svelte:head>
+<svelte:head><title>Forum – {group.name} – Stemma</title></svelte:head>
 
 <main class="page stack">
   <div class="page__head">
@@ -226,8 +226,7 @@
                 {/if}
                 <span class="quiet">
                   {#if hit.author}
-                    {hit.agent ? `${hit.agent}` : hit.author.display_name}
-                    ·
+                    {hit.agent ? `${hit.agent}` : hit.author.display_name},
                   {/if}
                   <time datetime={hit.created_at} title={exactly(hit.created_at)}>{when(hit.created_at)}</time>
                 </span>

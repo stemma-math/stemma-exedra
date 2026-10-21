@@ -430,7 +430,7 @@ fn show(machine: &Machine) {
             Some(n) => format!("{}/{n} minutes", today.minutes),
             None => format!("{} minutes", today.minutes),
         };
-        println!("{line} · today: {jobs}, {minutes}");
+        println!("{line} – today: {jobs}, {minutes}");
     }
 }
 

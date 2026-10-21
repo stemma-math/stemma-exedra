@@ -33,7 +33,7 @@
   }
 </script>
 
-<svelte:head><title>Set up · Stemma</title></svelte:head>
+<svelte:head><title>Set up – Stemma</title></svelte:head>
 
 <main class="page page--centered">
   <div class="sign-in">

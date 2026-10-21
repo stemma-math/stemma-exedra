@@ -90,7 +90,7 @@
           <span class="quiet truncate">{agent.model ?? "Default model"}</span>
           <span class="quiet"
             >{agent.daily_jobs ?? "Unlimited"}
-            jobs · {agent.daily_minutes ?? "Unlimited"} min/day</span
+            jobs, {agent.daily_minutes ?? "Unlimited"} min/day</span
           >
         </summary>
         <div class="stack panel">

@@ -42,7 +42,7 @@
   }
 </script>
 
-<svelte:head><title>New paper · {group.name} · Stemma</title></svelte:head>
+<svelte:head><title>New paper – {group.name} – Stemma</title></svelte:head>
 
 <main class="page page--narrow stack">
   <h1>New working paper</h1>

@@ -13,7 +13,7 @@
         <span class="stack stack--tight">
           <strong>{paper.title}</strong>
           <span class="quiet">
-            <span class="identifier">p/{paper.slug}</span> · by {paper.authors.map((a) => a.display_name).join(", ")}
+            <span class="identifier">p/{paper.slug}</span>, by {paper.authors.map((a) => a.display_name).join(", ")}
           </span>
         </span>
         <span class="quiet when">{paper.pdf ? `PDF ${when(paper.pdf.built_at)}` : "No PDF yet"}</span>

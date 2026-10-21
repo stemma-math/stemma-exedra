@@ -32,16 +32,16 @@ pub fn author(message: &Message) -> String {
 /// A message, headed by its address.
 pub fn message(thread: u32, message: &Message) -> String {
     let mut out = format!(
-        "### t{thread}#{} · {} · {}",
+        "### t{thread}#{} – {} – {}",
         message.number,
         author(message),
         when(message.created_at)
     );
     if let Some(to) = message.reply_to {
-        let _ = write!(out, " · reply to #{to}");
+        let _ = write!(out, " – reply to #{to}");
     }
     if message.edited_at.is_some() && !message.deleted {
-        out.push_str(" · edited");
+        out.push_str(" – edited");
     }
     out.push('\n');
     if message.deleted {
@@ -83,7 +83,7 @@ pub fn thread_heading(group: &str, thread: &Thread) -> String {
         (ThreadKind::Discussion, _) => "A discussion".into(),
     };
     format!(
-        "# t{} · {}\n\n{kind} in {group}, started by {} on {}; {} messages.\n",
+        "# t{} – {}\n\n{kind} in {group}, started by {} on {}; {} messages.\n",
         thread.number,
         thread.title,
         thread.created_by.display_name,
@@ -106,7 +106,7 @@ pub fn thread_list(threads: &[Thread]) -> String {
         };
         let _ = writeln!(
             out,
-            "t{} · {}{chat} · {} messages · last active {}",
+            "t{} – {}{chat} – {} messages – last active {}",
             thread.number,
             thread.title,
             thread.last_message,
@@ -124,13 +124,13 @@ pub fn search_hits(hits: &[SearchHit]) -> String {
     let mut out = String::new();
     for hit in hits {
         let who = match (&hit.author, &hit.agent) {
-            (Some(user), Some(agent)) => format!(" · {agent}, for {}", user.display_name),
-            (Some(user), None) => format!(" · {}", user.display_name),
+            (Some(user), Some(agent)) => format!(" – {agent}, for {}", user.display_name),
+            (Some(user), None) => format!(" – {}", user.display_name),
             _ => String::new(),
         };
         let _ = writeln!(
             out,
-            "- {} ({}){who} · {}\n  {}",
+            "- {} ({}){who} – {}\n  {}",
             hit.address,
             hit.thread_title,
             when(hit.created_at),
@@ -152,12 +152,12 @@ fn build_line(build: &Build) -> String {
         BuildState::Failed => "failed",
         BuildState::Cancelled => "cancelled",
     };
-    let mut line = format!("commit {} · {state}", short(&build.commit));
+    let mut line = format!("commit {} – {state}", short(&build.commit));
     if let Some(finished) = build.finished_at {
-        let _ = write!(line, " · {}", when(finished));
+        let _ = write!(line, " – {}", when(finished));
     }
     if let Some(lean) = &build.lean {
-        let _ = write!(line, " · Lean {lean}");
+        let _ = write!(line, " – Lean {lean}");
     }
     if let Some(error) = &build.error {
         let _ = write!(line, "\n  {error}");
@@ -210,7 +210,7 @@ pub fn library_state(hub: &str, library: &LibraryState, sorry: &[DeclarationSumm
         for module in &library.modules {
             let _ = writeln!(
                 out,
-                "- {} · {} declarations, {} with sorry",
+                "- {} – {} declarations, {} with sorry",
                 module.name, module.declarations, module.sorry
             );
         }
@@ -228,7 +228,7 @@ pub fn library_state(hub: &str, library: &LibraryState, sorry: &[DeclarationSumm
 pub fn declaration(page: &DeclarationPage) -> String {
     let d = &page.declaration;
     let mut out = format!(
-        "# lean:{} · {} · {}\n\n{} in {}",
+        "# lean:{} – {} – {}\n\n{} in {}",
         d.name,
         d.kind,
         state_word(page.state, &d.kind),
@@ -280,7 +280,7 @@ pub fn declaration_list(declarations: &[DeclarationSummary]) -> String {
     for d in declarations {
         let _ = writeln!(
             out,
-            "- lean:{} · {} · {} · {}\n  {}",
+            "- lean:{} – {} – {} – {}\n  {}",
             d.name,
             d.kind,
             state_word(d.state, &d.kind),
@@ -300,7 +300,7 @@ pub fn task_list(tasks: &[Task]) -> String {
     for task in tasks {
         let _ = writeln!(
             out,
-            "- w{} · {} · {} · from {}, for {} · {}",
+            "- w{} – {} – {} – from {}, for {} – {}",
             task.number,
             task.title,
             task.state.as_str(),
@@ -355,7 +355,7 @@ pub fn paper_list(papers: &[Paper]) -> String {
     for paper in papers {
         let _ = writeln!(
             out,
-            "- p/{} · {} · by {} · {}",
+            "- p/{} – {} – by {} – {}",
             paper.slug,
             paper.title,
             authors(paper),
@@ -376,7 +376,7 @@ pub fn paper(
 ) -> String {
     let paper = &page.paper;
     let mut out = format!(
-        "# p/{} · {}\n\nBy {}. {}{}\n",
+        "# p/{} – {}\n\nBy {}. {}{}\n",
         paper.slug,
         paper.title,
         authors(paper),
@@ -412,7 +412,7 @@ fn capitalize(text: &str) -> String {
 pub fn task(hub: &str, group: &str, page: &TaskPage) -> String {
     let task = &page.task;
     let mut out = format!(
-        "# w{} · {} · {}\n\nAsked in {} by {}",
+        "# w{} – {} – {}\n\nAsked in {} by {}",
         task.number,
         task.title,
         task.state.as_str(),
@@ -511,7 +511,7 @@ mod tests {
         };
         assert_eq!(
             super::message(12, &message),
-            "### t12#45 · Claude, for Ada · 2025-10-14 21:03 UTC · reply to #44\n\nThe map is proper.\n"
+            "### t12#45 – Claude, for Ada – 2025-10-14 21:03 UTC – reply to #44\n\nThe map is proper.\n"
         );
         assert_eq!(gap(12, 2, 9), "[#2–#9 not shown: read t12#2-9]\n");
     }

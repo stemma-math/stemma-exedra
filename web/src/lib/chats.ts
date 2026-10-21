@@ -16,10 +16,10 @@ export function takesEffort(runner: string): boolean {
   return runner === "claude-code" || runner === "codex";
 }
 
-/** One of a person's agents, as they choose it: `@claude · opus`. */
+/** One of a person's agents, as they choose it: `@claude (opus)`. */
 export function agentLabel(agent: Pick<PersonalAgent, "handle" | "runner" | "model">): string {
   const model = agent.model?.trim() || `${RUNNER_NAMES[agent.runner] ?? agent.runner}'s default`;
-  return `@${agent.handle} · ${model}`;
+  return `@${agent.handle} (${model})`;
 }
 
 /** A chat's title, from the question it starts with: its first line,

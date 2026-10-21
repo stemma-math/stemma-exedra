@@ -61,7 +61,7 @@
   }
 </script>
 
-<svelte:head><title>Create an account · Stemma</title></svelte:head>
+<svelte:head><title>Create an account – Stemma</title></svelte:head>
 
 <main class="page page--centered">
   <div class="sign-in">

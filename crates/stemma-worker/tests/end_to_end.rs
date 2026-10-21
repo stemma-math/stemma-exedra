@@ -367,7 +367,7 @@ async fn a_members_claude_answers_a_mention() {
     assert!(args.contains("mcp__stemma__read_thread"));
     assert!(args.contains("You are Claude, an agent in Stemma"));
     let input = std::fs::read_to_string(tools.path().join("claude.stdin")).unwrap();
-    assert!(input.contains("### t1#1 · Ada · "), "{input}");
+    assert!(input.contains("### t1#1 – Ada – "), "{input}");
     assert!(
         input.contains("Answer message t1#1, by Ada (@ada)"),
         "{input}"

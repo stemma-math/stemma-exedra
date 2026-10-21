@@ -35,7 +35,7 @@
   }
 </script>
 
-<svelte:head><title>Builds · Library · {group.name} · Stemma</title></svelte:head>
+<svelte:head><title>Builds – Library – {group.name} – Stemma</title></svelte:head>
 
 <main class="page page--narrow stack">
   <nav class="breadcrumbs" aria-label="Where">

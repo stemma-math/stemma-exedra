@@ -118,7 +118,7 @@
   }
 </script>
 
-<svelte:head><title>{task ? `${task.title} · ` : ""}Workshop · {group.name} · Stemma</title></svelte:head>
+<svelte:head><title>{task ? `${task.title} – ` : ""}Workshop – {group.name} – Stemma</title></svelte:head>
 
 <main class="page page--narrow stack">
   <nav class="breadcrumbs" aria-label="Where">

@@ -88,15 +88,15 @@
         <div class="table__row">
           <span class="stack stack--tight">
             <strong>{machine.name}</strong>
-            <span class="quiet">{machine.owner.display_name}'s · {runs(machine)}</span>
+            <span class="quiet">{machine.owner.display_name}'s, {runs(machine)}</span>
           </span>
           <span class="quiet">
             {#if machine.agents.length}
               <ol class="plain-list">
                 {#each machine.agents as agent, i (agent.id ?? i)}
                   <li>
-                    {i + 1}. {agentName(agent)}{#if agent.today}
-                      · today {agent.today.jobs}{agent.daily_jobs ? `/${agent.daily_jobs}` : ""} jobs,
+                    {i + 1}. {agentName(agent)}{#if agent.today},
+                      today {agent.today.jobs}{agent.daily_jobs ? `/${agent.daily_jobs}` : ""} jobs,
                       {agent.today.minutes}{agent.daily_minutes ? `/${agent.daily_minutes}` : ""} min{/if}
                   </li>
                 {/each}

@@ -88,7 +88,7 @@
   }
 
   function tokens(count: number | null): string {
-    if (count === null) return "—";
+    if (count === null) return "–";
     return count >= 1000 ? `${(count / 1000).toFixed(1)}k` : String(count);
   }
 
@@ -97,11 +97,11 @@
   }
 
   function cost(usd: number | null): string {
-    return usd === null ? "—" : `$${usd.toFixed(2)}`;
+    return usd === null ? "–" : `$${usd.toFixed(2)}`;
   }
 </script>
 
-<svelte:head><title>Workshop · {group.name} · Stemma</title></svelte:head>
+<svelte:head><title>Workshop – {group.name} – Stemma</title></svelte:head>
 
 {#snippet taskRow(task: Task)}
   <a class="table__row" href="/g/{group.slug}/w/{task.number}">
@@ -112,7 +112,7 @@
         <strong>{task.title}</strong>
       </span>
       <span class="quiet">
-        From {task.origin}, for {task.requester.display_name}{#if task.paper}, on p/{task.paper}{/if}{#if line(task)}{" · "}{line(task)}{/if}
+        From {task.origin}, for {task.requester.display_name}{#if task.paper}, on p/{task.paper}{/if}{#if line(task)}{", "}{line(task)}{/if}
       </span>
     </span>
     <time class="quiet when" datetime={task.updated_at} title={exactly(task.updated_at)}>{when(task.updated_at)}</time>
@@ -167,7 +167,7 @@
                     <strong>{task.title}</strong>
                   </span>
                   <span class="quiet">
-                    For {task.requester.display_name}{#if task.changes?.big}, a big change{/if}{#if line(task)}{" · "}{line(task)}{/if}
+                    For {task.requester.display_name}{#if task.changes?.big}, a big change{/if}{#if line(task)}{", "}{line(task)}{/if}
                   </span>
                 </a>
                 <span class="row" data-density="compact">

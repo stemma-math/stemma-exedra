@@ -15,10 +15,10 @@ describe("starting a chat", () => {
 
   it("names agents with their model", () => {
     expect(agentLabel({ handle: "claude", runner: "claude-code", model: "opus" })).toBe(
-      "@claude · opus",
+      "@claude (opus)",
     );
     expect(agentLabel({ handle: "codex", runner: "codex", model: null })).toBe(
-      "@codex · Codex's default",
+      "@codex (Codex's default)",
     );
   });
 
