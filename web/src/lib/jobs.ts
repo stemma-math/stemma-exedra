@@ -15,19 +15,6 @@ export function applyJob(jobs: Job[], job: Job): Job[] {
 
 /** What a job's agent is doing, in a few words. */
 export function jobStatus(job: Job): string {
-  if (job.kind === "task_run") {
-    const task = job.task ? `w${job.task}` : "a task";
-    switch (job.state) {
-      case "running":
-        return `${job.agent_name} is working on ${task}…`;
-      case "queued":
-        return `${job.agent_name} will work on ${task}`;
-      case "failed":
-        return `${job.agent_name} could not work on ${task}`;
-      default:
-        return "";
-    }
-  }
   switch (job.state) {
     case "running":
       return `${job.agent_name} is answering…`;

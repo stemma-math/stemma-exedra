@@ -1,8 +1,7 @@
 <script lang="ts">
-  import { api, type Paper, type Task, type Thread } from "#lib/api.ts";
+  import { api, type Paper, type Thread } from "#lib/api.ts";
   import Glyph from "#lib/components/Glyph.svelte";
   import PaperList from "#lib/components/PaperList.svelte";
-  import TaskChip from "#lib/components/TaskChip.svelte";
   import ThreadList from "#lib/components/ThreadList.svelte";
   import { listen } from "#lib/events.ts";
   import { groupContext } from "#lib/group.svelte.ts";
@@ -15,15 +14,13 @@
   let papers = $state<Paper[] | null>(null);
   let threads = $state<Thread[] | null>(null);
   let chats = $state<Thread[] | null>(null);
-  let review = $state<Task[]>([]);
 
   async function load() {
     const slug = group.slug;
-    [papers, threads, chats, review] = await Promise.all([
+    [papers, threads, chats] = await Promise.all([
       api.papers(slug).catch(() => []),
       api.threads(slug, { kind: "discussion", limit: SHOWN }).catch(() => []),
       api.threads(slug, { kind: "chat", limit: SHOWN }).catch(() => []),
-      api.tasks(slug, "review").catch(() => []),
     ]);
   }
 
@@ -39,10 +36,6 @@
         if (event.thread.kind === "chat" && chats) chats = applyThreadEvent(chats, event).slice(0, SHOWN);
         if (event.thread.kind === "discussion" && threads)
           threads = applyThreadEvent(threads, event).slice(0, SHOWN);
-      } else if (event.type === "task_updated") {
-        review = [event.task, ...review.filter((t) => t.number !== event.task.number)].filter(
-          (t) => t.state === "review",
-        );
       }
     });
   });
@@ -59,26 +52,6 @@
     </span>
   </div>
 
-  {#if review.length}
-    <section class="stack">
-      <h2 class="label">Waiting for approval</h2>
-      <div class="card">
-        <div class="table tasks">
-          {#each review as task (task.number)}
-            <a class="table__row" href="/g/{group.slug}/w/{task.number}">
-              <TaskChip {task} />
-              <span class="thread-row__title">
-                <span class="identifier quiet">w{task.number}</span>
-                <strong>{task.title}</strong>
-              </span>
-              <span class="quiet when">for {task.requester.display_name}</span>
-            </a>
-          {/each}
-        </div>
-      </div>
-    </section>
-  {/if}
-
   <section class="stack">
     <div class="row">
       <h2 class="label grow">Working papers</h2>
@@ -91,8 +64,7 @@
     {:else if papers.length === 0}
       <div class="card card--empty card__body">
         <p class="empty">
-          No papers yet: a working paper is the readable account of what the group is doing, in LaTeX, compiled
-          by the workshop.
+          No papers yet: a working paper is the readable account of what the group is doing, in LaTeX.
         </p>
       </div>
     {:else}

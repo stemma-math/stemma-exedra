@@ -120,7 +120,7 @@
         </a>
       </li>
       <li>
-        <a class="nav-item" href="{base}/workshop" aria-current={current(`${base}/workshop`) ?? current(`${base}/w`)}>
+        <a class="nav-item" href="{base}/workshop" aria-current={current(`${base}/workshop`)}>
           <Glyph name="sparkles" /><span class="nav-item__label">Workshop</span>
         </a>
       </li>
@@ -216,10 +216,10 @@
     {#if __STEMMA_DESKTOP__}
       <div class="sidebar__connection" role="status">
         <span class="chip chip--{connection.online ? 'success' : 'warning'}">{connection.online ? "Connected" : "Offline"}</span>
-        {#if desktopUI.machineNotKnown}
-          <span class="chip chip--warning">Not known to the hub</span>
+        {#if desktopUI.signedOut}
+          <span class="chip chip--warning">Signed out</span>
         {:else}
-          <span class="chip" class:chip--success={desktopUI.serviceConnected}>{desktopUI.serviceConnected ? "Machine on" : "Machine off"}</span>
+          <span class="chip" class:chip--success={desktopUI.serviceConnected}>{desktopUI.serviceConnected && desktopUI.agentsEnabled ? "Agents on" : "Agents off"}</span>
         {/if}
       </div>
     {/if}

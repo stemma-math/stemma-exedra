@@ -45,7 +45,7 @@
 </script>
 
 <p>
-  Your sessions and tokens: a token lets the command line and agents act as you, with everything
+  Your computers and scripts: a token lets the command line and agents act as you, with everything
   you can do. Keep it like a password, and revoke it when you no longer use it. <code>stemma login {hub}</code>
   makes one for the machine it runs on.
 </p>
@@ -72,13 +72,13 @@
     required
     maxlength="80"
   />
-  <button type="submit" class="button">Create a token</button>
+  <button type="submit" class="button">New token</button>
 </form>
 
 {#if tokens.length}
   <div class="card">
     <div class="table settings-table tokens-table">
-      <div class="table__head"><span>Name</span><span>Last used</span><span></span></div>
+      <div class="table__head"><span>Device</span><span>Last used</span><span></span></div>
       {#each tokens as token (token.id)}
         <div class="table__row">
           <span class="stack stack--tight">
@@ -86,6 +86,8 @@
               {token.name}
               <span class="identifier quiet">{token.prefix}…</span>
             </span>
+            <span class="quiet" title={exactly(token.created_at)}>Created {when(token.created_at)}</span>
+            {#if token.connected}<span class="chip chip--success">Agents on</span><span class="quiet">{token.runners.join(", ")}</span>{/if}
             {#if token.expires_at}
               <span class="quiet">A session's, until {exactly(token.expires_at)}</span>
             {/if}

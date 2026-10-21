@@ -2,8 +2,6 @@
   import type { Snippet } from "svelte";
   import type { StemmaDialog } from "@stemma-math/design-elements/dialog.js";
   import { MACHINE_PAGES, PAGES, type SettingsPage, settingsUI } from "#lib/settings.svelte.ts";
-  import AgentPage from "./AgentPage.svelte";
-  import MachinePage from "./MachinePage.svelte";
   import ProfileSettings from "./ProfileSettings.svelte";
   import TokenSettings from "./TokenSettings.svelte";
 
@@ -71,11 +69,7 @@
                 <h2 class="label">Theme</h2>
                 <stemma-theme-switch fill></stemma-theme-switch>
               </section>
-            {:else if settingsUI.page === "Agents"}
-              <AgentPage />
-            {:else if settingsUI.page === "Machines"}
-              <MachinePage />
-            {:else if settingsUI.page === "Tokens"}
+            {:else if settingsUI.page === "Devices"}
               <TokenSettings />
             {/if}
           {/if}

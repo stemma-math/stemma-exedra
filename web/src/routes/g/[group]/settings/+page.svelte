@@ -150,7 +150,7 @@
       <h2>Invitations</h2>
       <p>
         An invitation is a link: whoever opens it can create an account and join {group.name}, with the
-        role it grants. Admins manage the group; members also ask the workshop for work; guests read and
+        role it grants. Admins manage the group; members create papers; guests read and
         converse, summoning only their own agents. Send it the way you like.
       </p>
 
@@ -238,11 +238,5 @@
     {/if}
   </section>
 
-  <section class="stack">
-    <h2>The workshop</h2>
-    <p>
-      The machines lent to the workshop, their agents and their limits, are in the
-      <a href="/g/{group.slug}/workshop">workshop's panel</a>.
-    </p>
-  </section>
+
 </main>

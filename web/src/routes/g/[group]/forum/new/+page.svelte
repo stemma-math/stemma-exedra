@@ -1,11 +1,10 @@
 <script lang="ts">
   import { goto } from "$app/navigation";
   import { page } from "$app/state";
-  import { api } from "#lib/api.ts";
+  import { api, AGENTS } from "#lib/api.ts";
   import { addressPath, parseAddress } from "#lib/address.ts";
   import Composer from "#lib/components/Composer.svelte";
   import { groupContext } from "#lib/group.svelte.ts";
-  import { summonable } from "#lib/roles.ts";
 
   const context = groupContext();
   const group = $derived(context.group);
@@ -14,14 +13,7 @@
   let agents = $state<string[]>([]);
   const anchor = page.url.searchParams.get("anchor") ?? undefined;
 
-  $effect(() => {
-    api
-      .myAgents()
-      .then((own) => {
-        agents = summonable(own, group.role).map((a) => a.handle);
-      })
-      .catch(() => {});
-  });
+  $effect(() => { agents = AGENTS.map((a) => a.handle); });
 
   function anchorPath(written: string): string {
     const address = parseAddress(written);

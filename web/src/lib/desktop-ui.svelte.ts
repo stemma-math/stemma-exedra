@@ -3,5 +3,6 @@ export const desktopUI = $state({
   signOut: async () => {},
   serviceConnected: null as boolean | null,
   serviceRunning: false,
-  machineNotKnown: false,
+  signedOut: false,
+  agentsEnabled: true,
 });

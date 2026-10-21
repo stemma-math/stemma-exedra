@@ -1,293 +1,173 @@
 <script lang="ts">
-  import { ask } from "#lib/ask.svelte.ts";
-  import AgentAvatar from "../../components/AgentAvatar.svelte";
-  import { RUNNER_NAMES, type Snapshot } from "../api.ts";
+  import type { Snapshot, Explained } from "../api.ts";
   import type { MachineControls } from "../machine.svelte.ts";
-
+  import Glyph from "#lib/components/Glyph.svelte";
   let { controls, data }: { controls: MachineControls; data: Snapshot } = $props();
-  const found = $derived(data.agents.some((agent) => agent.installed));
-  const serving = $derived(
-    data.personal && data.workshop
-      ? "you and the workshop"
-      : data.personal
-        ? "you"
-        : data.workshop
-          ? "the workshop"
-          : "no one yet",
-  );
-
-  function register(event?: Event) {
-    event?.preventDefault();
-    controls.save(
-      { kind: "register", name: controls.name, preferred: false },
-      "Machine registered.",
-    );
-  }
-  function start() {
-    controls.save(
-      { kind: "service", personal: data.personal || !data.workshop, workshop: data.workshop },
-      "The service is on.",
-    );
-  }
-  async function remove() {
-    if (
-      await ask({
-        title: "Remove this machine?",
-        text: "Its service stops.",
-        action: "Remove",
-        danger: true,
-      })
-    )
-      controls.save({ kind: "remove" }, "Machine removed.");
+  const labels: Record<string, string> = {
+    enabled: "Run my agents",
+    concurrency: "Jobs at once",
+    priority: "Priority",
+    isolation: "Isolation",
+    image: "Agents' image",
+    workspace: "Workspace",
+    command: "Command",
+    model: "Model",
+    args: "Arguments",
+    timeout_minutes: "Timeout in minutes",
+    "container.env": "Container sign-in variables",
+    "container.files": "Container sign-in files",
+    "container.command": "Command in the container",
+  };
+  const valueText = (setting: Explained) =>
+    Array.isArray(setting.value) ? JSON.stringify(setting.value) : String(setting.value);
+  function save(setting: Explained, value: string) {
+    return controls.save({ kind: "set", key: setting.key, value, group: controls.scope || null });
   }
 </script>
 
-{#if data.service.stopped?.kind === "not_known"}
-  <section class="setting stack" aria-label="Machine status">
-    <h2>The hub no longer knows this machine.</h2>
-    <p class="quiet">
-      Register again to reconnect. Your folder, isolation, runners and offers stay here.
-    </p>
-    <div>
-      <button
-        type="button"
-        class="button button--primary"
-        disabled={controls.busy || !data.me}
-        onclick={() =>
-          controls.save({ kind: "register_again" }, "Registered again. This machine is online.")}
-      >
-        Register again
-      </button>
-    </div>
-  </section>
-{:else if controls.settingUp}
-  <section class="stack" aria-label="Set up this machine">
-    <p class="quiet">Everything here can also be done later from Settings → This machine.</p>
-    <ol class="checklist stack stack--tight">
-      <li class="setting__row">
-        <span class="row grow"
-          >1. Register this machine
-          <span class="chip chip--small" class:chip--success={data.registered}
-            >{data.registered ? "Done" : "Not done"}</span
-          ></span
-        ><button
-          type="button"
-          class="button button--small"
-          disabled={controls.busy || data.registered || !data.me || !controls.name.trim()}
-          onclick={() => register()}
-        >
-          Register
-        </button>
-      </li>
-      <li class="setting__row">
-        <span class="row grow"
-          >2. Your agents found
-          <span class="chip chip--small" class:chip--success={found}
-            >{found ? "Done" : "Not done"}</span
-          ></span
-        ><button
-          type="button"
-          class="button button--small"
-          disabled={controls.busy || found}
-          onclick={() => controls.refresh()}
-        >
-          Check agents
-        </button>
-      </li>
-      <li class="setting__row">
-        <span class="row grow"
-          >3. The service on
-          <span class="chip chip--small" class:chip--success={data.service.running}
-            >{data.service.running ? "Done" : "Not done"}</span
-          ></span
-        ><button
-          type="button"
-          class="button button--small"
-          disabled={controls.busy || data.service.running || !data.registered || !data.me}
-          onclick={start}
-        >
-          Turn on
-        </button>
-      </li>
-    </ol>
-  </section>
-{:else}
-  <section class="setting stack stack--tight" aria-label="Machine status">
-    <div class="setting__row">
-      <h2 class="truncate" title={data.name}>{data.name}</h2>
-      <span class="chip" class:chip--success={data.service.connected === true}
-        >{data.service.connected === true ? "Online" : "Offline"}</span
-      >
-    </div>
-    {#if data.service.stopped?.kind === "refused"}
-      <p class="message message--warning">{data.service.stopped.reason}</p>
-    {/if}
-    <p>The service is {data.service.running ? "on" : "off"}. This machine serves {serving}.</p>
-    <p class="quiet">
-      {data.service.running
-        ? "Keeps working when you close the app."
-        : "Turn on the service to take jobs from the hub."}
-    </p>
-    {#if data.registered}
-      <div>
-        <button
-          type="button"
-          class="button"
-          disabled={controls.busy ||
-            !data.me ||
-            (!data.service.running && !data.personal && !data.workshop)}
-          onclick={() =>
-            controls.save(
-              { kind: "serving", enabled: !data.service.running },
-              data.service.running ? "The service is off." : "The service is on.",
-            )}
-        >
-          {data.service.running ? "Stop service" : "Start service"}
-        </button>
-      </div>
-    {/if}
-  </section>
-
-  {#if data.service.stale_agents.length}
-    <section class="message message--warning stack stack--tight" role="status">
-      <p>
-        The service cannot find
-        {data.service.stale_agents.map((agent) => RUNNER_NAMES[agent] ?? agent).join(", ")}, which
-        {data.service.stale_agents.length === 1 ? "is" : "are"}
-        installed here. Reinstalling the service fixes this.
-      </p>
-      <div>
-        <button
-          type="button"
-          class="button"
-          disabled={controls.busy || !data.me}
-          onclick={() => controls.save({ kind: "serving", enabled: true }, "Service reinstalled.")}
-        >
-          Reinstall service
-        </button>
-      </div>
-    </section>
+<label class="field">
+  Scope
+  <select
+    class="select"
+    bind:value={controls.scope}
+    onchange={() => controls.refresh()}
+    disabled={controls.busy}
+  >
+    <option value="">All groups</option>
+    {#each data.me?.groups ?? [] as group (group.slug)}
+      <option value={group.slug}>{group.name}</option>
+    {/each}
+  </select>
+</label>
+<section class="setting stack">
+  <div class="row">
+    <span class="grow">Service: {data.service.running ? "Running" : "Stopped"}</span>
+    <button
+      type="button"
+      class="button button--small"
+      disabled={controls.busy || data.service.signed_out}
+      onclick={() => controls.save({ kind: "service", enabled: !data.service.running })}
+    >
+      {data.service.running ? "Stop" : "Start"}
+    </button>
+  </div>
+  {#if data.service.signed_out}
+    <p class="message message--warning">Signed out – sign in to run your agents.</p>
   {/if}
+</section>
 
-  <section class="setting stack stack--tight">
-    {#if !data.registered}
-      <form class="stack stack--tight" onsubmit={register}>
-        <label class="field"
-          >Machine name<input class="input" bind:value={controls.name} required /></label
-        >
-        <div>
-          <button
-            type="submit"
-            class="button"
-            disabled={controls.busy || !data.me || !controls.name.trim()}
+{#each ["agents", "agents.claude", "agents.codex", "agents.opencode"] as section (section)}
+  <section class="setting stack">
+    <h2 class="label">
+      {section === "agents"
+        ? "Your agents"
+        : section === "agents.claude"
+          ? "Claude Code"
+          : section === "agents.codex"
+            ? "Codex"
+            : "OpenCode"}
+    </h2>
+    {#each data.settings.filter((setting) =>
+      section === "agents"
+        ? setting.key.split(".").length === 2
+        : setting.key.startsWith(`${section}.`),
+    ) as setting (setting.key)}
+      {@const key = setting.key.slice(section.length + 1)}
+      {@const locked = setting.source.kind === "environment"}
+      <div class="stack stack--tight">
+        <label class="field" for={setting.key}
+          >{labels[key] ?? key}
+          {#if typeof setting.value === "boolean"}
+            <input
+              id={setting.key}
+              type="checkbox"
+              class="checkbox"
+              checked={setting.value}
+              disabled={locked || controls.busy}
+              onchange={(event) => save(setting, String(event.currentTarget.checked))}
+            />
+          {:else if key === "isolation"}
+            <select
+              id={setting.key}
+              class="select"
+              value={valueText(setting)}
+              disabled={locked || controls.busy}
+              onchange={(event) => save(setting, event.currentTarget.value)}
+            >
+              <option value="none">None</option>
+              <option value="docker">Docker</option>
+              <option value="podman">Podman</option>
+            </select>
+          {:else}
+            <input
+              id={setting.key}
+              class="input"
+              type={typeof setting.value === "number" && key !== "priority" ? "number" : "text"}
+              value={valueText(setting)}
+              readonly={locked}
+              disabled={controls.busy}
+              onchange={(event) => save(setting, event.currentTarget.value)}
+            />
+          {/if}
+        </label>
+        {#if locked}
+          <span class="quiet">Set by <code>{setting.source.name}</code></span>
+        {:else if setting.source.kind === "group"}
+          <div class="row">
+            <span class="quiet grow">Set for {controls.scope}</span
+            ><button
+              type="button"
+              class="button button--link button--small"
+              disabled={controls.busy}
+              onclick={() =>
+                controls.save({ kind: "unset", key: setting.key, group: controls.scope })}
+            >
+              Use general value
+            </button>
+          </div>
+        {:else}
+          <span class="quiet"
+            >{setting.source.kind === "default" ? "Default" : "General value"}</span
           >
-            Register this machine
+        {/if}
+        {#if key === "workspace"}
+          <p class="quiet">
+            Stemma manages this folder. Look and open it, but keep your own work elsewhere.
+          </p>
+          <button
+            type="button"
+            class="button button--small"
+            onclick={() =>
+              controls.save({ kind: "show_workspace", group: controls.scope || null }, "")}
+          >
+            Show in Finder
           </button>
-        </div>
-      </form>
-    {:else}
-      <div class="setting__row">
-        <h2 class="label">Name</h2>
-        <span class="truncate grow" title={data.name}>{data.name}</span>
+        {/if}
       </div>
-    {/if}
-    <p class="quiet">How this machine appears to you and your groups.</p>
+    {/each}
   </section>
-
-  <section class="setting stack stack--tight">
-    <label class="setting__row"
-      ><span>Preferred machine</span>
-      <input
-        type="checkbox"
-        role="switch"
-        aria-checked={data.machine?.preferred ?? false}
-        checked={data.machine?.preferred ?? false}
-        disabled={controls.busy || !data.machine}
-        onchange={() => controls.save({ kind: "prefer", preferred: !data.machine?.preferred })}
-      /></label
+{/each}
+<section class="setting stack" aria-label="Doctor">
+  <div class="row">
+    <h2 class="label grow">Doctor</h2>
+    <button
+      type="button"
+      class="button button--small"
+      disabled={controls.busy}
+      onclick={() => controls.refresh()}
     >
-    <p class="quiet">Your agents take jobs here first when this machine is online.</p>
-  </section>
-  <section class="setting stack stack--tight">
-    <label class="setting__row"
-      ><span>Your agents</span>
-      <input
-        type="checkbox"
-        role="switch"
-        aria-checked={data.personal}
-        checked={data.personal}
-        disabled={controls.busy || !data.registered || !data.me}
-        onchange={() =>
-          controls.save({ kind: "service", personal: !data.personal, workshop: data.workshop })}
-      /></label
-    >
-    <p class="quiet">Run your agents here, with your own sign-in, for all your groups.</p>
-  </section>
-  {#each data.agents as agent (agent.runner)}
-    <section class="setting stack stack--tight">
-      <div class="setting__row">
-        <span class="row"
-          ><AgentAvatar name={agent.name} runner={agent.runner} />
-          <h3>{agent.name}</h3></span
-        >
-        <span>{agent.installed ? "Installed" : "Not installed"}</span>
-      </div>
-      <p>
-        {!agent.installed || agent.sign_in === "Not signed in"
-          ? "Not signed in"
-          : agent.sign_in.startsWith("Signed in")
-            ? "Signed in"
-            : agent.sign_in.startsWith("No saved")
-              ? "No saved sign-in"
-              : "Could not check sign-in"}
-      </p>
-      <p class="quiet">
-        {agent.installed
-          ? agent.sign_in.startsWith("Signed in")
-            ? "Ready for your jobs."
-            : `Use ${agent.name} to sign in, then refresh here.`
-          : `Install ${agent.name}, then refresh here.`}
-      </p>
-    </section>
-  {/each}
-  <section class="setting stack stack--tight">
-    <form
-      class="stack stack--tight"
-      onsubmit={(event) => {
-        event.preventDefault();
-        controls.save({ kind: "folder", path: controls.folder });
-      }}
-    >
-      <label class="field"
-        >Repository copies<input
-          class="input"
-          bind:value={controls.folder}
-          required
-          disabled={!data.registered}
-        /></label
+      Check again
+    </button>
+  </div>
+  {#each data.checks as check (check.name)}
+    <div class="stack stack--tight">
+      <strong class="row"
+        ><Glyph name={check.status === "success" ? "check" : "alert"} /> {check.name}</strong
       >
-      <div>
-        <button type="submit" class="button" disabled={controls.busy || !data.registered}>
-          Save folder
-        </button>
-      </div>
-    </form>
-    <p class="quiet">Where Stemma keeps local copies of the groups’ repositories.</p>
-  </section>
-  {#if data.registered}
-    <section class="setting stack stack--tight">
-      <div class="setting__row">
-        <h2>Remove this machine</h2>
-        <button
-          type="button"
-          class="button button--danger"
-          disabled={controls.busy || !data.machine}
-          onclick={remove}
-        >
-          Remove
-        </button>
-      </div>
-      <p class="quiet">Stops the service and takes this machine back from your groups.</p>
-    </section>
-  {/if}
-{/if}
+      <span class="quiet">{check.detail}</span>
+      {#if check.remedy}
+        <span>{check.remedy}</span>
+      {/if}
+    </div>
+  {/each}
+</section>

@@ -54,6 +54,8 @@ export interface ApiToken {
   prefix: string;
   created_at: string;
   last_used_at: string | null;
+  connected: boolean;
+  runners: string[];
   /** When it stops working by itself, as a session's does. */
   expires_at?: string | null;
 }
@@ -65,7 +67,6 @@ export interface CreatedToken extends ApiToken {
 export type ThreadKind = "discussion" | "chat";
 
 /** How hard a chat's resident agent thinks before it answers. */
-export type Effort = "low" | "medium" | "high";
 
 export interface Thread {
   number: number;
@@ -74,8 +75,6 @@ export interface Thread {
   resident_agent: string | null;
   resident_runner: string | null;
   /** The model a chat's resident agent answers with, if the chat chose one. */
-  resident_model?: string | null;
-  resident_effort?: Effort | null;
   anchor: string | null;
   created_by: User;
   created_at: string;
@@ -140,122 +139,20 @@ export const RUNNER_NAMES: Record<string, string> = {
   opencode: "OpenCode",
 };
 
-/** One of a person's own agents, which answer for them in all their groups. */
-export interface PersonalAgent {
-  handle: string;
-  display_name: string;
-  runner: string;
-  model: string | null;
-  args: string[];
-  /** One everyone has, one per runner: changed, not removed. */
-  default: boolean;
-}
-
-/** How much a workshop agent did today. */
-export interface AgentToday {
-  jobs: number;
-  minutes: number;
-}
-
-/** One of the agents a machine offers the workshop, in its owner's order. */
-export interface WorkshopAgent {
-  id?: number | null;
-  runner: string;
-  model: string | null;
-  args: string[];
-  daily_jobs: number | null;
-  daily_minutes: number | null;
-  today?: AgentToday | null;
-}
-
-/** How a machine isolates the workshop's jobs: each in a container of its
- * own, with Docker or Podman, or, as its owner chose, on the machine itself,
- * unisolated. None if it cannot, and then it runs none of them. */
-export type Isolation = "docker" | "podman" | "host";
-
-/** How a machine isolates the workshop's jobs, as people read it. */
-export function isolationName(isolation: Isolation | null): string {
-  switch (isolation) {
-    case "docker":
-      return "Containers (Docker)";
-    case "podman":
-      return "Containers (Podman)";
-    case "host":
-      return "Unisolated";
-    default:
-      return "Cannot isolate";
-  }
-}
-
-/** One of a person's machines, where their own agents run, and the
- * workshops it works for. */
-export interface Machine {
-  id: number;
-  name: string;
-  prefix: string;
-  online: boolean;
-  runners: string[];
-  lean: boolean;
-  latex?: boolean;
-  isolation: Isolation | null;
-  preferred: boolean;
-  workshop: string[];
-  workshop_agents: WorkshopAgent[];
-  version: string | null;
-  created_at: string;
-  last_seen_at: string | null;
-}
-
-/** A machine working for a group's workshop. */
-export interface WorkshopMachine {
-  id: number;
-  name: string;
-  owner: User;
-  online: boolean;
-  lean: boolean;
-  latex?: boolean;
-  isolation: Isolation | null;
-  runners: string[];
-  agents: WorkshopAgent[];
-  added_at: string;
-}
-
-/** A kind of work the workshop knows. */
-export interface Architecture {
-  name: string;
-  description: string;
-  works_on: string;
-  steps: { name: string; description: string }[];
-  big: string[];
-  instructions: string[];
-}
-
-/** What the workshop's jobs consumed. */
-export interface Consumption {
-  jobs: number;
-  seconds: number;
-  input_tokens: number | null;
-  output_tokens: number | null;
-  cache_read_tokens: number | null;
-  cache_write_tokens: number | null;
-  cost_usd: number | null;
-}
-
-export interface ConsumptionDay extends Consumption {
-  day: string;
-  rows: (Consumption & { machine: string; runner: string; model: string | null })[];
-}
-
+export const AGENTS = [
+  { handle: "claude", display_name: "Claude", runner: "claude-code" },
+  { handle: "codex", display_name: "Codex", runner: "codex" },
+  { handle: "opencode", display_name: "OpenCode", runner: "opencode" },
+];
 export type JobState = "queued" | "running" | "done" | "failed" | "cancelled";
 
-export type JobKind = "reply" | "library_build" | "task_run";
+export type JobKind = "reply";
 
 export interface Job {
   id: number;
   kind: JobKind;
   thread: number | null;
   trigger: number | null;
-  task?: number | null;
   agent: string;
   agent_name: string;
   requester: User;
@@ -275,7 +172,6 @@ export type GroupEvent =
   | { type: "message_updated"; thread: number; message: Message }
   | { type: "job_updated"; job: Job }
   | { type: "build_updated"; build: Build }
-  | { type: "task_updated"; task: Task }
   | { type: "paper_updated"; paper: Paper };
 
 export type DeclarationState = "proved" | "sorry" | "missing";
@@ -344,73 +240,6 @@ export interface DeclarationPage extends DeclarationSummary {
   used_by: string[];
   commit: string;
   references: { address: string; title: string }[];
-}
-
-export type TaskState =
-  | "open"
-  | "running"
-  | "review"
-  | "done"
-  | "failed"
-  | "rejected"
-  | "cancelled";
-
-/** Whose approval a change needs. */
-export type Approver = "asker" | "admin" | "author";
-
-/** Who an approver is, in words, for a task asked by `asker`. */
-export function approverName(approver: Approver, asker: string): string {
-  switch (approver) {
-    case "asker":
-      return asker;
-    case "admin":
-      return "an admin";
-    case "author":
-      return "one of the paper's authors";
-  }
-}
-
-/** What a task proposes: a branch, in a pull request of the forge. */
-export interface Changes {
-  repository: string;
-  branch: string;
-  commit: string;
-  pull: number;
-  url: string;
-  big: boolean;
-  why_big: string[];
-  needs: Approver[];
-  approvals: { user: User; approver: Approver; at: string }[];
-  rejected_by: User | null;
-  merged: string | null;
-}
-
-export interface Task {
-  number: number;
-  title: string;
-  instructions: string;
-  architecture: string;
-  /** The paper it changes, by slug, if it changes one. */
-  paper?: string | null;
-  origin: string;
-  requester: User;
-  agent: string | null;
-  state: TaskState;
-  runner: string | null;
-  model: string | null;
-  progress: string | null;
-  reason: string | null;
-  changes: Changes | null;
-  report_message: string | null;
-  created_at: string;
-  updated_at: string;
-  started_at: string | null;
-  finished_at: string | null;
-}
-
-export interface TaskPage extends Task {
-  report: string | null;
-  log: string;
 }
 
 /** A build of a commit of a paper, compiled with latexmk. */
@@ -540,8 +369,6 @@ export const api = {
       title: string;
       kind: ThreadKind;
       resident_agent?: string;
-      model?: string;
-      effort?: Effort;
       anchor?: string;
       body?: string;
       attachments?: number[];
@@ -564,28 +391,6 @@ export const api = {
   search: (group: string, q: string, limit = 50) =>
     get<SearchHit[]>(`${g(group)}/search?${new URLSearchParams({ q, limit: String(limit) })}`),
 
-  architectures: () => get<Architecture[]>("/workshop/architectures"),
-  workshopMachines: (group: string) => get<WorkshopMachine[]>(`${g(group)}/workshop/machines`),
-  addWorkshopMachine: (group: string, machine: number) =>
-    post<void>(`${g(group)}/workshop/machines`, { machine }),
-  removeWorkshopMachine: (group: string, machine: number) =>
-    del<void>(`${g(group)}/workshop/machines/${machine}`),
-  consumption: (group: string, days = 14) =>
-    get<ConsumptionDay[]>(`${g(group)}/workshop/consumption?days=${days}`),
-
-  myAgents: () => get<PersonalAgent[]>("/me/agents"),
-  createMyAgent: (agent: PersonalAgent) => post<PersonalAgent>("/me/agents", agent),
-  updateMyAgent: (agent: PersonalAgent) =>
-    put<PersonalAgent>(`/me/agents/${encodeURIComponent(agent.handle)}`, agent),
-  deleteMyAgent: (handle: string) => del<void>(`/me/agents/${encodeURIComponent(handle)}`),
-
-  machines: () => get<Machine[]>("/me/machines"),
-  preferMachine: (id: number, preferred: boolean) =>
-    patch<Machine>(`/me/machines/${id}`, { preferred }),
-  revokeMachine: (id: number) => del<void>(`/me/machines/${id}`),
-  setWorkshopAgents: (id: number, agents: WorkshopAgent[]) =>
-    put<WorkshopAgent[]>(`/me/machines/${id}/workshop-agents`, agents),
-
   library: (group: string) => get<LibraryState>(`${g(group)}/library`),
   declarations: (
     group: string,
@@ -601,7 +406,6 @@ export const api = {
     get<DeclarationPage>(`${g(group)}/library/declarations/${encodeURIComponent(name)}`),
   builds: (group: string) => get<Build[]>(`${g(group)}/library/builds`),
   build: (group: string, id: number) => get<BuildLog>(`${g(group)}/library/builds/${id}`),
-  rebuild: (group: string) => post<Build>(`${g(group)}/library/builds`, {}),
 
   papers: (group: string) => get<Paper[]>(`${g(group)}/papers`),
   paper: (group: string, slug: string) =>
@@ -617,18 +421,6 @@ export const api = {
     del<Paper>(
       `${g(group)}/papers/${encodeURIComponent(slug)}/authors/${encodeURIComponent(username)}`,
     ),
-  rebuildPaper: (group: string, slug: string) =>
-    post<Paper>(`${g(group)}/papers/${encodeURIComponent(slug)}/builds`, {}),
-  editPaper: (group: string, slug: string, title: string, instructions: string) =>
-    post<Task>(`${g(group)}/papers/${encodeURIComponent(slug)}/tasks`, { title, instructions }),
-
-  tasks: (group: string, state?: TaskState) =>
-    get<Task[]>(`${g(group)}/tasks${state ? `?state=${state}` : ""}`),
-  task: (group: string, n: number) => get<TaskPage>(`${g(group)}/tasks/${n}`),
-  cancelTask: (group: string, n: number) => del<void>(`${g(group)}/tasks/${n}`),
-  approveTask: (group: string, n: number) => post<void>(`${g(group)}/tasks/${n}/approve`, {}),
-  rejectTask: (group: string, n: number) => post<void>(`${g(group)}/tasks/${n}/reject`, {}),
-
   threadJobs: (group: string, n: number) => get<Job[]>(`${g(group)}/threads/${n}/jobs`),
   cancelJob: (group: string, id: number) => del<void>(`${g(group)}/jobs/${id}`),
 

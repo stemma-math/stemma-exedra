@@ -1,7 +1,9 @@
 <script lang="ts">
   import { goto } from "$app/navigation";
   import { homeOf } from "../../session.svelte.ts";
-  import { login } from "../api.ts";
+  import { ask } from "#lib/ask.svelte.ts";
+  import { openSettings } from "#lib/settings.svelte.ts";
+  import { action, login } from "../api.ts";
   import type { MachineControls } from "../machine.svelte.ts";
 
   interface Props {
@@ -17,6 +19,22 @@
         try {
           await login(controls.url, controls.username, controls.password);
           await controls.load();
+          const run = await ask({
+            title: "Run your agents on this computer?",
+            text: "Your agents answer for you using your own sign-in to Claude Code, Codex and OpenCode.",
+            action: "Run my agents",
+          });
+          if (
+            controls.data?.settings.find((s) => s.key === "agents.enabled")?.source.kind !==
+            "environment"
+          )
+            await action({ kind: "set", key: "agents.enabled", value: String(run), group: null });
+          if (run) {
+            await action({ kind: "service", enabled: true });
+            await controls.load();
+            controls.settingUp = true;
+            openSettings("This machine");
+          }
           if (controls.data?.me) await goto(homeOf(controls.data.me), { replaceState: true });
         } finally {
           controls.password = "";

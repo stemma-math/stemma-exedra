@@ -518,51 +518,6 @@ stemma-toast-region {
   padding: 0;
 }
 
-/* ── The workshop ───────────────────────────────────────────────────── */
-
-.tasks {
-  --columns: auto minmax(0, 1fr) auto;
-}
-
-@media (max-width: 40rem) {
-  .tasks {
-    --columns: auto minmax(0, 1fr);
-  }
-
-  .tasks .when {
-    display: none;
-  }
-}
-
-.consumption-table {
-  --columns: auto auto auto auto auto;
-}
-
-.consumption-table .numeric {
-  justify-self: end;
-}
-
-/* Tables of settings: their columns fit what they hold, across rows. */
-.machines-table {
-  --columns: minmax(0, 1fr) auto auto auto;
-}
-
-.workshop-machines-table {
-  --columns: minmax(0, 1fr) minmax(0, 1fr) auto;
-}
-
-.workshop-machines-table.is-managed {
-  --columns: minmax(0, 1fr) minmax(0, 1fr) auto auto;
-}
-
-.workshop-agents-table {
-  --columns: auto minmax(0, 1fr) auto auto auto auto;
-}
-
-.my-agents-table {
-  --columns: minmax(0, 1fr) fit-content(14rem) auto;
-}
-
 .members-table {
   --columns: auto minmax(0, 1fr) auto auto;
 }
@@ -648,29 +603,6 @@ stemma-toast-region {
   display: grid;
   grid-template-columns: repeat(auto-fit, minmax(min(100%, 14rem), 1fr));
   gap: var(--space-4);
-}
-
-/* ── The workshop's panel ───────────────────────────────────────────── */
-
-.tasks--reviewed {
-  --columns: auto minmax(0, 1fr) auto;
-}
-
-/* A link that is a block of a row, read as its text. */
-.link-plain {
-  color: inherit;
-  text-decoration: none;
-}
-
-.architecture-steps {
-  margin: 0;
-  padding-left: var(--space-5);
-}
-
-@media (max-width: 40rem) {
-  .tasks--reviewed {
-    --columns: minmax(0, 1fr);
-  }
 }
 
 .sidebar__head { padding: var(--space-5) var(--space-5) var(--space-3); }

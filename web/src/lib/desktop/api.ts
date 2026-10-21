@@ -1,43 +1,32 @@
 import { invoke } from "@tauri-apps/api/core";
-import type { Machine, Me, WorkshopAgent } from "../api.ts";
-
-export { RUNNER_NAMES, RUNNERS } from "../api.ts";
-export type { WorkshopAgent };
-export interface Credentials {
-  env?: string[];
-  files?: { from: string; to?: string }[];
+import type { Me } from "../api.ts";
+export interface Explained {
+  key: string;
+  value: string | number | boolean | unknown[];
+  source: { kind: "default" | "file" | "group" | "environment" | "command_line"; name?: string };
+}
+export interface Check {
+  name: string;
+  status: "success" | "warning" | "danger";
+  detail: string;
+  remedy: string | null;
 }
 export interface Snapshot {
   hub: string | null;
   username: string | null;
   me: Me | null;
   hub_error: string | null;
-  registered: boolean;
-  offers: WorkshopAgent[];
-  machine: Machine | null;
-  name: string;
-  work_dir: string;
-  personal: boolean;
-  workshop: boolean;
   service: {
     installed: boolean;
     running: boolean;
-    personal: boolean;
-    workshop: boolean;
     connected: boolean | null;
-    stopped: { kind: "not_known" } | { kind: "refused"; reason: string } | null;
+    signed_out: boolean;
     logs: string;
-    stale_agents: string[];
   };
-  agents: { runner: string; name: string; installed: boolean; sign_in: string }[];
-  elan: string | null;
-  latex: string | null;
-  runtime: string;
-  image: string;
-  image_ready: boolean;
-  credentials: Record<string, Credentials>;
+  settings: Explained[];
+  checks: Check[];
 }
-export const snapshot = () => invoke<Snapshot>("snapshot");
+export const snapshot = (group: string | null = null) => invoke<Snapshot>("snapshot", { group });
 export const action = (action: object) => invoke<void>("action", { action });
 export const login = (url: string, username: string, password: string) =>
   invoke<void>("login", { url, username, password });

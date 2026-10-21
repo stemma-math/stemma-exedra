@@ -4,7 +4,6 @@
   import { listen } from "#lib/events.ts";
   import { exactly, when } from "#lib/format.ts";
   import { groupContext } from "#lib/group.svelte.ts";
-  import { asksForWork } from "#lib/roles.ts";
   import { toastError } from "#lib/toast.ts";
 
   const context = groupContext();
@@ -25,14 +24,6 @@
     });
   });
 
-  async function rebuild() {
-    try {
-      await api.rebuild(group.slug);
-      await load();
-    } catch (error) {
-      toastError(error);
-    }
-  }
 </script>
 
 <svelte:head><title>Builds – Library – {group.name}</title></svelte:head>
@@ -46,12 +37,9 @@
   </nav>
   <div class="page__head">
     <h1>Builds</h1>
-    {#if asksForWork(group.role)}
-      <button type="button" class="button push" onclick={rebuild}>Build main again</button>
-    {/if}
   </div>
   <p class="quiet">
-    A workshop machine with Lean builds each new commit of <code>main</code>, and inspects it. The library's
+    Earlier build results are kept here. New builds are paused. The library's
     state is its last build that passed.
   </p>
   {#if builds === null}

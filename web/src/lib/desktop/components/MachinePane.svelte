@@ -2,7 +2,6 @@
   import type { SettingsPage } from "#lib/settings.svelte.ts";
   import type { MachineControls } from "../machine.svelte.ts";
   import ThisMachine from "./ThisMachine.svelte";
-  import Workshop from "./Workshop.svelte";
 
   let { controls, page }: { controls: MachineControls; page: SettingsPage } = $props();
 </script>
@@ -36,8 +35,6 @@
   {@const data = controls.data}
   {#if page === "This machine"}
     <ThisMachine {controls} {data} />
-  {:else}
-    <Workshop {controls} {data} />
   {/if}
 {:else if !controls.busy}
   <p class="quiet">Could not read this machine’s settings. Try Refresh.</p>

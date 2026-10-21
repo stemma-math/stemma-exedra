@@ -38,7 +38,9 @@
       connection.hub = controls.data.hub ?? "";
       desktopUI.serviceConnected = controls.data.service.connected;
       desktopUI.serviceRunning = controls.data.service.running;
-      desktopUI.machineNotKnown = controls.data.service.stopped?.kind === "not_known";
+      desktopUI.signedOut = controls.data.service.signed_out;
+      desktopUI.agentsEnabled =
+        controls.data.settings.find((s) => s.key === "agents.enabled")?.value === true;
       if (controls.data.me && controls.settingUp && !setupShown) {
         setupShown = true;
         openSettings("This machine");

@@ -48,7 +48,7 @@
   <h1>New working paper</h1>
   <p class="quiet">
     A working paper is the readable account of what the group is doing: a LaTeX repository of the group, made from a
-    template, compiled into a PDF by the workshop after each push.
+    template.
   </p>
   {#if asksForWork(group.role)}
     <form class="card card__body form" onsubmit={create}>

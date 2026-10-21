@@ -2,7 +2,7 @@
   import { page } from "$app/state";
   import { tick } from "svelte";
   import { addressPath, parseAddress } from "#lib/address.ts";
-  import { ApiError, api, type Job, type Message, type Thread } from "#lib/api.ts";
+  import { ApiError, api, AGENTS, type Job, type Message, type Thread } from "#lib/api.ts";
   import Composer from "#lib/components/Composer.svelte";
   import JobItem from "#lib/components/JobItem.svelte";
   import MessageItem from "#lib/components/MessageItem.svelte";
@@ -11,7 +11,6 @@
   import { exactly } from "#lib/format.ts";
   import { groupContext } from "#lib/group.svelte.ts";
   import { applyJob } from "#lib/jobs.ts";
-  import { summonable } from "#lib/roles.ts";
   import { forgetReferences } from "#lib/references.ts";
   import { session } from "#lib/session.svelte.ts";
   import { toastError } from "#lib/toast.ts";
@@ -61,14 +60,7 @@
     }
   }
 
-  $effect(() => {
-    api
-      .myAgents()
-      .then((own) => {
-        agents = summonable(own, group.role).map((a) => a.handle);
-      })
-      .catch(() => {});
-  });
+  $effect(() => { agents = AGENTS.map((a) => a.handle); });
 
   async function cancel(job: Job) {
     try {
@@ -207,7 +199,7 @@
         />
       {/each}
       {#each jobs as job (job.id)}
-        <JobItem {job} group={group.slug} canCancel={admin || job.requester.id === viewer} oncancel={cancel} />
+        <JobItem {job} canCancel={admin || job.requester.id === viewer} oncancel={cancel} />
       {/each}
     </ol>
 

@@ -1,6 +1,5 @@
 // What each role may do in a group, as the hub decides it: admins manage
-// the group and approve big changes, members also ask the workshop for
-// work, and guests read and converse, summoning only their own agents.
+// the group, members create papers, and everyone reads and converses.
 
 import type { Role } from "./api";
 
@@ -12,8 +11,7 @@ export const ROLE_NAMES: Record<Role, string> = {
   guest: "Guest",
 };
 
-/** Whether a role may ask the workshop for work: hand it tasks, directly
- * or through an agent, and ask for builds of the library. */
+/** Whether a role may create a paper. */
 export function asksForWork(role: Role): boolean {
   return role !== "guest";
 }
@@ -24,12 +22,7 @@ export interface Summonable {
   display_name: string;
 }
 
-/** The group's workshop, which every group has. */
-export const WORKSHOP: Summonable = { handle: "workshop", display_name: "Workshop" };
-
-/** The agents someone with `role` may summon in a group: their own, and
- * the workshop, unless they are a guest. */
-export function summonable(own: Summonable[], role: Role): Summonable[] {
-  const mine = own.filter((agent) => agent.handle !== WORKSHOP.handle);
-  return asksForWork(role) ? [...mine, WORKSHOP] : mine;
+/** Every person can summon the same three agents. */
+export function summonable(own: Summonable[], _role: Role): Summonable[] {
+  return own;
 }

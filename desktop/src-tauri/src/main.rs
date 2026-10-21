@@ -2,15 +2,10 @@
 
 use anyhow::Context as _;
 use serde::{Deserialize, Serialize};
-use std::collections::BTreeMap;
-use std::path::PathBuf;
+use stemma_client::config::{Explained, Settings, Source};
 use stemma_client::{Hub, config::Credentials};
-use stemma_core::api::{Machine, Me, WorkshopAgent};
-use stemma_worker::{
-    control, detect, image,
-    isolation::{AgentSignIn, Runtime, SignInFile},
-    machine, service,
-};
+use stemma_core::api::Me;
+use stemma_worker::{doctor, service};
 use tauri::menu::{Menu, MenuItem, MenuItemKind, PredefinedMenuItem};
 use tauri::{Emitter, Manager, State, WebviewWindow};
 use transport::{subscribe, unsubscribe};
@@ -44,118 +39,33 @@ struct Snapshot {
     username: Option<String>,
     me: Option<Me>,
     hub_error: Option<String>,
-    registered: bool,
-    offers: Vec<WorkshopAgent>,
-    machine: Option<Machine>,
-    name: String,
-    work_dir: String,
-    personal: bool,
-    workshop: bool,
     service: service::Status,
-    agents: Vec<detect::AgentStatus>,
-    elan: Option<String>,
-    latex: Option<String>,
-    runtime: Runtime,
-    image: String,
-    image_ready: bool,
-    credentials: BTreeMap<String, AgentSignIn>,
+    settings: Vec<Explained>,
+    checks: Vec<doctor::Check>,
 }
 
 #[tauri::command]
-async fn snapshot(window: WebviewWindow) -> Result<Snapshot> {
+async fn snapshot(window: WebviewWindow, group: Option<String>) -> Result<Snapshot> {
     local(&window)?;
-    let config = Credentials::load().map_err(error)?.with_env();
-    let machine =
-        machine::MachineConfig::load_from(&machine::path().map_err(error)?).map_err(error)?;
-    let settings = machine
-        .as_ref()
-        .and_then(|m| m.isolation.clone())
-        .unwrap_or_default();
-    let runners = machine
-        .as_ref()
-        .map(|m| m.runners.clone())
-        .unwrap_or_default();
-    let mut hub_error = None;
-    let mut me = None;
-    let mut remote = None;
-    if config.token.is_some() {
-        match config.hub() {
-            Ok(hub) => match hub.me().await {
-                Ok(person) => {
-                    me = Some(person);
-                    if let Some(machine) = &machine {
-                        match control::check_hub(machine, &hub) {
-                            Ok(()) => match control::this(&hub).await {
-                                Ok(machine) => remote = Some(machine),
-                                Err(e)
-                                    if e.downcast_ref::<machine::Stopped>()
-                                        == Some(&machine::Stopped::NotKnown) => {}
-                                Err(e) => hub_error = Some(error(e)),
-                            },
-                            Err(e) => hub_error = Some(error(e)),
-                        }
-                    }
-                }
-                Err(e) => hub_error = Some(error(e)),
-            },
-            Err(e) => hub_error = Some(error(e)),
-        }
-    }
-    let (agents, elan, latex) = tokio::join!(
-        detect::agents(&runners),
-        detect::version("elan"),
-        detect::version("latexmk")
-    );
-    let image_ready = if machine.is_some() && settings.runtime() != Runtime::Host {
-        tokio::time::timeout(
-            std::time::Duration::from_secs(3),
-            stemma_worker::isolation::resolve(
-                &settings,
-                config.hub.as_deref().unwrap_or(""),
-                std::env::var_os("PATH").as_deref(),
-            ),
-        )
-        .await
-        .is_ok_and(|result| result.is_ok())
-    } else {
-        false
+    let credentials = Credentials::load().map_err(error)?.with_env();
+    let (me, hub_error) = match hub() {
+        Ok(hub) => match hub.me().await {
+            Ok(me) => (Some(me), None),
+            Err(e) => (None, Some(error(e))),
+        },
+        Err(e) => (None, Some(error(e))),
     };
-    let mut service = service::status().await.map_err(error)?;
-    if machine.is_none() {
-        service.running = false;
-        service.connected = None;
-    }
-    let personal = service.personal;
-    let workshop = service.workshop;
+    let settings = Settings::load()
+        .and_then(|s| s.explain(group.as_deref(), &Default::default()))
+        .map_err(error)?;
     Ok(Snapshot {
-        hub: config.hub,
-        username: config.username,
+        hub: credentials.hub,
+        username: credentials.username,
         me,
         hub_error,
-        registered: machine.is_some(),
-        offers: machine
-            .as_ref()
-            .map(|c| c.offers.clone())
-            .unwrap_or_default(),
-        machine: remote,
-        name: machine
-            .as_ref()
-            .map(|m| m.name.clone())
-            .unwrap_or_else(|| "This machine".into()),
-        work_dir: machine
-            .as_ref()
-            .map(|m| m.worker_config(&[]).work_dir().display().to_string())
-            .unwrap_or_default(),
-        personal,
-        workshop,
-        service,
-        agents,
-        elan,
-        latex,
-        runtime: settings.runtime(),
-        image: settings.image(),
-        image_ready,
-        credentials: settings.agents,
+        service: service::status().await.map_err(error)?,
+        settings,
+        checks: doctor::run(group.as_deref()).await,
     })
 }
 
@@ -167,19 +77,17 @@ async fn login(
     password: String,
 ) -> Result<()> {
     local(&window)?;
-    if let Ok(machine) = control::load() {
-        let target = Hub::new(&url, None).map_err(error)?;
-        control::check_hub(&machine, &target).map_err(error)?;
-        // A different account must not accidentally keep serving the old owner.
-        if Credentials::load().map_err(error)?.username.as_deref() != Some(&username) {
-            return Err(
-                "Remove this machine from its current account before switching accounts".into(),
-            );
-        }
-    }
-    stemma_client::sign_in::password(&url, &username, &password, "desktop", None)
+    let host = std::env::var("HOSTNAME")
+        .or_else(|_| {
+            std::process::Command::new("hostname")
+                .output()
+                .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_owned())
+                .map_err(|_| std::env::VarError::NotPresent)
+        })
+        .unwrap_or_else(|_| "This computer".into());
+    stemma_client::sign_in::password(&url, &username, &password, &host, None)
         .await
-        .map_err(|e| format!("{e:#}"))?;
+        .map_err(error)?;
     transport::stop(window.app_handle());
     Ok(())
 }
@@ -187,155 +95,81 @@ async fn login(
 #[derive(Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 enum Action {
-    Register {
-        name: String,
-        preferred: bool,
+    Set {
+        key: String,
+        value: String,
+        group: Option<String>,
     },
-    RegisterAgain,
-    Prefer {
-        preferred: bool,
-    },
-    Remove,
-    Folder {
-        path: PathBuf,
-    },
-    Serving {
-        enabled: bool,
+    Unset {
+        key: String,
+        group: Option<String>,
     },
     Service {
-        personal: bool,
-    },
-    Containers {
-        runtime: Runtime,
-        image: String,
-    },
-    Build {
-        source: String,
-    },
-    Lend {
-        group: String,
         enabled: bool,
     },
-    Agents {
-        agents: Vec<WorkshopAgent>,
-    },
-    Credentials {
-        runner: String,
-        env: Vec<String>,
-        files: Vec<SignInFile>,
+    ShowWorkspace {
+        group: Option<String>,
     },
 }
 
 #[tauri::command]
 async fn action(window: WebviewWindow, state: Shared<'_>, action: Action) -> Result<()> {
     local(&window)?;
-    perform(state, action).await.map_err(|e| format!("{e:#}"))
-}
-
-async fn perform(state: Shared<'_>, action: Action) -> anyhow::Result<()> {
-    // Image builds can take minutes; keep the service available for shutdown.
-    if let Action::Build { source } = &action {
-        let settings = control::load()?.isolation.unwrap_or_default();
-        let build = image::Build {
-            tag: settings.image(),
-            source: image::Source::parse(source).context("Choose release or git")?,
-            toolchain: image::TOOLCHAIN.trim().into(),
-            version: env!("CARGO_PKG_VERSION").into(),
-        };
-        control::build_image(&settings, &build).await.map_err(|_| anyhow::anyhow!(
-            "The image could not be prepared. Make sure Docker or Podman is running, then try again."
-        ))?;
-        let config = control::load()?;
-        if config.personal || config.workshop_enabled {
-            ensure_serving()?;
-        }
-        return Ok(());
-    }
     let _guard = state.lock().await;
+    perform(action).await.map_err(error)
+}
+async fn perform(action: Action) -> anyhow::Result<()> {
     match action {
-        Action::Register { name, preferred } => {
-            let config = control::register(&hub()?, &name, preferred).await?;
-            ensure_serving()?;
-            control::wait_online(&config).await?;
+        Action::Set { key, value, group } => {
+            let settings = Settings::load()?;
+            anyhow::ensure!(
+                !matches!(
+                    settings.get(&key, group.as_deref())?.source,
+                    Source::Environment(_)
+                ),
+                "This field is set by an environment variable"
+            );
+            settings.write(&key, Some(&value), group.as_deref())?;
         }
-        Action::RegisterAgain => {
-            let config = control::register_again(&hub()?).await?;
-            ensure_serving()?;
-            control::wait_online(&config).await?;
+        Action::Unset { key, group } => {
+            Settings::load()?.write(&key, None, group.as_deref())?;
         }
-        Action::Prefer { preferred } => {
-            let hub = hub()?;
-            let machine = control::this(&hub).await?;
-            hub.prefer_machine(machine.id, preferred).await?;
-        }
-        Action::Remove => {
-            let hub = hub()?;
-            let machine = control::this(&hub).await?;
-            service::remove_machine()?;
-            hub.revoke_machine(machine.id).await?;
-            std::fs::remove_file(machine::path()?)?;
-        }
-        Action::Folder { path } => {
-            control::configure(Some(path), None, None)?;
-        }
-        Action::Service { personal } => {
-            let workshop = !control::this(&hub()?).await?.workshop.is_empty();
-            control::configure(None, Some(personal), Some(workshop))?;
-            let config = control::load()?;
-            control::check_hub(&config, &hub()?)?;
-            if personal || workshop {
-                ensure_serving()?;
-                control::wait_online(&control::load()?).await?;
-            } else {
-                service::stop()?;
-            }
-        }
-        Action::Serving { enabled } => {
+        Action::Service { enabled } => {
             if enabled {
-                ensure_serving()?;
-                control::wait_online(&control::load()?).await?;
+                hub()?.me().await?;
+                let stemma = stemma_worker::detect::find_program(
+                    "stemma",
+                    std::env::var_os("PATH").as_deref(),
+                )
+                .context("Install the stemma CLI before starting the service")?;
+                service::install(&stemma)?;
             } else {
-                service::stop()?;
+                service::uninstall()?;
             }
         }
-
-        Action::Containers { runtime, image } => {
-            control::containers(runtime, image)?;
-        }
-        Action::Build { .. } => unreachable!("handled before locking the service"),
-        Action::Lend { group, enabled } => {
-            let hub = hub()?;
-            if enabled {
-                return control::lend(&hub, &group, &control::stemma()?).await;
-            }
-            let machine = control::this(&hub).await?;
-            hub.remove_workshop_machine(&group, machine.id).await?;
-            let workshop = !control::this(&hub).await?.workshop.is_empty();
-            let config = control::load()?;
-            control::configure(None, None, Some(workshop))?;
-            if config.personal || workshop {
-                ensure_serving()?;
-                control::wait_online(&control::load()?).await?;
+        Action::ShowWorkspace { group } => {
+            let settings = Settings::load()?;
+            let folder = if let Some(group) = group {
+                settings.workspace(&group)?
             } else {
-                service::stop()?;
-            }
-        }
-        Action::Agents { agents } => {
-            let hub = hub()?;
-            let machine = control::this(&hub).await?;
-            control::offers(&hub, &machine, &agents).await?;
-        }
-        Action::Credentials { runner, env, files } => {
-            control::credentials(runner, env, files)?;
+                stemma_client::config::expand_home(
+                    settings
+                        .get("agents.workspace", None)?
+                        .value
+                        .as_str()
+                        .unwrap(),
+                )?
+            };
+            #[cfg(target_os = "macos")]
+            let mut command = std::process::Command::new("open");
+            #[cfg(target_os = "linux")]
+            let mut command = std::process::Command::new("xdg-open");
+            #[cfg(target_os = "windows")]
+            let mut command = std::process::Command::new("explorer");
+            command.arg(folder).spawn()?;
         }
     }
     Ok(())
-}
-
-fn ensure_serving() -> anyhow::Result<()> {
-    // Installation starts the service too; start is also safe for an existing one.
-    let stemma = control::stemma()?;
-    service::install(&stemma)
 }
 
 #[tauri::command]
@@ -382,7 +216,15 @@ fn main() {
             let allowed_origin = origin.clone();
             let mut window = app.config().app.windows[0].clone();
             window.url = tauri::WebviewUrl::External(origin);
-            tauri::WebviewWindowBuilder::from_config(app, &window)?
+            let mut builder = tauri::WebviewWindowBuilder::from_config(app, &window)?;
+            if let Some(directory) = std::env::var_os("STEMMA_WEBVIEW_DIR") {
+                builder = builder.data_directory(directory.into());
+                #[cfg(target_os = "macos")]
+                {
+                    builder = builder.incognito(true);
+                }
+            }
+            builder
                 .on_navigation(move |url| page::same_origin(url, &allowed_origin))
                 .build()?;
             let menu = Menu::default(app.handle())?;

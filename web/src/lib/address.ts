@@ -7,8 +7,7 @@ export type Address =
   | { kind: "messages"; thread: number; from: number; to: number }
   | { kind: "attachment"; thread: number; message: number; name: string }
   | { kind: "paper"; slug: string }
-  | { kind: "declaration"; name: string }
-  | { kind: "task"; task: number };
+  | { kind: "declaration"; name: string };
 
 const MAX = 4294967295;
 
@@ -45,10 +44,6 @@ export function parseAddress(s: string): Address | null {
   if (s.startsWith("p/")) {
     const slug = s.slice(2);
     return isSlug(slug) ? { kind: "paper", slug } : null;
-  }
-  if (s.startsWith("w")) {
-    const task = number(s.slice(1));
-    return task === null ? null : { kind: "task", task };
   }
   if (!s.startsWith("t")) return null;
 
@@ -97,8 +92,6 @@ export function formatAddress(a: Address): string {
       return `p/${a.slug}`;
     case "declaration":
       return `lean:${a.name}`;
-    case "task":
-      return `w${a.task}`;
   }
 }
 
@@ -116,8 +109,6 @@ export function addressPath(a: Address, group: string): string {
       return `/g/${group}/p/${a.slug}`;
     case "declaration":
       return `/g/${group}/lib/${a.name}`;
-    case "task":
-      return `/g/${group}/w/${a.task}`;
   }
 }
 

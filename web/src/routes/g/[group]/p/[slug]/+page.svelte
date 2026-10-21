@@ -1,16 +1,13 @@
 <script lang="ts">
   import { ask as askFirst } from "#lib/ask.svelte.ts";
   import { hubUrl } from "#lib/transport.svelte.ts";
-  import { goto } from "$app/navigation";
   import { page } from "$app/state";
   import { api, type Member, type PaperPage } from "#lib/api.ts";
-  import type { StemmaDialog } from "@stemma-math/design-elements";
   import BuildChip from "#lib/components/BuildChip.svelte";
   import Glyph from "#lib/components/Glyph.svelte";
   import { listen } from "#lib/events.ts";
   import { exactly, fileSize } from "#lib/format.ts";
   import { groupContext } from "#lib/group.svelte.ts";
-  import { asksForWork } from "#lib/roles.ts";
   import { session } from "#lib/session.svelte.ts";
   import { toastError } from "#lib/toast.ts";
 
@@ -21,10 +18,6 @@
   let missing = $state(false);
   let members = $state<Member[]>([]);
   let adding = $state("");
-  let title = $state("");
-  let instructions = $state("");
-  let asking = $state(false);
-  let askDialog: StemmaDialog | undefined = $state();
 
   async function load() {
     const wanted = slug;
@@ -95,30 +88,6 @@
     }
   }
 
-  async function rebuild() {
-    if (!paper) return;
-    try {
-      await api.rebuildPaper(group.slug, paper.slug);
-      await load();
-    } catch (error) {
-      toastError(error);
-    }
-  }
-
-  async function ask(event: SubmitEvent) {
-    event.preventDefault();
-    if (!paper) return;
-    asking = true;
-    try {
-      const task = await api.editPaper(group.slug, paper.slug, title.trim(), instructions.trim());
-      askDialog?.close();
-      await goto(`/g/${group.slug}/w/${task.number}`);
-    } catch (error) {
-      toastError(error);
-    } finally {
-      asking = false;
-    }
-  }
 </script>
 
 <svelte:head><title>{paper?.title ?? slug} – {group.name}</title></svelte:head>
@@ -145,9 +114,7 @@
         <span class="identifier truncate" title={paper.forge_url}>{paper.forge_url}</span>
       {/if}
       <a class="button" href="/g/{group.slug}/p/{paper.slug}/edit"><Glyph name="edit" /> Editor</a>
-      {#if asksForWork(group.role)}
-        <button type="button" class="button" data-opens="paper-ask"><Glyph name="sparkles" /> Ask the workshop</button>
-      {/if}
+
       <button type="button" class="button" data-opens="paper-build">
         Build
         {#if paper.latest}<BuildChip build={paper.latest} />{/if}
@@ -168,7 +135,7 @@
     {:else if paper.latest && (paper.latest.state === "running" || paper.latest.state === "queued")}
       <p class="row quiet">
         {#if paper.latest.state === "running"}<span class="spinner" aria-hidden="true"></span>{/if}
-        {paper.latest.progress ?? "Waiting for a workshop machine with LaTeX"}
+        {paper.latest.progress ?? "No new builds are scheduled"}
       </p>
     {/if}
 
@@ -198,7 +165,7 @@
       </p>
     {:else}
       <div class="card card--empty card__body">
-        <p class="empty">No PDF yet: the workshop compiles the paper after each push, on a machine with LaTeX.</p>
+        <p class="empty">No PDF is available. New builds are paused.</p>
       </div>
     {/if}
 
@@ -227,13 +194,10 @@
             <p class="dialog__text">The paper has not been compiled yet.</p>
           {/if}
           <p class="dialog__text">
-            It compiles from <code>main.tex</code> with <code>latexmk -pdf</code>: pdfLaTeX and BibTeX. Each push to
-            <code>main</code> is compiled.
+            It compiles from <code>main.tex</code> with <code>latexmk -pdf</code>: pdfLaTeX and BibTeX. Builds are currently paused.
           </p>
           <div class="dialog__actions">
-            {#if asksForWork(group.role)}
-              <button type="button" class="button" onclick={rebuild}>Compile again</button>
-            {/if}
+        
             <button type="button" class="button button--primary" data-closes>Close</button>
           </div>
         </div>
@@ -244,7 +208,7 @@
       <dialog class="dialog" aria-labelledby="paper-authors-title">
         <div class="dialog__body">
           <h2 class="dialog__title" id="paper-authors-title">Authors</h2>
-          <p class="dialog__text">An author approves the workshop's changes to the paper that others ask for.</p>
+          <p class="dialog__text">Authors manage who writes the paper.</p>
           <ul class="plain-list stack stack--tight">
             {#each paper.authors as a (a.id)}
               <li class="row">
@@ -280,7 +244,7 @@
       <dialog class="dialog" aria-labelledby="paper-clone-title">
         <div class="dialog__body">
           <h2 class="dialog__title" id="paper-clone-title">Work on it on your machine</h2>
-          <p class="dialog__text">Clone it with a personal token, from Settings › Tokens, as the password:</p>
+          <p class="dialog__text">Clone it with a personal token, from Settings › Devices, as the password:</p>
           <span class="row">
             <code class="identifier grow" id="paper-clone">git clone {cloneUrl}</code>
             <stemma-copy-button for="paper-clone" label="Copy the command"></stemma-copy-button>
@@ -292,34 +256,7 @@
       </dialog>
     </stemma-dialog>
 
-    {#if asksForWork(group.role)}
-      <stemma-dialog id="paper-ask" bind:this={askDialog}>
-        <dialog class="dialog" aria-labelledby="paper-ask-title">
-          <form class="dialog__body" onsubmit={ask}>
-            <h2 class="dialog__title" id="paper-ask-title">Ask the workshop</h2>
-            <p class="dialog__text">
-              A thread about the paper is opened with your request; the workshop's changes are proposed there for
-              approval.
-            </p>
-            <div class="field">
-              <label class="field__label" for="edit-title">What to do, in a line</label>
-              <input id="edit-title" class="input" bind:value={title} required maxlength="200" />
-            </div>
-            <div class="field">
-              <label class="field__label" for="edit-instructions">Instructions</label>
-              <textarea id="edit-instructions" class="input" bind:value={instructions} required></textarea>
-              <span class="field__hint">
-                In Markdown, citing what to write up by address (<span class="identifier">[[t12#45-48]]</span>).
-              </span>
-            </div>
-            <div class="dialog__actions">
-              <button type="button" class="button" data-closes>Cancel</button>
-              <button type="submit" class="button button--primary" disabled={asking}>Ask for it</button>
-            </div>
-          </form>
-        </dialog>
-      </stemma-dialog>
-    {/if}
+
   {:else if missing}
     <h1>Paper not found</h1>
     <p>There is no paper <span class="identifier">p/{slug}</span> in the group.</p>

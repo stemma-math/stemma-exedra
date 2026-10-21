@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { agentLabel, takesEffort, titleOf } from "./chats";
+import { titleOf } from "./chats";
 
 describe("starting a chat", () => {
   it("titles it from the question", () => {
@@ -11,20 +11,5 @@ describe("starting a chat", () => {
     expect(long.endsWith("…")).toBe(true);
     expect(long.length).toBeLessThanOrEqual(31);
     expect(titleOf("   ")).toBe("");
-  });
-
-  it("names agents with their model", () => {
-    expect(agentLabel({ handle: "claude", runner: "claude-code", model: "opus" })).toBe(
-      "@claude (opus)",
-    );
-    expect(agentLabel({ handle: "codex", runner: "codex", model: null })).toBe(
-      "@codex (Codex's default)",
-    );
-  });
-
-  it("knows which runners take an effort", () => {
-    expect(takesEffort("claude-code")).toBe(true);
-    expect(takesEffort("codex")).toBe(true);
-    expect(takesEffort("opencode")).toBe(false);
   });
 });

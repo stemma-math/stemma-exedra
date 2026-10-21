@@ -24,7 +24,7 @@ describe("addresses", () => {
     };
     expect(path("t12#45-50")).toBe("/g/g/t/12#45");
     expect(path("lean:A.b")).toBe("/g/g/lib/A.b");
-    expect(path("w7")).toBe("/g/g/w/7");
+    expect(parseAddress("w7")).toBeNull();
     expect(path("p/notes")).toBe("/g/g/p/notes");
   });
 });

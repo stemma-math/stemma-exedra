@@ -22,12 +22,6 @@ function job(id: number, state: Job["state"]): Job {
 }
 
 describe("jobs", () => {
-  it("says what the workshop does", () => {
-    const run: Job = { ...job(3, "running"), kind: "task_run", task: 7, agent_name: "Workshop" };
-    expect(jobStatus(run)).toBe("Workshop is working on w7…");
-    expect(jobStatus({ ...run, state: "queued" })).toBe("Workshop will work on w7");
-  });
-
   it("keeps the jobs on their way, in order", () => {
     let jobs = applyJob([], job(2, "queued"));
     jobs = applyJob(jobs, job(1, "running"));
