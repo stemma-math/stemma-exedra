@@ -3,6 +3,7 @@
 mod client;
 mod launcher;
 mod machine;
+mod settings;
 
 use std::io::{BufRead, IsTerminal};
 use std::path::PathBuf;
@@ -31,6 +32,10 @@ enum Command {
     Login(client::LoginArgs),
     /// Sign out of the hub, revoking this machine's token.
     Logout,
+    /// Show or choose your active group.
+    Group(settings::GroupArgs),
+    /// Explain and edit this computer's settings.
+    Config(settings::ConfigArgs),
     /// List a group's threads.
     Threads(client::ThreadsArgs),
     /// Read a thread, some of its messages, a declaration, a task or a
@@ -117,6 +122,8 @@ async fn main() -> anyhow::Result<()> {
         Command::Machine(args) => machine::machine(args).await,
         Command::Login(args) => client::login(args).await,
         Command::Logout => client::logout().await,
+        Command::Group(args) => settings::group(args).await,
+        Command::Config(args) => settings::config(args),
         Command::Threads(args) => client::threads(args).await,
         Command::Read(args) => client::read(args).await,
         Command::Post(args) => client::post(args).await,
