@@ -28,7 +28,7 @@
   });
 </script>
 
-<svelte:head><title>Build {id} – Library – {group.name} – Stemma</title></svelte:head>
+<svelte:head><title>Build {id} – Library – {group.name}</title></svelte:head>
 
 <main class="page stack">
   <nav class="breadcrumbs" aria-label="Where">

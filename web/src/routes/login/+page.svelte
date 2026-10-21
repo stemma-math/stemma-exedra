@@ -42,7 +42,7 @@
   }
 </script>
 
-<svelte:head><title>Log in – Stemma</title></svelte:head>
+<svelte:head><title>Log in</title></svelte:head>
 
 <main class="page page--centered">
   <div class="sign-in">

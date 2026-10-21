@@ -95,7 +95,7 @@
   }
 </script>
 
-<svelte:head><title>Group settings – {group.name} – Stemma</title></svelte:head>
+<svelte:head><title>Group settings – {group.name}</title></svelte:head>
 
 <main class="page page--narrow stack stack--loose">
   <div class="stack stack--tight">

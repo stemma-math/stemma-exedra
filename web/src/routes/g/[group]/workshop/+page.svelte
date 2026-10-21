@@ -101,7 +101,7 @@
   }
 </script>
 
-<svelte:head><title>Workshop – {group.name} – Stemma</title></svelte:head>
+<svelte:head><title>Workshop – {group.name}</title></svelte:head>
 
 {#snippet taskRow(task: Task)}
   <a class="table__row" href="/g/{group.slug}/w/{task.number}">

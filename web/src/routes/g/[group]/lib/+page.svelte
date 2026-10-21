@@ -68,7 +68,7 @@
   const cloneUrl = $derived(library ? `${location.origin}${library.clone_path}` : "");
 </script>
 
-<svelte:head><title>Library – {group.name} – Stemma</title></svelte:head>
+<svelte:head><title>Library – {group.name}</title></svelte:head>
 
 <main class="page stack">
   <div class="page__head">

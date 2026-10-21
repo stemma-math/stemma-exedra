@@ -48,7 +48,7 @@
   });
 </script>
 
-<svelte:head><title>{group.name} – Stemma</title></svelte:head>
+<svelte:head><title>{group.name}</title></svelte:head>
 
 <main class="page stack stack--loose">
   <div class="page__head">

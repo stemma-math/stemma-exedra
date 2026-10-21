@@ -41,7 +41,7 @@
   }
 </script>
 
-<svelte:head><title>New thread – {group.name} – Stemma</title></svelte:head>
+<svelte:head><title>New thread – {group.name}</title></svelte:head>
 
 <main class="page page--narrow stack">
   <nav class="breadcrumbs" aria-label="Where">

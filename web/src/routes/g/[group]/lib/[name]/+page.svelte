@@ -43,7 +43,7 @@
   const discuss = $derived(`/g/${group.slug}/forum/new?anchor=${encodeURIComponent(`lean:${name}`)}`);
 </script>
 
-<svelte:head><title>{name} – Library – {group.name} – Stemma</title></svelte:head>
+<svelte:head><title>{name} – Library – {group.name}</title></svelte:head>
 
 <main class="page page--narrow stack">
   <nav class="breadcrumbs" aria-label="Where">

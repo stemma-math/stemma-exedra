@@ -47,7 +47,7 @@
   }
 </script>
 
-<svelte:head><title>Your groups – Stemma</title></svelte:head>
+<svelte:head><title>Your groups</title></svelte:head>
 
 <main class="page page--narrow stack stack--loose">
   <header class="row">

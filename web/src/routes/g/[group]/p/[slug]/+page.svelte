@@ -121,7 +121,7 @@
   }
 </script>
 
-<svelte:head><title>{paper?.title ?? slug} – {group.name} – Stemma</title></svelte:head>
+<svelte:head><title>{paper?.title ?? slug} – {group.name}</title></svelte:head>
 
 <main class="page stack">
   {#if paper}
