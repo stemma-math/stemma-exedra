@@ -1316,11 +1316,8 @@ async fn mentions_and_chats_queue_jobs() {
     assert_eq!(jobs[0]["agent"], "claude");
     assert_eq!(jobs[0]["state"], "queued");
     assert_eq!(jobs[0]["trigger"], 1);
-    assert_eq!(
-        jobs[0]["note"],
-        "Waiting for a machine of Ada's with Claude Code"
-    );
-    assert_eq!(jobs[1]["note"], "Waiting for a machine of Ada's with Codex");
+    assert_eq!(jobs[0]["note"], "Waiting for one of Ada's machines");
+    assert_eq!(jobs[1]["note"], "Waiting for one of Ada's machines");
 
     // An agent's message summons no one.
     let token = with_token(&hub, &ada).await;
@@ -1385,173 +1382,6 @@ async fn mentions_and_chats_queue_jobs() {
     assert_eq!(reply.status, StatusCode::UNPROCESSABLE_ENTITY);
 }
 
-/// The agent a job runs, as the hub stored it when it queued the job.
-async fn job_agent(hub: &TestHub, job: &Value) -> Value {
-    let agent: String = sqlx::query_scalar("SELECT agent FROM jobs WHERE id = ?")
-        .bind(job["id"].as_i64().unwrap())
-        .fetch_one(&hub.state.db)
-        .await
-        .unwrap();
-    serde_json::from_str(&agent).unwrap()
-}
-
-#[tokio::test]
-async fn a_chat_chooses_its_model_and_effort() {
-    let hub = TestHub::new().await;
-    let ada = hub.admin_with_group().await;
-    let bob = hub.member(&ada, "bob").await;
-    let reply = hub
-        .post(
-            &ada,
-            "/groups/geometry/threads",
-            json!({"title": "Is every compact group profinite?", "kind": "chat",
-                   "resident_agent": "claude", "model": "opus", "effort": "high",
-                   "body": "Is every compact group profinite?"}),
-        )
-        .await;
-    assert_eq!(reply.status, StatusCode::CREATED, "{:?}", reply.json());
-    let thread = &reply.json()["thread"];
-    assert_eq!(thread["resident_model"], "opus");
-    assert_eq!(thread["resident_effort"], "high");
-
-    // Everyone who writes is answered by their own @claude, as the chat chose.
-    hub.post(
-        &bob,
-        "/groups/geometry/threads/1/messages",
-        json!({"body": "Not the circle, surely"}),
-    )
-    .await;
-    let jobs = hub
-        .get(&ada, "/groups/geometry/threads/1/jobs")
-        .await
-        .json();
-    assert_eq!(jobs.as_array().unwrap().len(), 2);
-    for (job, who) in jobs.as_array().unwrap().iter().zip(["ada", "bob"]) {
-        assert_eq!(job["requester"]["username"], who);
-        let agent = job_agent(&hub, job).await;
-        assert_eq!(agent["model"], "opus");
-        assert_eq!(agent["args"], json!(["--effort", "high"]));
-    }
-
-    // Codex takes it as its reasoning effort.
-    let reply = hub
-        .post(
-            &ada,
-            "/groups/geometry/threads",
-            json!({"title": "Quick", "kind": "chat", "resident_agent": "codex",
-                   "effort": "low", "body": "Hi"}),
-        )
-        .await;
-    assert_eq!(reply.status, StatusCode::CREATED);
-    let jobs = hub
-        .get(&ada, "/groups/geometry/threads/2/jobs")
-        .await
-        .json();
-    let agent = job_agent(&hub, &jobs[0]).await;
-    assert_eq!(agent["model"], Value::Null);
-    assert_eq!(agent["args"], json!(["-c", "model_reasoning_effort=low"]));
-
-    // Only chats choose, and OpenCode takes no effort from them.
-    for body in [
-        json!({"title": "x", "model": "opus"}),
-        json!({"title": "x", "kind": "chat", "effort": "high"}),
-        json!({"title": "x", "kind": "chat", "resident_agent": "opencode", "effort": "high"}),
-        json!({"title": "x", "kind": "chat", "resident_agent": "claude", "effort": "extreme"}),
-    ] {
-        let reply = hub
-            .post(&ada, "/groups/geometry/threads", body.clone())
-            .await;
-        assert!(reply.status.is_client_error(), "{body}: {:?}", reply.json());
-    }
-}
-
-#[tokio::test]
-async fn machines_are_their_owners() {
-    let hub = TestHub::new().await;
-    let ada = hub.admin_with_group().await;
-    let bob = hub.member(&ada, "bob").await;
-
-    let reply = hub
-        .post(&bob, "/me/machines", json!({"name": "laptop"}))
-        .await;
-    assert_eq!(reply.status, StatusCode::CREATED);
-    assert!(reply.json()["secret"].as_str().unwrap().starts_with("stw_"));
-    assert_eq!(reply.json()["preferred"], false);
-    let id = reply.json()["id"].as_i64().unwrap();
-    // Names tell one's machines apart.
-    let reply = hub
-        .post(&bob, "/me/machines", json!({"name": "laptop"}))
-        .await;
-    assert_eq!(reply.status, StatusCode::CONFLICT);
-    let reply = hub
-        .post(
-            &bob,
-            "/me/machines",
-            json!({"name": "desktop", "preferred": true}),
-        )
-        .await;
-    assert_eq!(reply.json()["preferred"], true);
-    let desktop = reply.json()["id"].as_i64().unwrap();
-
-    let mine = hub.get(&bob, "/me/machines").await.json();
-    assert_eq!(mine.as_array().unwrap().len(), 2);
-
-    // One machine at most is preferred.
-    let reply = hub
-        .call(
-            &bob,
-            Method::PATCH,
-            &format!("/me/machines/{id}"),
-            Some(json!({"preferred": true})),
-        )
-        .await;
-    assert_eq!(reply.status, StatusCode::OK);
-    assert_eq!(reply.json()["preferred"], true);
-    let mine = hub.get(&bob, "/me/machines").await.json();
-    assert_eq!(mine[1]["id"], desktop);
-    assert_eq!(mine[1]["preferred"], false);
-
-    let reply = hub
-        .call(&ada, Method::DELETE, &format!("/me/machines/{id}"), None)
-        .await;
-    assert_eq!(reply.status, StatusCode::NOT_FOUND);
-    for id in [id, desktop] {
-        let reply = hub
-            .call(&bob, Method::DELETE, &format!("/me/machines/{id}"), None)
-            .await;
-        assert_eq!(reply.status, StatusCode::NO_CONTENT);
-    }
-    assert!(
-        hub.get(&bob, "/me/machines")
-            .await
-            .json()
-            .as_array()
-            .unwrap()
-            .is_empty()
-    );
-}
-
-async fn job_token(hub: &TestHub, user_id: i64) -> Client {
-    let group_id: i64 = sqlx::query_scalar("SELECT id FROM groups WHERE slug = 'geometry'")
-        .fetch_one(&hub.state.db)
-        .await
-        .unwrap();
-    let (_, secret) = stemma_hub::auth::create_job_token(
-        &hub.state.db,
-        user_id,
-        group_id,
-        None,
-        "Claude",
-        stemma_hub::db::now() + 60_000,
-    )
-    .await
-    .unwrap();
-    Client {
-        cookie: None,
-        token: Some(secret),
-    }
-}
-
 #[tokio::test]
 async fn threads_anchor_to_declarations() {
     let hub = TestHub::new().await;
@@ -1575,138 +1405,6 @@ async fn threads_anchor_to_declarations() {
             .await;
         assert!(reply.status.is_client_error(), "{anchor}: {}", reply.status);
     }
-}
-
-#[tokio::test]
-async fn the_workshop_takes_tasks_from_conversation() {
-    let hub = TestHub::new().await;
-    let ada = hub.admin_with_group().await;
-    let bob = hub.member(&ada, "bob").await;
-
-    // A message to the workshop hands it a task.
-    hub.post(
-        &ada,
-        "/groups/geometry/threads",
-        json!({"title": "Gluing", "body": "The charts glue."}),
-    )
-    .await;
-    let reply = hub
-        .post(
-            &ada,
-            "/groups/geometry/threads/1/messages",
-            json!({"body": "@workshop formalize the gluing of t1#1, with a docstring."}),
-        )
-        .await;
-    assert_eq!(reply.status, StatusCode::CREATED);
-    let tasks = hub.get(&bob, "/groups/geometry/tasks").await.json();
-    assert_eq!(tasks.as_array().unwrap().len(), 1, "{tasks}");
-    let task = &tasks[0];
-    assert_eq!(task["number"], 1);
-    assert_eq!(
-        task["title"],
-        "Formalize the gluing of t1#1, with a docstring"
-    );
-    assert_eq!(task["state"], "open");
-    assert_eq!(task["origin"], "t1#2");
-    assert_eq!(task["requester"]["username"], "ada");
-    assert_eq!(
-        task["progress"],
-        "Waiting for a workshop machine with Lean to come online"
-    );
-    // The thread shows it on its way.
-    let jobs = hub
-        .get(&ada, "/groups/geometry/threads/1/jobs")
-        .await
-        .json();
-    assert_eq!(jobs[0]["kind"], "task_run");
-    assert_eq!(jobs[0]["task"], 1);
-    assert_eq!(jobs[0]["agent_name"], "Workshop");
-
-    // Handed over by a person, naming the message that asks.
-    let reply = hub
-        .post(
-            &bob,
-            "/groups/geometry/tasks",
-            json!({"title": "State the lemma", "instructions": "As in t1#1.", "origin": "t1#1"}),
-        )
-        .await;
-    assert_eq!(reply.status, StatusCode::CREATED, "{:?}", reply.json());
-    let task = reply.json();
-    assert_eq!(task["number"], 2);
-    let page = hub.get(&bob, "/groups/geometry/tasks/2").await.json();
-    assert_eq!(page["instructions"], "As in t1#1.");
-    assert_eq!(
-        page["progress"],
-        "Waiting for a workshop machine with Lean to come online"
-    );
-    assert_eq!(page["log"], "");
-    let reply = hub
-        .post(
-            &bob,
-            "/groups/geometry/tasks",
-            json!({"title": "No origin", "instructions": "Something."}),
-        )
-        .await;
-    assert_eq!(reply.status, StatusCode::UNPROCESSABLE_ENTITY);
-    let reply = hub
-        .post(
-            &bob,
-            "/groups/geometry/tasks",
-            json!({"title": "Far", "instructions": "Something.", "origin": "t1#9"}),
-        )
-        .await;
-    assert_eq!(reply.status, StatusCode::UNPROCESSABLE_ENTITY);
-
-    // A job's token hands tasks over only for an agent answering a thread.
-    let bob_id: i64 = sqlx::query_scalar("SELECT id FROM users WHERE username = 'bob'")
-        .fetch_one(&hub.state.db)
-        .await
-        .unwrap();
-    let job = job_token(&hub, bob_id).await;
-    let reply = hub
-        .post(
-            &job,
-            "/groups/geometry/tasks",
-            json!({"title": "Sneaky", "instructions": "Something.", "origin": "t1#1"}),
-        )
-        .await;
-    assert_eq!(reply.status, StatusCode::FORBIDDEN);
-
-    // References to tasks resolve.
-    let resolved = hub
-        .post(
-            &ada,
-            "/groups/geometry/resolve",
-            json!({"addresses": ["w2", "w9"]}),
-        )
-        .await
-        .json();
-    assert_eq!(resolved[0]["exists"], true);
-    assert_eq!(resolved[0]["title"], "w2: State the lemma");
-    assert_eq!(resolved[0]["path"], "/g/geometry/w/2");
-    assert_eq!(resolved[1]["exists"], false);
-
-    // Only its requester or an admin cancels a task.
-    let reply = hub
-        .call(&bob, Method::DELETE, "/groups/geometry/tasks/1", None)
-        .await;
-    assert_eq!(reply.status, StatusCode::FORBIDDEN);
-    let reply = hub
-        .call(&ada, Method::DELETE, "/groups/geometry/tasks/1", None)
-        .await;
-    assert_eq!(reply.status, StatusCode::NO_CONTENT);
-    let page = hub.get(&ada, "/groups/geometry/tasks/1").await.json();
-    assert_eq!(page["state"], "cancelled");
-    let reply = hub
-        .call(&ada, Method::DELETE, "/groups/geometry/tasks/1", None)
-        .await;
-    assert_eq!(reply.status, StatusCode::CONFLICT);
-    let open = hub
-        .get(&ada, "/groups/geometry/tasks?state=open")
-        .await
-        .json();
-    assert_eq!(open.as_array().unwrap().len(), 1);
-    assert_eq!(open[0]["number"], 2);
 }
 
 #[tokio::test]
@@ -1819,496 +1517,7 @@ async fn admins_change_roles() {
     assert_eq!(set(&ada, ada_id, "guest").await, StatusCode::CONFLICT);
 }
 
-#[tokio::test]
-async fn guests_converse_but_ask_for_no_work() {
-    let hub = TestHub::new().await;
-    let ada = hub.admin_with_group().await;
-    let gus = hub.join(&ada, "gus", "guest").await;
-
-    // A guest reads, posts and summons their own agents.
-    let reply = hub
-        .post(
-            &gus,
-            "/groups/geometry/threads",
-            json!({"title": "A question", "body": "@claude is it proper?"}),
-        )
-        .await;
-    assert_eq!(reply.status, StatusCode::CREATED, "{:?}", reply.json());
-    assert_eq!(
-        hub.get(&gus, "/groups/geometry/threads").await.status,
-        StatusCode::OK
-    );
-    let jobs = hub
-        .get(&gus, "/groups/geometry/threads/1/jobs")
-        .await
-        .json();
-    assert_eq!(jobs[0]["agent"], "claude");
-    assert_eq!(jobs[0]["state"], "queued");
-
-    // But asks nothing of the workshop: not in a message…
-    hub.post(
-        &gus,
-        "/groups/geometry/threads/1/messages",
-        json!({"body": "@workshop formalize it."}),
-    )
-    .await;
-    let tasks = hub.get(&gus, "/groups/geometry/tasks").await.json();
-    assert!(tasks.as_array().unwrap().is_empty(), "{tasks}");
-    let jobs = hub
-        .get(&gus, "/groups/geometry/threads/1/jobs")
-        .await
-        .json();
-    assert_eq!(jobs[1]["state"], "failed", "{jobs}");
-    assert_eq!(jobs[1]["error"], "Guests cannot ask @workshop for work");
-
-    // …nor directly…
-    let task = json!({"title": "Formalize it", "instructions": "As in t1#1.", "origin": "t1#1"});
-    let reply = hub.post(&gus, "/groups/geometry/tasks", task.clone()).await;
-    assert_eq!(reply.status, StatusCode::FORBIDDEN);
-
-    // …nor through an agent, with its job's token, which has the guest's
-    // role.
-    let gus_id = hub.get(&gus, "/me").await.json()["id"].as_i64().unwrap();
-    let job = job_token(&hub, gus_id).await;
-    assert_eq!(
-        hub.get(&job, "/groups/geometry").await.json()["role"],
-        "guest"
-    );
-    let reply = hub.post(&job, "/groups/geometry/tasks", task.clone()).await;
-    assert_eq!(reply.status, StatusCode::FORBIDDEN);
-
-    // Nor asks for a build of the library.
-    let reply = hub
-        .post(&gus, "/groups/geometry/library/builds", json!({}))
-        .await;
-    assert_eq!(reply.status, StatusCode::FORBIDDEN);
-
-    // Nor changes the group's settings.
-    for (method, path, body) in [
-        (
-            Method::POST,
-            "/groups/geometry/workshop/machines",
-            Some(json!({"machine": 1})),
-        ),
-        (
-            Method::POST,
-            "/groups/geometry/invitations",
-            Some(json!({})),
-        ),
-        (Method::GET, "/groups/geometry/invitations", None),
-    ] {
-        let reply = hub.call(&gus, method.clone(), path, body).await;
-        assert_eq!(reply.status, StatusCode::FORBIDDEN, "{method} {path}");
-    }
-
-    // A member asks the workshop for work.
-    let bob = hub.member(&ada, "bob").await;
-    let reply = hub.post(&bob, "/groups/geometry/tasks", task).await;
-    assert_eq!(reply.status, StatusCode::CREATED, "{:?}", reply.json());
-}
-
 // ── People's agents and machines ──────────────────────────────────────
-
-fn handles(agents: &Value) -> Vec<String> {
-    agents
-        .as_array()
-        .unwrap()
-        .iter()
-        .map(|a| a["handle"].as_str().unwrap().to_owned())
-        .collect()
-}
-
-#[tokio::test]
-async fn people_keep_their_own_agents() {
-    let hub = TestHub::new().await;
-    let ada = hub.admin_with_group().await;
-    let bob = hub.member(&ada, "bob").await;
-
-    // Everyone has one agent per runner.
-    let mine = hub.get(&bob, "/me/agents").await.json();
-    assert_eq!(handles(&mine), ["claude", "codex", "opencode"]);
-    assert_eq!(mine[0]["runner"], "claude-code");
-    assert_eq!(mine[0]["display_name"], "Claude");
-    assert_eq!(mine[0]["default"], true);
-
-    // And adds more, with handles of their own.
-    let sonnet = json!({"handle": "@Claude-Sonnet", "display_name": "Claude Sonnet",
-                        "runner": "claude-code", "model": "sonnet",
-                        "args": ["--effort", "high"]});
-    let reply = hub.post(&bob, "/me/agents", sonnet.clone()).await;
-    assert_eq!(reply.status, StatusCode::CREATED, "{:?}", reply.json());
-    assert_eq!(reply.json()["handle"], "claude-sonnet");
-    assert_eq!(reply.json()["default"], false);
-    let reply = hub.post(&bob, "/me/agents", sonnet).await;
-    assert_eq!(reply.status, StatusCode::CONFLICT);
-    let mine = hub.get(&bob, "/me/agents").await.json();
-    assert_eq!(
-        handles(&mine),
-        ["claude", "codex", "opencode", "claude-sonnet"]
-    );
-    assert_eq!(mine[3]["args"], json!(["--effort", "high"]));
-    // Ada has none of Bob's.
-    assert_eq!(handles(&hub.get(&ada, "/me/agents").await.json()).len(), 3);
-
-    for (agent, status) in [
-        // A default is changed, not added again.
-        (
-            json!({"handle": "claude", "display_name": "C", "runner": "claude-code"}),
-            StatusCode::CONFLICT,
-        ),
-        // The group's agents keep their handles.
-        (
-            json!({"handle": "workshop", "display_name": "W", "runner": "opencode"}),
-            StatusCode::CONFLICT,
-        ),
-        (
-            json!({"handle": "1x", "display_name": "X", "runner": "codex"}),
-            StatusCode::UNPROCESSABLE_ENTITY,
-        ),
-        (
-            json!({"handle": "x", "display_name": "X", "runner": "api"}),
-            StatusCode::UNPROCESSABLE_ENTITY,
-        ),
-        (
-            json!({"handle": "x", "display_name": " ", "runner": "codex"}),
-            StatusCode::UNPROCESSABLE_ENTITY,
-        ),
-        (
-            json!({"handle": "x", "display_name": "X", "runner": "codex",
-                   "args": vec!["-v"; 40]}),
-            StatusCode::UNPROCESSABLE_ENTITY,
-        ),
-    ] {
-        let reply = hub.post(&bob, "/me/agents", agent.clone()).await;
-        assert_eq!(reply.status, status, "{agent}");
-    }
-
-    // A default is changed, but keeps its runner.
-    let reply = hub
-        .call(
-            &bob,
-            Method::PUT,
-            "/me/agents/claude",
-            Some(
-                json!({"handle": "x", "display_name": "Claude Opus", "runner": "claude-code",
-                        "model": "opus"}),
-            ),
-        )
-        .await;
-    assert_eq!(reply.status, StatusCode::OK, "{:?}", reply.json());
-    assert_eq!(reply.json()["handle"], "claude");
-    assert_eq!(reply.json()["default"], true);
-    let mine = hub.get(&bob, "/me/agents").await.json();
-    assert_eq!(mine[0]["model"], "opus");
-    let reply = hub
-        .call(
-            &bob,
-            Method::PUT,
-            "/me/agents/claude",
-            Some(json!({"handle": "claude", "display_name": "Claude", "runner": "codex"})),
-        )
-        .await;
-    assert_eq!(reply.status, StatusCode::UNPROCESSABLE_ENTITY);
-    let reply = hub
-        .call(
-            &bob,
-            Method::PUT,
-            "/me/agents/nobody",
-            Some(json!({"handle": "nobody", "display_name": "N", "runner": "codex"})),
-        )
-        .await;
-    assert_eq!(reply.status, StatusCode::NOT_FOUND);
-
-    // Removing a default puts it back as it was.
-    let reply = hub
-        .call(&bob, Method::DELETE, "/me/agents/claude", None)
-        .await;
-    assert_eq!(reply.status, StatusCode::NO_CONTENT);
-    let mine = hub.get(&bob, "/me/agents").await.json();
-    assert_eq!(mine[0]["display_name"], "Claude");
-    assert!(mine[0]["model"].is_null());
-    for status in [StatusCode::NO_CONTENT, StatusCode::NOT_FOUND] {
-        let reply = hub
-            .call(&bob, Method::DELETE, "/me/agents/claude-sonnet", None)
-            .await;
-        assert_eq!(reply.status, status);
-    }
-
-    // Nobody's own agent takes the workshop's handle.
-    let reply = hub
-        .post(
-            &bob,
-            "/me/agents",
-            json!({"handle": "workshop", "display_name": "Mine", "runner": "opencode"}),
-        )
-        .await;
-    assert_eq!(reply.status, StatusCode::CONFLICT);
-}
-
-#[tokio::test]
-async fn mentions_are_the_writers_own_agents() {
-    let hub = TestHub::new().await;
-    let ada = hub.admin_with_group().await;
-    let bob = hub.member(&ada, "bob").await;
-    let gus = hub.join(&ada, "gus", "guest").await;
-    hub.post(
-        &bob,
-        "/me/agents",
-        json!({"handle": "claude-sonnet", "display_name": "Claude Sonnet",
-               "runner": "claude-code", "model": "sonnet"}),
-    )
-    .await;
-
-    // Ada has no @claude-sonnet: her job fails at once, and says so.
-    hub.post(
-        &ada,
-        "/groups/geometry/threads",
-        json!({"title": "Gluing", "body": "@claude-sonnet @claude @nobody is it proper?"}),
-    )
-    .await;
-    let jobs = hub
-        .get(&ada, "/groups/geometry/threads/1/jobs")
-        .await
-        .json();
-    assert_eq!(jobs.as_array().unwrap().len(), 2, "{jobs}");
-    assert_eq!(jobs[0]["agent"], "claude-sonnet");
-    assert_eq!(jobs[0]["state"], "failed");
-    assert_eq!(
-        jobs[0]["error"],
-        "Ada has no agent @claude-sonnet: add one in the settings"
-    );
-    assert_eq!(jobs[1]["agent"], "claude");
-    assert_eq!(jobs[1]["requester"]["username"], "ada");
-    assert_eq!(jobs[1]["state"], "queued");
-
-    // Bob's is his, as he defined it.
-    hub.post(
-        &bob,
-        "/groups/geometry/threads/1/messages",
-        json!({"body": "@claude-sonnet, you?"}),
-    )
-    .await;
-    let jobs = hub
-        .get(&bob, "/groups/geometry/threads/1/jobs")
-        .await
-        .json();
-    assert_eq!(jobs[2]["agent"], "claude-sonnet");
-    assert_eq!(jobs[2]["agent_name"], "Claude Sonnet");
-    assert_eq!(jobs[2]["requester"]["username"], "bob");
-    assert_eq!(jobs[2]["state"], "queued");
-    assert_eq!(
-        jobs[2]["note"],
-        "Waiting for a machine of bob's with Claude Code"
-    );
-    let agent: String = sqlx::query_scalar("SELECT agent FROM jobs WHERE id = ?")
-        .bind(jobs[2]["id"].as_i64().unwrap())
-        .fetch_one(&hub.state.db)
-        .await
-        .unwrap();
-    let agent: Value = serde_json::from_str(&agent).unwrap();
-    assert_eq!(agent["model"], "sonnet");
-
-    // A guest summons their own too.
-    hub.post(
-        &gus,
-        "/groups/geometry/threads/1/messages",
-        json!({"body": "@codex and you?"}),
-    )
-    .await;
-    let jobs = hub
-        .get(&gus, "/groups/geometry/threads/1/jobs")
-        .await
-        .json();
-    assert_eq!(jobs[3]["agent"], "codex");
-    assert_eq!(jobs[3]["requester"]["username"], "gus");
-    assert_eq!(jobs[3]["state"], "queued");
-
-    // A chat's resident agent is the writer's own, for each who writes.
-    let reply = hub
-        .post(
-            &bob,
-            "/groups/geometry/threads",
-            json!({"title": "Chat", "kind": "chat", "resident_agent": "claude-sonnet",
-                   "body": "Hi"}),
-        )
-        .await;
-    assert_eq!(reply.status, StatusCode::CREATED, "{:?}", reply.json());
-    hub.post(
-        &ada,
-        "/groups/geometry/threads/2/messages",
-        json!({"body": "Me too"}),
-    )
-    .await;
-    let jobs = hub
-        .get(&ada, "/groups/geometry/threads/2/jobs")
-        .await
-        .json();
-    assert_eq!(jobs[0]["state"], "queued");
-    assert_eq!(jobs[1]["state"], "failed");
-    let reply = hub
-        .post(
-            &ada,
-            "/groups/geometry/threads",
-            json!({"title": "Chat", "kind": "chat", "resident_agent": "claude-sonnet"}),
-        )
-        .await;
-    assert_eq!(reply.status, StatusCode::UNPROCESSABLE_ENTITY);
-}
-
-/// A machine of `user_id`'s, connected as if over its WebSocket, with
-/// `runners`: what the hub sends it arrives on the receiver.
-async fn connect_machine(
-    hub: &TestHub,
-    id: i64,
-    owner_id: i64,
-    runners: &[&str],
-    preferred: bool,
-) -> tokio::sync::mpsc::UnboundedReceiver<stemma_core::protocol::HubMessage> {
-    let (sender, receiver) = tokio::sync::mpsc::unbounded_channel();
-    stemma_hub::jobs::connected(
-        &hub.state,
-        id,
-        stemma_hub::jobs::Connected {
-            personal: true,
-            connection: id as u64,
-            owner_id,
-            runners: runners.iter().map(|r| (*r).to_owned()).collect(),
-            lean: false,
-            latex: false,
-            isolation: None,
-            workshop: Default::default(),
-            concurrency: 4,
-            preferred,
-            running: Default::default(),
-            sender,
-        },
-    )
-    .await
-    .unwrap();
-    receiver
-}
-
-/// The handle of the agent of the job a machine was sent, if it was sent
-/// one.
-fn sent(
-    receiver: &mut tokio::sync::mpsc::UnboundedReceiver<stemma_core::protocol::HubMessage>,
-) -> Option<String> {
-    match receiver.try_recv().ok()? {
-        stemma_core::protocol::HubMessage::Job(spec) => {
-            Some(spec.conversation()?.agent.handle.clone())
-        }
-        _ => None,
-    }
-}
-
-#[tokio::test]
-async fn jobs_go_to_the_preferred_machine_with_the_runner() {
-    let hub = TestHub::new().await;
-    let ada = hub.admin_with_group().await;
-    let bob = hub.member(&ada, "bob").await;
-    let bob_id = hub.get(&bob, "/me").await.json()["id"].as_i64().unwrap();
-    let mut ids = Vec::new();
-    for (name, preferred) in [("laptop", false), ("desktop", true)] {
-        let reply = hub
-            .post(
-                &bob,
-                "/me/machines",
-                json!({"name": name, "preferred": preferred}),
-            )
-            .await;
-        ids.push(reply.json()["id"].as_i64().unwrap());
-    }
-    let (laptop, desktop) = (ids[0], ids[1]);
-    let mut on_laptop =
-        connect_machine(&hub, laptop, bob_id, &["claude-code", "codex"], false).await;
-    let mut on_desktop = connect_machine(&hub, desktop, bob_id, &["claude-code"], true).await;
-    let machines = hub.get(&bob, "/me/machines").await.json();
-    assert_eq!(machines[0]["online"], true);
-
-    // Both have Claude Code: the preferred one runs it.
-    hub.post(
-        &bob,
-        "/groups/geometry/threads",
-        json!({"title": "Gluing", "body": "@claude is it proper?"}),
-    )
-    .await;
-    assert_eq!(sent(&mut on_desktop).as_deref(), Some("claude"));
-    assert_eq!(sent(&mut on_laptop), None);
-
-    // Only one has Codex.
-    hub.post(
-        &bob,
-        "/groups/geometry/threads/1/messages",
-        json!({"body": "@codex?"}),
-    )
-    .await;
-    assert_eq!(sent(&mut on_laptop).as_deref(), Some("codex"));
-    assert_eq!(sent(&mut on_desktop), None);
-
-    // None has OpenCode: the job waits, and says for what.
-    hub.post(
-        &bob,
-        "/groups/geometry/threads/1/messages",
-        json!({"body": "@opencode?"}),
-    )
-    .await;
-    let jobs = hub
-        .get(&bob, "/groups/geometry/threads/1/jobs")
-        .await
-        .json();
-    let waiting = jobs
-        .as_array()
-        .unwrap()
-        .iter()
-        .find(|j| j["agent"] == "opencode")
-        .unwrap();
-    assert_eq!(waiting["state"], "queued");
-    assert_eq!(
-        waiting["note"],
-        "Waiting for a machine of bob's with OpenCode"
-    );
-
-    // Ada's agents never run on Bob's machines.
-    hub.post(
-        &ada,
-        "/groups/geometry/threads/1/messages",
-        json!({"body": "@claude, and for me?"}),
-    )
-    .await;
-    assert_eq!(sent(&mut on_desktop), None);
-    assert_eq!(sent(&mut on_laptop), None);
-    let jobs = hub
-        .get(&ada, "/groups/geometry/threads/1/jobs")
-        .await
-        .json();
-    let adas = jobs
-        .as_array()
-        .unwrap()
-        .iter()
-        .find(|j| j["requester"]["username"] == "ada")
-        .unwrap();
-    assert_eq!(
-        adas["note"],
-        "Waiting for a machine of Ada's with Claude Code"
-    );
-
-    // Preferring the other machine sends the next job there.
-    hub.call(
-        &bob,
-        Method::PATCH,
-        &format!("/me/machines/{laptop}"),
-        Some(json!({"preferred": true})),
-    )
-    .await;
-    hub.post(
-        &bob,
-        "/groups/geometry/threads/1/messages",
-        json!({"body": "@claude once more"}),
-    )
-    .await;
-    assert_eq!(sent(&mut on_laptop).as_deref(), Some("claude"));
-    assert_eq!(sent(&mut on_desktop), None);
-}
 
 #[tokio::test]
 async fn tokens_may_expire() {
@@ -2586,4 +1795,182 @@ async fn webhooks_must_be_signed() {
         StatusCode::NO_CONTENT
     );
     assert_eq!(send(Some(signed), "issues").await, StatusCode::NO_CONTENT);
+}
+
+/// Connect a real personal token to the scheduler without a network transport.
+async fn computer(
+    hub: &TestHub,
+    person: &Client,
+    name: &str,
+    connection: u64,
+    priority: i64,
+) -> (
+    i64,
+    tokio::sync::mpsc::UnboundedReceiver<stemma_core::protocol::HubMessage>,
+) {
+    let token = hub
+        .post(person, "/me/tokens", json!({"name": name}))
+        .await
+        .json();
+    let id = token["id"].as_i64().unwrap();
+    let owner = hub.get(person, "/me").await.json()["id"].as_i64().unwrap();
+    let (sender, receiver) = tokio::sync::mpsc::unbounded_channel();
+    stemma_hub::jobs::connected(
+        &hub.state,
+        id,
+        stemma_hub::jobs::Connected {
+            connection,
+            owner_id: owner,
+            runners: vec!["claude-code".into(), "codex".into()],
+            agents: stemma_core::protocol::GroupAgents {
+                enabled: true,
+                priority,
+                concurrency: None,
+            },
+            groups: Default::default(),
+            concurrency: 1,
+            running: Default::default(),
+            sender,
+        },
+    )
+    .await
+    .unwrap();
+    (id, receiver)
+}
+fn dispatched(
+    receiver: &mut tokio::sync::mpsc::UnboundedReceiver<stemma_core::protocol::HubMessage>,
+) -> Option<stemma_core::protocol::JobSpec> {
+    match receiver.try_recv().ok()? {
+        stemma_core::protocol::HubMessage::Job(job) => Some(*job),
+        _ => None,
+    }
+}
+
+#[tokio::test]
+async fn personal_tokens_route_by_group_priority_capacity_and_connection_time() {
+    let hub = TestHub::new().await;
+    let ada = hub.admin_with_group().await;
+    let bob = hub.member(&ada, "bob").await;
+    let (_, mut bobs) = computer(&hub, &bob, "Bob's computer", 1, 100).await;
+    hub.post(
+        &ada,
+        "/groups/geometry/threads",
+        json!({"title":"Question", "body":"@claude help"}),
+    )
+    .await;
+    let waiting = hub
+        .get(&ada, "/groups/geometry/threads/1/jobs")
+        .await
+        .json();
+    assert_eq!(waiting[0]["note"], "Waiting for one of Ada's machines");
+    assert!(dispatched(&mut bobs).is_none());
+    let (first, mut one) = computer(&hub, &ada, "Laptop", 2, 10).await;
+    let initial = dispatched(&mut one).expect("queued work starts on connection");
+    let (second, mut two) = computer(&hub, &ada, "Desktop", 3, 0).await;
+    hub.post(
+        &ada,
+        "/groups/geometry/threads/1/messages",
+        json!({"body":"@codex help too"}),
+    )
+    .await;
+    let overflow = dispatched(&mut two).expect("the highest priority computer is full");
+    stemma_hub::jobs::finished(
+        &hub.state,
+        second,
+        3,
+        overflow.id,
+        stemma_core::protocol::Outcome::Answer {
+            body: "A second answer".into(),
+        },
+        Default::default(),
+    )
+    .await
+    .unwrap();
+    let reply = hub
+        .call(&ada, Method::DELETE, &format!("/me/tokens/{first}"), None)
+        .await;
+    assert_eq!(reply.status, StatusCode::NO_CONTENT);
+    assert!(one.is_closed());
+    let retried = dispatched(&mut two).expect("revocation queues the running job again");
+    assert_eq!(retried.id, initial.id);
+    assert_ne!(retried.token, initial.token);
+    let revoked: bool =
+        sqlx::query_scalar("SELECT revoked_at IS NOT NULL FROM api_tokens WHERE token_hash = ?")
+            .bind(stemma_hub::secret::token_hash(&initial.token))
+            .fetch_one(&hub.state.db)
+            .await
+            .unwrap();
+    assert!(revoked);
+    stemma_hub::jobs::finished(
+        &hub.state,
+        second,
+        3,
+        retried.id,
+        stemma_core::protocol::Outcome::Answer {
+            body: "The answer".into(),
+        },
+        Default::default(),
+    )
+    .await
+    .unwrap();
+    let (third, mut three) = computer(&hub, &ada, "Newest", 4, 0).await;
+    hub.post(
+        &ada,
+        "/groups/geometry/threads/1/messages",
+        json!({"body":"@claude again"}),
+    )
+    .await;
+    assert!(
+        dispatched(&mut three).is_some(),
+        "ties use the newest connection"
+    );
+    assert!(dispatched(&mut two).is_none());
+    let hello = stemma_core::protocol::Hello {
+        protocol: stemma_core::protocol::PROTOCOL_VERSION,
+        version: "test".into(),
+        runners: vec!["claude-code".into()],
+        concurrency: 1,
+        agents: stemma_core::protocol::GroupAgents {
+            enabled: true,
+            priority: 0,
+            concurrency: None,
+        },
+        groups: std::collections::BTreeMap::from([(
+            "geometry".into(),
+            stemma_core::protocol::GroupAgents {
+                enabled: false,
+                priority: 99,
+                concurrency: None,
+            },
+        )]),
+    };
+    stemma_hub::jobs::hello(&hub.state, second, 3, hello)
+        .await
+        .unwrap();
+    hub.post(
+        &ada,
+        "/groups/geometry/threads/1/messages",
+        json!({"body":"@claude wait"}),
+    )
+    .await;
+    assert!(
+        dispatched(&mut two).is_none(),
+        "disabled group overrides priority"
+    );
+    let devices = hub.get(&ada, "/me/tokens").await.json();
+    assert!(
+        devices
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|d| d["id"] == third && d["connected"] == true)
+    );
+    for route in [
+        "/me/machines",
+        "/me/agents",
+        "/groups/geometry/tasks",
+        "/workshop/architectures",
+    ] {
+        assert_eq!(hub.get(&ada, route).await.status, StatusCode::NOT_FOUND);
+    }
 }

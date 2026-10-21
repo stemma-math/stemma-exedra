@@ -8,7 +8,6 @@
 //! | Attachment              | `t12#45/photo.jpg`                    |
 //! | Working paper           | `p/compactification`                  |
 //! | Library declaration     | `lean:Foo.bar`                        |
-//! | Task                    | `w7`                                  |
 //!
 //! Every address has one canonical spelling, which [`Address`]'s `Display`
 //! writes and [`Address::from_str`](std::str::FromStr) reads back.
@@ -37,8 +36,6 @@ pub enum Address {
     Paper(String),
     /// A declaration of the library: `lean:Foo.bar`.
     Declaration(String),
-    /// A workshop task: `w7`.
-    Task(u32),
 }
 
 /// Why a string is not an address.
@@ -70,7 +67,6 @@ pub enum AddressKind {
     Attachment,
     Paper,
     Declaration,
-    Task,
 }
 
 impl Address {
@@ -83,7 +79,6 @@ impl Address {
             Address::Attachment { .. } => AddressKind::Attachment,
             Address::Paper(_) => AddressKind::Paper,
             Address::Declaration(_) => AddressKind::Declaration,
-            Address::Task(_) => AddressKind::Task,
         }
     }
 
@@ -110,7 +105,6 @@ impl Address {
             Address::Messages { thread, from, .. } => format!("/g/{group}/t/{thread}#{from}"),
             Address::Paper(slug) => format!("/g/{group}/p/{slug}"),
             Address::Declaration(name) => format!("/g/{group}/lib/{name}"),
-            Address::Task(n) => format!("/g/{group}/w/{n}"),
         }
     }
 }
@@ -128,7 +122,6 @@ impl fmt::Display for Address {
             } => write!(f, "t{thread}#{message}/{name}"),
             Address::Paper(slug) => write!(f, "p/{slug}"),
             Address::Declaration(name) => write!(f, "lean:{name}"),
-            Address::Task(n) => write!(f, "w{n}"),
         }
     }
 }
@@ -149,9 +142,6 @@ impl FromStr for Address {
             } else {
                 Err(AddressError::InvalidSlug(slug.to_owned()))
             };
-        }
-        if let Some(rest) = s.strip_prefix('w') {
-            return parse_number(rest).map(Address::Task);
         }
         if let Some(rest) = s.strip_prefix('t') {
             return parse_thread_address(rest);
@@ -302,7 +292,6 @@ mod tests {
             Address::Declaration("CategoryTheory.Functor.map_id'".into())
         );
         assert_eq!(parse("lean:α.β₁"), Address::Declaration("α.β₁".into()));
-        assert_eq!(parse("w7"), Address::Task(7));
         assert_eq!(
             parse("p/compactification"),
             Address::Paper("compactification".into())
@@ -352,8 +341,7 @@ mod tests {
             ("lean:Foo..bar", InvalidLeanName("Foo..bar".into())),
             ("lean:.Foo", InvalidLeanName(".Foo".into())),
             ("lean:Foo bar", InvalidLeanName("Foo bar".into())),
-            ("w", InvalidNumber("".into())),
-            ("w0", InvalidNumber("0".into())),
+            ("w0", UnknownKind),
         ];
         for (input, error) in cases {
             assert_eq!(
@@ -373,7 +361,6 @@ mod tests {
             "t12#45/notes.tex",
             "p/a-b-1",
             "lean:Nat.add_comm",
-            "w4294967295",
         ] {
             assert_eq!(parse(s).to_string(), s);
         }
@@ -383,7 +370,7 @@ mod tests {
     fn knows_its_thread_and_kind() {
         assert_eq!(parse("t12#45-50").thread(), Some(12));
         assert_eq!(parse("t12#45/a.png").thread(), Some(12));
-        assert_eq!(parse("w12").thread(), None);
+        assert!("w12".parse::<Address>().is_err());
         assert_eq!(parse("t12#45-50").kind(), AddressKind::Messages);
         assert_eq!(parse("lean:A").kind(), AddressKind::Declaration);
     }
@@ -395,7 +382,6 @@ mod tests {
         assert_eq!(parse("t12#45-50").web_path("g"), "/g/g/t/12#45");
         assert_eq!(parse("t12#45/x.pdf").web_path("g"), "/g/g/t/12#45");
         assert_eq!(parse("lean:A.b").web_path("g"), "/g/g/lib/A.b");
-        assert_eq!(parse("w7").web_path("g"), "/g/g/w/7");
         assert_eq!(parse("p/notes").web_path("g"), "/g/g/p/notes");
     }
 

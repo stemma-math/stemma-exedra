@@ -19,8 +19,7 @@ COPY Cargo.toml Cargo.lock ./
 COPY crates/ crates/
 COPY lean/ lean/
 COPY latex/ latex/
-COPY workshop/ workshop/
-COPY docker/workshop/ docker/workshop/
+COPY docker/agents/ docker/agents/
 COPY --from=web /src/web/build web/build
 RUN cargo build --release --locked --bin stemma
 

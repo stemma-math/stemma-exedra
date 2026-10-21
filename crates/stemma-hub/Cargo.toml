@@ -3,7 +3,7 @@ name = "stemma-hub"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
-description = "The Stemma hub: accounts, groups, the forum, libraries, the workshop and the API"
+description = "The Stemma hub: accounts, groups, the forum, libraries, papers and the API"
 repository.workspace = true
 license.workspace = true
 

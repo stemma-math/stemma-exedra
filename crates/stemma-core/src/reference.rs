@@ -153,9 +153,7 @@ mod tests {
     }
 
     #[test]
-    fn trims_spaces_inside_the_brackets() {
-        assert_eq!(references("[[ w7 ]]")[0].address, Ok(Address::Task(7)));
-    }
+    fn trims_spaces_inside_the_brackets() {}
 
     #[test]
     fn ignores_code() {

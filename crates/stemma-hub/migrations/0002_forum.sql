@@ -8,11 +8,7 @@ CREATE TABLE threads (
     kind TEXT NOT NULL CHECK (kind IN ('discussion', 'chat')),
     -- The agent that answers every message of a chat.
     resident_agent TEXT,
-    -- It answers with the model and the effort chosen when the chat
-    -- started, when the writer's agent runs with the same runner.
     resident_runner TEXT,
-    resident_model TEXT,
-    resident_effort TEXT CHECK (resident_effort IN ('low', 'medium', 'high')),
     -- What the thread is about: a declaration's address, `lean:Foo.bar`.
     anchor TEXT,
     created_by INTEGER NOT NULL REFERENCES users (id),

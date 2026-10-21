@@ -3,13 +3,12 @@
 //!
 //! Each space of Stemma has a module with its tools: what each is called,
 //! what it takes (a JSON Schema) and how it runs against the hub: the
-//! forum, the library, the papers and the workshop. [`Toolbox`] offers
+//! forum, the library, the papers. [`Toolbox`] offers
 //! them all.
 
 mod forum;
 mod library;
 mod papers;
-mod tasks;
 
 use serde::de::DeserializeOwned;
 use serde_json::Value;
@@ -24,17 +23,8 @@ fn all_definitions() -> Vec<ToolDef> {
     let mut tools = forum::definitions();
     tools.extend(library::definitions());
     tools.extend(papers::definitions());
-    tools.extend(tasks::definitions());
     tools
 }
-
-/// The tools that write which an agent answering in a thread may still
-/// use, when its toolbox hands over: handing a task to the workshop.
-pub const HANDS_OVER: &[&str] = &["create_task"];
-
-/// The tools that write which the workshop's agent may still use, when its
-/// toolbox opens threads: asking the group for a decision.
-pub const OPENS_THREADS: &[&str] = &["open_thread"];
 
 /// The names of the tools that only read: what agents' jobs may use.
 pub fn read_only_names() -> Vec<&'static str> {
@@ -82,10 +72,6 @@ pub struct Toolbox {
     /// The group to use when a call names none.
     default_group: Option<String>,
     read_only: bool,
-    /// With `read_only`, still offer [`HANDS_OVER`].
-    hands_over: bool,
-    /// With `read_only`, still offer [`OPENS_THREADS`].
-    opens_threads: bool,
 }
 
 impl Toolbox {
@@ -94,28 +80,12 @@ impl Toolbox {
             hub,
             default_group,
             read_only: false,
-            hands_over: false,
-            opens_threads: false,
         }
     }
 
     /// Leaves out the tools that change anything.
     pub fn read_only(mut self, read_only: bool) -> Toolbox {
         self.read_only = read_only;
-        self
-    }
-
-    /// With [`Toolbox::read_only`], still offers what hands work over:
-    /// [`HANDS_OVER`], for agents answering in a thread.
-    pub fn hands_over(mut self, hands_over: bool) -> Toolbox {
-        self.hands_over = hands_over;
-        self
-    }
-
-    /// With [`Toolbox::read_only`], still offers what opens a thread:
-    /// [`OPENS_THREADS`], for the workshop's agent.
-    pub fn opens_threads(mut self, opens_threads: bool) -> Toolbox {
-        self.opens_threads = opens_threads;
         self
     }
 
@@ -127,12 +97,7 @@ impl Toolbox {
     pub fn definitions(&self) -> Vec<ToolDef> {
         all_definitions()
             .into_iter()
-            .filter(|tool| {
-                !(self.read_only
-                    && tool.writes
-                    && !(self.hands_over && HANDS_OVER.contains(&tool.name))
-                    && !(self.opens_threads && OPENS_THREADS.contains(&tool.name)))
-            })
+            .filter(|tool| !self.read_only || !tool.writes)
             .collect()
     }
 
@@ -150,9 +115,6 @@ impl Toolbox {
             args
         };
         if let Some(result) = forum::call(self, tool.name, args.clone(), agent).await {
-            return result;
-        }
-        if let Some(result) = tasks::call(self, tool.name, args.clone(), agent).await {
             return result;
         }
         if let Some(result) = papers::call(self, tool.name, args.clone()).await {

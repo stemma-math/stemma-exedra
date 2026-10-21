@@ -14,6 +14,11 @@ pub async fn save(
     let mut previous = Credentials::load()?;
     let client = Hub::new(&url, Some(token.clone()))?;
     let me = client.me().await.context("checking the token")?;
+    let identity = client
+        .token_identity()
+        .await
+        .context("checking the personal token")?;
+    let token_id = Some(token_id.unwrap_or(identity.id));
     if let Some(group) = &group {
         anyhow::ensure!(
             me.groups.iter().any(|g| &g.slug == group),

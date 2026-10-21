@@ -10,9 +10,7 @@
     "t12#45/the board.png": "t12#45/the board.png",
     "lean:Foo.bar": "lean:Foo.bar",
     "lean:Nat.add_comm'": "lean:Nat.add_comm'",
-    "lean:α.β₁": "lean:α.β₁",
-    "w7": "w7",
-    "w4294967295": "w4294967295",
+    "lean:\u03b1.\u03b2\u2081": "lean:\u03b1.\u03b2\u2081",
     "p/notes": "p/notes",
     "p/number-theory-2": "p/number-theory-2"
   },
@@ -48,16 +46,57 @@
     "lean:Foo.",
     "lean:Foo bar",
     "w",
-    "w0"
+    "w0",
+    "w7",
+    "w4294967295"
   ],
   "references": [
-    { "text": "See [[t12#45-50]] and [[lean:Foo.bar]].", "found": ["t12#45-50", "lean:Foo.bar"] },
-    { "text": "[[ w7 ]]", "found": [" w7 "] },
-    { "text": "As [[p/notes]] says.", "found": ["p/notes"] },
-    { "text": "[[t0]] [[]]", "found": ["t0", ""] },
-    { "text": "`[[t1]]` ``a ` [[t2]]`` [[t3]]\n```\n[[t4]]\n```\n[[t5]]", "found": ["t3", "t5"] },
-    { "text": "[[t1] [t2]] [[t3", "found": [] },
-    { "text": "[[[t1]]]", "found": ["t1"] },
-    { "text": "[[t1\n]]", "found": [] }
+    {
+      "text": "See [[t12#45-50]] and [[lean:Foo.bar]].",
+      "found": [
+        "t12#45-50",
+        "lean:Foo.bar"
+      ]
+    },
+    {
+      "text": "[[ w7 ]]",
+      "found": [
+        " w7 "
+      ]
+    },
+    {
+      "text": "As [[p/notes]] says.",
+      "found": [
+        "p/notes"
+      ]
+    },
+    {
+      "text": "[[t0]] [[]]",
+      "found": [
+        "t0",
+        ""
+      ]
+    },
+    {
+      "text": "`[[t1]]` ``a ` [[t2]]`` [[t3]]\n```\n[[t4]]\n```\n[[t5]]",
+      "found": [
+        "t3",
+        "t5"
+      ]
+    },
+    {
+      "text": "[[t1] [t2]] [[t3",
+      "found": []
+    },
+    {
+      "text": "[[[t1]]]",
+      "found": [
+        "t1"
+      ]
+    },
+    {
+      "text": "[[t1\n]]",
+      "found": []
+    }
   ]
 }

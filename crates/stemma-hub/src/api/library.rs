@@ -2,7 +2,6 @@
 //! declarations, from the report of its last successful build.
 
 use axum::extract::{Path, Query, State};
-use axum::http::StatusCode;
 use serde::Deserialize;
 use sqlx::AssertSqlSafe;
 use stemma_core::Address;
@@ -90,25 +89,6 @@ pub async fn build(
     let group = Membership::of(&state, &viewer, &group).await?;
     let (build, log) = library::build(&state, group.group_id, id).await?;
     Ok(Json(BuildLog { build, log }))
-}
-
-/// Builds `main` again, as when a workshop machine with Lean was missing.
-pub async fn rebuild(
-    State(state): State<AppState>,
-    viewer: Viewer,
-    Path(group): Path<String>,
-) -> ApiResult<(StatusCode, Json<Build>)> {
-    viewer.require_full()?;
-    let group = Membership::of(&state, &viewer, &group).await?;
-    if !group.role.can_ask_for_work() {
-        return Err(ApiError::forbidden("Guests cannot ask for a build"));
-    }
-    let head = library::main_commit(&state, group.group_id)
-        .await?
-        .ok_or_else(|| ApiError::not_found("Library"))?;
-    let id = library::queue(&state, group.group_id, &head, viewer.id).await?;
-    let (build, _) = library::build(&state, group.group_id, id).await?;
-    Ok((StatusCode::CREATED, Json(build)))
 }
 
 #[derive(Deserialize)]

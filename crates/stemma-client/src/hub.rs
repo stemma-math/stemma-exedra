@@ -6,12 +6,9 @@ use reqwest::{Method, StatusCode};
 use serde::Serialize;
 use serde::de::DeserializeOwned;
 use stemma_core::api::{
-    AddWorkshopMachine, ApiToken, Architecture, ConsumptionDay, CreateMachine, CreatePaper,
-    CreateTask, CreateThread, CreateToken, CreatedMachine, CreatedToken, DeclarationPage,
-    DeclarationSummary, ErrorBody, LibraryState, Machine, Me, Message, PREFIX, Paper,
-    PaperFileText, PaperPage, PaperSource, PersonalAgent, PostMessage, SearchHit, SignIn, Task,
-    TaskPage, TaskState, Thread, ThreadKind, ThreadPage, UpdateMachine, WorkshopAgent,
-    WorkshopMachine,
+    ApiToken, CreatePaper, CreateThread, CreateToken, CreatedToken, DeclarationPage,
+    DeclarationSummary, ErrorBody, LibraryState, Me, Message, PREFIX, Paper, PaperFileText,
+    PaperPage, PaperSource, PostMessage, SearchHit, SignIn, Thread, ThreadKind, ThreadPage,
 };
 
 /// An error the hub answered with, or not reaching it.
@@ -139,38 +136,6 @@ impl Hub {
         Ok(self.send(Method::POST, path, &[], Some(body)).await?.0)
     }
 
-    /// Uploads a build's PDF, with a job's token, to `path` (relative to
-    /// the hub, as the job says).
-    pub async fn put_pdf(&self, path: &str, pdf: Vec<u8>) -> Result<()> {
-        let mut request = self
-            .http
-            .put(format!("{}{path}", self.base))
-            .header(reqwest::header::CONTENT_TYPE, "application/pdf")
-            .timeout(Duration::from_secs(600))
-            .body(pdf);
-        if let Some(token) = &self.token {
-            request = request.bearer_auth(token);
-        }
-        let response = request.send().await?;
-        let status = response.status();
-        if status.is_success() {
-            return Ok(());
-        }
-        let text = response.text().await.unwrap_or_default();
-        Err(match serde_json::from_str::<ErrorBody>(&text) {
-            Ok(body) => ApiError::Hub {
-                status,
-                code: body.error.code,
-                message: body.error.message,
-            },
-            Err(_) => ApiError::Hub {
-                status,
-                code: "unknown".into(),
-                message: format!("The hub answered {status}"),
-            },
-        })
-    }
-
     async fn delete(&self, path: &str) -> Result<()> {
         self.send::<serde_json::Value>(Method::DELETE, path, &[], None::<&()>)
             .await?;
@@ -227,6 +192,10 @@ impl Hub {
         self.post("/me/tokens", &body).await
     }
 
+    pub async fn token_identity(&self) -> Result<ApiToken> {
+        self.get("/me/token", &[]).await
+    }
+
     pub async fn tokens(&self) -> Result<Vec<ApiToken>> {
         self.get("/me/tokens", &[]).await
     }
@@ -236,128 +205,6 @@ impl Hub {
     }
 
     // ── Agents and machines ───────────────────────────────────────────
-
-    /// The person's own agents.
-    pub async fn my_agents(&self) -> Result<Vec<PersonalAgent>> {
-        self.get("/me/agents", &[]).await
-    }
-
-    /// The machine authenticated by this client's worker token.
-    pub async fn machine_identity(&self) -> Result<Machine> {
-        self.get("/worker/me", &[]).await
-    }
-
-    /// The person's machines.
-    pub async fn machines(&self) -> Result<Vec<Machine>> {
-        self.get("/me/machines", &[]).await
-    }
-
-    pub async fn create_machine(&self, name: &str, preferred: bool) -> Result<CreatedMachine> {
-        let body = CreateMachine {
-            name: name.into(),
-            preferred,
-        };
-        self.post("/me/machines", &body).await
-    }
-
-    pub async fn prefer_machine(&self, id: i64, preferred: bool) -> Result<Machine> {
-        let body = UpdateMachine { preferred };
-        Ok(self
-            .send(
-                Method::PATCH,
-                &format!("/me/machines/{id}"),
-                &[],
-                Some(&body),
-            )
-            .await?
-            .0)
-    }
-
-    pub async fn revoke_machine(&self, id: i64) -> Result<()> {
-        self.delete(&format!("/me/machines/{id}")).await
-    }
-
-    /// Sets the agents one of the person's machines offers the workshop,
-    /// in order of preference.
-    pub async fn set_workshop_agents(
-        &self,
-        id: i64,
-        agents: &[WorkshopAgent],
-    ) -> Result<Vec<WorkshopAgent>> {
-        Ok(self
-            .send(
-                Method::PUT,
-                &format!("/me/machines/{id}/workshop-agents"),
-                &[],
-                Some(agents),
-            )
-            .await?
-            .0)
-    }
-
-    // ── The workshop ──────────────────────────────────────────────────
-
-    /// The kinds of work the workshop knows.
-    pub async fn architectures(&self) -> Result<Vec<Architecture>> {
-        self.get("/workshop/architectures", &[]).await
-    }
-
-    pub async fn workshop_machines(&self, group: &str) -> Result<Vec<WorkshopMachine>> {
-        self.get(&format!("{}/workshop/machines", g(group)), &[])
-            .await
-    }
-
-    /// Makes one of the person's machines work for a group's workshop.
-    pub async fn add_workshop_machine(&self, group: &str, machine: i64) -> Result<()> {
-        self.send::<serde_json::Value>(
-            Method::POST,
-            &format!("{}/workshop/machines", g(group)),
-            &[],
-            Some(&AddWorkshopMachine { machine }),
-        )
-        .await?;
-        Ok(())
-    }
-
-    pub async fn remove_workshop_machine(&self, group: &str, machine: i64) -> Result<()> {
-        self.delete(&format!("{}/workshop/machines/{machine}", g(group)))
-            .await
-    }
-
-    /// What a group's workshop consumed, day by day.
-    pub async fn workshop_consumption(
-        &self,
-        group: &str,
-        days: u32,
-    ) -> Result<Vec<ConsumptionDay>> {
-        self.get(
-            &format!("{}/workshop/consumption", g(group)),
-            &[("days", days.to_string())],
-        )
-        .await
-    }
-
-    pub async fn approve_task(&self, group: &str, number: u32) -> Result<()> {
-        self.send::<serde_json::Value>(
-            Method::POST,
-            &format!("{}/tasks/{number}/approve", g(group)),
-            &[],
-            None::<&()>,
-        )
-        .await?;
-        Ok(())
-    }
-
-    pub async fn reject_task(&self, group: &str, number: u32) -> Result<()> {
-        self.send::<serde_json::Value>(
-            Method::POST,
-            &format!("{}/tasks/{number}/reject", g(group)),
-            &[],
-            None::<&()>,
-        )
-        .await?;
-        Ok(())
-    }
 
     // ── The forum ─────────────────────────────────────────────────────
 
@@ -478,30 +325,7 @@ impl Hub {
     }
 }
 
-impl Hub {
-    // ── The workshop ──────────────────────────────────────────────────
-
-    pub async fn tasks(
-        &self,
-        group: &str,
-        state: Option<TaskState>,
-        limit: u32,
-    ) -> Result<Vec<Task>> {
-        let mut query = vec![("limit", limit.to_string())];
-        if let Some(state) = state {
-            query.push(("state", state.as_str().to_owned()));
-        }
-        self.get(&format!("{}/tasks", g(group)), &query).await
-    }
-
-    pub async fn task(&self, group: &str, number: u32) -> Result<TaskPage> {
-        self.get(&format!("{}/tasks/{number}", g(group)), &[]).await
-    }
-
-    pub async fn create_task(&self, group: &str, task: &CreateTask) -> Result<Task> {
-        self.post(&format!("{}/tasks", g(group)), task).await
-    }
-}
+impl Hub {}
 
 fn g(group: &str) -> String {
     format!("/groups/{}", encode(group))

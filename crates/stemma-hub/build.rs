@@ -1,5 +1,4 @@
-//! Rebuilds the hub when the web app or the workshop's architectures it
-//! embeds change.
+//! Rebuild the hub when its embedded web app changes.
 
 fn main() {
     let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
@@ -8,8 +7,4 @@ fn main() {
     // so make sure the folder is there; in a read-only tree, do without.
     let _ = std::fs::create_dir_all(&build);
     println!("cargo::rerun-if-changed={}", build.display());
-    println!(
-        "cargo::rerun-if-changed={}",
-        root.join("workshop/architectures").display()
-    );
 }

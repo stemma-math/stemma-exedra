@@ -30,14 +30,11 @@ CREATE TABLE groups (
     id INTEGER PRIMARY KEY,
     slug TEXT NOT NULL UNIQUE,
     name TEXT NOT NULL,
-    -- The numbers of the last thread and task, so numbers are never reused.
     last_thread INTEGER NOT NULL DEFAULT 0,
     last_task INTEGER NOT NULL DEFAULT 0,
     created_at INTEGER NOT NULL
 );
 
--- An admin manages the group; a member also asks the workshop for work; a
--- guest reads and converses.
 CREATE TABLE memberships (
     group_id INTEGER NOT NULL REFERENCES groups (id) ON DELETE CASCADE,
     user_id INTEGER NOT NULL REFERENCES users (id) ON DELETE CASCADE,

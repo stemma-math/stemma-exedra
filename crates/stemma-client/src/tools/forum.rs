@@ -40,7 +40,7 @@ pub fn definitions() -> Vec<ToolDef> {
                           (the thread), t12#45 (a message) or t12#45-50 (messages 45 to 50). \
                           Links to the web app work too. Each message comes headed by its \
                           address, its author and its time. Declarations (lean:Name) and the \
-                          workshop's tasks (w7) are read too.",
+                          and papers are read too.",
             input_schema: json!({
                 "type": "object",
                 "properties": {
@@ -74,7 +74,7 @@ pub fn definitions() -> Vec<ToolDef> {
             name: "open_thread",
             description: "Open a new thread in the group, to ask it something: a short title, \
                           and a first message in Markdown that cites by address what it is \
-                          about ([[t12#45]], [[lean:Foo.bar]], [[w7]]). Use it sparingly, only \
+                          about ([[t12#45]], [[lean:Foo.bar]]). Use it sparingly, only \
                           when a decision is needed and no thread fits. Returns the thread's \
                           address.",
             input_schema: json!({
@@ -146,8 +146,6 @@ async fn open_thread(toolbox: &Toolbox, args: Value) -> ToolResult {
                 title: args.title,
                 kind: ThreadKind::Discussion,
                 resident_agent: None,
-                model: None,
-                effort: None,
                 anchor: None,
                 body: Some(args.body),
                 attachments: Vec::new(),
@@ -217,10 +215,7 @@ async fn read_thread(toolbox: &Toolbox, args: Value) -> ToolResult {
             let args = json!({"name": name, "group": group});
             return super::library::lookup(toolbox, args).await;
         }
-        Address::Task(number) => {
-            let args = json!({"address": format!("w{number}"), "group": group});
-            return super::tasks::status(toolbox, args).await;
-        }
+
         Address::Paper(slug) => {
             let args = json!({"address": format!("p/{slug}"), "group": group});
             return super::papers::read(toolbox, args).await;

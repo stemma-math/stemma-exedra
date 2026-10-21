@@ -2,7 +2,6 @@
 
 mod account;
 pub use account::create_user;
-pub(crate) mod agents;
 mod attachments;
 mod events;
 pub(crate) mod forum;
@@ -10,9 +9,7 @@ mod groups;
 mod jobs;
 mod library;
 mod papers;
-mod tasks;
 pub mod workers;
-mod workshop;
 
 use axum::Router;
 use axum::extract::rejection::JsonRejection;
@@ -37,6 +34,7 @@ pub fn router(state: AppState) -> Router {
         .route("/setup", get(account::setup_state).post(account::setup))
         .route("/session", post(account::sign_in).delete(account::sign_out))
         .route("/me", get(account::me).patch(account::update_me))
+        .route("/me/token", get(account::token_identity))
         .route("/me/password", post(account::change_password))
         .route(
             "/me/tokens",
@@ -82,10 +80,7 @@ pub fn router(state: AppState) -> Router {
                 .delete(forum::delete_message),
         )
         .route("/groups/{group}/library", get(library::state))
-        .route(
-            "/groups/{group}/library/builds",
-            get(library::builds).post(library::rebuild),
-        )
+        .route("/groups/{group}/library/builds", get(library::builds))
         .route("/groups/{group}/library/builds/{id}", get(library::build))
         .route(
             "/groups/{group}/library/declarations",
@@ -104,78 +99,19 @@ pub fn router(state: AppState) -> Router {
             "/groups/{group}/papers/{paper}/authors/{username}",
             put(papers::add_author).delete(papers::remove_author),
         )
-        .route(
-            "/groups/{group}/papers/{paper}/builds",
-            post(papers::rebuild),
-        )
-        .route(
-            "/groups/{group}/papers/{paper}/builds/{build}/pdf",
-            put(papers::upload_pdf).layer(DefaultBodyLimit::max(upload_limit)),
-        )
         .route("/groups/{group}/papers/{paper}/pdf", get(papers::pdf))
         .route("/groups/{group}/papers/{paper}/files", get(papers::files))
         .route(
             "/groups/{group}/papers/{paper}/files/{*path}",
             get(papers::file),
         )
-        .route("/groups/{group}/papers/{paper}/tasks", post(papers::edit))
         .route("/groups/{group}/resolve", post(forum::resolve))
         .route("/groups/{group}/search", get(forum::search))
-        .route("/workshop/architectures", get(workshop::architectures))
-        .route(
-            "/groups/{group}/workshop/machines",
-            get(workshop::list_machines).post(workshop::add_machine),
-        )
-        .route(
-            "/groups/{group}/workshop/machines/{id}",
-            delete(workshop::remove_machine),
-        )
-        .route(
-            "/groups/{group}/workshop/consumption",
-            get(workshop::consumption),
-        )
-        .route(
-            "/me/machines",
-            get(workers::list_machines).post(workers::create_machine),
-        )
-        .route(
-            "/me/machines/{id}",
-            patch(workers::update_machine).delete(workers::revoke_machine),
-        )
-        .route(
-            "/me/machines/{id}/workshop-agents",
-            put(workers::set_workshop_agents),
-        )
-        .route(
-            "/me/agents",
-            get(agents::list_mine).post(agents::create_mine),
-        )
-        .route(
-            "/me/agents/{handle}",
-            put(agents::update_mine).delete(agents::remove_mine),
-        )
         .route(
             "/groups/{group}/threads/{thread}/jobs",
             get(jobs::of_thread),
         )
         .route("/groups/{group}/jobs/{id}", delete(jobs::cancel))
-        .route(
-            "/groups/{group}/tasks",
-            get(tasks::list).post(tasks::create),
-        )
-        .route(
-            "/groups/{group}/tasks/{number}",
-            get(tasks::get).delete(tasks::cancel),
-        )
-        .route(
-            "/groups/{group}/tasks/{number}/approve",
-            post(workshop::approve),
-        )
-        .route(
-            "/groups/{group}/tasks/{number}/reject",
-            post(workshop::reject),
-        )
-        .route("/worker/me", get(workers::identity))
         .route(stemma_core::protocol::WORKER_PATH, get(workers::connect))
         .route(
             "/groups/{group}/attachments",

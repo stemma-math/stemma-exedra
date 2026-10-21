@@ -1,15 +1,12 @@
 //! The Stemma hub: accounts, groups, the forum and the agents in it, and
-//! the libraries and their workshop, behind a JSON API, with the web app
+//! the libraries and working papers, behind a JSON API, with the web app
 //! and the workers' WebSocket. The groups' repositories are kept by a
 //! forge beside it, which people sign in to through the hub, and whose git
 //! the hub passes on to workers and personal tokens.
 
-pub mod agents;
 pub mod api;
-pub mod architectures;
 pub mod auth;
 pub mod config;
-pub mod consumption;
 pub mod db;
 pub mod error;
 pub mod forge;
@@ -22,7 +19,6 @@ pub mod search;
 pub mod secret;
 pub mod state;
 pub mod web;
-pub mod workshop;
 
 use std::sync::Arc;
 

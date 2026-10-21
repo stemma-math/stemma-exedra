@@ -251,6 +251,8 @@ impl From<TokenRow> for ApiToken {
             created_at: db::from_millis(row.created_at),
             last_used_at: row.last_used_at.map(db::from_millis),
             expires_at: row.expires_at.map(db::from_millis),
+            connected: false,
+            runners: Vec::new(),
         }
     }
 }
@@ -262,7 +264,7 @@ pub async fn list_tokens(
     viewer.require_full()?;
     let rows: Vec<TokenRow> = sqlx::query_as(
         "SELECT id, name, prefix, created_at, last_used_at, expires_at FROM api_tokens
-         WHERE user_id = ? AND kind IN ('personal', 'launcher') AND revoked_at IS NULL
+         WHERE user_id = ? AND kind = 'personal' AND revoked_at IS NULL
            AND (expires_at IS NULL OR expires_at > ?)
          ORDER BY created_at DESC",
     )
@@ -270,7 +272,17 @@ pub async fn list_tokens(
     .bind(db::now())
     .fetch_all(&state.db)
     .await?;
-    Ok(Json(rows.into_iter().map(ApiToken::from).collect()))
+    let workers = state.workers.lock().await;
+    Ok(Json(
+        rows.into_iter()
+            .map(|row| {
+                let mut token = ApiToken::from(row);
+                token.connected = workers.is_online(token.id);
+                token.runners = workers.runners(token.id);
+                token
+            })
+            .collect(),
+    ))
 }
 
 pub async fn create_token(
@@ -319,6 +331,8 @@ pub async fn create_token(
         created_at: db::from_millis(now),
         last_used_at: None,
         expires_at: expires_at.map(db::from_millis),
+        connected: false,
+        runners: Vec::new(),
     };
     Ok((StatusCode::CREATED, Json(CreatedToken { token, secret })))
 }
@@ -341,7 +355,27 @@ pub async fn revoke_token(
     if done.rows_affected() == 0 {
         return Err(ApiError::not_found("Token"));
     }
+    crate::jobs::disconnect(&state, id).await?;
     Ok(StatusCode::NO_CONTENT)
+}
+
+/// The current personal token, without its secret.
+pub async fn token_identity(
+    State(state): State<AppState>,
+    headers: axum::http::HeaderMap,
+    viewer: Viewer,
+) -> ApiResult<Json<ApiToken>> {
+    if !viewer.personal_token {
+        return Err(ApiError::forbidden("A personal token is required"));
+    }
+    let secret = crate::auth::bearer_token(&headers).ok_or_else(ApiError::unauthenticated)?;
+    let row: TokenRow = sqlx::query_as("SELECT id, name, prefix, created_at, last_used_at, expires_at FROM api_tokens WHERE token_hash = ? AND kind = 'personal' AND revoked_at IS NULL")
+        .bind(crate::secret::token_hash(secret)).fetch_one(&state.db).await?;
+    let mut token = ApiToken::from(row);
+    let computers = state.workers.lock().await;
+    token.connected = computers.is_online(token.id);
+    token.runners = computers.runners(token.id);
+    Ok(Json(token))
 }
 
 #[cfg(test)]

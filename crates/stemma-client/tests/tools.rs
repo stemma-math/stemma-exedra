@@ -296,9 +296,6 @@ async fn mcp_serves_the_tools_and_names_the_agent() {
             "library_search",
             "list_papers",
             "read_paper",
-            "create_task",
-            "task_status",
-            "list_tasks"
         ]
     );
 

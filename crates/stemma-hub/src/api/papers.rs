@@ -1,22 +1,16 @@
-//! Working papers over the API: listing and creating them, their authors,
-//! their builds and PDF, their source, and asking the workshop to edit one.
+//! Working papers, authors, archived PDFs and source.
 
-use axum::body::{Body, Bytes};
+use axum::body::Body;
 use axum::extract::{Path, State};
 use axum::http::{HeaderValue, StatusCode, header};
 use axum::response::{IntoResponse, Response};
-use stemma_core::Address;
-use stemma_core::api::{
-    CreatePaper, CreateThread, EditPaper, Paper, PaperFileText, PaperPage, PaperSource, Task,
-    ThreadKind,
-};
+use stemma_core::api::{CreatePaper, Paper, PaperFileText, PaperPage, PaperSource};
 
-use super::forum::{create_thread, find_thread};
 use super::{Json, Membership};
 use crate::auth::Viewer;
 use crate::error::{ApiError, ApiResult};
+use crate::papers;
 use crate::state::AppState;
-use crate::{jobs, papers, workshop};
 
 /// The group's papers.
 pub async fn list(
@@ -81,18 +75,6 @@ pub async fn remove_author(
     ))
 }
 
-/// Builds the paper's `main` again.
-pub async fn rebuild(
-    State(state): State<AppState>,
-    viewer: Viewer,
-    Path((slug, paper)): Path<(String, String)>,
-) -> ApiResult<(StatusCode, Json<Paper>)> {
-    viewer.require_full()?;
-    let group = Membership::of(&state, &viewer, &slug).await?;
-    let paper = papers::rebuild(&state, &group, viewer.id, &paper).await?;
-    Ok((StatusCode::CREATED, Json(paper)))
-}
-
 /// The paper's PDF: that of its last build that made one. Browsers show
 /// it in their own viewer.
 pub async fn pdf(
@@ -129,26 +111,6 @@ pub async fn pdf(
     Ok(response)
 }
 
-/// Keeps the PDF of a build, as the machine building it uploads it, with
-/// its job's token.
-pub async fn upload_pdf(
-    State(state): State<AppState>,
-    viewer: Viewer,
-    Path((slug, paper, build)): Path<(String, String, i64)>,
-    body: Bytes,
-) -> ApiResult<StatusCode> {
-    let Some(job) = viewer.job() else {
-        return Err(ApiError::forbidden(
-            "Only the machine building it uploads a build's PDF",
-        ));
-    };
-    let token_id = job.token_id;
-    let group = Membership::of(&state, &viewer, &slug).await?;
-    let row = papers::find(&state, group.group_id, &paper).await?;
-    papers::upload(&state, token_id, &row, build, &body).await?;
-    Ok(StatusCode::NO_CONTENT)
-}
-
 /// The paper's source files, at its `main`.
 pub async fn files(
     State(state): State<AppState>,
@@ -171,58 +133,4 @@ pub async fn file(
     let row = papers::find(&state, group.group_id, &paper).await?;
     let (commit, text) = papers::source_file(&state, &row, &path).await?;
     Ok(Json(PaperFileText { path, commit, text }))
-}
-
-/// Asks the workshop to edit the paper: opens a thread about it with the
-/// request, and hands the task over from its first message.
-pub async fn edit(
-    State(state): State<AppState>,
-    viewer: Viewer,
-    Path((slug, paper)): Path<(String, String)>,
-    Json(body): Json<EditPaper>,
-) -> ApiResult<(StatusCode, Json<Task>)> {
-    viewer.require_full()?;
-    let group = Membership::of(&state, &viewer, &slug).await?;
-    if !group.role.can_ask_for_work() {
-        return Err(ApiError::forbidden(
-            "Guests cannot ask the workshop for work",
-        ));
-    }
-    let row = papers::find(&state, group.group_id, &paper).await?;
-    let title = super::required_text(&body.title, "The title", 200)?;
-    let instructions = super::required_text(&body.instructions, "The instructions", 20_000)?;
-    let (_, Json(page)) = create_thread(
-        State(state.clone()),
-        viewer.clone(),
-        Path(slug),
-        Json(CreateThread {
-            title: title.clone(),
-            kind: ThreadKind::Discussion,
-            resident_agent: None,
-            model: None,
-            effort: None,
-            anchor: Some(Address::Paper(row.slug.clone())),
-            body: Some(instructions.clone()),
-            attachments: Vec::new(),
-        }),
-    )
-    .await?;
-    let thread = find_thread(&state, group.group_id, page.thread.number).await?;
-    let task = workshop::create(
-        &state,
-        &group,
-        workshop::NewTask {
-            title,
-            instructions,
-            architecture: None,
-            paper_id: Some(row.id),
-            thread_id: thread.id,
-            origin_message: 1,
-            requester_id: viewer.id,
-            agent: None,
-        },
-    )
-    .await?;
-    jobs::dispatch(&state).await?;
-    Ok((StatusCode::CREATED, Json(task)))
 }

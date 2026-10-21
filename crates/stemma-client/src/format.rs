@@ -7,7 +7,7 @@ use std::fmt::Write;
 use stemma_core::Address;
 use stemma_core::api::{
     Build, BuildState, DeclarationPage, DeclarationState, DeclarationSummary, LibraryState,
-    Message, Paper, PaperPage, PaperSource, SearchHit, Task, TaskPage, Thread, ThreadKind,
+    Message, Paper, PaperPage, PaperSource, SearchHit, Thread, ThreadKind,
 };
 use time::OffsetDateTime;
 use time::format_description::well_known::Rfc3339;
@@ -291,27 +291,6 @@ pub fn declaration_list(declarations: &[DeclarationSummary]) -> String {
     out
 }
 
-/// One line per task.
-pub fn task_list(tasks: &[Task]) -> String {
-    if tasks.is_empty() {
-        return "No tasks.\n".into();
-    }
-    let mut out = String::new();
-    for task in tasks {
-        let _ = writeln!(
-            out,
-            "- w{} – {} – {} – from {}, for {} – {}",
-            task.number,
-            task.title,
-            task.state.as_str(),
-            task.origin,
-            task.requester.display_name,
-            when(task.created_at)
-        );
-    }
-    out
-}
-
 /// How a paper's PDF stands, in a line.
 fn paper_state(paper: &Paper) -> String {
     let mut out = match &paper.pdf {
@@ -406,84 +385,6 @@ fn capitalize(text: &str) -> String {
         Some(first) => first.to_uppercase().chain(chars).collect(),
         None => String::new(),
     }
-}
-
-/// A task, with its report and the end of its log.
-pub fn task(hub: &str, group: &str, page: &TaskPage) -> String {
-    let task = &page.task;
-    let mut out = format!(
-        "# w{} – {} – {}\n\nAsked in {} by {}",
-        task.number,
-        task.title,
-        task.state.as_str(),
-        task.origin,
-        task.requester.display_name
-    );
-    if let Some(paper) = &task.paper {
-        let _ = write!(out, ", on p/{paper}");
-    }
-    if let Some(agent) = &task.agent {
-        let _ = write!(out, ", through {agent}");
-    }
-    let _ = writeln!(
-        out,
-        ", {}. {}{}",
-        when(task.created_at),
-        hub,
-        Address::Task(task.number).web_path(group)
-    );
-    if let Some(runner) = &task.runner {
-        let _ = write!(out, "\nWorked on with {runner}");
-        if let Some(model) = &task.model {
-            let _ = write!(out, " ({model})");
-        }
-        out.push_str(".\n");
-    }
-    if let Some(progress) = &task.progress {
-        let _ = writeln!(out, "\nNow: {progress}.");
-    }
-    if let Some(reason) = &task.reason {
-        let _ = writeln!(out, "\nWhy: {reason}");
-    }
-    if let Some(changes) = &task.changes {
-        let _ = write!(
-            out,
-            "\nChanges: {} on the branch {}, in {}",
-            short(&changes.commit),
-            changes.branch,
-            changes.url
-        );
-        if changes.big {
-            let _ = write!(out, "; big ({})", changes.why_big.join("; "));
-        }
-        out.push_str(".\n");
-        if !changes.needs.is_empty() {
-            let needs: Vec<&str> = changes.needs.iter().map(|n| n.as_str()).collect();
-            let _ = writeln!(out, "Waiting for the approval of: {}.", needs.join(", "));
-        }
-        for approval in &changes.approvals {
-            let _ = writeln!(
-                out,
-                "Approved by {}, as {}.",
-                approval.user.display_name,
-                approval.approver.as_str()
-            );
-        }
-        if let Some(user) = &changes.rejected_by {
-            let _ = writeln!(out, "Rejected by {}.", user.display_name);
-        }
-        if let Some(merged) = &changes.merged {
-            let _ = writeln!(out, "Merged into main as {}.", short(merged));
-        }
-    }
-    if let Some(message) = &task.report_message {
-        let _ = writeln!(out, "\nReported in {message}.");
-    }
-    let _ = writeln!(out, "\n## Instructions\n\n{}", task.instructions.trim());
-    if let Some(report) = page.report.as_deref().filter(|r| !r.trim().is_empty()) {
-        let _ = writeln!(out, "\n## Report\n\n{}", report.trim());
-    }
-    out
 }
 
 #[cfg(test)]

@@ -1,20 +1,17 @@
-//! Libraries, end to end over HTTP: made from the template in the forge,
-//! cloned and pushed with git through the hub, built after each push, and
-//! their reports kept and queried. The forge is a stand-in for Forgejo.
+//! Library creation and git authorization, without scheduling builds.
 
 use std::path::Path;
 use std::sync::Arc;
 
 use serde_json::{Value, json};
-use stemma_core::api::{Declaration, LibraryReport, NewAccount};
-use stemma_core::protocol::Built;
+use stemma_core::api::NewAccount;
 use stemma_fake_forge::FakeForge;
 use stemma_hub::config::{ForgeConfig, ForgeSecrets};
 
 struct Hub {
     url: String,
     state: stemma_hub::AppState,
-    forge: FakeForge,
+    _forge: FakeForge,
     _data: tempfile::TempDir,
 }
 
@@ -44,7 +41,7 @@ async fn hub() -> Hub {
     Hub {
         url,
         state,
-        forge,
+        _forge: forge,
         _data: data,
     }
 }
@@ -114,27 +111,8 @@ fn git(dir: &Path, args: &[&str]) -> std::process::Output {
         .unwrap()
 }
 
-fn declaration(name: &str, sorry: bool, uses: &[&str]) -> Declaration {
-    Declaration {
-        name: name.into(),
-        module: "Geometry.Basic".into(),
-        kind: "theorem".into(),
-        type_: "1 + 1 = 2".into(),
-        doc: Some("A fact. ".into()),
-        range: None,
-        sorry,
-        data_sorry: false,
-        axioms: if sorry {
-            vec!["sorryAx".into()]
-        } else {
-            Vec::new()
-        },
-        uses: uses.iter().map(|u| u.to_string()).collect(),
-    }
-}
-
 #[tokio::test(flavor = "multi_thread")]
-async fn libraries_are_made_cloned_pushed_and_built() {
+async fn libraries_are_made_cloned_and_pushed_without_building() {
     let hub = hub().await;
     let ada = person(&hub, "ada", true).await;
     call(
@@ -150,13 +128,8 @@ async fn libraries_are_made_cloned_pushed_and_built() {
     let library = call(&hub, &ada, "GET", "/groups/geometry/library", None).await;
     assert_eq!(library["available"], true);
     assert_eq!(library["clone_path"], "/git/geometry/library.git");
-    let first = library["head"].as_str().unwrap().to_owned();
-    assert_eq!(library["latest"]["state"], "queued");
-    assert_eq!(library["latest"]["commit"], first.as_str());
-    assert_eq!(
-        library["latest"]["progress"],
-        "Waiting for a workshop machine with Lean to come online"
-    );
+    assert!(library["head"].is_string());
+    assert!(library["latest"].is_null());
     assert!(library["current"].is_null());
 
     // Cloned with the token as the password; not without it.
@@ -193,21 +166,11 @@ async fn libraries_are_made_cloned_pushed_and_built() {
     git(&dir, &["commit", "-qam", "More"]);
     let pushed = git(&dir, &["push", "-q", "origin", "main"]);
     assert!(pushed.status.success(), "{pushed:?}");
-    let second = String::from_utf8(git(&dir, &["rev-parse", "HEAD"]).stdout).unwrap();
-    let second = second.trim();
-    let mut builds = Value::Null;
-    for _ in 0..100 {
-        builds = call(&hub, &ada, "GET", "/groups/geometry/library/builds", None).await;
-        if builds.as_array().unwrap().len() == 2 {
-            break;
-        }
-        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
-    }
-    assert_eq!(builds[0]["commit"], second);
-    assert_eq!(builds[0]["state"], "queued");
-    assert_eq!(builds[1]["commit"], first.as_str());
-    assert_eq!(builds[1]["state"], "cancelled");
-
+    let count: i64 = sqlx::query_scalar("SELECT count(*) FROM jobs")
+        .fetch_one(&hub.state.db)
+        .await
+        .unwrap();
+    assert_eq!(count, 0);
     // History cannot be rewritten.
     git(&dir, &["reset", "-q", "--hard", "HEAD~1"]);
     let forced = git(&dir, &["push", "-q", "--force", "origin", "main"]);
@@ -271,7 +234,7 @@ async fn libraries_are_made_cloned_pushed_and_built() {
             .fetch_one(&hub.state.db)
             .await
             .unwrap();
-    let (token_id, job) = stemma_hub::auth::create_job_token(
+    let (_token_id, job) = stemma_hub::auth::create_job_token(
         &hub.state.db,
         ada_id,
         group_id,
@@ -290,190 +253,4 @@ async fn libraries_are_made_cloned_pushed_and_built() {
     git(&checkout, &["commit", "-qm", "Notes"]);
     let pushed = git(&checkout, &["push", "-q", "origin", "main"]);
     assert!(!pushed.status.success());
-    stemma_hub::auth::grant_task(
-        &hub.state.db,
-        token_id,
-        "library",
-        "refs/heads/workshop/w1",
-        0,
-    )
-    .await
-    .unwrap();
-    let pushed = git(&checkout, &["push", "-q", "origin", "main"]);
-    assert!(!pushed.status.success(), "{pushed:?}");
-    let both = git(
-        &checkout,
-        &[
-            "push",
-            "-q",
-            "origin",
-            "HEAD:refs/heads/workshop/w1",
-            "HEAD:refs/heads/main",
-        ],
-    );
-    assert!(!both.status.success(), "{both:?}");
-    let pushed = git(
-        &checkout,
-        &["push", "-q", "origin", "HEAD:refs/heads/workshop/w1"],
-    );
-    assert!(pushed.status.success(), "{pushed:?}");
-    let branch = hub
-        .forge
-        .branch_commit("geometry", "library", "workshop/w1")
-        .await;
-    assert!(branch.is_some());
-    // Ada puts it on main herself.
-    let ada_url = format!("http://ada:{ada}@{host}/git/geometry/library.git");
-    let pushed = git(&checkout, &["push", "-q", &ada_url, "HEAD:refs/heads/main"]);
-    assert!(pushed.status.success(), "{pushed:?}");
-    let third = String::from_utf8(git(&checkout, &["rev-parse", "HEAD"]).stdout).unwrap();
-    let third = third.trim().to_owned();
-    for _ in 0..100 {
-        builds = call(&hub, &ada, "GET", "/groups/geometry/library/builds", None).await;
-        if builds[0]["commit"] == third.as_str() {
-            break;
-        }
-        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
-    }
-    assert_eq!(builds[0]["commit"], third.as_str());
-
-    // A worker's report becomes the library's state.
-    let job_id: i64 = sqlx::query_scalar("SELECT job_id FROM library_builds WHERE commit_sha = ?")
-        .bind(second)
-        .fetch_one(&hub.state.db)
-        .await
-        .unwrap();
-    let group_id: i64 = sqlx::query_scalar("SELECT id FROM groups")
-        .fetch_one(&hub.state.db)
-        .await
-        .unwrap();
-    let report = LibraryReport {
-        lean: "4.35.0".into(),
-        modules: vec!["Geometry".into(), "Geometry.Basic".into()],
-        declarations: vec![
-            declaration("Geometry.two", false, &[]),
-            declaration("Geometry.hard", true, &["Geometry.two"]),
-        ],
-    };
-    stemma_hub::library::build_finished(
-        &hub.state,
-        group_id,
-        job_id,
-        Built {
-            succeeded: true,
-            error: None,
-            log: "✔ Built Geometry".into(),
-            report: Some(report),
-        },
-    )
-    .await
-    .unwrap();
-
-    let library = call(&hub, &ada, "GET", "/groups/geometry/library", None).await;
-    assert_eq!(library["current"]["commit"], second);
-    assert_eq!(library["current"]["state"], "succeeded");
-    assert_eq!(library["current"]["lean"], "4.35.0");
-    assert_eq!(library["declarations"], 2);
-    assert_eq!(library["sorry"], 1);
-    assert_eq!(library["modules"][0]["name"], "Geometry.Basic");
-
-    call(
-        &hub,
-        &ada,
-        "POST",
-        "/groups/geometry/threads",
-        Some(json!({"title": "Hard", "body": "Is [[lean:Geometry.hard]] true?"})),
-    )
-    .await;
-    let page = call(
-        &hub,
-        &ada,
-        "GET",
-        "/groups/geometry/library/declarations/Geometry.two",
-        None,
-    )
-    .await;
-    assert_eq!(page["state"], "proved");
-    assert_eq!(page["doc"], "A fact.");
-    assert_eq!(page["used_by"], json!(["Geometry.hard"]));
-    let page = call(
-        &hub,
-        &ada,
-        "GET",
-        "/groups/geometry/library/declarations/Geometry.hard",
-        None,
-    )
-    .await;
-    assert_eq!(page["state"], "sorry");
-    assert_eq!(page["references"][0]["address"], "t1#1");
-    // A thread about it, as "Discuss it" starts one, is listed too.
-    call(
-        &hub,
-        &ada,
-        "POST",
-        "/groups/geometry/threads",
-        Some(json!({"title": "Proving it", "anchor": "lean:Geometry.hard"})),
-    )
-    .await;
-    let page = call(
-        &hub,
-        &ada,
-        "GET",
-        "/groups/geometry/library/declarations/Geometry.hard",
-        None,
-    )
-    .await;
-    assert_eq!(page["references"][0]["address"], "t2");
-    assert_eq!(page["references"][0]["title"], "Proving it");
-    assert_eq!(page["references"][1]["address"], "t1#1");
-
-    let found = call(
-        &hub,
-        &ada,
-        "GET",
-        "/groups/geometry/library/declarations?q=HARD",
-        None,
-    )
-    .await;
-    assert_eq!(found.as_array().unwrap().len(), 1);
-    let sorry = call(
-        &hub,
-        &ada,
-        "GET",
-        "/groups/geometry/library/declarations?state=sorry",
-        None,
-    )
-    .await;
-    assert_eq!(sorry[0]["name"], "Geometry.hard");
-
-    let resolved = call(
-        &hub,
-        &ada,
-        "POST",
-        "/groups/geometry/resolve",
-        Some(json!({"addresses": ["lean:Geometry.two", "lean:Geometry.hard", "lean:Nope"]})),
-    )
-    .await;
-    let states: Vec<&str> = resolved
-        .as_array()
-        .unwrap()
-        .iter()
-        .map(|r| r["state"].as_str().unwrap())
-        .collect();
-    assert_eq!(states, ["proved", "sorry", "missing"]);
-    assert_eq!(resolved[0]["exists"], true);
-    assert_eq!(resolved[2]["exists"], false);
-
-    let log = call(
-        &hub,
-        &ada,
-        "GET",
-        &format!(
-            "/groups/geometry/library/builds/{}",
-            library["current"]["id"]
-        ),
-        None,
-    )
-    .await;
-    assert_eq!(log["log"], "✔ Built Geometry");
 }

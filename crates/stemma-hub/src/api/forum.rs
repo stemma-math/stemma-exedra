@@ -9,8 +9,8 @@ use serde::Deserialize;
 use sqlx::{AssertSqlSafe, Sqlite, Transaction};
 use stemma_core::Address;
 use stemma_core::api::{
-    CreateThread, EditMessage, Effort, Event, Message, PostMessage, Resolve, Resolved, SearchHit,
-    Thread, ThreadKind, ThreadPage, UpdateThread,
+    CreateThread, EditMessage, Event, Message, PostMessage, Resolve, Resolved, SearchHit, Thread,
+    ThreadKind, ThreadPage, UpdateThread,
 };
 
 use super::attachments::{self, attachments_of};
@@ -24,8 +24,7 @@ const MAX_BODY_CHARS: usize = 100_000;
 
 /// What [`ThreadRow`] reads, from `threads t` and its creator.
 const THREAD_COLUMNS: &str =
-    "SELECT t.id, t.number, t.title, t.kind, t.resident_agent, t.resident_runner, t.resident_model,
-            t.resident_effort, t.anchor, t.created_at, t.last_activity_at,
+    "SELECT t.id, t.number, t.title, t.kind, t.resident_agent, t.resident_runner, t.anchor, t.created_at, t.last_activity_at,
             t.last_message, u.id AS user_id, u.username, u.display_name
      FROM threads t JOIN users u ON u.id = t.created_by";
 
@@ -37,8 +36,6 @@ pub(crate) struct ThreadRow {
     kind: String,
     resident_agent: Option<String>,
     resident_runner: Option<String>,
-    resident_model: Option<String>,
-    resident_effort: Option<String>,
     anchor: Option<String>,
     created_at: i64,
     last_activity_at: i64,
@@ -55,8 +52,6 @@ impl From<ThreadRow> for Thread {
             kind: ThreadKind::parse(&row.kind).unwrap_or(ThreadKind::Discussion),
             resident_agent: row.resident_agent,
             resident_runner: row.resident_runner,
-            resident_model: row.resident_model,
-            resident_effort: row.resident_effort.as_deref().and_then(Effort::parse),
             anchor: row.anchor.and_then(|a| a.parse().ok()),
             created_by: row.creator.into(),
             created_at: db::from_millis(row.created_at),
@@ -128,28 +123,8 @@ pub async fn create_thread(
 ) -> ApiResult<(StatusCode, Json<ThreadPage>)> {
     let group = Membership::of(&state, &viewer, &slug).await?;
     let title = required_text(&body.title, "The title", 200)?;
-    // A job's token opens a thread only as the workshop does, to ask the
-    // group something, and only a few times.
-    let agent = match viewer.job() {
-        None => None,
-        Some(job) => {
-            let asks = body.kind == ThreadKind::Discussion
-                && body.resident_agent.is_none()
-                && body.attachments.is_empty()
-                && body.body.as_deref().is_some_and(|b| !b.trim().is_empty());
-            if !asks {
-                return Err(ApiError::invalid(
-                    "A job opens a discussion, with its first message and nothing more",
-                ));
-            }
-            if !crate::auth::take_thread(&state.db, job.token_id).await? {
-                return Err(ApiError::forbidden(
-                    "This job's token opens no more threads",
-                ));
-            }
-            Some(job.agent.clone())
-        }
-    };
+    viewer.require_full()?;
+    let agent: Option<String> = None;
     let (resident_agent, resident_runner) = match (body.kind, body.resident_agent) {
         (_, None) => (None, None),
         (ThreadKind::Chat, Some(agent)) => {
@@ -159,38 +134,14 @@ pub async fn create_thread(
             }
             // One of the writer's: each person writing in the chat is then
             // answered by theirs.
-            let profile =
-                match crate::agents::resolve(&state, group.group_id, viewer.id, &agent).await? {
-                    crate::agents::Summoned::Personal(profile) => profile,
-                    crate::agents::Summoned::Workshop => {
-                        return Err(ApiError::invalid(
-                            "The workshop works on tasks, and is no chat's resident agent",
-                        ));
-                    }
-                    _ => {
-                        return Err(ApiError::invalid(format!("You have no agent @{agent}")));
-                    }
-                };
+            let profile = stemma_core::api::AgentProfile::default_for(&agent)
+                .ok_or_else(|| ApiError::invalid(format!("Unknown agent @{agent}")))?;
             (Some(agent), Some(profile.runner))
         }
         (ThreadKind::Discussion, Some(_)) => {
             return Err(ApiError::invalid("Only chats have a resident agent"));
         }
     };
-    let resident_model = super::agents::optional(body.model, "The model", 200)?;
-    if (resident_model.is_some() || body.effort.is_some()) && resident_agent.is_none() {
-        return Err(ApiError::invalid(
-            "Only a chat's resident agent is given a model or an effort",
-        ));
-    }
-    if let (Some(effort), Some(runner)) = (body.effort, &resident_runner)
-        && effort.args(runner).is_none()
-    {
-        return Err(ApiError::invalid(format!(
-            "{} takes no effort here: give its agent the arguments it takes",
-            stemma_core::api::runners::name(runner)
-        )));
-    }
     match &body.anchor {
         None | Some(Address::Declaration(_)) => {}
         Some(Address::Paper(paper)) => {
@@ -221,9 +172,9 @@ pub async fn create_thread(
     .await?;
     let thread_id = sqlx::query(
         "INSERT INTO threads (group_id, number, title, kind, resident_agent, resident_runner,
-                              resident_model, resident_effort, anchor, created_by,
+                              anchor, created_by,
                               created_at, last_activity_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
     )
     .bind(group.group_id)
     .bind(number)
@@ -231,8 +182,6 @@ pub async fn create_thread(
     .bind(body.kind.as_str())
     .bind(&resident_agent)
     .bind(&resident_runner)
-    .bind(&resident_model)
-    .bind(body.effort.map(Effort::as_str))
     .bind(body.anchor.as_ref().map(ToString::to_string))
     .bind(viewer.id)
     .bind(now)
@@ -413,17 +362,17 @@ pub async fn post_message(
     }
     Ok((StatusCode::CREATED, Json(message)))
 }
-
-/// Job attribution comes from the saved runner, so renaming a profile never changes its mark.
 async fn attribution_runner(
     state: &AppState,
     viewer: &Viewer,
     agent: Option<&str>,
 ) -> ApiResult<Option<String>> {
     if let Some(job) = viewer.job() {
-        let runner: Option<String> = sqlx::query_scalar(
-            "SELECT COALESCE((SELECT r.runner FROM job_runs r WHERE r.job_id = j.id ORDER BY r.id DESC LIMIT 1), j.runner) FROM jobs j WHERE j.token_id = ?"
-        ).bind(job.token_id).fetch_optional(&state.db).await?;
+        let runner: Option<String> =
+            sqlx::query_scalar("SELECT runner FROM jobs WHERE token_id = ?")
+                .bind(job.token_id)
+                .fetch_optional(&state.db)
+                .await?;
         return Ok(runner);
     }
     Ok(agent.and_then(|name| {
@@ -773,15 +722,7 @@ pub async fn resolve(
                     entry.note = found.note;
                     entry.state = found.state;
                 }
-                Address::Task(number) => {
-                    let (exists, title) =
-                        crate::workshop::resolve(&state, group.group_id, *number).await?;
-                    entry.exists = exists;
-                    entry.title = title;
-                    if !exists {
-                        entry.note = Some("There is no such task".into());
-                    }
-                }
+
                 Address::Paper(slug) => {
                     let (exists, title) =
                         crate::papers::resolve(&state, group.group_id, slug).await?;

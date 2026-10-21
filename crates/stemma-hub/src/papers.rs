@@ -1,29 +1,15 @@
-//! Working papers: the readable account of what the group is doing, each a
-//! LaTeX repository of the group's organization in the forge (see
-//! [`crate::forge`]), `paper-<slug>`, made from the template in
-//! `latex/template` when an admin or a member creates it.
-//!
-//! The hub keeps each paper's title and authors: its creator, and those
-//! its authors add. Each new commit of its `main` is compiled by a
-//! workshop machine with LaTeX, with `latexmk`, which uploads the PDF and
-//! says how it went; the hub keeps the last PDF that was made, which a
-//! build that fails leaves as it is, and the newest build's log. The
-//! workshop changes papers too, with the architecture `write`, and one of
-//! a paper's authors approves the changes others asked for (see
-//! [`crate::workshop::review`]).
+//! Working papers, their source and archived PDFs. New builds are paused.
 
 use std::path::PathBuf;
 
 use axum::http::StatusCode;
 use stemma_core::address::is_slug;
 use stemma_core::api::{BuildState, Event, PAPER_MAIN, Paper, PaperBuild, PaperPdf, Role, User};
-use stemma_core::protocol::{PaperBuilt, PaperCompile};
 
 use crate::api::Membership;
 use crate::db;
 use crate::error::{ApiError, ApiResult};
 use crate::forge::{self, MAIN};
-use crate::jobs;
 use crate::state::AppState;
 
 /// The paper a new one starts as: a LaTeX article, its references, and
@@ -39,9 +25,6 @@ const TEMPLATE: &[(&str, &str)] = &[
         include_str!("../../../latex/template/gitignore"),
     ),
 ];
-
-/// The most of a build's log that is kept, in bytes: its end.
-const MAX_LOG: usize = 200_000;
 
 /// The longest slug a paper may have.
 const MAX_SLUG: usize = 60;
@@ -196,17 +179,7 @@ impl PaperRow {
 
     /// The paper as people see it.
     pub async fn to_api(&self, state: &AppState) -> ApiResult<Paper> {
-        self.to_api_noted(state, true).await
-    }
-
-    /// The paper as people see it; with why its newest build waits, if
-    /// `noted`, which takes the workers' lock.
-    async fn to_api_noted(&self, state: &AppState, noted: bool) -> ApiResult<Paper> {
-        let latest = match latest_build(state, self.id).await? {
-            Some(row) if noted => Some(row.to_api_noted(state).await?),
-            Some(row) => Some(row.to_api(None)),
-            None => None,
-        };
+        let latest = latest_build(state, self.id).await?.map(|row| row.to_api());
         Ok(Paper {
             slug: self.slug.clone(),
             title: self.title.clone(),
@@ -292,7 +265,7 @@ pub async fn create(
     slug: &str,
     title: &str,
 ) -> ApiResult<Paper> {
-    if !group.role.can_ask_for_work() {
+    if !group.role.can_write() {
         return Err(ApiError::forbidden("Guests cannot create papers"));
     }
     let slug = slug.trim();
@@ -404,7 +377,7 @@ pub async fn add_author(
     let Some((user_id, role)) = found else {
         return Err(ApiError::not_found("Member"));
     };
-    if Role::parse(&role).is_none_or(|role| !role.can_ask_for_work()) {
+    if Role::parse(&role).is_none_or(|role| !role.can_write()) {
         return Err(ApiError::invalid("Guests are not authors of papers"));
     }
     sqlx::query(
@@ -473,9 +446,8 @@ pub async fn main_commit(state: &AppState, paper: &PaperRow) -> ApiResult<Option
         .map_err(forge::api_error)
 }
 
-/// Looks at where a paper's `main` is; if it moved, queues a build of the
-/// new commit, for `requester_id`, in place of those still waiting.
-pub async fn refresh(state: &AppState, paper_id: i64, requester_id: i64) -> ApiResult<()> {
+/// Update the recorded main commit without scheduling a build.
+pub async fn refresh(state: &AppState, paper_id: i64, _requester_id: i64) -> ApiResult<()> {
     let Some(paper) = by_id(state, paper_id).await? else {
         return Ok(());
     };
@@ -490,147 +462,42 @@ pub async fn refresh(state: &AppState, paper_id: i64, requester_id: i64) -> ApiR
         .bind(paper_id)
         .execute(&state.db)
         .await?;
-    let built: Option<i64> = sqlx::query_scalar(
-        "SELECT id FROM paper_builds WHERE paper_id = ? AND commit_sha = ? AND succeeded = 1",
-    )
-    .bind(paper_id)
-    .bind(&head)
-    .fetch_optional(&state.db)
-    .await?;
-    if built.is_none() {
-        queue(state, &paper, &head, requester_id).await?;
-    }
     Ok(())
-}
-
-/// Queues a build of a commit of a paper, and drops the builds of the
-/// paper still waiting: only the newest commit matters.
-pub async fn queue(
-    state: &AppState,
-    paper: &PaperRow,
-    commit: &str,
-    requester_id: i64,
-) -> ApiResult<i64> {
-    let waiting: Vec<i64> = sqlx::query_scalar(
-        "SELECT j.id FROM paper_builds b JOIN jobs j ON j.id = b.job_id
-         WHERE b.paper_id = ? AND j.state = 'queued'",
-    )
-    .bind(paper.id)
-    .fetch_all(&state.db)
-    .await?;
-    for job in waiting {
-        let _ = jobs::stop(state, job).await;
-    }
-    let now = db::now();
-    let job_id = sqlx::query(
-        "INSERT INTO jobs (group_id, kind, requester_id, runner, state, created_at, updated_at)
-         VALUES (?, 'paper_build', ?, ?, 'queued', ?, ?)",
-    )
-    .bind(paper.group_id)
-    .bind(requester_id)
-    .bind(LATEX)
-    .bind(now)
-    .bind(now)
-    .execute(&state.db)
-    .await?
-    .last_insert_rowid();
-    let build_id = sqlx::query(
-        "INSERT INTO paper_builds (paper_id, commit_sha, job_id, created_at) VALUES (?, ?, ?, ?)",
-    )
-    .bind(paper.id)
-    .bind(commit)
-    .bind(job_id)
-    .bind(now)
-    .execute(&state.db)
-    .await?
-    .last_insert_rowid();
-    jobs::dispatch(state).await?;
-    Ok(build_id)
-}
-
-/// Builds a paper's `main` again: an admin or a member.
-pub async fn rebuild(
-    state: &AppState,
-    group: &Membership,
-    requester_id: i64,
-    slug: &str,
-) -> ApiResult<Paper> {
-    if !group.role.can_ask_for_work() {
-        return Err(ApiError::forbidden("Guests cannot ask for a build"));
-    }
-    let paper = find(state, group.group_id, slug).await?;
-    let head = main_commit(state, &paper)
-        .await?
-        .ok_or_else(|| ApiError::not_found("Paper's repository"))?;
-    queue(state, &paper, &head, requester_id).await?;
-    publish(state, paper.id).await?;
-    paper.to_api(state).await
 }
 
 #[derive(sqlx::FromRow)]
 struct BuildRow {
     id: i64,
-    paper_id: i64,
     commit_sha: String,
     succeeded: Option<bool>,
     error: Option<String>,
     created_at: i64,
     finished_at: Option<i64>,
-    job_id: Option<i64>,
-    job_state: Option<String>,
-    job_error: Option<String>,
-    job_progress: Option<String>,
-    job_updated_at: Option<i64>,
 }
 
 macro_rules! build_query {
     () => {
-        "SELECT b.id, b.paper_id, b.commit_sha, b.succeeded, b.error, b.created_at,
-                b.finished_at, b.job_id, j.state AS job_state, j.error AS job_error,
-                j.progress AS job_progress, j.updated_at AS job_updated_at
-         FROM paper_builds b LEFT JOIN jobs j ON j.id = b.job_id"
+        "SELECT b.id, b.commit_sha, b.succeeded, b.error, b.created_at,
+                b.finished_at
+         FROM paper_builds b"
     };
 }
 
 impl BuildRow {
-    fn to_api(&self, note: Option<String>) -> PaperBuild {
-        let state = match (self.succeeded, self.job_state.as_deref()) {
-            (Some(true), _) => BuildState::Succeeded,
-            (Some(false), _) | (None, Some("failed")) => BuildState::Failed,
-            (None, Some("queued")) => BuildState::Queued,
-            (None, Some("running")) => BuildState::Running,
-            _ => BuildState::Cancelled,
-        };
-        let progress = match state {
-            BuildState::Running => self.job_progress.clone(),
-            BuildState::Queued => note,
-            _ => None,
-        };
-        let finished_at = self.finished_at.or(match state {
-            BuildState::Failed | BuildState::Cancelled => self.job_updated_at,
-            _ => None,
-        });
+    fn to_api(&self) -> PaperBuild {
         PaperBuild {
             id: self.id,
             commit: self.commit_sha.clone(),
-            state,
-            progress,
-            error: self.error.clone().or_else(|| {
-                (state == BuildState::Failed)
-                    .then(|| self.job_error.clone())
-                    .flatten()
-            }),
+            state: match self.succeeded {
+                Some(true) => BuildState::Succeeded,
+                Some(false) => BuildState::Failed,
+                None => BuildState::Cancelled,
+            },
+            progress: None,
+            error: self.error.clone(),
             created_at: db::from_millis(self.created_at),
-            finished_at: finished_at.map(db::from_millis),
+            finished_at: self.finished_at.map(db::from_millis),
         }
-    }
-
-    async fn to_api_noted(&self, state: &AppState) -> ApiResult<PaperBuild> {
-        let note = match (self.job_state.as_deref(), self.job_id) {
-            (Some("queued"), Some(job)) => jobs::note_of(state, job).await?,
-            _ => None,
-        };
-        Ok(self.to_api(note))
     }
 }
 
@@ -655,57 +522,6 @@ pub async fn latest_log(state: &AppState, paper_id: i64) -> ApiResult<String> {
     Ok(log.flatten().unwrap_or_default())
 }
 
-/// Tells the group how the paper of a build's job is, if the job builds
-/// one; `note` is why the job waits.
-pub async fn publish_of_job(state: &AppState, job_id: i64, note: Option<String>) -> ApiResult<()> {
-    let row: Option<BuildRow> = sqlx::query_as(concat!(build_query!(), " WHERE b.job_id = ?"))
-        .bind(job_id)
-        .fetch_optional(&state.db)
-        .await?;
-    let Some(row) = row else {
-        return Ok(());
-    };
-    let Some(paper) = by_id(state, row.paper_id).await? else {
-        return Ok(());
-    };
-    // The caller holds the workers' lock.
-    let mut api = paper.to_api_noted(state, false).await?;
-    if api.latest.as_ref().is_some_and(|b| b.id == row.id) {
-        api.latest = Some(row.to_api(note));
-    }
-    state.publish(
-        paper.group_id,
-        Event::PaperUpdated {
-            paper: Box::new(api),
-        },
-    );
-    Ok(())
-}
-
-/// What a workshop machine needs to compile a job's commit.
-pub async fn work_for(state: &AppState, job_id: i64) -> ApiResult<PaperCompile> {
-    let (build, paper_id, commit): (i64, i64, String) =
-        sqlx::query_as("SELECT id, paper_id, commit_sha FROM paper_builds WHERE job_id = ?")
-            .bind(job_id)
-            .fetch_optional(&state.db)
-            .await?
-            .ok_or_else(|| ApiError::internal("a paper's build without its build"))?;
-    let paper = by_id(state, paper_id)
-        .await?
-        .ok_or_else(|| ApiError::internal("a build without its paper"))?;
-    Ok(PaperCompile {
-        build,
-        paper: paper.slug.clone(),
-        repository: clone_path(&paper.group_slug, &paper.repository),
-        commit,
-        main: PAPER_MAIN.into(),
-        upload: format!(
-            "/api/v1/groups/{}/papers/{}/builds/{build}/pdf",
-            paper.group_slug, paper.slug
-        ),
-    })
-}
-
 /// Where a build's PDF is kept.
 pub fn pdf_path(state: &AppState, build_id: i64) -> PathBuf {
     state
@@ -722,122 +538,6 @@ pub async fn pdf_file(state: &AppState, paper: &PaperRow) -> ApiResult<(PathBuf,
         .await?
         .ok_or_else(|| ApiError::not_found("PDF"))?;
     Ok((pdf_path(state, pdf.build), pdf.size))
-}
-
-/// Keeps the PDF a machine uploads for a build it is running: only the
-/// job's own token uploads it, while the job runs.
-pub async fn upload(
-    state: &AppState,
-    token_id: i64,
-    paper: &PaperRow,
-    build_id: i64,
-    pdf: &[u8],
-) -> ApiResult<()> {
-    let running: Option<i64> = sqlx::query_scalar(
-        "SELECT b.id FROM paper_builds b JOIN jobs j ON j.id = b.job_id
-         WHERE b.id = ? AND b.paper_id = ? AND j.token_id = ? AND j.state = 'running'",
-    )
-    .bind(build_id)
-    .bind(paper.id)
-    .bind(token_id)
-    .fetch_optional(&state.db)
-    .await?;
-    if running.is_none() {
-        return Err(ApiError::forbidden(
-            "Only the machine building it uploads a build's PDF",
-        ));
-    }
-    if !pdf.starts_with(b"%PDF-") {
-        return Err(ApiError::invalid("This is not a PDF"));
-    }
-    let path = pdf_path(state, build_id);
-    tokio::fs::create_dir_all(path.parent().expect("in a folder")).await?;
-    tokio::fs::write(&path, pdf).await?;
-    sqlx::query("UPDATE paper_builds SET pdf_size = ? WHERE id = ?")
-        .bind(pdf.len() as i64)
-        .bind(build_id)
-        .execute(&state.db)
-        .await?;
-    Ok(())
-}
-
-/// The end of a log, when it is too long.
-fn tail(log: &str) -> String {
-    if log.len() <= MAX_LOG {
-        return log.to_owned();
-    }
-    let mut start = log.len() - MAX_LOG;
-    while !log.is_char_boundary(start) {
-        start += 1;
-    }
-    format!("[… the beginning is cut]\n{}", &log[start..])
-}
-
-/// Keeps what a machine says of a paper's build: its log, and if it made
-/// the PDF it uploaded, that PDF becomes the paper's, in place of the one
-/// before. A build that failed leaves the paper's PDF as it was.
-pub async fn build_finished(state: &AppState, job_id: i64, built: PaperBuilt) -> ApiResult<()> {
-    let (build_id, paper_id, size): (i64, i64, Option<i64>) =
-        sqlx::query_as("SELECT id, paper_id, pdf_size FROM paper_builds WHERE job_id = ?")
-            .bind(job_id)
-            .fetch_optional(&state.db)
-            .await?
-            .ok_or_else(|| ApiError::internal("a paper's build without its build"))?;
-    let succeeded = built.succeeded && built.pdf && size.is_some();
-    let error = match (&built.error, succeeded) {
-        (Some(error), _) => Some(error.chars().take(2_000).collect::<String>()),
-        (None, false) => Some("The build made no PDF".to_owned()),
-        (None, true) => None,
-    };
-    // Publish completion and the PDF pointer together: readers must never see
-    // a successful build before its PDF is available.
-    let mut tx = state.db.begin().await?;
-    sqlx::query(
-        "UPDATE paper_builds SET succeeded = ?, error = ?, log = ?, finished_at = ?,
-                                 pdf_size = CASE WHEN ? THEN pdf_size END
-         WHERE id = ?",
-    )
-    .bind(succeeded)
-    .bind(&error)
-    .bind(tail(&built.log))
-    .bind(db::now())
-    .bind(succeeded)
-    .bind(build_id)
-    .execute(&mut *tx)
-    .await?;
-    let mut gone = Vec::new();
-    if succeeded {
-        let before: Option<Option<i64>> =
-            sqlx::query_scalar("SELECT pdf_build FROM papers WHERE id = ?")
-                .bind(paper_id)
-                .fetch_optional(&mut *tx)
-                .await?;
-        match before.flatten() {
-            // A newer build made the paper's PDF already.
-            Some(newer) if newer > build_id => gone.push(build_id),
-            before => {
-                sqlx::query("UPDATE papers SET pdf_build = ? WHERE id = ?")
-                    .bind(build_id)
-                    .bind(paper_id)
-                    .execute(&mut *tx)
-                    .await?;
-                gone.extend(before);
-            }
-        }
-    } else {
-        gone.push(build_id);
-    }
-    for build in &gone {
-        sqlx::query("UPDATE paper_builds SET pdf_size = NULL WHERE id = ?")
-            .bind(build)
-            .execute(&mut *tx)
-            .await?;
-    }
-    tx.commit().await?;
-    for build in gone {
-        let _ = tokio::fs::remove_file(pdf_path(state, build)).await;
-    }
-    Ok(())
 }
 
 // ── Source ────────────────────────────────────────────────────────────

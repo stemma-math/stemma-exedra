@@ -1,23 +1,9 @@
-//! The worker protocol: what a person's machine and the hub say to each
-//! other.
-//!
-//! A machine connects outbound to the hub's WebSocket at
-//! `/api/v1/worker`, with its token in an `Authorization: Bearer` header,
-//! and sends [`WorkerMessage::Hello`]. The hub answers
-//! [`HubMessage::Welcome`], or [`HubMessage::Refused`] and closes. Then the
-//! hub sends jobs: its owner's agents' answers and, if it is a workshop
-//! machine, the workshop's tasks and builds; and the machine sends their
-//! progress, their outcome and what they consumed. Each message is one
-//! JSON text frame.
-//!
-//! When the connection drops, the machine stops what it was running and
-//! the hub queues those jobs again, so they run from the start, on this
-//! machine when it is back or on another.
+//! The personal-token worker WebSocket protocol. Connections and capabilities are live state only.
 
 use serde::{Deserialize, Serialize};
 
 pub use crate::api::JobKind;
-use crate::api::{AgentProfile, LibraryReport, Message, ThreadKind, User};
+use crate::api::{AgentProfile, Message, ThreadKind, User};
 
 /// The version of this protocol. A hub refuses workers that speak another.
 pub const PROTOCOL_VERSION: u32 = 10;
@@ -44,28 +30,13 @@ pub enum WorkerMessage {
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Hello {
-    /// Whether this machine accepts its owner's personal jobs.
-    pub personal: bool,
     pub protocol: u32,
-    /// The worker's version of Stemma.
     pub version: String,
-    /// The runners it can run, such as `claude-code` or `codex`: those
-    /// found installed and usable.
     pub runners: Vec<String>,
-    /// Whether it has Lean (elan or lake), for the workshop: its tasks and
-    /// the library's builds.
-    pub lean: bool,
-    /// Whether it has LaTeX (`latexmk`), for the workshop's papers: in the
-    /// workshop's image, or on the machine.
-    #[serde(default)]
-    pub latex: bool,
-    /// How it isolates the workshop's jobs: in containers, or on the
-    /// machine itself if its owner chose so; none if it cannot, and then
-    /// it runs none of them.
-    #[serde(default)]
-    pub isolation: Option<crate::api::Isolation>,
-    /// How many jobs it runs at once.
     pub concurrency: u32,
+    pub agents: GroupAgents,
+    /// Only groups whose effective enabled or priority differs from general settings.
+    pub groups: std::collections::BTreeMap<String, GroupAgents>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -75,42 +46,9 @@ pub enum Outcome {
     Answer {
         body: String,
     },
-    /// A build of the library, whether it passed or not.
-    Built(Box<Built>),
-    /// A build of a paper, whether it made a PDF or not.
-    PaperBuilt(Box<PaperBuilt>),
-    /// How a task's run ended, whatever the end.
-    Task(Box<TaskOutcome>),
     Failed {
         error: String,
     },
-}
-
-/// How a build of the library went.
-#[derive(Clone, Debug, Serialize, Deserialize)]
-pub struct Built {
-    /// Whether `lake build` passed and the library could be inspected.
-    pub succeeded: bool,
-    /// Why not, in a line, if it did not.
-    pub error: Option<String>,
-    /// What the build wrote, trimmed to its end when long.
-    pub log: String,
-    /// What the inspection found, if it ran.
-    pub report: Option<LibraryReport>,
-}
-
-/// How a build of a paper went. The PDF, if it made one, was uploaded to
-/// the hub before, with the job's token, to [`PaperCompile::upload`].
-#[derive(Clone, Debug, Serialize, Deserialize)]
-pub struct PaperBuilt {
-    /// Whether `latexmk` made the PDF.
-    pub succeeded: bool,
-    /// Why not, in a line, if it did not.
-    pub error: Option<String>,
-    /// What the build wrote, trimmed to its end when long.
-    pub log: String,
-    /// Whether the PDF was uploaded.
-    pub pdf: bool,
 }
 
 /// What a runner said a job consumed, as far as it says: Claude Code
@@ -149,35 +87,6 @@ impl Usage {
     }
 }
 
-/// How a task's run ended.
-#[derive(Clone, Debug, Serialize, Deserialize)]
-pub struct TaskOutcome {
-    pub end: TaskEnd,
-    /// Why it failed, in a line.
-    pub reason: Option<String>,
-    /// The runner's report, in Markdown: what was done, what is pending.
-    pub report: String,
-    /// The commit pushed to the task's branch; none if nothing changed.
-    pub commit: Option<String>,
-    /// What the run did, trimmed to its end when long.
-    pub log: String,
-    /// The build and inspection of the commit pushed, for the library.
-    pub built: Option<Built>,
-    /// The runner that worked on it, and its model, if known.
-    pub runner: String,
-    pub model: Option<String>,
-}
-
-/// How a task's run can end.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum TaskEnd {
-    /// The work passed its checks, and is on the task's branch if it
-    /// changed anything.
-    Done,
-    Failed,
-}
-
 /// From the hub to a worker.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
@@ -211,14 +120,6 @@ pub struct JobSpec {
     /// A token for the hub's API while the job lasts, scoped to its group;
     /// it reads, and does not post.
     pub token: String,
-    /// Whether the job's agent may hand tasks to the workshop: one
-    /// answering in a thread, for someone who may ask for work.
-    #[serde(default)]
-    pub hands_over: bool,
-    /// Whether the job's agent may open threads of its own in the group,
-    /// to ask it something: the workshop's.
-    #[serde(default)]
-    pub opens_threads: bool,
     pub work: Work,
 }
 
@@ -228,24 +129,12 @@ pub struct JobSpec {
 pub enum Work {
     /// Answer a message, with [`Outcome::Answer`].
     Reply(Box<Conversation>),
-    /// Build a commit of the library and inspect it, with
-    /// [`Outcome::Built`].
-    LibraryBuild(LibraryBuild),
-    /// Compile a commit of a paper, upload its PDF, and say how it went,
-    /// with [`Outcome::PaperBuilt`].
-    PaperBuild(PaperCompile),
-    /// Work on a task of the workshop in the library, with
-    /// [`Outcome::Task`].
-    TaskRun(Box<TaskRun>),
 }
 
 impl JobSpec {
     pub fn kind(&self) -> JobKind {
         match self.work {
             Work::Reply(_) => JobKind::Reply,
-            Work::LibraryBuild(_) => JobKind::LibraryBuild,
-            Work::PaperBuild(_) => JobKind::PaperBuild,
-            Work::TaskRun(_) => JobKind::TaskRun,
         }
     }
 
@@ -253,8 +142,6 @@ impl JobSpec {
     pub fn conversation(&self) -> Option<&Conversation> {
         match &self.work {
             Work::Reply(conversation) => Some(conversation),
-            Work::TaskRun(run) => Some(&run.conversation),
-            Work::LibraryBuild(_) | Work::PaperBuild(_) => None,
         }
     }
 }
@@ -270,87 +157,6 @@ pub struct Conversation {
     pub requester: User,
     /// The thread up to the trigger, trimmed when long.
     pub context: Vec<ContextItem>,
-}
-
-/// A commit of the library to build.
-#[derive(Clone, Debug, Serialize, Deserialize)]
-pub struct LibraryBuild {
-    /// The build's number on the hub.
-    pub build: i64,
-    /// Where to fetch the library from, relative to the hub:
-    /// `/git/geometry/library.git`, with the job's token.
-    pub repository: String,
-    /// The commit, in full.
-    pub commit: String,
-}
-
-/// A commit of a paper to compile.
-#[derive(Clone, Debug, Serialize, Deserialize)]
-pub struct PaperCompile {
-    /// The build's number on the hub.
-    pub build: i64,
-    /// The paper, by slug.
-    pub paper: String,
-    /// Where to fetch the paper from, relative to the hub:
-    /// `/git/geometry/paper-notes.git`, with the job's token.
-    pub repository: String,
-    /// The commit, in full.
-    pub commit: String,
-    /// The file to compile: `main.tex`.
-    pub main: String,
-    /// Where to upload the PDF, relative to the hub, with a `PUT` and the
-    /// job's token.
-    pub upload: String,
-}
-
-/// A task of the workshop, as its workshop machine gets it.
-///
-/// The machine runs the steps of the task's architecture: for
-/// `formalize`, it works on a fresh worktree of the library at `main`
-/// with the chosen agent (`work`); checks that the build passes and that
-/// no definition's data newly depends on `sorry` (`check`); for `write`,
-/// it works on the paper's, and checks that it compiles (`compile`); and
-/// commits,
-/// with the task's provenance in trailers, and pushes to the task's
-/// branch with the job's token, which pushes only there (`propose`). The
-/// hub then opens a pull request, which people approve.
-#[derive(Clone, Debug, Serialize, Deserialize)]
-pub struct TaskRun {
-    /// Its number: the `7` of `w7`.
-    pub task: u32,
-    pub title: String,
-    pub instructions: String,
-    /// The architecture it runs with.
-    pub architecture: ArchitectureRun,
-    /// The workshop's agent, with the runner, model and arguments this
-    /// machine is to use; the thread of the message that asked, up to it;
-    /// and who asked.
-    pub conversation: Conversation,
-    /// Where to fetch the repository and push the branch, relative to the
-    /// hub: `/git/geometry/library.git`, with the job's token.
-    pub repository: String,
-    /// The branch to push to: `workshop/w7`.
-    pub branch: String,
-    /// The definitions whose data already depends on `sorry`, in the
-    /// library's state: only new ones fail the task.
-    pub data_sorry: Vec<String>,
-    /// The paper it works on, by slug, if it works on one: the repository
-    /// is then the paper's.
-    #[serde(default)]
-    pub paper: Option<String>,
-}
-
-/// An architecture, as a workshop machine runs it.
-#[derive(Clone, Debug, Serialize, Deserialize)]
-pub struct ArchitectureRun {
-    pub name: String,
-    /// Its steps, by name, in order: the machine refuses a task with a
-    /// step it does not know.
-    pub steps: Vec<String>,
-    /// The instructions its agent is given, in Markdown, with `{agent}`,
-    /// `{requester}`, `{group}`, `{task}`, `{paper}` and `{report}` to fill
-    /// in.
-    pub instructions: String,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -380,30 +186,11 @@ pub enum ContextItem {
     },
 }
 
-#[cfg(test)]
-mod tests {
-    use super::{Hello, PROTOCOL_VERSION};
-    use serde_json::json;
-
-    #[test]
-    fn hello_requires_an_explicit_personal_service_mode() {
-        let mut hello = json!({
-            "protocol": PROTOCOL_VERSION,
-            "version": "0.1.1",
-            "runners": [],
-            "lean": false,
-            "concurrency": 1,
-        });
-        let error = serde_json::from_value::<Hello>(hello.clone()).unwrap_err();
-        assert!(error.to_string().contains("missing field `personal`"));
-        for personal in [false, true] {
-            hello["personal"] = json!(personal);
-            assert_eq!(
-                serde_json::from_value::<Hello>(hello.clone())
-                    .unwrap()
-                    .personal,
-                personal
-            );
-        }
-    }
+/// Whether a computer runs agents in a group, and its scheduling priority there.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct GroupAgents {
+    pub enabled: bool,
+    pub priority: i64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub concurrency: Option<u32>,
 }
