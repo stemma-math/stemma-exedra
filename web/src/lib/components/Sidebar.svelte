@@ -104,7 +104,7 @@
         <div class="menu__row">
           <a class="menu__item" href="/groups">All groups</a>
           {#if session.me?.hub_admin}
-            <a class="menu__item menu__action" href="/groups#new-group" aria-label="New group"><Glyph name="add" small /></a>
+            <a class="menu__action" href="/groups#new-group" aria-label="New group"><Glyph name="add" small /></a>
           {/if}
         </div>
       </div>
