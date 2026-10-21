@@ -1,58 +1,82 @@
-//! The desktop's shared local controls, through the CLI, against a real hub.
-
+//! The CLI edits only its explicitly isolated settings and state folders.
 use std::path::Path;
-use std::sync::Arc;
-
-use stemma_core::api::NewAccount;
-use stemma_worker::machine::MachineConfig;
-
-async fn cli(dir: &Path, args: &[&str]) {
-    let output = tokio::process::Command::new(env!("CARGO_BIN_EXE_stemma"))
+fn cli(dir: &Path, args: &[&str]) -> std::process::Output {
+    std::process::Command::new(env!("CARGO_BIN_EXE_stemma"))
         .args(args)
-        .env_remove("STEMMA_HUB")
-        .env_remove("STEMMA_TOKEN")
-        .env_remove("STEMMA_GROUP")
+        .env("STEMMA_CONFIG_DIR", dir.join("config"))
+        .env("STEMMA_STATE_DIR", dir.join("state"))
+        .env("STEMMA_DATA_DIR", dir.join("data"))
         .env("STEMMA_SERVICE_DIR", dir.join("service"))
-        .env(
-            "PATH",
-            std::env::join_paths([dir.join("bin"), "/usr/bin".into(), "/bin".into()]).unwrap(),
-        )
-        .env("STEMMA_CLIENT_CONFIG", dir.join("client.toml"))
-        .env("STEMMA_MACHINE_CONFIG", dir.join("machine.toml"))
+        .env_remove("STEMMA_AGENTS_CLAUDE_MODEL")
         .output()
-        .await
-        .unwrap();
+        .unwrap()
+}
+#[test]
+fn settings_round_trip_and_removed_commands_fail() {
+    let dir = tempfile::tempdir().unwrap();
     assert!(
-        output.status.success(),
-        "{}",
-        String::from_utf8_lossy(&output.stderr)
+        cli(
+            dir.path(),
+            &["config", "set", "agents.claude.model", "opus"]
+        )
+        .status
+        .success()
     );
+    assert!(
+        cli(
+            dir.path(),
+            &[
+                "config",
+                "set",
+                "agents.claude.model",
+                "sonnet",
+                "--group",
+                "algebra"
+            ]
+        )
+        .status
+        .success()
+    );
+    let output = cli(
+        dir.path(),
+        &["config", "get", "agents.claude.model", "--group", "algebra"],
+    );
+    assert!(String::from_utf8(output.stdout).unwrap().contains("sonnet"));
+    assert!(!dir.path().join("config/credentials.toml").exists());
+    for command in [
+        ["machine", "add"],
+        ["machine", "status"],
+        ["machine", "prefer"],
+        ["task", "work"],
+    ] {
+        assert!(!cli(dir.path(), &command).status.success());
+    }
 }
 
+#[cfg(unix)]
 #[tokio::test(flavor = "multi_thread")]
-async fn registers_configures_prefers_and_removes_this_machine() {
-    let dir = tempfile::tempdir().unwrap();
-    // Never install a real login service or overwrite the developer's service.
-    let bin = dir.path().join("bin");
-    std::fs::create_dir_all(&bin).unwrap();
-    for manager in ["launchctl", "systemctl"] {
-        let script = bin.join(manager);
-        std::fs::write(
-            &script,
-            "#!/bin/sh\ncase \"$*\" in *print*|*is-active*) exit 1;; *) exit 0;; esac\n",
-        )
-        .unwrap();
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::PermissionsExt;
-            std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755)).unwrap();
-        }
-    }
+async fn foreground_service_uses_the_personal_token_and_managed_workspace() {
+    use serde_json::json;
+    use std::{os::unix::fs::PermissionsExt, sync::Arc, time::Duration};
+    let temp = tempfile::tempdir().unwrap();
+    let forge = stemma_fake_forge::FakeForge::start().await;
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let url = format!("http://{}", listener.local_addr().unwrap());
     let state = Arc::new(
         stemma_hub::Hub::new(
             stemma_hub::db::in_memory().await.unwrap(),
             stemma_hub::Config {
-                data_dir: dir.path().join("hub"),
+                data_dir: temp.path().join("hub"),
+                public_url: Some(url.clone()),
+                forge: Some(stemma_hub::config::ForgeConfig::new(
+                    &forge.url,
+                    "http://forge.test/callback",
+                    stemma_hub::config::ForgeSecrets {
+                        token: stemma_fake_forge::TOKEN.into(),
+                        webhook_secret: "test hook".into(),
+                        client_secret: "test client".into(),
+                    },
+                )),
                 ..Default::default()
             },
         )
@@ -60,90 +84,154 @@ async fn registers_configures_prefers_and_removes_this_machine() {
     );
     stemma_hub::api::create_user(
         &state,
-        NewAccount {
+        stemma_core::api::NewAccount {
             username: "ada".into(),
             display_name: "Ada".into(),
-            password: "analytical".into(),
+            password: "test password".into(),
         },
         true,
     )
     .await
     .unwrap();
-    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-    let url = format!("http://{}", listener.local_addr().unwrap());
-    let server = tokio::spawn(async move { axum::serve(listener, stemma_hub::app(state)).await });
-    let mut hub = stemma_client::Hub::new(&url, None).unwrap();
-    hub.sign_in("ada", "analytical").await.unwrap();
-    let created = hub.create_token("tests").await.unwrap();
-    cli(dir.path(), &["login", &url, "--token", &created.secret]).await;
-    let worker_path = dir.path().join("machine.toml");
-    let worker = tokio::spawn(async move {
-        while !worker_path.exists() {
-            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
-        }
-        stemma_worker::machine::run(&worker_path).await.unwrap();
+    let app = stemma_hub::app(state.clone());
+    let server = tokio::spawn(async move {
+        axum::serve(listener, app).await.unwrap();
     });
-    cli(dir.path(), &["machine", "add", "test machine"]).await;
-    assert!(hub.machines().await.unwrap()[0].online);
-    worker.abort();
-    let _ = worker.await;
-    let path = dir.path().join("machine.toml");
-    let config = MachineConfig::load_from(&path).unwrap().unwrap();
-    assert!(config.personal);
-    assert!(!config.workshop_enabled);
-    let copies = dir.path().join("copies");
-    cli(
-        dir.path(),
-        &[
-            "machine",
-            "configure",
-            "--work-dir",
-            copies.to_str().unwrap(),
-            "--personal",
-            "false",
-            "--workshop",
-            "false",
-        ],
+    let mut hub = stemma_client::Hub::new(&url, None).unwrap();
+    hub.sign_in("ada", "test password").await.unwrap();
+    let token = hub.create_token("Test computer").await.unwrap();
+    let http = reqwest::Client::new();
+    let group = http
+        .post(format!("{url}/api/v1/groups"))
+        .bearer_auth(&token.secret)
+        .json(&json!({"slug":"algebra", "name":"Algebra"}))
+        .send()
+        .await
+        .unwrap();
+    assert!(
+        group.status().is_success(),
+        "{}",
+        group.text().await.unwrap()
+    );
+    let runner = temp.path().join("fake-codex");
+    std::fs::write(
+        &runner,
+        r#"#!/bin/sh
+set -eu
+if [ "${1:-}" = --version ]; then echo 'codex test'; exit 0; fi
+answer=''
+root=''
+while [ "$#" -gt 0 ]; do
+  case "$1" in
+    --output-last-message) shift; answer="$1" ;;
+    --add-dir) shift; root="$1" ;;
+  esac
+  shift
+done
+cat >/dev/null
+test -d "$root/library/.git"
+root=$(cd "$root" && pwd -P)
+case "$PWD" in "$root"/scratch/*) ;; *) exit 3 ;; esac
+test -n "$answer"
+printf 'Checked in the workspace.\n' > "$answer"
+printf 'ephemeral\n' > "$root/library/check.txt"
+"#,
     )
-    .await;
-    cli(
-        dir.path(),
-        &[
-            "machine",
-            "workshop",
-            "isolation",
-            "podman",
-            "--image",
-            "stemma-workshop:test",
-        ],
+    .unwrap();
+    std::fs::set_permissions(&runner, std::fs::Permissions::from_mode(0o700)).unwrap();
+    let config_dir = temp.path().join("config");
+    std::fs::create_dir_all(&config_dir).unwrap();
+    std::fs::write(
+        config_dir.join("config.toml"),
+        format!(
+            "[agents.codex]\ncommand = {}\n",
+            serde_json::to_string(&runner.display().to_string()).unwrap()
+        ),
     )
-    .await;
-    cli(
-        dir.path(),
-        &[
-            "machine",
-            "workshop",
-            "credentials",
-            "codex",
-            "--env",
-            "OPENAI_API_KEY",
-            "--file",
-            "~/.codex/auth.json",
-        ],
-    )
-    .await;
-    let config = MachineConfig::load_from(&path).unwrap().unwrap();
-    assert_eq!(config.work_dir.as_deref(), Some(copies.as_path()));
-    assert!(!config.personal && !config.workshop_enabled);
-    let settings = config.isolation.unwrap();
-    assert_eq!(settings.image(), "stemma-workshop:test");
-    assert_eq!(settings.agents["codex"].env, ["OPENAI_API_KEY"]);
-    cli(dir.path(), &["machine", "prefer"]).await;
-    assert!(hub.machines().await.unwrap()[0].preferred);
-    // Both services off exits without detecting tools or contacting a runtime.
-    cli(dir.path(), &["machine", "run"]).await;
-    cli(dir.path(), &["machine", "remove"]).await;
-    assert!(!path.exists());
-    assert!(hub.machines().await.unwrap().is_empty());
+    .unwrap();
+    let mut process = tokio::process::Command::new(env!("CARGO_BIN_EXE_stemma"));
+    process
+        .args(["machine", "run"])
+        .env("STEMMA_CONFIG_DIR", &config_dir)
+        .env("STEMMA_STATE_DIR", temp.path().join("state"))
+        .env("STEMMA_DATA_DIR", temp.path().join("data"))
+        .env("STEMMA_SERVICE_DIR", temp.path().join("service"))
+        .env("STEMMA_HUB", &url)
+        .env("STEMMA_TOKEN", &token.secret)
+        .kill_on_drop(true)
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::from(
+            std::fs::File::create(temp.path().join("service.log")).unwrap(),
+        ));
+    let mut child = process.spawn().unwrap();
+    tokio::time::timeout(Duration::from_secs(15), async {
+        loop {
+            if state.workers.lock().await.is_online(token.token.id) {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(30)).await;
+        }
+    })
+    .await
+    .expect("service connects with the personal token");
+    let requester = stemma_client::Hub::new(&url, Some(token.secret.clone())).unwrap();
+    let thread = requester
+        .create_thread(
+            "algebra",
+            &stemma_core::api::CreateThread {
+                title: "Question".into(),
+                kind: stemma_core::api::ThreadKind::Discussion,
+                resident_agent: None,
+                anchor: None,
+                body: Some("@codex check it".into()),
+                attachments: vec![],
+            },
+        )
+        .await
+        .unwrap();
+    tokio::time::timeout(Duration::from_secs(15), async {
+        loop {
+            let page = requester
+                .thread("algebra", thread.thread.number)
+                .await
+                .unwrap();
+            if page.messages.len() == 2 {
+                assert_eq!(page.messages[1].agent.as_deref(), Some("Codex"));
+                assert_eq!(page.messages[1].body, "Checked in the workspace.");
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+    })
+    .await
+    .unwrap_or_else(|error| {
+        panic!(
+            "reply timed out: {error}; logs: {}",
+            std::fs::read_to_string(temp.path().join("service.log")).unwrap()
+        )
+    });
+    assert!(
+        temp.path()
+            .join("data/groups/algebra/library/check.txt")
+            .is_file()
+    );
+    assert_eq!(
+        std::fs::read_dir(temp.path().join("state/jobs"))
+            .unwrap()
+            .count(),
+        0
+    );
+    assert_eq!(
+        std::fs::read_dir(temp.path().join("data/groups/algebra/scratch"))
+            .unwrap()
+            .count(),
+        0
+    );
+    requester.revoke_token(token.token.id).await.unwrap();
+    let status = tokio::time::timeout(Duration::from_secs(8), child.wait())
+        .await
+        .expect("revocation signs the computer out")
+        .unwrap();
+    assert!(status.success());
     server.abort();
 }

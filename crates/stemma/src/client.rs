@@ -4,7 +4,6 @@
 use std::io::{IsTerminal, Read, Write};
 use std::path::PathBuf;
 
-use anyhow::Context;
 use clap::Args;
 use serde_json::{Value, json};
 use stemma_client::config::{self, Credentials};
@@ -49,7 +48,7 @@ pub struct ThreadsArgs {
 
 #[derive(Args)]
 pub struct ReadArgs {
-    /// What to read: t12, t12#45, t12#45-50, lean:Foo.bar, w7, p/notes, or
+    /// What to read: t12, t12#45, t12#45-50, lean:Foo.bar, p/notes, or
     /// a link to it.
     pub address: String,
     /// For a paper, the file of its source to read; its main file if
@@ -75,8 +74,6 @@ pub struct PaperArgs {
 
 #[derive(clap::Subcommand)]
 pub enum PaperCommand {
-    /// Create a paper: its repository, from the template, which the
-    /// workshop then compiles.
     New {
         /// Its short name, in its address: notes, for p/notes.
         slug: String,
@@ -121,77 +118,6 @@ pub struct LibraryArgs {
 }
 
 #[derive(Args)]
-pub struct TasksArgs {
-    #[command(flatten)]
-    group: GroupArg,
-    /// Only the tasks in this state: open, running, review, done, failed,
-    /// rejected or cancelled.
-    #[arg(long)]
-    state: Option<String>,
-    #[arg(long, short = 'n', default_value_t = 30)]
-    limit: u32,
-}
-
-#[derive(Args)]
-pub struct ReviewArgs {
-    /// The task: w7.
-    task: String,
-    #[command(flatten)]
-    group: GroupArg,
-}
-
-/// The number of a task, as written: `w7` or `7`.
-fn task_number(written: &str) -> anyhow::Result<u32> {
-    written
-        .trim()
-        .trim_start_matches('w')
-        .parse()
-        .with_context(|| format!("{written} is not a task: a task is w7"))
-}
-
-/// Approves a task's changes, as what you may approve them as: their
-/// asker, or an admin.
-pub async fn approve(args: ReviewArgs) -> anyhow::Result<()> {
-    let number = task_number(&args.task)?;
-    let toolbox = toolbox(args.group)?;
-    let group = toolbox.group(None).await?;
-    toolbox.hub().approve_task(&group, number).await?;
-    let page = toolbox.hub().task(&group, number).await?;
-    match page.task.changes.map(|c| c.needs).unwrap_or_default() {
-        needs if needs.is_empty() => println!("Approved: w{number} is in the library."),
-        _ => println!("Approved: w{number} still waits for an admin's approval."),
-    }
-    Ok(())
-}
-
-/// Rejects a task's changes: their asker, or an admin.
-pub async fn reject(args: ReviewArgs) -> anyhow::Result<()> {
-    let number = task_number(&args.task)?;
-    let toolbox = toolbox(args.group)?;
-    let group = toolbox.group(None).await?;
-    toolbox.hub().reject_task(&group, number).await?;
-    println!("Rejected the changes of w{number}.");
-    Ok(())
-}
-
-#[derive(Args)]
-pub struct TaskArgs {
-    /// What to do, in a line.
-    title: String,
-    /// The message that asks for it: t12#48, or a link to it.
-    #[arg(long, short)]
-    origin: String,
-    /// The agent handing it over for you, such as "Claude Code".
-    #[arg(long)]
-    agent: Option<String>,
-    /// The paper to work on, as p/notes; the library if absent.
-    #[arg(long)]
-    pub paper: Option<String>,
-    #[command(flatten)]
-    group: GroupArg,
-}
-
-#[derive(Args)]
 pub struct McpArgs {
     #[command(flatten)]
     group: GroupArg,
@@ -201,14 +127,6 @@ pub struct McpArgs {
     /// Offer only the tools that read.
     #[arg(long)]
     read_only: bool,
-    /// With --read-only, still offer create_task, to hand tasks to the
-    /// workshop.
-    #[arg(long, requires = "read_only")]
-    hand_over: bool,
-    /// With --read-only, still offer open_thread, for the workshop's agent
-    /// to ask the group something.
-    #[arg(long, requires = "read_only")]
-    open_threads: bool,
     /// The hub, instead of the one signed in to.
     #[arg(long, env = "STEMMA_HUB")]
     hub: Option<String>,
@@ -223,9 +141,9 @@ pub async fn login(args: LoginArgs) -> anyhow::Result<()> {
         None => {
             let username = match args.username {
                 Some(username) => username,
-                None => prompt("Username: ")?,
+                None => cliclack::input("Username").interact()?,
             };
-            let password = rpassword::prompt_password("Password: ")?;
+            let password: String = cliclack::password("Password").interact()?;
             stemma_client::sign_in::password(
                 &args.hub,
                 &username,
@@ -281,7 +199,7 @@ async fn run(
     agent: Option<&str>,
 ) -> anyhow::Result<()> {
     let text = toolbox.call(tool, args, agent).await?;
-    print!("{text}");
+    crate::output::text(&text);
     std::io::stdout().flush()?;
     Ok(())
 }
@@ -393,37 +311,6 @@ pub async fn library(args: LibraryArgs) -> anyhow::Result<()> {
     }
 }
 
-pub async fn tasks(args: TasksArgs) -> anyhow::Result<()> {
-    let toolbox = toolbox(args.group)?;
-    let mut call = json!({"limit": args.limit});
-    if let Some(state) = args.state {
-        call["state"] = json!(state);
-    }
-    run(&toolbox, "list_tasks", call, None).await
-}
-
-pub async fn task(args: TaskArgs) -> anyhow::Result<()> {
-    let toolbox = toolbox(args.group)?;
-    if std::io::stdin().is_terminal() {
-        eprintln!("Write what the workshop is to do, and end it with Ctrl-D.");
-    }
-    let mut instructions = String::new();
-    std::io::stdin().read_to_string(&mut instructions)?;
-    anyhow::ensure!(
-        !instructions.trim().is_empty(),
-        "the instructions are empty"
-    );
-    let mut call = json!({
-        "title": args.title,
-        "instructions": instructions,
-        "origin": args.origin,
-    });
-    if let Some(paper) = args.paper {
-        call["paper"] = json!(paper);
-    }
-    run(&toolbox, "create_task", call, args.agent.as_deref()).await
-}
-
 pub async fn mcp(args: McpArgs) -> anyhow::Result<()> {
     let mut config = Credentials::load()?.with_env();
     if let Some(hub) = args.hub {
@@ -433,18 +320,8 @@ pub async fn mcp(args: McpArgs) -> anyhow::Result<()> {
         config.token = Some(config::read_token_file(path)?);
     }
     let toolbox = Toolbox::new(config.hub()?, config::active_group(args.group.group)?)
-        .read_only(args.read_only)
-        .hands_over(args.hand_over)
-        .opens_threads(args.open_threads);
+        .read_only(args.read_only);
     StemmaServer::new(toolbox, args.agent).serve_stdio().await
-}
-
-fn prompt(question: &str) -> anyhow::Result<String> {
-    eprint!("{question}");
-    std::io::stderr().flush()?;
-    let mut line = String::new();
-    std::io::stdin().read_line(&mut line)?;
-    Ok(line.trim().to_owned())
 }
 
 pub fn hostname() -> String {

@@ -73,7 +73,7 @@ async fn signals_drain_streams_and_machines_and_exit_successfully() {
         let mut hub = stemma_client::Hub::new(&url, None).unwrap();
         hub.sign_in("ada", "analytical").await.unwrap();
         let token = hub.create_token("shutdown test").await.unwrap().secret;
-        let machine = hub.create_machine("Test machine", false).await.unwrap();
+        let machine = hub.create_token("Test machine").await.unwrap();
         let mut events = http
             .get(format!("{url}/api/v1/groups/geometry/events"))
             .bearer_auth(token)
@@ -103,13 +103,15 @@ async fn signals_drain_streams_and_machines_and_exit_successfully() {
         socket
             .send(Message::Text(
                 serde_json::to_string(&WorkerMessage::Hello(Hello {
-                    personal: true,
                     protocol: PROTOCOL_VERSION,
                     version: env!("CARGO_PKG_VERSION").into(),
                     runners: vec![],
-                    lean: false,
-                    latex: false,
-                    isolation: None,
+                    agents: stemma_core::protocol::GroupAgents {
+                        enabled: true,
+                        priority: 0,
+                        concurrency: None,
+                    },
+                    groups: Default::default(),
                     concurrency: 1,
                 }))
                 .unwrap()

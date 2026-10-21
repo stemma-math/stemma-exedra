@@ -15,10 +15,6 @@ pub struct LaunchArgs {
     /// The group to work with; the one chosen at login if absent.
     #[arg(long, short, env = "STEMMA_GROUP")]
     group: Option<String>,
-    /// Another of your agents with this runner, by handle, such as
-    /// claude-sonnet; your default one if absent.
-    #[arg(long)]
-    agent: Option<String>,
     /// More arguments for the agent, after `--`.
     #[arg(last = true)]
     args: Vec<String>,
@@ -31,7 +27,6 @@ pub async fn launch(runner: &str, args: LaunchArgs) -> anyhow::Result<i32> {
     let hub = config.hub()?;
     let options = Options {
         runner: runner.to_owned(),
-        agent: args.agent,
         group: stemma_client::config::active_group(args.group)?,
         args: args.args,
         stemma: std::env::current_exe().context("finding the stemma binary")?,
@@ -45,7 +40,12 @@ pub async fn launch(runner: &str, args: LaunchArgs) -> anyhow::Result<i32> {
         session.agent.display_name, session.person.display_name, session.group.name
     );
     let program = session.prepared.program.clone();
-    let mut child = match session.prepared.command().spawn() {
+    let mut child = match session
+        .prepared
+        .command()
+        .current_dir(&session.workspace.path)
+        .spawn()
+    {
         Ok(child) => child,
         Err(error) => {
             session.close(&hub).await?;

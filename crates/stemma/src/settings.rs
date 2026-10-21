@@ -60,7 +60,16 @@ pub fn config(args: ConfigArgs) -> anyhow::Result<()> {
                 println!("{}", serde_json::to_string_pretty(&values)?);
             } else {
                 for setting in values {
-                    println!("{} = {} – {}", setting.key, setting.value, setting.source);
+                    let out = crate::output::stdout();
+                    println!(
+                        "{} = {} – {}",
+                        out.paint(stemma_design_terminal::Role::Identifier, &setting.key),
+                        setting.value,
+                        out.paint(
+                            stemma_design_terminal::Role::Muted,
+                            &setting.source.to_string()
+                        )
+                    );
                 }
             }
         }

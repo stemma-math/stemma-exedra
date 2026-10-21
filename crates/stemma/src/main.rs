@@ -3,6 +3,7 @@
 mod client;
 mod launcher;
 mod machine;
+mod output;
 mod settings;
 
 use std::io::{BufRead, IsTerminal};
@@ -13,9 +14,45 @@ use stemma_core::api::{NewAccount, runners};
 use stemma_hub::Config;
 use tracing_subscriber::EnvFilter;
 
+const HELP: &str = "{about}
+
+Usage: {usage}
+
+Your account:
+  login       Sign in on this computer
+  logout      Sign out
+  group       Show or choose the active group
+
+The forum:
+  threads     List threads
+  read        Read a thread, declaration or paper
+  post        Post a message
+  search      Search the forum
+
+Library and papers:
+  library     Browse the library
+  papers      List working papers
+  paper       Create a working paper
+
+Your agents:
+  claude      Open Claude Code
+  codex       Open Codex
+  opencode    Open OpenCode
+  mcp         Serve Stemma's tools
+
+This computer:
+  machine     Manage the agents' service and image
+  config      Explain and edit settings
+  doctor      Check this computer
+
+Running a hub:
+  hub         Run a hub
+
+{options}";
+
 /// Stemma: where a research group does mathematics by talking.
 #[derive(Parser)]
-#[command(version, about)]
+#[command(version, about, disable_help_subcommand = true, help_template = HELP, styles = stemma_design_terminal::themes::clap::styles())]
 struct Cli {
     #[command(subcommand)]
     command: Command,
@@ -25,21 +62,22 @@ struct Cli {
 enum Command {
     /// Run the hub: accounts, groups, the forum and the web app.
     Hub(HubArgs),
-    /// Set up and serve this machine, where your own agents run, and the
-    /// workshops it works for.
+    /// Manage this computer's agents and service.
     Machine(machine::MachineArgs),
     /// Sign in to a hub from this machine.
     Login(client::LoginArgs),
     /// Sign out of the hub, revoking this machine's token.
     Logout,
+    /// Check this computer, its runners, workspace and service.
+    Doctor(DoctorArgs),
     /// Show or choose your active group.
     Group(settings::GroupArgs),
     /// Explain and edit this computer's settings.
     Config(settings::ConfigArgs),
     /// List a group's threads.
     Threads(client::ThreadsArgs),
-    /// Read a thread, some of its messages, a declaration, a task or a
-    /// paper's source: t12, t12#45-50, lean:Foo.bar, w7, p/notes.
+    /// Read a thread, some of its messages, a declaration or a
+    /// paper's source: t12, t12#45-50, lean:Foo.bar, p/notes.
     Read(client::ReadArgs),
     /// Post a message in a thread, or in reply to a message.
     Post(client::PostArgs),
@@ -51,14 +89,6 @@ enum Command {
     Papers(client::PapersArgs),
     /// Create a working paper, from the template.
     Paper(client::PaperArgs),
-    /// List the workshop's tasks; read one with `stemma read w7`.
-    Tasks(client::TasksArgs),
-    /// Hand a task to the workshop, with its instructions on standard input.
-    Task(client::TaskArgs),
-    /// Approve a task's changes (w7): as the one who asked, or as an admin.
-    Approve(client::ReviewArgs),
-    /// Reject a task's changes (w7): as the one who asked, or as an admin.
-    Reject(client::ReviewArgs),
     /// Open your Claude Code, with Stemma's tools and instructions for the
     /// session.
     Claude(launcher::LaunchArgs),
@@ -71,6 +101,14 @@ enum Command {
     /// Serve Stemma's tools to an agent over MCP, on standard input and
     /// output, for agents you install Stemma into.
     Mcp(client::McpArgs),
+}
+
+#[derive(Args)]
+struct DoctorArgs {
+    #[arg(long)]
+    json: bool,
+    #[arg(long)]
+    group: Option<String>,
 }
 
 #[derive(Args)]
@@ -102,6 +140,9 @@ enum HubCommand {
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
+    let policy = stemma_design_terminal::Output::detect(stemma_design_terminal::Stream::Stderr);
+    policy.apply_to_console(stemma_design_terminal::Stream::Stderr);
+    cliclack::set_theme(stemma_design_terminal::themes::cliclack::Theme::new(policy));
     let cli = Cli::parse();
     // Standard output is for what commands print, and for MCP's messages:
     // logs go to standard error, and the client commands log only problems.
@@ -122,6 +163,32 @@ async fn main() -> anyhow::Result<()> {
         Command::Machine(args) => machine::machine(args).await,
         Command::Login(args) => client::login(args).await,
         Command::Logout => client::logout().await,
+        Command::Doctor(args) => {
+            let checks = stemma_worker::doctor::run(args.group.as_deref()).await;
+            if args.json {
+                println!("{}", serde_json::to_string_pretty(&checks)?);
+            } else {
+                use stemma_design_terminal::{Role, Symbol};
+                let out = output::stdout();
+                for check in checks {
+                    let (role, symbol) = match check.status {
+                        stemma_worker::doctor::Status::Success => (Role::Success, Symbol::Success),
+                        stemma_worker::doctor::Status::Warning => (Role::Warning, Symbol::Warning),
+                        stemma_worker::doctor::Status::Danger => (Role::Danger, Symbol::Failure),
+                    };
+                    println!(
+                        "{} {} – {}",
+                        out.paint(role, out.symbol(symbol)),
+                        out.paint(Role::Strong, &check.name),
+                        out.paint(Role::Muted, &check.detail)
+                    );
+                    if let Some(remedy) = check.remedy {
+                        println!("  {remedy}");
+                    }
+                }
+            }
+            Ok(())
+        }
         Command::Group(args) => settings::group(args).await,
         Command::Config(args) => settings::config(args),
         Command::Threads(args) => client::threads(args).await,
@@ -131,10 +198,6 @@ async fn main() -> anyhow::Result<()> {
         Command::Library(args) => client::library(args).await,
         Command::Papers(args) => client::papers(args).await,
         Command::Paper(args) => client::paper(args).await,
-        Command::Tasks(args) => client::tasks(args).await,
-        Command::Task(args) => client::task(args).await,
-        Command::Approve(args) => client::approve(args).await,
-        Command::Reject(args) => client::reject(args).await,
         Command::Mcp(args) => client::mcp(args).await,
         Command::Claude(args) => exit(launcher::launch(runners::CLAUDE_CODE, args).await?),
         Command::Codex(args) => exit(launcher::launch(runners::CODEX, args).await?),
@@ -188,6 +251,22 @@ mod tests {
 
     use super::{Cli, Command};
 
+    #[test]
+    fn every_command_is_listed_once() {
+        use clap::CommandFactory;
+        for command in Cli::command().get_subcommands() {
+            assert_eq!(
+                super::HELP
+                    .lines()
+                    .filter(|line| line.split_whitespace().next() == Some(command.get_name()))
+                    .count(),
+                1,
+                "{}",
+                command.get_name()
+            );
+        }
+    }
+
     fn parse(args: &[&str]) -> Cli {
         Cli::try_parse_from(args).unwrap_or_else(|e| panic!("{args:?}: {e}"))
     }
@@ -224,20 +303,6 @@ mod tests {
         match parse(&["stemma", "read", "p/notes"]).command {
             Command::Read(args) => assert_eq!(args.file, None),
             _ => panic!("not a read"),
-        }
-        match parse(&[
-            "stemma",
-            "task",
-            "Write it up",
-            "--origin",
-            "t1#2",
-            "--paper",
-            "p/notes",
-        ])
-        .command
-        {
-            Command::Task(args) => assert_eq!(args.paper.as_deref(), Some("p/notes")),
-            _ => panic!("not a task"),
         }
     }
 }
