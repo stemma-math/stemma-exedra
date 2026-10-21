@@ -19,6 +19,20 @@ use crate::runners::{Answer, Work as RunnerWork};
 /// Stemma's instructions to an agent answering in a thread.
 pub const REPLY_INSTRUCTIONS: &str = include_str!("../prompts/reply.md");
 
+/// What an answer in a container of its own is told of its workspace.
+const CONTAINED: &str = "\
+- You work in the group's workspace, in a container of your own:
+  `library/` and `papers/<slug>/` are clones of its repositories at `main`,
+  and you start in a scratch folder. You may run anything there, such as
+  `lake build` or `latexmk`, to check your answer. Nothing you write there
+  is kept.";
+
+/// What an answer on its person's computer is told.
+const ON_THE_COMPUTER: &str = "\
+- You can read the group's workspace (`library/` and `papers/<slug>/`,
+  clones of its repositories at `main`), but you cannot run commands or
+  edit files: answer from what you read and reason.";
+
 /// What every job of a machine shares.
 pub struct Context {
     pub config: WorkerConfig,
@@ -169,7 +183,7 @@ pub fn conversation_text(group: &GroupRef, conversation: &Conversation) -> Strin
 }
 
 /// The prompt for an answer.
-pub fn reply_prompt(group: &GroupRef, conversation: &Conversation) -> Prompt {
+pub fn reply_prompt(group: &GroupRef, conversation: &Conversation, contained: bool) -> Prompt {
     let thread = &conversation.thread;
     let mut user = conversation_text(group, conversation);
     user.push_str(&format!(
@@ -180,7 +194,18 @@ pub fn reply_prompt(group: &GroupRef, conversation: &Conversation) -> Prompt {
         conversation.requester.username
     ));
     Prompt {
-        system: instructions(REPLY_INSTRUCTIONS, group, conversation),
+        system: instructions(
+            &REPLY_INSTRUCTIONS.replace(
+                "{workspace}",
+                if contained {
+                    CONTAINED
+                } else {
+                    ON_THE_COMPUTER
+                },
+            ),
+            group,
+            conversation,
+        ),
         user,
     }
 }
@@ -219,7 +244,8 @@ pub async fn run(context: Arc<Context>, job: JobSpec, progress: Progress) -> (Ou
     let mut usage = Usage::default();
     let outcome = match &job.work {
         Work::Reply(conversation) => {
-            let prompt = reply_prompt(&job.group, conversation);
+            let contained = matches!(context.isolator, Some(Isolator::Containers(_)));
+            let prompt = reply_prompt(&job.group, conversation, contained);
             ask(&context, &job, &conversation.agent, &prompt, &progress)
                 .await
                 .and_then(|answer| {
@@ -265,21 +291,9 @@ async fn ask(
     let mut container = None;
     let mut contained_program = None;
     if let Some(Isolator::Containers(containers)) = &context.isolator {
-        use crate::isolation::{Mount, ROOT, owner_of};
+        use crate::isolation::owner_of;
         let (env, files) = containers.sign_in(&agent.runner, dirs::home_dir().as_deref())?;
-        let mut mounts = vec![
-            Mount::Bind {
-                source: workspace.path.clone(),
-                target: ROOT.into(),
-                read_only: false,
-            },
-            Mount::Bind {
-                source: dir.path.clone(),
-                target: dir.path.clone(),
-                read_only: true,
-            },
-        ];
-        mounts.extend(files);
+        let mounts = answer_mounts(&workspace.path, &dir.path, files);
         let spec = containers.spec(
             job.id,
             owner_of(&workspace.path),
@@ -304,8 +318,6 @@ async fn ask(
         root: &workspace.path,
         sandbox,
         contained_program,
-        edits: true,
-        max_turns: None,
     };
     let name = &agent.display_name;
     let minutes = cli_runner(context, &agent.runner)?
@@ -317,6 +329,32 @@ async fn ask(
         run_cli(context, job, agent, &dir, &work, prompt, progress),
     )
     .await
+}
+
+/// What an answer's container is given of the computer, and nothing else:
+/// the group's workspace, read-write, where it works; the job's folder, with
+/// its token and the agent's launch files, read-only; and the agent's
+/// sign-in files.
+pub fn answer_mounts(
+    workspace: &Path,
+    job_dir: &Path,
+    sign_in: Vec<crate::isolation::Mount>,
+) -> Vec<crate::isolation::Mount> {
+    use crate::isolation::{Mount, ROOT};
+    let mut mounts = vec![
+        Mount::Bind {
+            source: workspace.to_owned(),
+            target: ROOT.into(),
+            read_only: false,
+        },
+        Mount::Bind {
+            source: job_dir.to_owned(),
+            target: job_dir.to_owned(),
+            read_only: true,
+        },
+    ];
+    mounts.extend(sign_in);
+    mounts
 }
 
 /// The configuration of one of the worker's command-line runners.
@@ -371,6 +409,52 @@ pub async fn within<T>(
 mod tests {
     use super::*;
     use serde_json::json;
+
+    #[test]
+    fn an_answers_container_gets_only_the_workspace_its_job_and_its_sign_in() {
+        use crate::isolation::{Mount, ROOT};
+        let sign_in = vec![Mount::Bind {
+            source: "/home/ada/.codex/auth.json".into(),
+            target: "/home/stemma/.codex/auth.json".into(),
+            read_only: true,
+        }];
+        let mounts = answer_mounts(
+            Path::new("/data/groups/geometry"),
+            Path::new("/state/jobs/7-0000abcd"),
+            sign_in,
+        );
+        let binds: Vec<_> = mounts
+            .iter()
+            .map(|mount| match mount {
+                Mount::Bind {
+                    source,
+                    target,
+                    read_only,
+                } => (
+                    source.display().to_string(),
+                    target.display().to_string(),
+                    *read_only,
+                ),
+                Mount::Hidden { .. } => panic!("nothing hidden"),
+            })
+            .collect();
+        assert_eq!(
+            binds,
+            [
+                ("/data/groups/geometry".into(), ROOT.into(), false),
+                (
+                    "/state/jobs/7-0000abcd".into(),
+                    "/state/jobs/7-0000abcd".into(),
+                    true
+                ),
+                (
+                    "/home/ada/.codex/auth.json".into(),
+                    "/home/stemma/.codex/auth.json".into(),
+                    true
+                ),
+            ]
+        );
+    }
 
     #[test]
     fn describes_tool_calls() {

@@ -114,7 +114,9 @@ async fn checkout(hub: &str, token: &str, repository: &str, dir: &Path) -> anyho
     git(dir, token, &["fetch", "--depth=1", "origin", "main"]).await?;
     git(dir, token, &["checkout", "-B", "main", "FETCH_HEAD"]).await?;
     git(dir, token, &["reset", "--hard", "FETCH_HEAD"]).await?;
-    git(dir, token, &["clean", "-ffdx"]).await?;
+    // Ignored files stay: Lake's `.lake`, with the packages and the build,
+    // so that the next job neither fetches Mathlib nor builds it again.
+    git(dir, token, &["clean", "-ffd"]).await?;
     Ok(())
 }
 
@@ -132,5 +134,55 @@ impl Scratch {
 impl Drop for Scratch {
     fn drop(&mut self) {
         let _ = std::fs::remove_dir_all(&self.0);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn run(dir: &Path, args: &[&str]) {
+        let output = std::process::Command::new("git")
+            .args(args)
+            .current_dir(dir)
+            .env("GIT_AUTHOR_NAME", "Ada")
+            .env("GIT_AUTHOR_EMAIL", "ada@example.org")
+            .env("GIT_COMMITTER_NAME", "Ada")
+            .env("GIT_COMMITTER_EMAIL", "ada@example.org")
+            .output()
+            .unwrap();
+        assert!(output.status.success(), "{output:?}");
+    }
+
+    #[tokio::test]
+    async fn an_update_keeps_lakes_build_and_drops_the_rest() {
+        let temp = tempfile::tempdir().unwrap();
+        let source = temp.path().join("source");
+        std::fs::create_dir_all(&source).unwrap();
+        run(&source, &["init", "-q", "--initial-branch=main"]);
+        std::fs::write(source.join(".gitignore"), ".lake\n").unwrap();
+        std::fs::write(source.join("Basic.lean"), "theorem t : True := trivial\n").unwrap();
+        run(&source, &["add", "."]);
+        run(&source, &["commit", "-qm", "Start"]);
+        run(
+            temp.path(),
+            &["clone", "-q", "--bare", "source", "library.git"],
+        );
+
+        let hub = format!("file://{}", temp.path().display());
+        let dir = temp.path().join("workspace/library");
+        checkout(&hub, "stj_x", "/library.git", &dir).await.unwrap();
+        assert!(dir.join("Basic.lean").is_file());
+        std::fs::create_dir_all(dir.join(".lake/packages/mathlib")).unwrap();
+        std::fs::write(dir.join("Basic.lean"), "changed\n").unwrap();
+        std::fs::write(dir.join("scratch.lean"), "left over\n").unwrap();
+
+        checkout(&hub, "stj_x", "/library.git", &dir).await.unwrap();
+        assert!(dir.join(".lake/packages/mathlib").is_dir());
+        assert!(!dir.join("scratch.lean").exists());
+        assert_eq!(
+            std::fs::read_to_string(dir.join("Basic.lean")).unwrap(),
+            "theorem t : True := trivial\n"
+        );
     }
 }

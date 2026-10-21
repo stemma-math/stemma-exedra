@@ -1,4 +1,6 @@
-//! Runner-specific reply execution with read-only Stemma tools and a writable workspace.
+//! The runners: how a machine gets an answer from its person's agent
+//! (`claude-code`, `codex`, `opencode`), launched as [`crate::launch`] says,
+//! with Stemma's tools through `stemma mcp`, read-only, with the job's token.
 
 pub mod claude_code;
 pub mod codex;
@@ -20,18 +22,14 @@ use crate::launch::{self, Launch, Mcp, Mode, Prepared};
 
 /// Where and how a runner works.
 pub struct Work<'a> {
-    /// The folder it works in, on the machine: the job's own, or for a
-    /// task, the worktree of the library.
+    /// The folder it starts in, on the machine: the job's scratch folder.
     pub dir: &'a Path,
+    /// The group's workspace, on the machine.
     pub root: &'a Path,
     /// Where it runs: on the machine, or in the job's container.
     pub sandbox: &'a dyn Sandbox,
     /// Its program in the container, if not its usual name.
     pub contained_program: Option<String>,
-    /// Whether it edits files and runs commands there, as for a reply.
-    pub edits: bool,
-    /// The most steps it may take, for runners that count them.
-    pub max_turns: Option<u32>,
 }
 
 /// What an agent said, and what it consumed, as its runner reports it.
@@ -115,9 +113,7 @@ pub fn prepared(
         mode: Mode::Job {
             dir: &dir_seen,
             root: &root_seen,
-            edits: work.edits,
             contained,
-            max_turns: work.max_turns,
             allowed: allowed_tools(job).into_iter().map(str::to_owned).collect(),
         },
     })?;

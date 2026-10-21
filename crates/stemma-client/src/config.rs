@@ -541,6 +541,20 @@ fn validate(key: &str, value: &Value) -> anyhow::Result<()> {
                 .is_some_and(|v| v.iter().all(Value::is_str)),
             "{key} must be an array of strings"
         );
+        // Stemma's own sign-in never enters an agent's container.
+        if key.ends_with(".container.env") {
+            for name in value
+                .as_array()
+                .into_iter()
+                .flatten()
+                .filter_map(Value::as_str)
+            {
+                anyhow::ensure!(
+                    !name.to_uppercase().starts_with("STEMMA_"),
+                    "{key} cannot pass {name}: Stemma's own settings stay out of containers"
+                );
+            }
+        }
     } else if key.ends_with(".files") {
         for file in value
             .as_array()
@@ -686,6 +700,19 @@ mod tests {
             assert!(error.contains("unknown key"), "{error}");
             assert!(error.contains("config.toml"), "{error}");
         }
+    }
+    #[test]
+    fn stemmas_sign_in_never_enters_a_container() {
+        let (_temp, paths) = fixture();
+        let text = "[agents.claude.container]\nenv = ['CLAUDE_CODE_OAUTH_TOKEN', 'STEMMA_TOKEN']";
+        let error = Settings::parse(
+            paths.config.join("config.toml"),
+            text,
+            &paths,
+            BTreeMap::new(),
+        )
+        .unwrap_err();
+        assert!(format!("{error:#}").contains("STEMMA_TOKEN"), "{error:#}");
     }
     #[test]
     fn writes_preserve_comments_order_and_group_fallback() {
