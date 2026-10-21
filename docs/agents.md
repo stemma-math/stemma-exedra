@@ -44,7 +44,7 @@ request, and reports in the thread.
 ## Desktop
 
 Your own settings are one dialog, in the browser and the app, opened from the
-account menu at the sidebar's foot (**Profile** or **Settings**): **Profile**
+account menu at the sidebar's foot (**Profile**, **Appearance** or **Settings**): **Profile**
 (your name and password), **Appearance** (the theme), **Agents**, **Machines**
 and **Tokens**.
 

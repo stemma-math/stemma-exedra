@@ -240,6 +240,7 @@
           </div>
           <hr class="menu__separator" />
           <button type="button" class="menu__item" onclick={() => openSettings("Profile")}><Glyph name="person" small /> Profile</button>
+          <button type="button" class="menu__item" onclick={() => openSettings("Appearance")}><Glyph name="appearance" small /> Appearance</button>
           <button type="button" class="menu__item" onclick={() => openSettings()}><Glyph name="settings" small /> Settings</button>
           <hr class="menu__separator" />
           <button type="button" class="menu__item" onclick={logOut}><Glyph name="log-out" small /> Log out</button>

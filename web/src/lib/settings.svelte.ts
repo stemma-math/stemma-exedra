@@ -10,8 +10,9 @@ export const settingsUI = $state<{ open: boolean; page: SettingsPage }>({
   page: "Appearance",
 });
 
-/** Opens the settings at `page`; "Settings" alone opens the first after Profile. */
-export function openSettings(page: SettingsPage = "Appearance") {
+/** Opens the settings at `page`; "Settings" alone opens the first page the
+ * account menu has no item of its own for. */
+export function openSettings(page: SettingsPage = "Agents") {
   settingsUI.page = page;
   settingsUI.open = true;
 }
