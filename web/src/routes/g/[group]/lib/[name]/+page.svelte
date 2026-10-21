@@ -1,4 +1,5 @@
 <script lang="ts">
+  import DottedName from "#lib/components/DottedName.svelte";
   import { page } from "$app/state";
   import { addressPath, parseAddress } from "#lib/address.ts";
   import { ApiError, api, type DeclarationPage } from "#lib/api.ts";
@@ -51,13 +52,13 @@
       {#if declaration}
         <li><a href="/g/{group.slug}/lib?module={encodeURIComponent(declaration.module)}">{declaration.module}</a></li>
       {/if}
-      <li><span aria-current="page">{name}</span></li>
+      <li><span aria-current="page"><DottedName {name} /></span></li>
     </ol>
   </nav>
 
   {#if missing}
     <div class="thread-head">
-      <h1>{name}</h1>
+      <h1><DottedName {name} /></h1>
       <StateChip state="missing" />
     </div>
     <p>The library's last successful build has no declaration <span class="identifier">{name}</span>.</p>
@@ -66,7 +67,7 @@
     {@const d = declaration}
     <header class="stack stack--tight">
       <div class="thread-head">
-        <h1>{d.name}</h1>
+        <h1><DottedName name={d.name} /></h1>
         <StateChip state={d.state} kind={d.kind} />
         <span data-density="compact">
           <stemma-copy-button value="lean:{d.name}" label="Copy the address lean:{d.name}"></stemma-copy-button>
@@ -79,7 +80,7 @@
       </p>
     </header>
 
-    <div class="document"><pre><code>{d.name} : {d.type}</code></pre></div>
+    <div class="document"><pre class="declaration-signature"><code>{d.name} : {d.type}</code></pre></div>
 
     {#if d.doc}
       <Markdown text={d.doc} group={group.slug} />
@@ -110,7 +111,7 @@
       <section class="stack stack--tight">
         <h2 class="label">Uses</h2>
         {#each d.uses as used (used)}
-          <a class="identifier link" href="/g/{group.slug}/lib/{encodeURIComponent(used)}">{used}</a>
+          <a class="identifier link" href="/g/{group.slug}/lib/{encodeURIComponent(used)}"><DottedName name={used} /></a>
         {:else}
           <p class="empty">Nothing else of the library.</p>
         {/each}
@@ -118,7 +119,7 @@
       <section class="stack stack--tight">
         <h2 class="label">Used by</h2>
         {#each d.used_by as user (user)}
-          <a class="identifier link" href="/g/{group.slug}/lib/{encodeURIComponent(user)}">{user}</a>
+          <a class="identifier link" href="/g/{group.slug}/lib/{encodeURIComponent(user)}"><DottedName name={user} /></a>
         {:else}
           <p class="empty">Nothing in the library.</p>
         {/each}
@@ -126,7 +127,7 @@
       <section class="stack stack--tight">
         <h2 class="label">Axioms</h2>
         {#each d.axioms as axiom (axiom)}
-          <span class="identifier">{axiom}</span>
+          <span class="identifier"><DottedName name={axiom} /></span>
         {:else}
           <p class="empty">None.</p>
         {/each}

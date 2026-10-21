@@ -234,7 +234,7 @@
       <div class="card">
         <div class="table consumption-table">
           <div class="table__head">
-            <span>Day</span><span>Jobs</span><span>Time</span><span>Tokens in / out</span><span>Cost</span>
+            <span>Day</span><span class="numeric">Jobs</span><span class="numeric">Time</span><span class="numeric">Tokens in / out</span><span class="numeric">Cost</span>
           </div>
           {#each days as day (day.day)}
             <div
