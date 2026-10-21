@@ -116,7 +116,7 @@ general values, then defaults. A general `workspace` is a parent, with a
 slug added; a group's `workspace` is its exact folder. An environment
 workspace applies to every group as a parent.
 
-`stemma config` lists all effective values and their sources. Use
+`stemma config` lists the effective values and their sources. Use
 `stemma config get agents.claude.model --group algebra`, `set`, or `unset`.
 With `--group`, writes affect that group's override; `unset` restores the
 next layer. `stemma config path` shows the settings file and `config edit`
@@ -152,6 +152,64 @@ credentials files are required. The hub's own `STEMMA_CONFIG` and
 `group use algebra` saves just its slug in the state's `group` file.
 `--group` and `STEMMA_GROUP` take precedence over that state.
 
+## How an agent runs
+
+An agent runs in one of three ways. In each, it is your agent as it is,
+and it reaches Stemma only through Stemma's tools (`stemma mcp`) with a
+token of its own, never yours. The hub enforces what that token may do; the
+tools offer exactly that.
+
+| | Where | Its own tools | Its token |
+| --- | --- | --- | --- |
+| A session: `stemma claude`, `codex`, `opencode` | Your computer, as you | All of them, as you set them up | An agent's token |
+| An answer, with isolation | A container of its own | All of them, without asking | A job's token |
+| An answer, without isolation | Your computer | None: it only reads | A job's token |
+
+**An agent's token** is for one group, for a long day at most, and is
+revoked when the session ends. It reads the group, and posts and opens
+discussions there, always as "Claude, for Ada". It cannot push, attach
+files, or reach your account, your tokens, invitations, members or the
+group's settings. **A job's token** is for one answer: it only reads the
+group, and the hub posts the answer itself. Your computer's own token, and
+any token made in Devices, never reaches an agent.
+
+### Sessions
+
+`stemma claude`, `stemma codex` and `stemma opencode` open a session in the
+folder you are in, with your agent's own configuration, plugins and MCP
+servers. With `--workspace` (`-w`), it opens in the group's workspace,
+brought up to date first. A session never runs in a container.
+
+A session keeps off your own sign-in to Stemma: its instructions say to use
+Stemma's tools only; the agent runs with `STEMMA_CONFIG_DIR` at the
+session's folder, which has no credentials, and without `STEMMA_TOKEN` or
+`STEMMA_HUB`, so the `stemma` command there is signed out; and Claude Code
+is told not to run `stemma` at all. This is not a wall: the agent runs as
+you, and one that insists can still read your files.
+
+### Answers
+
+When someone mentions `@claude`, their Claude answers on one of their
+computers. With `isolation = "docker"` or `"podman"`, the agent runs with
+no limits inside a container that holds only the group's workspace,
+read-write; the job's folder, with its token, read-only; and the agent's
+own sign-in. It can run `lake build` or `latexmk` to check its answer.
+Without isolation, the agent only answers: Claude Code with none of its own
+tools, Codex in its read-only sandbox, OpenCode only reading. Either way,
+Stemma's tools only read.
+
+### Held answers
+
+Before posting an answer, the hub looks for secrets in it: Stemma's tokens,
+Anthropic's, OpenAI's and GitHub's keys and tokens, access tokens (JWTs)
+and private keys. If it finds one, nothing is posted: the thread says
+"Claude's answer is waiting for Ada", and only Ada sees the answer, with
+each secret marked in red. She chooses to **Publish hidden** (each secret
+replaced by `[hidden]`), **Publish** as it is (after confirming; then revoke
+what it showed), or **Discard**. Nobody else, admins included, ever
+receives a held answer's text. A failed answer's error has its secrets
+hidden without asking.
+
 ## The managed workspace
 
 Each group has:
@@ -160,31 +218,27 @@ Each group has:
 <workspace>/
   library/        the group's library at main
   papers/<slug>/  each working paper at main
-  scratch/<job>/  a reply's working directory, removed afterwards
+  scratch/<job>/  an answer's working directory, removed afterwards
 ```
 
 Stemma manages this folder. Look, open and inspect it, but **do not keep your
-own work there**. Before the first job or session of a group starts, Stemma
-fetches its clones and resets and cleans them to main. While another job or
-session holds that group's lock, no reset occurs. Jobs start in scratch and
-may read, edit and run commands throughout the workspace to check an answer.
-Mathlib's cache stays in `~/.cache/mathlib`, shared across groups.
-
-`stemma claude`, `stemma codex` and `stemma opencode` open interactive
-sessions in the active group's workspace after the same update. Launch
-files and tokens stay in the state folder. Session launcher tokens expire
-and are revoked when the session ends. `stemma mcp` serves Stemma's tools.
-Reply job tokens remain scoped to their group and only read: replies cannot
-push repositories or open threads.
+own work there**. Before the first answer or `--workspace` session of a
+group starts, Stemma fetches its clones and brings them to main, removing
+untracked files but keeping ignored ones, such as Lake's `.lake`, so that
+Mathlib is neither fetched nor built again. While another answer or session
+holds that group's lock, no update occurs. Mathlib's own cache stays in
+`~/.cache/mathlib`, shared across groups.
 
 ## Isolation
 
-Without isolation, replies use each runner's sandbox rooted at the workspace:
-Codex uses `workspace-write`, Claude Code receives the workspace as an added
-directory, and OpenCode's permissions allow it. With Docker or Podman, the
-container receives the workspace read-write, the job's own launch files,
-and only the runner's selected sign-in from the computer. Runner sign-in is
-configured by variable names and file paths, never secret values:
+With Docker or Podman, each answer runs in a container of its own, from the
+agents' image, which `stemma machine image` builds from `docker/agents/`,
+with the runners, git, Lean and LaTeX. It runs as you, never root, with no
+capabilities and limits on memory, CPUs and processes, and is removed when
+the answer ends.
+
+Each runner signs in inside as you configure it, by variable names and file
+paths, never values in `config.toml`:
 
 ```toml
 [agents]
@@ -200,16 +254,31 @@ files = [{ from = "~/.codex/auth.json" }]
 env = ["OPENROUTER_API_KEY"]
 ```
 
-Container settings are `env` (an array of variable names), `files` (an array
-of `from` and optional `to` paths), and `command` (the runner's program in
-the container). Files are mounted read-only. `stemma machine image` builds
-the agents' image from `docker/agents/`, with the runners, git, Lean and LaTeX.
+- **Claude Code**: run `claude setup-token`, keep what it prints with
+  `stemma config secret set CLAUDE_CODE_OAUTH_TOKEN` (it asks for the value,
+  or reads it from standard input), and list the variable as above.
+- **Codex**: mount its `~/.codex/auth.json`, as above.
+- **OpenCode**: keep its providers' keys with `stemma config secret set`,
+  and list their names.
+
+`stemma config secret` keeps these values in `credentials.toml`, the only
+file with secrets: the service, which has only its search path and settings
+folder, passes them to the container runtime through its environment, so
+that they are on no command line. A variable with no value kept there is
+taken from the service's own environment. `stemma config secret list`
+shows the names kept; logging out forgets them with the rest of your
+credentials. Variables named `STEMMA_*` never enter a container.
+
+Container settings are `env` (variable names), `files` (`from` and optional
+`to` paths, mounted read-only) and `command` (the runner's program in the
+container). `stemma config` lists them only when isolation is set, or with
+`--all`.
 
 ## Doctor
 
 `stemma doctor` checks the hub and token, settings, each runner's path and
 version, `elan`, `lake` and `latexmk`, the selected container runtime and
-image, workspace writability, and whether the service is installed and
-running. Lean and LaTeX are tools your agents can use to check their work.
+image, each runner's sign-in for its container when isolation is set,
+workspace writability, and whether the service is installed and running. Lean and LaTeX are tools your agents can use to check their work.
 Each result has a status and a remedy when needed. `--json` provides
 structured results. The app shows the same checks with Check again.
