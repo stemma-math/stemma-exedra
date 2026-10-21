@@ -36,6 +36,8 @@ pub async fn save(
         token: Some(token),
         token_id,
         username: Some(me.user.username),
+        // Signing in again keeps the containers' sign-ins.
+        secrets: std::mem::take(&mut previous.secrets),
     };
     config.save()?;
     if let Some(group) = group {

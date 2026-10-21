@@ -294,7 +294,7 @@ async fn ask(
         use crate::isolation::owner_of;
         let (env, files) = containers.sign_in(&agent.runner, dirs::home_dir().as_deref())?;
         let mounts = answer_mounts(&workspace.path, &dir.path, files);
-        let spec = containers.spec(
+        let mut spec = containers.spec(
             job.id,
             owner_of(&workspace.path),
             mounts,
@@ -306,6 +306,22 @@ async fn ask(
                     + 60,
             ),
         );
+        // The sign-in's values, from the person's credentials, or else the
+        // computer's environment.
+        let secrets = stemma_client::config::Credentials::load()
+            .map(|c| c.secrets)
+            .unwrap_or_default();
+        spec.pass_values = spec
+            .pass_env
+            .iter()
+            .filter_map(|name| {
+                secrets
+                    .get(name)
+                    .cloned()
+                    .or_else(|| std::env::var(name).ok())
+                    .map(|value| (name.clone(), value))
+            })
+            .collect();
         container = Some(containers.start(&spec, &workspace.path).await?);
         contained_program = containers.program(&agent.runner);
     }

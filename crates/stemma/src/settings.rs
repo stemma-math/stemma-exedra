@@ -37,6 +37,54 @@ enum ConfigCommand {
     Path,
     /// Open the settings file in $EDITOR.
     Edit,
+    /// Keep the value of a variable your agents' containers are given
+    /// (agents.<runner>.container.env), among your credentials.
+    #[command(subcommand)]
+    Secret(SecretCommand),
+}
+
+#[derive(Subcommand)]
+enum SecretCommand {
+    /// Keep a variable's value, asked for, or read from standard input.
+    Set { name: String },
+    /// Forget a variable's value.
+    Unset { name: String },
+    /// List the variables whose values are kept, without them.
+    List,
+}
+
+fn secret(command: SecretCommand) -> anyhow::Result<()> {
+    use std::io::{IsTerminal, Read};
+    let mut credentials = Credentials::load_from(&config::path()?)?;
+    match command {
+        SecretCommand::Set { name } => {
+            anyhow::ensure!(
+                !name.is_empty()
+                    && name.bytes().all(|c| c.is_ascii_alphanumeric() || c == b'_')
+                    && !name.to_uppercase().starts_with("STEMMA_"),
+                "{name} cannot be a container's variable"
+            );
+            let value = if std::io::stdin().is_terminal() {
+                cliclack::password(format!("Value of {name}")).interact()?
+            } else {
+                let mut value = String::new();
+                std::io::stdin().read_to_string(&mut value)?;
+                value.trim().to_owned()
+            };
+            anyhow::ensure!(!value.is_empty(), "no value for {name}");
+            credentials.secrets.insert(name, value);
+        }
+        SecretCommand::Unset { name } => {
+            credentials.secrets.remove(&name);
+        }
+        SecretCommand::List => {
+            for name in credentials.secrets.keys() {
+                println!("{name}");
+            }
+            return Ok(());
+        }
+    }
+    credentials.save()
 }
 
 pub fn config(args: ConfigArgs) -> anyhow::Result<()> {
@@ -58,6 +106,7 @@ pub fn config(args: ConfigArgs) -> anyhow::Result<()> {
             settings.write(&key, Some(&value), args.group.as_deref())?
         }
         Some(ConfigCommand::Unset { key }) => settings.write(&key, None, args.group.as_deref())?,
+        Some(ConfigCommand::Secret(command)) => secret(command)?,
         command => {
             let values = match command {
                 Some(ConfigCommand::Get { key }) => {

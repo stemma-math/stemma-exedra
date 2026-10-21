@@ -53,6 +53,59 @@ fn settings_round_trip_and_removed_commands_fail() {
     }
 }
 
+#[test]
+fn containers_sign_ins_are_kept_among_the_credentials() {
+    use std::io::Write;
+    let dir = tempfile::tempdir().unwrap();
+    let set = |name: &str, value: &str| {
+        let mut child = std::process::Command::new(env!("CARGO_BIN_EXE_stemma"))
+            .args(["config", "secret", "set", name])
+            .env("STEMMA_CONFIG_DIR", dir.path().join("config"))
+            .stdin(std::process::Stdio::piped())
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::piped())
+            .spawn()
+            .unwrap();
+        child
+            .stdin
+            .take()
+            .unwrap()
+            .write_all(value.as_bytes())
+            .unwrap();
+        child.wait_with_output().unwrap()
+    };
+    assert!(
+        set("CLAUDE_CODE_OAUTH_TOKEN", "sk-ant-oat01-x\n")
+            .status
+            .success()
+    );
+    assert!(!set("STEMMA_TOKEN", "stm_x").status.success());
+    let listed = cli(dir.path(), &["config", "secret", "list"]);
+    assert_eq!(
+        String::from_utf8(listed.stdout).unwrap(),
+        "CLAUDE_CODE_OAUTH_TOKEN\n"
+    );
+    let file = dir.path().join("config/credentials.toml");
+    let text = std::fs::read_to_string(&file).unwrap();
+    assert!(text.contains("sk-ant-oat01-x"), "{text}");
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let mode = std::fs::metadata(&file).unwrap().permissions().mode();
+        assert_eq!(mode & 0o777, 0o600);
+    }
+    assert!(
+        cli(
+            dir.path(),
+            &["config", "secret", "unset", "CLAUDE_CODE_OAUTH_TOKEN"]
+        )
+        .status
+        .success()
+    );
+    let listed = cli(dir.path(), &["config", "secret", "list"]);
+    assert!(listed.stdout.is_empty());
+}
+
 #[cfg(unix)]
 #[tokio::test(flavor = "multi_thread")]
 async fn foreground_service_answers_from_the_workspace_reading_only() {

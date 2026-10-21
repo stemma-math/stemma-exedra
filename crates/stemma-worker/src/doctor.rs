@@ -71,24 +71,26 @@ fn container_sign_in(settings: &Settings, group: Option<&str>, handle: &str) -> 
     );
     let how = match handle {
         "claude" => {
-            "Run claude setup-token, set CLAUDE_CODE_OAUTH_TOKEN where the service runs, and \
-             stemma config set agents.claude.container.env CLAUDE_CODE_OAUTH_TOKEN."
+            "Run claude setup-token, keep what it prints with stemma config secret set \
+             CLAUDE_CODE_OAUTH_TOKEN, and stemma config set agents.claude.container.env \
+             CLAUDE_CODE_OAUTH_TOKEN."
         }
         "codex" => {
             "stemma config set agents.codex.container.files \"[{ from = '~/.codex/auth.json' }]\"."
         }
         _ => {
-            "Give it its providers' keys: stemma config set agents.opencode.container.env \
-             with their variables' names."
+            "Keep its providers' keys with stemma config secret set <NAME>, and list their \
+             names in agents.opencode.container.env."
         }
     };
     if variables.is_empty() && files.is_empty() {
         return check(&name, false, "No sign-in for its container", how);
     }
+    let kept = Credentials::load().map(|c| c.secrets).unwrap_or_default();
     let missing: Vec<String> = variables
         .iter()
-        .filter(|v| std::env::var_os(v).is_none())
-        .map(|v| format!("{v} is not set"))
+        .filter(|v| !kept.contains_key(*v) && std::env::var_os(v).is_none())
+        .map(|v| format!("{v} has no value"))
         .chain(files.iter().filter_map(|f| {
             let path = stemma_client::config::expand_home(f).ok()?;
             (!path.is_file()).then(|| format!("{} is missing", path.display()))

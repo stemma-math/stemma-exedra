@@ -367,9 +367,12 @@ pub struct ContainerSpec {
     pub mounts: Vec<Mount>,
     /// Variables set, with their values: none of them secret.
     pub env: Vec<(String, String)>,
-    /// Variables passed from the machine's environment, by name: the
-    /// agent's sign-in.
+    /// Variables passed by name: the agent's sign-in. Their values come
+    /// from `pass_values`, or else the computer's environment, and reach the
+    /// runtime through its own environment, never its command line.
     pub pass_env: Vec<String>,
+    /// The values of some of `pass_env`, from the person's credentials.
+    pub pass_values: Vec<(String, String)>,
     pub limits: Limits,
     pub network: Option<String>,
     /// Whether it reaches the machine by the runtime's name for it.
@@ -567,7 +570,11 @@ impl Container {
             work_dir: work_dir.to_owned(),
             hub,
         };
-        let output = Command::new(container.engine.program())
+        let mut command = Command::new(container.engine.program());
+        for (name, value) in &spec.pass_values {
+            command.env(name, value);
+        }
+        let output = command
             .args(run_args(container.engine.as_ref(), spec))
             .stdin(Stdio::null())
             .kill_on_drop(true)
@@ -877,6 +884,7 @@ impl Containers {
             mounts,
             env: vec![("HOME".into(), HOME.into())],
             pass_env,
+            pass_values: Vec::new(),
             limits: self.limits.clone(),
             network: self.network.clone(),
             host_alias: self.host_alias,
@@ -931,6 +939,10 @@ mod tests {
             ],
             env: vec![("HOME".into(), HOME.into())],
             pass_env: vec!["CLAUDE_CODE_OAUTH_TOKEN".into()],
+            pass_values: vec![(
+                "CLAUDE_CODE_OAUTH_TOKEN".into(),
+                "sk-ant-oat01-secret".into(),
+            )],
             limits: Limits {
                 memory: "8g".into(),
                 cpus: 4.0,
@@ -977,6 +989,8 @@ mod tests {
         // The sign-in, by name only.
         let pass = position(&args, "CLAUDE_CODE_OAUTH_TOKEN");
         assert_eq!(args[pass - 1], "--env");
+        // Its value is on no command line.
+        assert!(!args.iter().any(|a| a.contains("sk-ant-oat01-secret")));
         position(&args, "HOME=/home/stemma");
         position(
             &args,

@@ -19,6 +19,11 @@ pub struct Credentials {
     pub token_id: Option<i64>,
     /// Who signed in.
     pub username: Option<String>,
+    /// The values of the variables agents' containers are given by name
+    /// (`agents.<runner>.container.env`): their sign-ins, kept here, the
+    /// only file with secrets, rather than in the service's environment.
+    #[serde(default, skip_serializing_if = "std::collections::BTreeMap::is_empty")]
+    pub secrets: std::collections::BTreeMap<String, String>,
 }
 
 /// The credentials file, separate from settings and active group state.
@@ -764,10 +769,17 @@ mod tests {
             token: Some("test-secret".into()),
             token_id: Some(3),
             username: Some("ada".into()),
+            secrets: [(
+                "CLAUDE_CODE_OAUTH_TOKEN".to_owned(),
+                "sk-ant-oat01-x".to_owned(),
+            )]
+            .into(),
         };
         credentials.save_to(&path).unwrap();
         credentials.save_to(&path).unwrap();
-        assert_eq!(Credentials::load_from(&path).unwrap().token_id, Some(3));
+        let read = Credentials::load_from(&path).unwrap();
+        assert_eq!(read.token_id, Some(3));
+        assert_eq!(read.secrets["CLAUDE_CODE_OAUTH_TOKEN"], "sk-ant-oat01-x");
         paths.use_group("algebra").unwrap();
         assert_eq!(
             paths
