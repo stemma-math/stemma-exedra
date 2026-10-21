@@ -17,6 +17,7 @@ use crate::auth;
 use crate::db;
 use crate::error::{ApiError, ApiResult};
 use crate::state::AppState;
+use stemma_core::secrets;
 
 /// How long a job's token lasts, in milliseconds.
 const JOB_TOKEN_MILLIS: i64 = 2 * 60 * 60 * 1000;
@@ -122,6 +123,7 @@ struct JobRow {
     progress: Option<String>,
     error: Option<String>,
     answer: Option<i64>,
+    held_answer: Option<String>,
     created_at: i64,
     updated_at: i64,
     group_slug: String,
@@ -132,7 +134,7 @@ macro_rules! job_query {
         "SELECT j.id, j.group_id, j.kind, j.thread_id, t.number AS thread_number,
         j.trigger_message, j.requester_id, u.username, u.display_name, j.agent_handle,
         j.runner, j.state, j.worker_id, w.name AS machine_name, j.token_id, j.progress, j.error,
-        j.answer, j.created_at, j.updated_at, g.slug AS group_slug
+        j.answer, j.held_answer, j.created_at, j.updated_at, g.slug AS group_slug
          FROM jobs j LEFT JOIN threads t ON t.id = j.thread_id
               JOIN users u ON u.id = j.requester_id
               JOIN groups g ON g.id = j.group_id
@@ -176,13 +178,22 @@ impl JobRow {
             thread: self.thread_number.map(|n| n as u32),
             trigger: self.trigger_message.map(|n| n as u32),
             agent,
-            agent_name,
+            agent_name: agent_name.clone(),
             requester: self.requester(),
             state,
             progress: self.progress.clone().filter(|_| state == JobState::Running),
-            note: (state == JobState::Queued).then(|| workers.note(self)),
+            note: match state {
+                JobState::Queued => Some(workers.note(self)),
+                JobState::Held => Some(format!(
+                    "{}'s answer is waiting for {}",
+                    agent_name, self.display_name
+                )),
+                _ => None,
+            },
             error: self.error.clone(),
             answer: self.answer.map(|n| n as u32),
+            // Only ever given to its requester: see [`of_thread`].
+            held: None,
             created_at: db::from_millis(self.created_at),
             updated_at: db::from_millis(self.updated_at),
         }
@@ -209,11 +220,14 @@ async fn publish(state: &AppState, workers: &Workers, job_id: i64) -> ApiResult<
 
 /// The jobs of a thread worth showing: those on their way, and those that
 /// failed in the last day and nobody dismissed.
-pub async fn of_thread(state: &AppState, thread_id: i64) -> ApiResult<Vec<Job>> {
+/// The thread's jobs on their way, held, or failed lately, as `viewer_id`
+/// sees them: a held answer's text only for its requester.
+pub async fn of_thread(state: &AppState, thread_id: i64, viewer_id: i64) -> ApiResult<Vec<Job>> {
     let rows: Vec<JobRow> = sqlx::query_as(concat!(
         job_query!(),
         " WHERE j.thread_id = ?
-           AND (j.state IN ('queued', 'running') OR (j.state = 'failed' AND j.updated_at > ?))
+           AND (j.state IN ('queued', 'running', 'held')
+                OR (j.state = 'failed' AND j.updated_at > ?))
          ORDER BY j.id"
     ))
     .bind(thread_id)
@@ -221,7 +235,16 @@ pub async fn of_thread(state: &AppState, thread_id: i64) -> ApiResult<Vec<Job>> 
     .fetch_all(&state.db)
     .await?;
     let workers = state.workers.lock().await;
-    Ok(rows.iter().map(|row| row.to_api(&workers)).collect())
+    Ok(rows
+        .iter()
+        .map(|row| {
+            let mut job = row.to_api(&workers);
+            if row.requester_id == viewer_id {
+                job.held = row.held_answer.as_deref().map(secrets::parts);
+            }
+            job
+        })
+        .collect())
 }
 
 /// Why a job waits, if it does: for a build's or a task's page.
@@ -407,11 +430,12 @@ async fn revoke_token(state: &AppState, token_id: Option<i64>) -> ApiResult<()> 
 }
 
 async fn fail(state: &AppState, job_id: i64, error: &str) -> ApiResult<()> {
+    // An error may end with what a runner printed: never a secret of it.
     let token: Option<Option<i64>> = sqlx::query_scalar(
         "UPDATE jobs SET state = 'failed', error = ?, progress = NULL, updated_at = ?
          WHERE id = ? RETURNING token_id",
     )
-    .bind(error)
+    .bind(secrets::hide(error))
     .bind(db::now())
     .bind(job_id)
     .fetch_optional(&state.db)
@@ -513,9 +537,89 @@ async fn answered(state: &AppState, job: &JobRow, answer: &str) -> ApiResult<Opt
         text = text.chars().take(MAX_ANSWER_CHARS - 40).collect();
         text.push_str("\n\n[The answer was cut here.]");
     }
+    if !secrets::find(&text).is_empty() {
+        hold(state, job, &text).await?;
+        return Ok(None);
+    }
     let number = say(state, job, &text).await?;
     done(state, job, Some(number)).await?;
     Ok(None)
+}
+
+/// Keeps an answer that seems to hold a secret, unposted, for its
+/// requester to decide.
+async fn hold(state: &AppState, job: &JobRow, text: &str) -> ApiResult<()> {
+    sqlx::query(
+        "UPDATE jobs SET state = 'held', held_answer = ?, progress = NULL, updated_at = ?
+         WHERE id = ?",
+    )
+    .bind(text)
+    .bind(db::now())
+    .bind(job.id)
+    .execute(&state.db)
+    .await?;
+    revoke_token(state, job.token_id).await
+}
+
+/// A held job of `group`'s, which only its requester decides on.
+async fn held_by(
+    state: &AppState,
+    group: &Membership,
+    user_id: i64,
+    job_id: i64,
+) -> ApiResult<(JobRow, String)> {
+    let job = load_job(state, job_id)
+        .await?
+        .filter(|job| job.group_id == group.group_id && job.requester_id == user_id)
+        .ok_or_else(|| ApiError::not_found("Job"))?;
+    match (job.state(), job.held_answer.clone()) {
+        (JobState::Held, Some(text)) => Ok((job, text)),
+        _ => Err(ApiError::conflict("This answer is not held")),
+    }
+}
+
+/// Posts a held answer, as it is or with its secrets hidden: its
+/// requester only.
+pub async fn publish_held(
+    state: &AppState,
+    group: &Membership,
+    user_id: i64,
+    job_id: i64,
+    hidden: bool,
+) -> ApiResult<()> {
+    let (job, text) = held_by(state, group, user_id, job_id).await?;
+    let text = if hidden { secrets::hide(&text) } else { text };
+    let number = say(state, &job, &text).await?;
+    sqlx::query(
+        "UPDATE jobs SET state = 'done', answer = ?, held_answer = NULL, updated_at = ?
+         WHERE id = ?",
+    )
+    .bind(number)
+    .bind(db::now())
+    .bind(job.id)
+    .execute(&state.db)
+    .await?;
+    let workers = state.workers.lock().await;
+    publish(state, &workers, job.id).await
+}
+
+/// Discards a held answer: its requester only.
+pub async fn discard_held(
+    state: &AppState,
+    group: &Membership,
+    user_id: i64,
+    job_id: i64,
+) -> ApiResult<()> {
+    let (job, _) = held_by(state, group, user_id, job_id).await?;
+    sqlx::query(
+        "UPDATE jobs SET state = 'cancelled', held_answer = NULL, updated_at = ? WHERE id = ?",
+    )
+    .bind(db::now())
+    .bind(job.id)
+    .execute(&state.db)
+    .await?;
+    let workers = state.workers.lock().await;
+    publish(state, &workers, job.id).await
 }
 
 /// Posts a message in a job's thread, by its agent, in reply to the
@@ -645,7 +749,8 @@ pub async fn stop(state: &AppState, job_id: i64) -> ApiResult<()> {
         let _ = worker.sender.send(HubMessage::Cancel { job: job_id });
     }
     sqlx::query(
-        "UPDATE jobs SET state = 'cancelled', progress = NULL, updated_at = ? WHERE id = ?",
+        "UPDATE jobs SET state = 'cancelled', progress = NULL, held_answer = NULL, updated_at = ?
+         WHERE id = ?",
     )
     .bind(db::now())
     .bind(job_id)

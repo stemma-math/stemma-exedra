@@ -144,7 +144,13 @@ export const AGENTS = [
   { handle: "codex", display_name: "Codex", runner: "codex" },
   { handle: "opencode", display_name: "OpenCode", runner: "opencode" },
 ];
-export type JobState = "queued" | "running" | "done" | "failed" | "cancelled";
+export type JobState = "queued" | "running" | "held" | "done" | "failed" | "cancelled";
+
+/** A part of a held answer: plain, or a secret, with what it seems to be. */
+export interface HeldPart {
+  text: string;
+  secret?: string;
+}
 
 export type JobKind = "reply";
 
@@ -162,6 +168,8 @@ export interface Job {
   note: string | null;
   error: string | null;
   answer: number | null;
+  /** A held answer, cut at its secrets: only ever for its requester. */
+  held?: HeldPart[];
   created_at: string;
   updated_at: string;
 }
@@ -424,6 +432,9 @@ export const api = {
     ),
   threadJobs: (group: string, n: number) => get<Job[]>(`${g(group)}/threads/${n}/jobs`),
   cancelJob: (group: string, id: number) => del<void>(`${g(group)}/jobs/${id}`),
+  publishHeld: (group: string, id: number, hidden: boolean) =>
+    post<void>(`${g(group)}/jobs/${id}/publish`, { hidden }),
+  discardHeld: (group: string, id: number) => post<void>(`${g(group)}/jobs/${id}/discard`, {}),
 
   async upload(group: string, file: File): Promise<Attachment> {
     const form = new FormData();

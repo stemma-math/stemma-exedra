@@ -29,15 +29,19 @@ CREATE TABLE jobs (
     requester_id INTEGER NOT NULL REFERENCES users (id) ON DELETE CASCADE,
     agent_handle TEXT,
     runner TEXT NOT NULL,
-    state TEXT NOT NULL CHECK (state IN ('queued', 'running', 'done', 'failed', 'cancelled')),
+    state TEXT NOT NULL
+        CHECK (state IN ('queued', 'running', 'held', 'done', 'failed', 'cancelled')),
     worker_id INTEGER REFERENCES api_tokens (id) ON DELETE SET NULL,
     -- The job token of the current run.
     token_id INTEGER REFERENCES api_tokens (id) ON DELETE SET NULL,
     attempts INTEGER NOT NULL DEFAULT 0,
     progress TEXT,
     error TEXT,
-    -- The number of the message with the answer, or with the report.
+    -- The number of the message with the answer.
     answer INTEGER,
+    -- An answer that seems to hold a secret, until its requester publishes
+    -- or discards it.
+    held_answer TEXT,
     created_at INTEGER NOT NULL,
     updated_at INTEGER NOT NULL
 );

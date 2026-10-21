@@ -12,8 +12,9 @@
   import { groupContext } from "#lib/group.svelte.ts";
   import { applyJob } from "#lib/jobs.ts";
   import { forgetReferences } from "#lib/references.ts";
+  import { ask } from "#lib/ask.svelte.ts";
   import { session } from "#lib/session.svelte.ts";
-  import { toastError } from "#lib/toast.ts";
+  import { toast, toastError } from "#lib/toast.ts";
 
   const context = groupContext();
   const group = $derived(context.group);
@@ -71,6 +72,44 @@
     }
   }
 
+  /** Posts a held answer: with its secrets hidden, or, once confirmed, as it is. */
+  async function publishHeld(job: Job, hidden: boolean) {
+    if (!hidden) {
+      const yes = await ask({
+        title: "Publish with the secret?",
+        text: "Everyone in the group will read it. Revoke that token or key afterwards, wherever it came from.",
+        action: "Publish",
+        danger: true,
+      });
+      if (!yes) return;
+    }
+    try {
+      await api.publishHeld(group.slug, job.id, hidden);
+      jobs = jobs.filter((j) => j.id !== job.id);
+      if (!hidden) toast("Published. Revoke the token or key it showed.", "warning");
+    } catch (error) {
+      toastError(error);
+    }
+  }
+
+  async function discardHeld(job: Job) {
+    try {
+      await api.discardHeld(group.slug, job.id);
+      jobs = jobs.filter((j) => j.id !== job.id);
+    } catch (error) {
+      toastError(error);
+    }
+  }
+
+  /** The thread's jobs again: a held answer's text comes only this way. */
+  async function reloadJobs() {
+    try {
+      jobs = await api.threadJobs(group.slug, number);
+    } catch (error) {
+      toastError(error);
+    }
+  }
+
   $effect(() => {
     void number;
     thread = null;
@@ -85,7 +124,8 @@
       } else if (event.type === "thread_updated" && event.thread.number === number) {
         thread = event.thread;
       } else if (event.type === "job_updated" && event.job.thread === number) {
-        jobs = applyJob(jobs, event.job);
+        if (event.job.state === "held" && event.job.requester.id === viewer) reloadJobs();
+        else jobs = applyJob(jobs, event.job);
       }
       if (event.type === "thread_created" || event.type === "message_created") forgetReferences(group.slug);
     });
@@ -199,7 +239,13 @@
         />
       {/each}
       {#each jobs as job (job.id)}
-        <JobItem {job} canCancel={admin || job.requester.id === viewer} oncancel={cancel} />
+        <JobItem
+          {job}
+          canCancel={admin || job.requester.id === viewer}
+          oncancel={cancel}
+          onpublish={publishHeld}
+          ondiscard={discardHeld}
+        />
       {/each}
     </ol>
 

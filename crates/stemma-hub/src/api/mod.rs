@@ -113,6 +113,14 @@ pub fn router(state: AppState) -> Router {
             get(jobs::of_thread),
         )
         .route("/groups/{group}/jobs/{id}", delete(jobs::cancel))
+        .route(
+            "/groups/{group}/jobs/{id}/publish",
+            post(jobs::publish_held),
+        )
+        .route(
+            "/groups/{group}/jobs/{id}/discard",
+            post(jobs::discard_held),
+        )
         .route(stemma_core::protocol::WORKER_PATH, get(workers::connect))
         .route(
             "/groups/{group}/attachments",

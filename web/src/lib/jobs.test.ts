@@ -38,6 +38,14 @@ describe("jobs", () => {
     expect(applyJob(jobs, job(2, "cancelled"))).toEqual([]);
   });
 
+  it("keeps a held answer until it is published or discarded", () => {
+    let jobs = applyJob([], job(1, "held"));
+    expect(jobs.map((j) => j.state)).toEqual(["held"]);
+    expect(jobStatus(jobs[0])).toBe("Claude's answer is held");
+    jobs = applyJob(jobs, job(1, "done"));
+    expect(jobs).toEqual([]);
+  });
+
   it("says what the agent is doing", () => {
     expect(jobStatus(job(1, "running"))).toBe("Claude is answering…");
     expect(jobStatus(job(1, "queued"))).toBe("Claude will answer");

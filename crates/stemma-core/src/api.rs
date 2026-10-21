@@ -128,6 +128,13 @@ pub struct CreateAgentToken {
     pub host: String,
 }
 
+/// What to do with a held answer.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct PublishHeld {
+    /// Whether to replace each secret with `[hidden]` first.
+    pub hidden: bool,
+}
+
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct CreatedToken {
     #[serde(flatten)]
@@ -821,6 +828,9 @@ pub enum JobState {
     Queued,
     /// A worker is on it.
     Running,
+    /// Its answer seems to hold a secret, and waits for its requester to
+    /// publish it, hidden or not, or to discard it.
+    Held,
     Done,
     Failed,
     Cancelled,
@@ -831,6 +841,7 @@ impl JobState {
         match self {
             JobState::Queued => "queued",
             JobState::Running => "running",
+            JobState::Held => "held",
             JobState::Done => "done",
             JobState::Failed => "failed",
             JobState::Cancelled => "cancelled",
@@ -841,6 +852,7 @@ impl JobState {
         match s {
             "queued" => Some(JobState::Queued),
             "running" => Some(JobState::Running),
+            "held" => Some(JobState::Held),
             "done" => Some(JobState::Done),
             "failed" => Some(JobState::Failed),
             "cancelled" => Some(JobState::Cancelled),
@@ -905,6 +917,9 @@ pub struct Job {
     pub error: Option<String>,
     /// The message with the answer, once there is one.
     pub answer: Option<u32>,
+    /// A held answer, with its secrets marked: only ever to its requester.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub held: Option<Vec<crate::secrets::Part>>,
     #[serde(with = "time::serde::rfc3339")]
     pub created_at: OffsetDateTime,
     #[serde(with = "time::serde::rfc3339")]

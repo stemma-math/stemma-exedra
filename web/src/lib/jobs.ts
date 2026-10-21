@@ -2,9 +2,14 @@
 
 import type { Job } from "./api";
 
-/** Whether a thread still shows a job: on its way, or failed. */
+/** Whether a thread still shows a job: on its way, held, or failed. */
 export function isShown(job: Job): boolean {
-  return job.state === "queued" || job.state === "running" || job.state === "failed";
+  return (
+    job.state === "queued" ||
+    job.state === "running" ||
+    job.state === "held" ||
+    job.state === "failed"
+  );
 }
 
 /** The jobs of a thread with one of them updated, in order. */
@@ -20,6 +25,8 @@ export function jobStatus(job: Job): string {
       return `${job.agent_name} is answering…`;
     case "queued":
       return `${job.agent_name} will answer`;
+    case "held":
+      return `${job.agent_name}'s answer is held`;
     case "failed":
       return `${job.agent_name} could not answer`;
     default:

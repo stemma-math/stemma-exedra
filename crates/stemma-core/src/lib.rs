@@ -9,6 +9,7 @@ pub mod locator;
 pub mod mention;
 pub mod protocol;
 pub mod reference;
+pub mod secrets;
 
 pub use address::{Address, AddressError, AddressKind};
 pub use locator::{Located, locate};

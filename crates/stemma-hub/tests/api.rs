@@ -2126,3 +2126,127 @@ async fn personal_tokens_route_by_group_priority_capacity_and_connection_time() 
         assert_eq!(hub.get(&ada, route).await.status, StatusCode::NOT_FOUND);
     }
 }
+
+#[tokio::test]
+async fn an_answer_with_a_secret_waits_for_its_requester() {
+    let hub = TestHub::new().await;
+    let ada = hub.admin_with_group().await;
+    let bob = hub.member(&ada, "bob").await;
+    let (computer_id, mut jobs) = computer(&hub, &ada, "Laptop", 1, 0).await;
+    let secret = "stm_AbCdEfGhIjKlMnOpQrStUvWxYz0123456789";
+    hub.post(
+        &ada,
+        "/groups/geometry/threads",
+        json!({"title": "Question", "body": "@claude where is my token?"}),
+    )
+    .await;
+    let job = dispatched(&mut jobs).expect("Ada's computer takes it");
+    stemma_hub::jobs::finished(
+        &hub.state,
+        computer_id,
+        1,
+        job.id,
+        stemma_core::protocol::Outcome::Answer {
+            body: format!("It is {secret}, in your credentials."),
+        },
+        Default::default(),
+    )
+    .await
+    .unwrap();
+
+    // Nothing is posted; everyone sees that it waits; only Ada sees it.
+    let thread = hub.get(&ada, "/groups/geometry/threads/1").await.json();
+    assert_eq!(thread["messages"].as_array().unwrap().len(), 1);
+    let for_ada = hub
+        .get(&ada, "/groups/geometry/threads/1/jobs")
+        .await
+        .json();
+    assert_eq!(for_ada[0]["state"], "held");
+    assert_eq!(for_ada[0]["note"], "Claude's answer is waiting for Ada");
+    assert_eq!(for_ada[0]["held"][1]["text"], secret);
+    assert_eq!(for_ada[0]["held"][1]["secret"], "a Stemma token");
+    let for_bob = hub
+        .get(&bob, "/groups/geometry/threads/1/jobs")
+        .await
+        .json();
+    assert_eq!(for_bob[0]["state"], "held");
+    assert!(for_bob[0]["held"].is_null(), "{for_bob}");
+    assert!(!for_bob.to_string().contains(secret));
+
+    // Only Ada decides.
+    let path = format!("/groups/geometry/jobs/{}/publish", job.id);
+    let reply = hub.post(&bob, &path, json!({"hidden": true})).await;
+    assert_eq!(reply.status, StatusCode::NOT_FOUND);
+    let reply = hub.post(&ada, &path, json!({"hidden": true})).await;
+    assert_eq!(reply.status, StatusCode::NO_CONTENT);
+    let thread = hub.get(&ada, "/groups/geometry/threads/1").await.json();
+    let answer = &thread["messages"][1];
+    assert_eq!(answer["body"], "It is [hidden], in your credentials.");
+    assert_eq!(answer["agent"], "Claude");
+    let reply = hub.post(&ada, &path, json!({"hidden": false})).await;
+    assert_eq!(reply.status, StatusCode::CONFLICT);
+
+    // A discarded one is gone, for good.
+    hub.post(
+        &ada,
+        "/groups/geometry/threads/1/messages",
+        json!({"body": "@claude again"}),
+    )
+    .await;
+    let job = dispatched(&mut jobs).expect("Ada's computer takes it");
+    stemma_hub::jobs::finished(
+        &hub.state,
+        computer_id,
+        1,
+        job.id,
+        stemma_core::protocol::Outcome::Answer {
+            body: format!("Again: {secret}"),
+        },
+        Default::default(),
+    )
+    .await
+    .unwrap();
+    let path = format!("/groups/geometry/jobs/{}/discard", job.id);
+    assert_eq!(
+        hub.post(&ada, &path, json!({})).await.status,
+        StatusCode::NO_CONTENT
+    );
+    let kept: Option<String> = sqlx::query_scalar("SELECT held_answer FROM jobs WHERE id = ?")
+        .bind(job.id)
+        .fetch_one(&hub.state.db)
+        .await
+        .unwrap();
+    assert!(kept.is_none());
+
+    // A failure's error has its secrets hidden, without asking.
+    hub.post(
+        &ada,
+        "/groups/geometry/threads/1/messages",
+        json!({"body": "@claude once more"}),
+    )
+    .await;
+    let job = dispatched(&mut jobs).expect("Ada's computer takes it");
+    stemma_hub::jobs::finished(
+        &hub.state,
+        computer_id,
+        1,
+        job.id,
+        stemma_core::protocol::Outcome::Failed {
+            error: format!("claude exited: token {secret} refused"),
+        },
+        Default::default(),
+    )
+    .await
+    .unwrap();
+    let failed = hub
+        .get(&bob, "/groups/geometry/threads/1/jobs")
+        .await
+        .json();
+    let failed = failed
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|j| j["state"] == "failed")
+        .unwrap();
+    assert_eq!(failed["error"], "claude exited: token [hidden] refused");
+}
