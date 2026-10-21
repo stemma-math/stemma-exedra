@@ -45,9 +45,13 @@
 </script>
 
 <p>
-  Your computers and scripts: a token lets the command line and agents act as you, with everything
-  you can do. Keep it like a password, and revoke it when you no longer use it. <code>stemma login {hub}</code>
-  makes one for the machine it runs on.
+  Your computers and scripts. A computer's or a script's token can do everything you can: keep it
+  like a password, and revoke it when you no longer use it. <code>stemma login {hub}</code> makes
+  one for the computer it runs on.
+</p>
+<p class="quiet">
+  Your agents never get these. A session with one, or an answer it gives, has a token of its own,
+  for one group and for what agents do there, which ends with it.
 </p>
 
 {#if created}

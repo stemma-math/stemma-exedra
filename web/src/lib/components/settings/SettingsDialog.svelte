@@ -51,7 +51,12 @@
             {#each PAGES as name (name)}{@render item(name)}{/each}
           </ul>
           {#if machine}
-            <p class="label settings__group">This machine</p>
+            <!-- A heading only when it heads more than one page. -->
+            {#if MACHINE_PAGES.length > 1}
+              <p class="label settings__group">This machine</p>
+            {:else}
+              <hr class="settings__separator" />
+            {/if}
             <ul class="nav-list">
               {#each MACHINE_PAGES as name (name)}{@render item(name)}{/each}
             </ul>

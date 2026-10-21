@@ -67,6 +67,23 @@
   function save(setting: Explained, value: string) {
     return controls.save({ kind: "set", key: setting.key, value, group: controls.scope || null });
   }
+  const PRIORITIES = ["high", "normal", "low"];
+  /** The priority's choice: one of its names, or "custom" for a number. */
+  function priorityChoice(setting: Explained): string {
+    return PRIORITIES.includes(String(setting.value)) ? String(setting.value) : "custom";
+  }
+  let customPriority = $state(false);
+  /** One state, as the hub sees this computer: connected or not. */
+  const enabled = $derived(data.settings.find((s) => s.key === "agents.enabled")?.value !== false);
+  const status = $derived(
+    data.service.connected && enabled
+      ? "On: this computer answers for you."
+      : data.service.connected
+        ? "Off: your agents are turned off here."
+        : data.service.running
+          ? "Starting: not connected to the hub yet."
+          : "Off: this computer does not answer for you.",
+  );
 </script>
 
 <label class="field">
@@ -85,7 +102,7 @@
 </label>
 <section class="setting stack">
   <div class="row">
-    <span class="grow">Service: {data.service.running ? "Running" : "Stopped"}</span>
+    <span class="grow">{status}</span>
     <button
       type="button"
       class="button button--small"
@@ -115,41 +132,75 @@
       {@const key = setting.key.slice(section.length + 1)}
       {@const locked = setting.source.kind === "environment"}
       <div class="stack stack--tight">
-        <label class="field" for={setting.key}
-          >{labels[key] ?? key}
-          {#if typeof setting.value === "boolean"}
+        {#if typeof setting.value === "boolean"}
+          <label class="row" for={setting.key}>
+            <span class="grow">{labels[key] ?? key}</span>
             <input
               id={setting.key}
               type="checkbox"
-              class="checkbox"
+              role="switch"
+              aria-checked={setting.value}
               checked={setting.value}
               disabled={locked || controls.busy}
               onchange={(event) => save(setting, String(event.currentTarget.checked))}
             />
-          {:else if key === "isolation"}
-            <select
-              id={setting.key}
-              class="input"
-              value={valueText(setting)}
-              disabled={locked || controls.busy}
-              onchange={(event) => save(setting, event.currentTarget.value)}
-            >
-              <option value="none">None</option>
-              <option value="docker">Docker</option>
-              <option value="podman">Podman</option>
-            </select>
-          {:else}
-            <input
-              id={setting.key}
-              class="input"
-              type={typeof setting.value === "number" && key !== "priority" ? "number" : "text"}
-              value={valueText(setting)}
-              readonly={locked}
-              disabled={controls.busy}
-              onchange={(event) => save(setting, event.currentTarget.value)}
-            />
-          {/if}
-        </label>
+          </label>
+        {:else}
+          <label class="field" for={setting.key}
+            >{labels[key] ?? key}
+            {#if key === "priority"}
+              <select
+                id={setting.key}
+                class="input"
+                value={customPriority ? "custom" : priorityChoice(setting)}
+                disabled={locked || controls.busy}
+                onchange={(event) => {
+                  const choice = event.currentTarget.value;
+                  customPriority = choice === "custom";
+                  if (!customPriority) save(setting, choice);
+                }}
+              >
+                <option value="high">High</option>
+                <option value="normal">Normal</option>
+                <option value="low">Low</option>
+                <option value="custom">Custom</option>
+              </select>
+              {#if customPriority || priorityChoice(setting) === "custom"}
+                <input
+                  class="input"
+                  type="number"
+                  aria-label="Custom priority"
+                  value={priorityChoice(setting) === "custom" ? valueText(setting) : "0"}
+                  readonly={locked}
+                  disabled={controls.busy}
+                  onchange={(event) => save(setting, event.currentTarget.value)}
+                />
+              {/if}
+            {:else if key === "isolation"}
+              <select
+                id={setting.key}
+                class="input"
+                value={valueText(setting)}
+                disabled={locked || controls.busy}
+                onchange={(event) => save(setting, event.currentTarget.value)}
+              >
+                <option value="none">None</option>
+                <option value="docker">Docker</option>
+                <option value="podman">Podman</option>
+              </select>
+            {:else}
+              <input
+                id={setting.key}
+                class="input"
+                type={typeof setting.value === "number" && key !== "priority" ? "number" : "text"}
+                value={valueText(setting)}
+                readonly={locked}
+                disabled={controls.busy}
+                onchange={(event) => save(setting, event.currentTarget.value)}
+              />
+            {/if}
+          </label>
+        {/if}
         {#if locked}
           <span class="quiet">Set by <code>{setting.source.name}</code></span>
         {:else if setting.source.kind === "group"}
