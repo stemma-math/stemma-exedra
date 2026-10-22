@@ -1,5 +1,7 @@
 <script lang="ts">
   import type { Snippet } from "svelte";
+  import AccountMenu from "./AccountMenu.svelte";
+  import { session } from "#lib/session.svelte.ts";
   import { page } from "$app/state";
   let { children }: { children: Snippet } = $props();
 </script>
@@ -9,20 +11,24 @@
     <a class="account-frame__brand" href="/" aria-label="Stemma, front page">
       <stemma-mark></stemma-mark><span class="wordmark">Stemma</span>
     </a>
-    <nav class="tabs" aria-label="Account">
-      <a
-        class="tabs__tab"
-        href="/login"
-        aria-current={page.url.pathname === "/login" ? "page" : undefined}
-        >Log in</a
-      >
-      <a
-        class="tabs__tab"
-        href="/signup"
-        aria-current={page.url.pathname === "/signup" ? "page" : undefined}
-        >Create an account</a
-      >
-    </nav>
+    {#if session.me}
+      <AccountMenu />
+    {:else}
+      <nav class="tabs" aria-label="Account">
+        <a
+          class="tabs__tab"
+          href="/login"
+          aria-current={page.url.pathname === "/login" ? "page" : undefined}
+          >Log in</a
+        >
+        <a
+          class="tabs__tab"
+          href="/signup"
+          aria-current={page.url.pathname === "/signup" ? "page" : undefined}
+          >Create an account</a
+        >
+      </nav>
+    {/if}
   </header>
   <div class="account-frame__body">{@render children()}</div>
   <footer class="account-frame__foot quiet">

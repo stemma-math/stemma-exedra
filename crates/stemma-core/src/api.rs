@@ -144,6 +144,47 @@ pub struct CreatedToken {
 
 // ── Groups ────────────────────────────────────────────────────────────
 
+/// A person's proposal for a new group.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct CreateGroupRequest {
+    pub slug: String,
+    pub name: String,
+    pub purpose: String,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct GroupRequest {
+    pub id: i64,
+    pub slug: String,
+    pub name: String,
+    pub purpose: String,
+    pub requester: User,
+    pub status: String,
+    #[serde(with = "time::serde::rfc3339")]
+    pub created_at: OffsetDateTime,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct HubGroup {
+    pub slug: String,
+    pub name: String,
+    pub members: i64,
+    #[serde(with = "time::serde::rfc3339")]
+    pub created_at: OffsetDateTime,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct HubPerson {
+    #[serde(flatten)]
+    pub user: User,
+    pub hub_admin: bool,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct UpdateHubPerson {
+    pub hub_admin: bool,
+}
+
 /// What someone may do in a group.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]

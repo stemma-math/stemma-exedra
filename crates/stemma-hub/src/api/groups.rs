@@ -67,14 +67,14 @@ pub async fn create(
     viewer: Viewer,
     Json(body): Json<CreateGroup>,
 ) -> ApiResult<(StatusCode, Json<Group>)> {
-    viewer.require_full()?;
-    if !viewer.hub_admin {
-        return Err(ApiError::forbidden(
-            "Only the hub's admins can create groups",
-        ));
-    }
-    let forge = forge::require(&state)?;
-    let slug = body.slug.trim().to_owned();
+    viewer.require_hub_admin()?;
+    let _guard = state.group_changes.lock().await;
+    let group = create_for(&state, &viewer, body, None).await?;
+    Ok((StatusCode::CREATED, Json(group)))
+}
+
+pub(super) async fn available_slug(state: &AppState, value: &str) -> ApiResult<String> {
+    let slug = value.trim().to_owned();
     if !is_slug(&slug) || slug.len() > 40 {
         return Err(ApiError::invalid(
             "A group's short name is up to 40 lowercase letters, digits and inner dashes",
@@ -85,28 +85,33 @@ pub async fn create(
             "{slug} is a name the forge keeps for itself"
         )));
     }
-    let name = required_text(&body.name, "The name", 80)?;
-    let taken: Option<i64> = sqlx::query_scalar("SELECT id FROM groups WHERE slug = ?")
+    let taken: bool = sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM groups WHERE slug = ?)")
         .bind(&slug)
-        .fetch_optional(&state.db)
+        .fetch_one(&state.db)
         .await?;
-    if taken.is_some() {
+    if taken {
         return Err(ApiError::conflict(format!(
             "There is already a group {slug}"
         )));
     }
-    forge::create_group(
-        forge,
-        &state,
-        &slug,
-        &name,
-        &library::template(&slug, &name),
-    )
-    .await?;
-    match insert_group(&state, &viewer, &slug, &name).await {
+    Ok(slug)
+}
+
+/// The caller serializes group changes; approval and membership are kept together.
+pub(super) async fn create_for(
+    state: &AppState,
+    owner: &Viewer,
+    body: CreateGroup,
+    request: Option<i64>,
+) -> ApiResult<Group> {
+    let forge = forge::require(state)?;
+    let slug = available_slug(state, &body.slug).await?;
+    let name = required_text(&body.name, "The name", 80)?;
+    forge::create_group(forge, state, &slug, &name, &library::template(&slug, &name)).await?;
+    match insert_group(state, owner, &slug, &name, request).await {
         Ok(group) => {
-            library::created(&state, group, viewer.id).await?;
-            forge::sync_members_or_log(&state, group).await;
+            library::created(state, group, owner.id).await?;
+            forge::sync_members_or_log(state, group).await;
         }
         Err(error) => {
             // The organization is the group's alone: without the group, it
@@ -116,12 +121,17 @@ pub async fn create(
             return Err(error);
         }
     }
-    let group = Membership::of(&state, &viewer, &slug).await?.group();
-    Ok((StatusCode::CREATED, Json(group)))
+    Ok(Membership::of(state, owner, &slug).await?.group())
 }
 
 /// Keeps a new group, with `viewer` as its admin.
-async fn insert_group(state: &AppState, viewer: &Viewer, slug: &str, name: &str) -> ApiResult<i64> {
+async fn insert_group(
+    state: &AppState,
+    viewer: &Viewer,
+    slug: &str,
+    name: &str,
+    request: Option<i64>,
+) -> ApiResult<i64> {
     let now = db::now();
     let mut tx = state.db.begin().await?;
     let inserted = sqlx::query("INSERT INTO groups (slug, name, created_at) VALUES (?, ?, ?)")
@@ -147,6 +157,12 @@ async fn insert_group(state: &AppState, viewer: &Viewer, slug: &str, name: &str)
     .bind(now)
     .execute(&mut *tx)
     .await?;
+    if let Some(id) = request {
+        sqlx::query("UPDATE group_requests SET status = 'approved' WHERE id = ?")
+            .bind(id)
+            .execute(&mut *tx)
+            .await?;
+    }
     tx.commit().await?;
     Ok(group_id)
 }

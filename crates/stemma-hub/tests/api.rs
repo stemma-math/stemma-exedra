@@ -1210,6 +1210,62 @@ async fn agent_tokens_reach_only_what_their_tools_offer() {
             S::FORBIDDEN,
             S::FORBIDDEN,
         ),
+        (
+            Method::POST,
+            "/group-requests".into(),
+            Some(json!({"slug": "logic", "name": "Logic", "purpose": "Research"})),
+            S::FORBIDDEN,
+            S::FORBIDDEN,
+        ),
+        (
+            Method::GET,
+            "/group-requests".into(),
+            None,
+            S::FORBIDDEN,
+            S::FORBIDDEN,
+        ),
+        (
+            Method::GET,
+            "/me/group-requests".into(),
+            None,
+            S::FORBIDDEN,
+            S::FORBIDDEN,
+        ),
+        (
+            Method::POST,
+            "/group-requests/1/approve".into(),
+            Some(json!({})),
+            S::FORBIDDEN,
+            S::FORBIDDEN,
+        ),
+        (
+            Method::POST,
+            "/group-requests/1/decline".into(),
+            Some(json!({})),
+            S::FORBIDDEN,
+            S::FORBIDDEN,
+        ),
+        (
+            Method::GET,
+            "/hub/groups".into(),
+            None,
+            S::FORBIDDEN,
+            S::FORBIDDEN,
+        ),
+        (
+            Method::GET,
+            "/hub/people".into(),
+            None,
+            S::FORBIDDEN,
+            S::FORBIDDEN,
+        ),
+        (
+            Method::PATCH,
+            "/hub/people/1".into(),
+            Some(json!({"hub_admin": true})),
+            S::FORBIDDEN,
+            S::FORBIDDEN,
+        ),
     ];
     for (method, path, body, for_job, for_session) in table {
         for (who, client, expected) in [("job", &job, for_job), ("session", &session, for_session)]
@@ -1735,6 +1791,28 @@ async fn without_a_forge_no_group_is_made() {
             .unwrap()
             .is_empty()
     );
+    // A failed approval leaves the proposal open and creates no membership.
+    let reply = hub
+        .post(
+            &ada,
+            "/group-requests",
+            json!({"slug": "algebra", "name": "Algebra", "purpose": "Research"}),
+        )
+        .await;
+    assert_eq!(reply.status, StatusCode::CREATED);
+    let id = reply.json()["id"].as_i64().unwrap();
+    let reply = hub
+        .post(&ada, &format!("/group-requests/{id}/approve"), json!({}))
+        .await;
+    assert_eq!(reply.status, StatusCode::SERVICE_UNAVAILABLE);
+    assert_eq!(
+        hub.get(&ada, "/me/group-requests").await.json()[0]["status"],
+        "open"
+    );
+    assert_eq!(
+        hub.get(&ada, "/groups/algebra").await.status,
+        StatusCode::NOT_FOUND
+    );
     // Nor does it speak OpenID Connect.
     let reply = hub
         .fetch(&Client::default(), "/.well-known/openid-configuration")
@@ -2249,4 +2327,191 @@ async fn an_answer_with_a_secret_waits_for_its_requester() {
         .find(|j| j["state"] == "failed")
         .unwrap();
     assert_eq!(failed["error"], "claude exited: token [hidden] refused");
+}
+
+#[tokio::test]
+async fn group_requests_are_private_and_decided_by_hub_admins() {
+    let hub = TestHub::new().await;
+    let ada = hub.admin_with_group().await;
+    let bob = hub.member(&ada, "bob").await;
+    let eve = hub.member(&ada, "eve").await;
+    let body = json!({"slug": "algebra", "name": "Algebra", "purpose": "Work on groups and rings"});
+    assert_eq!(
+        hub.post(&Client::default(), "/group-requests", body.clone())
+            .await
+            .status,
+        StatusCode::UNAUTHORIZED
+    );
+    assert_eq!(
+        hub.post(&bob, "/group-requests", body.clone()).await.status,
+        StatusCode::CREATED
+    );
+    assert_eq!(
+        hub.post(&bob, "/group-requests", body.clone()).await.status,
+        StatusCode::CONFLICT
+    );
+    assert_eq!(
+        hub.post(&eve, "/group-requests", body).await.status,
+        StatusCode::CREATED
+    );
+    for body in [
+        json!({"slug": "geometry", "name": "Taken", "purpose": "A purpose"}),
+        json!({"slug": "Bad name", "name": "Bad", "purpose": "A purpose"}),
+        json!({"slug": "valid", "name": " ", "purpose": "A purpose"}),
+        json!({"slug": "valid", "name": "Valid", "purpose": " "}),
+        json!({"slug": "valid", "name": "Valid", "purpose": "a".repeat(2001)}),
+    ] {
+        assert!(
+            hub.post(&bob, "/group-requests", body)
+                .await
+                .status
+                .is_client_error()
+        );
+    }
+    let own = hub.get(&bob, "/me/group-requests").await.json();
+    assert_eq!(own.as_array().unwrap().len(), 1);
+    assert_eq!(own[0]["requester"]["username"], "bob");
+    let id = own[0]["id"].as_i64().unwrap();
+    for path in [
+        "/group-requests".to_owned(),
+        "/hub/groups".into(),
+        "/hub/people".into(),
+    ] {
+        assert_eq!(hub.get(&bob, &path).await.status, StatusCode::FORBIDDEN);
+        assert_eq!(
+            hub.get(&Client::default(), &path).await.status,
+            StatusCode::UNAUTHORIZED
+        );
+    }
+    for decision in ["approve", "decline"] {
+        assert_eq!(
+            hub.post(&bob, &format!("/group-requests/{id}/{decision}"), json!({}))
+                .await
+                .status,
+            StatusCode::FORBIDDEN
+        );
+    }
+    assert_eq!(
+        hub.get(&ada, "/group-requests")
+            .await
+            .json()
+            .as_array()
+            .unwrap()
+            .len(),
+        2
+    );
+    let path = format!("/group-requests/{id}/approve");
+    let (first, second) = tokio::join!(
+        hub.post(&ada, &path, json!({})),
+        hub.post(&ada, &path, json!({}))
+    );
+    assert!(matches!(
+        (first.status, second.status),
+        (StatusCode::OK, StatusCode::NOT_FOUND) | (StatusCode::NOT_FOUND, StatusCode::OK)
+    ));
+    let group = hub.get(&bob, "/groups/algebra").await.json();
+    assert_eq!(group["role"], "admin");
+    assert_eq!(
+        hub.get(&ada, "/groups/algebra").await.status,
+        StatusCode::NOT_FOUND
+    );
+    assert_eq!(
+        hub.get(&bob, "/me/group-requests").await.json()[0]["status"],
+        "approved"
+    );
+    let other = hub.get(&eve, "/me/group-requests").await.json()[0]["id"]
+        .as_i64()
+        .unwrap();
+    assert_eq!(
+        hub.post(&ada, &format!("/group-requests/{other}/approve"), json!({}))
+            .await
+            .status,
+        StatusCode::CONFLICT
+    );
+    let decline = format!("/group-requests/{other}/decline");
+    assert_eq!(
+        hub.post(&ada, &decline, json!({})).await.status,
+        StatusCode::NO_CONTENT
+    );
+    assert_eq!(
+        hub.post(&ada, &decline, json!({})).await.status,
+        StatusCode::NOT_FOUND
+    );
+    assert_eq!(
+        hub.get(&eve, "/me/group-requests").await.json()[0]["status"],
+        "declined"
+    );
+    assert!(
+        hub.get(&ada, "/group-requests")
+            .await
+            .json()
+            .as_array()
+            .unwrap()
+            .is_empty()
+    );
+    assert_eq!(
+        hub.post(&ada, "/group-requests/999/approve", json!({}))
+            .await
+            .status,
+        StatusCode::NOT_FOUND
+    );
+    let all = hub.get(&ada, "/hub/groups").await.json();
+    assert_eq!(all.as_array().unwrap().len(), 2);
+    assert_eq!(all[0]["slug"], "algebra");
+    assert_eq!(all[0]["members"], 1);
+    assert!(all[0]["created_at"].is_string());
+}
+
+#[tokio::test]
+async fn hub_admins_manage_people_and_always_keep_one_admin() {
+    let hub = TestHub::new().await;
+    let ada = hub.admin_with_group().await;
+    let bob = hub.member(&ada, "bob").await;
+    let ada_id = hub.get(&ada, "/me").await.json()["id"].as_i64().unwrap();
+    let bob_id = hub.get(&bob, "/me").await.json()["id"].as_i64().unwrap();
+    let update = async |who: &Client, id: i64, admin: bool| {
+        hub.call(
+            who,
+            Method::PATCH,
+            &format!("/hub/people/{id}"),
+            Some(json!({"hub_admin": admin})),
+        )
+        .await
+        .status
+    };
+    assert_eq!(
+        hub.get(&ada, "/hub/people")
+            .await
+            .json()
+            .as_array()
+            .unwrap()
+            .len(),
+        2
+    );
+    assert_eq!(update(&bob, bob_id, true).await, StatusCode::FORBIDDEN);
+    assert_eq!(
+        update(&Client::default(), bob_id, true).await,
+        StatusCode::UNAUTHORIZED
+    );
+    assert_eq!(update(&ada, ada_id, false).await, StatusCode::CONFLICT);
+    assert_eq!(update(&ada, 999, true).await, StatusCode::NOT_FOUND);
+    assert_eq!(update(&ada, bob_id, true).await, StatusCode::NO_CONTENT);
+    assert_eq!(hub.get(&bob, "/me").await.json()["hub_admin"], true);
+    assert_eq!(hub.get(&bob, "/hub/people").await.status, StatusCode::OK);
+    let (a, b) = tokio::join!(update(&ada, ada_id, false), update(&bob, bob_id, false));
+    assert!(a == StatusCode::NO_CONTENT || b == StatusCode::NO_CONTENT);
+    let count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM users WHERE hub_admin = 1")
+        .fetch_one(&hub.state.db)
+        .await
+        .unwrap();
+    assert_eq!(count, 1);
+    let demoted = if a == StatusCode::NO_CONTENT {
+        &ada
+    } else {
+        &bob
+    };
+    assert_eq!(
+        hub.get(demoted, "/hub/people").await.status,
+        StatusCode::FORBIDDEN
+    );
 }

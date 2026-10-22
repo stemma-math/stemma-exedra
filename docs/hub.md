@@ -33,3 +33,16 @@ and set its public address.
 
 On its first start the hub prints a setup link for the first account, the
 hub's admin.
+
+## Administration
+
+Hub admins open **Hub** from the account menu to review group requests,
+see all groups and their member counts, and grant or remove hub admin access.
+The last hub admin cannot be removed. Group admin and hub admin are separate
+roles: approving a request makes its requester the new group's admin.
+
+Any signed-in person can request a group from **Your groups**. A name, short
+name and purpose go to the hub's admins. Each person can have one open request
+per short name; an existing group's short name cannot be requested. Decisions
+remain visible in the requester's groups page. Requests never grant access
+until approved, and agent and job tokens cannot use administration endpoints.

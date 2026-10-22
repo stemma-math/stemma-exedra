@@ -1,121 +1,36 @@
 <script lang="ts">
-  import { openSettings } from "#lib/settings.svelte.ts";
-  import { goto } from "$app/navigation";
-  import { api } from "#lib/api.ts";
-  import { isSlug } from "#lib/address.ts";
+  import { onMount } from "svelte";
+  import { page } from "$app/state";
+  import { api, type GroupRequest } from "#lib/api.ts";
+  import AccountFrame from "#lib/components/AccountFrame.svelte";
+  import GroupDialog from "#lib/components/GroupDialog.svelte";
   import Glyph from "#lib/components/Glyph.svelte";
   import { ROLE_NAMES } from "#lib/roles.ts";
-  import { loadSession, session, signOut } from "#lib/session.svelte.ts";
+  import { session } from "#lib/session.svelte.ts";
   import { toastError } from "#lib/toast.ts";
-
-  let name = $state("");
-  let slug = $state("");
-  let slugEdited = $state(false);
-  let creating = $state(false);
-
-  const groups = $derived(session.me?.groups ?? []);
-
-  $effect(() => {
-    if (!slugEdited) {
-      slug = name
-        .toLowerCase()
-        .normalize("NFD")
-        .replace(/[̀-ͯ]/g, "")
-        .replace(/[^a-z0-9]+/g, "-")
-        .replace(/^-+|-+$/g, "")
-        .slice(0, 40);
-    }
-  });
-
-  async function create(event: Event) {
-    event.preventDefault();
-    creating = true;
-    try {
-      const group = await api.createGroup(slug, name);
-      await loadSession();
-      goto(`/g/${group.slug}`);
-    } catch (error) {
-      toastError(error);
-    } finally {
-      creating = false;
-    }
-  }
-
-  async function leave() {
-    await signOut();
-    goto("/");
-  }
+  let search = $state("");
+  let open = $state(false);
+  let requests = $state<GroupRequest[]>([]);
+  const groups = $derived((session.me?.groups ?? []).filter((g) => `${g.name} ${g.slug}`.toLocaleLowerCase().includes(search.toLocaleLowerCase().trim())));
+  async function refresh() { try { requests = await api.myGroupRequests(); } catch (error) { toastError(error); } }
+  onMount(() => { open = page.url.searchParams.has("new"); void refresh(); });
 </script>
 
-<svelte:head><title>Your groups</title></svelte:head>
-
-<main class="page page--narrow stack stack--loose">
-  <header class="row">
-    <a class="sign-in__brand sign-in__brand--inline" href="/" aria-label="Stemma">
-      <stemma-mark></stemma-mark>
-      <span class="wordmark">Stemma</span>
-    </a>
-    <span class="row push">
-      <button type="button" class="button button--quiet" onclick={() => openSettings()}><Glyph name="settings" /> Settings</button>
-      <button type="button" class="button button--quiet" onclick={leave}><Glyph name="log-out" /> Log out</button>
-    </span>
-  </header>
-
-  <section class="stack">
-    <h1>Your groups</h1>
-    {#if groups.length}
-      <div class="card">
-        <div class="table" style="--columns: minmax(0, 1fr) auto auto">
-          {#each groups as group (group.slug)}
-            <a class="table__row" href="/g/{group.slug}">
-              <span>{group.name} <span class="quiet identifier">{group.slug}</span></span>
-              <span class="chip">{ROLE_NAMES[group.role]}</span>
-              <Glyph name="chevron-right" small />
-            </a>
-          {/each}
-        </div>
-      </div>
-    {:else if session.me?.hub_admin}
-      <p>There are no groups yet. Create the first, then invite people to it.</p>
-    {:else}
-      <p>
-        You are not in any group yet. Ask one of a group's admins for an invitation link, and open it while
-        logged in.
-      </p>
+<svelte:head><title>Your groups – Stemma</title></svelte:head>
+<AccountFrame>
+  <main class="page page--narrow stack stack--loose">
+    <header class="row"><h1 class="grow">Your groups</h1><button type="button" class="button button--primary" onclick={() => {open = true;}}>{session.me?.hub_admin ? "Create group" : "Request a group"}</button></header>
+    <label class="field"><span class="field__label">Search groups</span><input class="input" type="search" bind:value={search} placeholder="Name or short name" /></label>
+    <ul class="card row-list">
+      {#each groups as group (group.slug)}
+        <li><a class="row-list__item" href="/g/{group.slug}"><span class="row-list__text"><span class="row-list__name">{group.name}</span><span class="row-list__description identifier">{group.slug}</span></span><span class="row-list__control"><span class="chip">{ROLE_NAMES[group.role]}</span><Glyph name="chevron-right" small /></span></a></li>
+      {:else}<li class="row-list__item"><span class="quiet">{search ? "No groups match your search." : "You are not in any group yet. Request one, or ask a group's admin for an invitation."}</span></li>{/each}
+    </ul>
+    {#if requests.length}
+      <section class="stack"><h2 class="label">Your requests</h2><ul class="card row-list">
+        {#each requests as request (request.id)}<li class="row-list__item"><span class="row-list__text"><span class="row-list__name">{request.name}</span><span class="row-list__description">{request.slug} – {request.status === "open" ? "Waiting for the hub's admins" : request.status === "approved" ? "Approved. Your group is ready." : "Declined by the hub's admins."}</span></span></li>{/each}
+      </ul></section>
     {/if}
-  </section>
-
-  {#if session.me?.hub_admin}
-    <section class="card">
-      <form class="card__body form" onsubmit={create}>
-        <h2 id="new-group">New group</h2>
-        <div class="field">
-          <label class="field__label" for="group-name">Name</label>
-          <input id="group-name" class="input" bind:value={name} required maxlength="80" />
-        </div>
-        <div class="field">
-          <label class="field__label" for="group-slug">Short name</label>
-          <input
-            id="group-slug"
-            class="input input--mono"
-            bind:value={slug}
-            oninput={() => (slugEdited = true)}
-            required
-            maxlength="40"
-            aria-invalid={slug !== "" && !isSlug(slug)}
-            aria-describedby="group-slug-hint"
-          />
-          <span class="field__hint" id="group-slug-hint">
-            In the group's addresses: <span class="identifier">/g/{slug || "…"}</span>. Lowercase
-            letters, digits and dashes.
-          </span>
-        </div>
-        <div class="row row--end">
-          <button type="submit" class="button button--primary" disabled={creating || !isSlug(slug) || !name.trim()}>
-            Create the group
-          </button>
-        </div>
-      </form>
-    </section>
-  {/if}
-</main>
+  </main>
+</AccountFrame>
+<GroupDialog bind:open saved={refresh} />

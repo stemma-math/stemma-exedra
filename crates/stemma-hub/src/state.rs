@@ -32,6 +32,8 @@ pub struct Hub {
     pub connections: AtomicU64,
     /// The forge that keeps the groups' repositories, if there is one.
     pub forge: Option<Arc<Forge>>,
+    /// Serializes requests and group creation, including their work in the forge.
+    pub group_changes: tokio::sync::Mutex<()>,
     /// Taken while the hub changes the forge's teams.
     pub forge_sync: tokio::sync::Mutex<()>,
     /// The key the hub signs its OpenID Connect tokens with, when it has a
@@ -67,6 +69,7 @@ impl Hub {
             workers: tokio::sync::Mutex::new(Workers::default()),
             connections: AtomicU64::new(0),
             forge,
+            group_changes: tokio::sync::Mutex::new(()),
             forge_sync: tokio::sync::Mutex::new(()),
             signing_key,
         })

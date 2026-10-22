@@ -61,6 +61,15 @@ pub struct AgentScope {
 }
 
 impl Viewer {
+    pub fn require_hub_admin(&self) -> Result<(), ApiError> {
+        self.require_full()?;
+        if self.hub_admin {
+            Ok(())
+        } else {
+            Err(ApiError::forbidden("Only the hub's admins can do this"))
+        }
+    }
+
     pub fn user(&self) -> User {
         User {
             id: self.id,

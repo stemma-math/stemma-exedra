@@ -1,12 +1,10 @@
 <script lang="ts">
-  import { goto } from "$app/navigation";
   import { page } from "$app/state";
   import { api, type Group, type Paper, type Thread } from "#lib/api.ts";
   import { listen } from "#lib/events.ts";
   import { asksForWork } from "#lib/roles.ts";
-  import { ask } from "#lib/ask.svelte.ts";
-  import { session, signOut } from "#lib/session.svelte.ts";
-  import { openSettings } from "#lib/settings.svelte.ts";
+  import AccountMenu from "./AccountMenu.svelte";
+  import { session } from "#lib/session.svelte.ts";
   import { folded, setFolded } from "#lib/sidebar.svelte.ts";
   import { applyThreadEvent } from "#lib/threads.ts";
   import { initials } from "#lib/format.ts";
@@ -14,7 +12,6 @@
   import { desktopUI } from "#lib/desktop-ui.svelte.ts";
   import { ROLE_NAMES } from "#lib/roles.ts";
   import AgentAvatar from "./AgentAvatar.svelte";
-  import Avatar from "./Avatar.svelte";
   import Glyph from "./Glyph.svelte";
 
   let { group }: { group: Group } = $props();
@@ -67,18 +64,7 @@
     });
   });
 
-  async function logOut() {
-    if (__STEMMA_DESKTOP__) {
-      const yes = await ask({
-        title: "Log out?",
-        text: "This app and the command line on this machine are both signed out of the hub.",
-        action: "Log out",
-      });
-      if (!yes) return;
-    }
-    await signOut();
-    goto("/");
-  }
+
 </script>
 
 <div class="sidebar__inner">
@@ -103,9 +89,7 @@
         <hr class="menu__separator" />
         <div class="menu__row">
           <a class="menu__item" href="/groups">All groups</a>
-          {#if session.me?.hub_admin}
-            <a class="menu__action" href="/groups#new-group" aria-label="New group"><Glyph name="add" small /></a>
-          {/if}
+          <a class="menu__action" href="/groups?new" aria-label="New group"><Glyph name="add" small /></a>
         </div>
       </div>
     </stemma-menu>
@@ -223,29 +207,6 @@
         {/if}
       </div>
     {/if}
-    {#if session.me}
-      <stemma-menu match-width>
-        <button type="button" class="account account--menu" aria-label="Your account, {session.me.display_name}">
-          <Avatar user={session.me} />
-          <span class="account__details"><span class="account__name" title={session.me.display_name}>{session.me.display_name}</span></span>
-          <Glyph name="chevron-down" class="account__chevron" small />
-        </button>
-        <div class="menu">
-          <div class="menu__header">
-            <Avatar user={session.me} />
-            <div class="menu__identity">
-              <span class="menu__name">{session.me.display_name}</span>
-              <span class="menu__meta">@{session.me.username}, {ROLE_NAMES[group.role]}</span>
-            </div>
-          </div>
-          <hr class="menu__separator" />
-          <button type="button" class="menu__item" onclick={() => openSettings("Profile")}><Glyph name="person" small /> Profile</button>
-          <button type="button" class="menu__item" onclick={() => openSettings("Appearance")}><Glyph name="appearance" small /> Appearance</button>
-          <button type="button" class="menu__item" onclick={() => openSettings()}><Glyph name="settings" small /> Settings</button>
-          <hr class="menu__separator" />
-          <button type="button" class="menu__item" onclick={logOut}><Glyph name="log-out" small /> Log out</button>
-        </div>
-      </stemma-menu>
-    {/if}
+    <AccountMenu role={ROLE_NAMES[group.role]} />
   </div>
 </div>

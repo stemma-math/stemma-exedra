@@ -35,6 +35,19 @@ CREATE TABLE groups (
     created_at INTEGER NOT NULL
 );
 
+-- Requests remain visible to their requester after a decision.
+CREATE TABLE group_requests (
+    id INTEGER PRIMARY KEY,
+    user_id INTEGER NOT NULL REFERENCES users (id),
+    slug TEXT NOT NULL,
+    name TEXT NOT NULL,
+    purpose TEXT NOT NULL,
+    status TEXT NOT NULL DEFAULT 'open' CHECK (status IN ('open', 'approved', 'declined')),
+    created_at INTEGER NOT NULL
+);
+
+CREATE UNIQUE INDEX group_requests_open ON group_requests (user_id, slug) WHERE status = 'open';
+
 CREATE TABLE memberships (
     group_id INTEGER NOT NULL REFERENCES groups (id) ON DELETE CASCADE,
     user_id INTEGER NOT NULL REFERENCES users (id) ON DELETE CASCADE,

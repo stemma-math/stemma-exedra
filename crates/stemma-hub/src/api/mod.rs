@@ -6,6 +6,7 @@ mod attachments;
 mod events;
 pub(crate) mod forum;
 mod groups;
+mod hub;
 mod jobs;
 mod library;
 mod papers;
@@ -47,6 +48,13 @@ pub fn router(state: AppState) -> Router {
             "/invitations/{token}/accept",
             post(groups::accept_invitation),
         )
+        .route("/group-requests", get(hub::list).post(hub::request))
+        .route("/me/group-requests", get(hub::mine))
+        .route("/group-requests/{id}/approve", post(hub::approve))
+        .route("/group-requests/{id}/decline", post(hub::decline))
+        .route("/hub/groups", get(hub::all_groups))
+        .route("/hub/people", get(hub::people))
+        .route("/hub/people/{id}", patch(hub::update_person))
         .route("/groups", get(groups::list).post(groups::create))
         .route("/groups/{group}", get(groups::get))
         .route("/groups/{group}/members", get(groups::members))

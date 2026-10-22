@@ -23,6 +23,25 @@ export interface Me extends User {
   groups: Group[];
 }
 
+export interface GroupRequest {
+  id: number;
+  slug: string;
+  name: string;
+  purpose: string;
+  requester: User;
+  status: "open" | "approved" | "declined";
+  created_at: string;
+}
+export interface HubGroup {
+  slug: string;
+  name: string;
+  members: number;
+  created_at: string;
+}
+export interface HubPerson extends User {
+  hub_admin: boolean;
+}
+
 export interface Member extends User {
   role: Role;
   joined_at: string;
@@ -314,9 +333,11 @@ async function parse<T>(response: Response): Promise<T> {
     throw new ApiError(
       response.status,
       data?.error?.code ?? "unknown",
-      data?.error?.message ?? `The hub answered ${response.status}`,
+      data?.error?.message ?? "This address did not answer as a Stemma hub.",
     );
   }
+  if (data === null)
+    throw new ApiError(response.status, "not_hub", "This address did not answer as a Stemma hub.");
   return data as T;
 }
 
@@ -348,6 +369,16 @@ export const api = {
     account?: { username: string; display_name: string; password: string },
   ) => post<Me>(`/invitations/${encodeURIComponent(token)}/accept`, { account }),
 
+  groupRequests: () => get<GroupRequest[]>("/group-requests"),
+  myGroupRequests: () => get<GroupRequest[]>("/me/group-requests"),
+  requestGroup: (slug: string, name: string, purpose: string) =>
+    post<void>("/group-requests", { slug, name, purpose }),
+  approveGroup: (id: number) => post<Group>(`/group-requests/${id}/approve`, {}),
+  declineGroup: (id: number) => post<void>(`/group-requests/${id}/decline`, {}),
+  hubGroups: () => get<HubGroup[]>("/hub/groups"),
+  hubPeople: () => get<HubPerson[]>("/hub/people"),
+  updateHubPerson: (id: number, hub_admin: boolean) =>
+    patch<void>(`/hub/people/${id}`, { hub_admin }),
   createGroup: (slug: string, name: string) => post<Group>("/groups", { slug, name }),
   group: (group: string) => get<Group>(g(group)),
   members: (group: string) => get<Member[]>(`${g(group)}/members`),
