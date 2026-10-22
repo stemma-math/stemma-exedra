@@ -288,7 +288,9 @@ capabilities and limits on memory, CPUs and processes, and is removed when
 the answer ends.
 
 Stemma's image is `stemma-agents:<version>`, so that updating Stemma asks
-for it to be built again. `agents.image` can name an image of your own
+for it to be built again. Its `stemma` is the release's; a `stemma` built
+from source that is still on the computer builds the image from that same
+source instead, so that its containers run the same code. `agents.image` can name an image of your own
 instead, built from Stemma's (`FROM stemma-agents:<version>`) with what you
 add: Stemma does not build it, and `stemma machine image` refuses to build
 its own under that name. `stemma doctor` starts it once to check that it

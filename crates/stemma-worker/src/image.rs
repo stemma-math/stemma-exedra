@@ -27,6 +27,9 @@ pub enum Source {
     Release,
     /// Built from the release's tag, for any architecture.
     Git,
+    /// Built from the source this `stemma` was built from, still on this
+    /// computer: a development build, whose code no release has.
+    Local,
 }
 
 impl Source {
@@ -34,6 +37,7 @@ impl Source {
         match text {
             "release" => Some(Source::Release),
             "git" => Some(Source::Git),
+            "local" => Some(Source::Local),
             _ => None,
         }
     }
@@ -42,7 +46,17 @@ impl Source {
         match self {
             Source::Release => "release",
             Source::Git => "git",
+            Source::Local => "local",
         }
+    }
+
+    /// The folder of the source this binary was built from, if it is still
+    /// there: then its containers run the same `stemma`, not a release's.
+    pub fn checkout() -> Option<PathBuf> {
+        let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+        (root.join("Cargo.toml").is_file() && root.join("docker/agents/Dockerfile").is_file())
+            .then(|| root.canonicalize().ok())
+            .flatten()
     }
 
     /// The release's binary where there is one for this machine's
@@ -126,11 +140,16 @@ pub async fn build_for(group: Option<&str>) -> anyhow::Result<()> {
     let engine = isolation::find_engine(&isolation, std::env::var_os("PATH").as_deref())
         .await
         .ok_or_else(|| anyhow::anyhow!("Install and start Docker or Podman."))?;
+    let checkout = Source::checkout();
     build(
         engine.as_ref(),
         &Build {
             tag,
-            source: Source::for_this_machine(),
+            source: if checkout.is_some() {
+                Source::Local
+            } else {
+                Source::for_this_machine()
+            },
             toolchain: TOOLCHAIN.into(),
             version: env!("CARGO_PKG_VERSION").into(),
         },
@@ -140,16 +159,26 @@ pub async fn build_for(group: Option<&str>) -> anyhow::Result<()> {
 
 /// Builds the image with `engine`, showing what it does.
 pub async fn build(engine: &dyn Engine, build: &Build) -> anyhow::Result<()> {
-    let dir: PathBuf =
-        std::env::temp_dir().join(format!("stemma-image-{:08x}", rand::random::<u32>()));
-    write_context(&dir)?;
+    // From the source itself, or from a folder of only the image's files.
+    let (dir, made) = match (build.source, Source::checkout()) {
+        (Source::Local, Some(root)) => (root, false),
+        (Source::Local, None) => anyhow::bail!("the source this stemma was built from is gone"),
+        _ => {
+            let dir =
+                std::env::temp_dir().join(format!("stemma-image-{:08x}", rand::random::<u32>()));
+            write_context(&dir)?;
+            (dir, true)
+        }
+    };
     let status = tokio::process::Command::new(engine.program())
         .args(build_args(build, &dir))
         .stdin(Stdio::null())
         .status()
         .await
         .with_context(|| format!("running {}", engine.program().display()));
-    let _ = std::fs::remove_dir_all(&dir);
+    if made {
+        let _ = std::fs::remove_dir_all(&dir);
+    }
     anyhow::ensure!(status?.success(), "the image could not be built");
     Ok(())
 }
