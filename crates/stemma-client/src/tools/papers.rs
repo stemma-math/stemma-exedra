@@ -106,8 +106,8 @@ pub async fn read(toolbox: &Toolbox, args: Value) -> ToolResult {
         .map(|f| f.trim().trim_start_matches("./"))
         .filter(|f| !f.is_empty())
         .unwrap_or(PAPER_MAIN);
-    let (text, missing) = match hub.paper_file(&group, &slug, file).await {
-        Ok(found) => (found.text, found.missing_references),
+    let text = match hub.paper_file(&group, &slug, file).await {
+        Ok(found) => found.text,
         Err(error) if error.status() == Some(reqwest::StatusCode::NOT_FOUND) => {
             let files: Vec<&str> = source.files.iter().map(|f| f.path.as_str()).collect();
             return Err(ToolError::invalid(format!(
@@ -117,11 +117,14 @@ pub async fn read(toolbox: &Toolbox, args: Value) -> ToolResult {
         }
         Err(error) => return Err(error.into()),
     };
-    let mut output = format::paper(hub.base(), &group, &page, &source, file, &text);
-    if !missing.is_empty() {
-        output.push_str(&format!("\nNot found: {}\n", missing.join(", ")));
-    }
-    Ok(output)
+    Ok(format::paper(
+        hub.base(),
+        &group,
+        &page,
+        &source,
+        file,
+        &text,
+    ))
 }
 
 #[derive(Deserialize)]

@@ -836,7 +836,6 @@ pub struct PaperSource {
 /// One file of a paper's source, as text.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct PaperFileText {
-    pub missing_references: Vec<String>,
     pub path: String,
     pub commit: String,
     pub text: String,

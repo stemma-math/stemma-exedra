@@ -460,7 +460,6 @@ pub async fn refresh(state: &AppState, paper_id: i64, _requester_id: i64) -> Api
     if paper.head.as_deref() == Some(head.as_str()) {
         return Ok(());
     }
-    snapshot_source(state, &paper, &head).await?;
     sqlx::query("UPDATE papers SET head = ? WHERE id = ?")
         .bind(&head)
         .bind(paper_id)
@@ -574,7 +573,7 @@ pub async fn source_file(
     state: &AppState,
     paper: &PaperRow,
     path: &str,
-) -> ApiResult<(String, String, Vec<String>)> {
+) -> ApiResult<(String, String)> {
     let path = path.trim_matches('/');
     if path.is_empty() || path.split('/').any(|part| part.is_empty() || part == "..") {
         return Err(ApiError::invalid(
@@ -585,76 +584,14 @@ pub async fn source_file(
     let commit = main_commit(state, paper)
         .await?
         .ok_or_else(|| ApiError::not_found("Paper's repository"))?;
-    let cached: Option<String> = sqlx::query_scalar(
-        "SELECT text_ids FROM paper_texts WHERE paper_id = ? AND commit_sha = ? AND path = ?",
-    )
-    .bind(paper.id)
-    .bind(&commit)
-    .bind(path)
-    .fetch_optional(&state.db)
-    .await?;
-    let ids = match cached {
-        Some(ids) => ids,
-        None => {
-            let bytes = forge
-                .raw_file(&paper.group_slug, &paper.repository, &commit, path)
-                .await
-                .map_err(forge::api_error)?
-                .ok_or_else(|| ApiError::not_found("File"))?;
-            let text = String::from_utf8(bytes)
-                .map_err(|_| ApiError::invalid(format!("{path} is not text")))?;
-            let ids =
-                crate::text::encode(&mut *state.db.acquire().await?, paper.group_id, &text).await?;
-            sqlx::query("INSERT OR IGNORE INTO paper_texts (paper_id, commit_sha, path, text_ids) VALUES (?, ?, ?, ?)")
-                .bind(paper.id).bind(&commit).bind(path).bind(&ids).execute(&state.db).await?;
-            ids
-        }
-    };
-    let (text, missing) = crate::text::render(state, &ids).await?;
-    Ok((commit, text, missing))
-}
-
-/// Capture identity interpretation when a push is learned, before any rename.
-async fn snapshot_source(state: &AppState, paper: &PaperRow, commit: &str) -> ApiResult<()> {
-    let forge = forge::require(state)?;
-    let files = forge
-        .tree(&paper.group_slug, &paper.repository, commit)
+    let bytes = forge
+        .raw_file(&paper.group_slug, &paper.repository, &commit, path)
         .await
         .map_err(forge::api_error)?
-        .unwrap_or_default();
-    for file in files {
-        let Some(bytes) = forge
-            .raw_file(&paper.group_slug, &paper.repository, commit, &file.path)
-            .await
-            .map_err(forge::api_error)?
-        else {
-            continue;
-        };
-        let Ok(text) = String::from_utf8(bytes) else {
-            continue;
-        };
-        // Preserve identities in unchanged files across commits, including an
-        // account whose old username has since been released after deletion.
-        let previous: Vec<String> =
-            sqlx::query_scalar("SELECT text_ids FROM paper_texts WHERE paper_id = ? AND path = ?")
-                .bind(paper.id)
-                .bind(&file.path)
-                .fetch_all(&state.db)
-                .await?;
-        let same = previous.into_iter().find(|ids| {
-            serde_json::from_str::<stemma_core::text::StoredText>(ids)
-                .is_ok_and(|s| s.typed() == text)
-        });
-        let ids = match same {
-            Some(ids) => ids,
-            None => {
-                crate::text::encode(&mut *state.db.acquire().await?, paper.group_id, &text).await?
-            }
-        };
-        sqlx::query("INSERT OR IGNORE INTO paper_texts (paper_id, commit_sha, path, text_ids) VALUES (?, ?, ?, ?)")
-            .bind(paper.id).bind(commit).bind(&file.path).bind(ids).execute(&state.db).await?;
-    }
-    Ok(())
+        .ok_or_else(|| ApiError::not_found("File"))?;
+    let text =
+        String::from_utf8(bytes).map_err(|_| ApiError::invalid(format!("{path} is not text")))?;
+    Ok((commit, text))
 }
 
 #[cfg(test)]
