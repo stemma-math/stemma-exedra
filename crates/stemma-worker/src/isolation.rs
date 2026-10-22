@@ -746,6 +746,29 @@ async fn has_image(program: &Path, image: &str) -> bool {
         .is_ok_and(|status| status.success())
 }
 
+/// How many CPUs the runtime has: on macOS, its virtual machine's, which may
+/// be fewer than the computer's. Docker and Podman name it differently.
+async fn available_cpus(program: &Path) -> Option<f64> {
+    for format in ["{{.NCPU}}", "{{.Host.CPUs}}"] {
+        let output = Command::new(program)
+            .args(["info", "--format", format])
+            .stdin(Stdio::null())
+            .stderr(Stdio::null())
+            .kill_on_drop(true)
+            .output()
+            .await
+            .ok()?;
+        if let Ok(cpus) = String::from_utf8_lossy(&output.stdout)
+            .trim()
+            .parse::<f64>()
+            && cpus > 0.0
+        {
+            return Some(cpus);
+        }
+    }
+    None
+}
+
 /// The engine of `kind` whose program is found on `search` and works.
 async fn engine(
     kind: Runtime,
@@ -822,10 +845,15 @@ pub async fn resolve(
         Some(url) => (url.trim_end_matches('/').to_owned(), false),
         None => hub_in_container(hub, engine.host_alias()),
     };
+    // A container may not ask for more CPUs than the runtime has.
+    let mut limits = config.limits();
+    if let Some(cpus) = available_cpus(engine.program()).await {
+        limits.cpus = limits.cpus.min(cpus);
+    }
     Ok(Isolator::Containers(Arc::new(Containers {
         engine,
         image,
-        limits: config.limits(),
+        limits,
         network: config.network.clone(),
         hub,
         host_alias,
