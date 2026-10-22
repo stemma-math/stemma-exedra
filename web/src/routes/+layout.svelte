@@ -52,7 +52,7 @@
     {#if !session.me && isPublic}<PublicFrame>{@render children()}</PublicFrame>{:else}{@render children()}{/if}
   {:else}
     <div class="page page--centered" aria-busy="true">
-      <span class="spinner" role="status" aria-label="Loading"></span>
+      <span class="skeleton loading-placeholder" role="status" aria-label="Loading"></span>
     </div>
   {/if}
 

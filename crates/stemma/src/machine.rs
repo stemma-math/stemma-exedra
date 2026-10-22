@@ -1,6 +1,6 @@
 //! This computer's service and agents' image.
 use clap::{Args, Subcommand};
-use stemma_worker::{image, isolation, service};
+use stemma_worker::{image, service};
 
 #[derive(Args)]
 pub struct MachineArgs {
@@ -42,23 +42,7 @@ pub async fn machine(args: MachineArgs) -> anyhow::Result<()> {
         }
         Some(MachineCommand::Run) => stemma_worker::machine::run(std::env::current_exe()?).await?,
         Some(MachineCommand::Image) => {
-            let config = stemma_worker::WorkerConfig::load(None)?;
-            let runtime = match config.isolation.runtime() {
-                isolation::Runtime::Podman => isolation::Runtime::Podman,
-                _ => isolation::Runtime::Docker,
-            };
-            let mut isolation = config.isolation.clone();
-            isolation.runtime = Some(runtime);
-            let engine = isolation::find_engine(&isolation, std::env::var_os("PATH").as_deref())
-                .await
-                .ok_or_else(|| anyhow::anyhow!("Install and start Docker or Podman"))?;
-            let build = image::Build {
-                tag: config.isolation.image(),
-                source: image::Source::for_this_machine(),
-                toolchain: image::TOOLCHAIN.into(),
-                version: env!("CARGO_PKG_VERSION").into(),
-            };
-            image::build(engine.as_ref(), &build).await?;
+            image::build_for(None).await?;
         }
         None => {
             let status = service::status().await?;

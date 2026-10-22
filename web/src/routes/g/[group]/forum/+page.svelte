@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { scriptedSelect } from "#lib/scripted-select.ts";
   import { goto } from "$app/navigation";
   import { page } from "$app/state";
   import { addressPath, parseAddress } from "#lib/address.ts";
@@ -153,7 +154,7 @@
         {/each}
       </div>
       <label class="visually-hidden" for="search-kind">What</label>
-      <select
+      <stemma-select><select use:scriptedSelect={[operators.kind ?? ""]}
         id="search-kind"
         class="input search-filters__select"
         value={operators.kind ?? ""}
@@ -163,9 +164,9 @@
         {#each KINDS as kind (kind.value)}
           <option value={kind.value}>{kind.label}</option>
         {/each}
-      </select>
+      </select></stemma-select>
       <label class="visually-hidden" for="search-author">Author</label>
-      <select
+      <stemma-select><select use:scriptedSelect={[operators.author ?? ""]}
         id="search-author"
         class="input search-filters__select"
         value={operators.author ?? ""}
@@ -178,9 +179,9 @@
         {#if operators.author && !members.some((m) => m.username === operators.author)}
           <option value={operators.author}>{operators.author}</option>
         {/if}
-      </select>
+      </select></stemma-select>
       <label class="visually-hidden" for="search-since">Since</label>
-      <select
+      <stemma-select><select use:scriptedSelect={[operators.since ?? ""]}
         id="search-since"
         class="input search-filters__select"
         value={operators.since ?? ""}
@@ -193,7 +194,7 @@
         {#if operators.since && !PERIODS.some((p) => p.value === operators.since)}
           <option value={operators.since}>Since {operators.since}</option>
         {/if}
-      </select>
+      </select></stemma-select>
     </div>
     <p class="quiet" id="forum-search-hint">
       Every word is searched for, as the start of a word, regardless of case and accents. <code>until:2026-03-01</code>,
@@ -207,7 +208,7 @@
       {#if error}
         <p class="message message--warning"><span class="message__text">{error}</span></p>
       {:else if hits === null}
-        <span class="spinner" role="status" aria-label="Searching"></span>
+        <span class="skeleton loading-placeholder" role="status" aria-label="Searching"></span>
       {:else if hits.length === 0}
         <div class="card card--empty card__body"><p class="empty">Nothing found.</p></div>
       {:else}
@@ -240,7 +241,7 @@
     <section class="stack">
       <h2 class="label">Latest threads</h2>
       {#if threads === null}
-        <span class="spinner" role="status" aria-label="Loading"></span>
+        <span class="skeleton loading-placeholder" role="status" aria-label="Loading"></span>
       {:else if threads.length === 0}
         <div class="card card--empty card__body">
           <p class="empty">

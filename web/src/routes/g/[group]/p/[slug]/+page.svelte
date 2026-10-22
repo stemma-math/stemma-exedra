@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { scriptedSelect } from "#lib/scripted-select.ts";
   import { ask as askFirst } from "#lib/ask.svelte.ts";
   import { hubUrl } from "#lib/transport.svelte.ts";
   import { page } from "$app/state";
@@ -134,7 +135,6 @@
       </p>
     {:else if paper.latest && (paper.latest.state === "running" || paper.latest.state === "queued")}
       <p class="row quiet">
-        {#if paper.latest.state === "running"}<span class="spinner" aria-hidden="true"></span>{/if}
         {paper.latest.progress ?? "No new builds are scheduled"}
       </p>
     {/if}
@@ -224,12 +224,12 @@
           {#if changesAuthors && candidates.length}
             <form class="row" onsubmit={addAuthor}>
               <label class="visually-hidden" for="paper-author">Add an author</label>
-              <select id="paper-author" class="input grow" bind:value={adding}>
+              <stemma-select><select use:scriptedSelect={[adding]} id="paper-author" class="input grow" bind:value={adding}>
                 <option value="">Add an author…</option>
                 {#each candidates as m (m.id)}
                   <option value={m.username}>{m.display_name} (@{m.username})</option>
                 {/each}
-              </select>
+              </select></stemma-select>
               <button type="submit" class="button" disabled={!adding}>Add</button>
             </form>
           {/if}
@@ -261,6 +261,6 @@
     <h1>Paper not found</h1>
     <p>There is no paper <span class="identifier">p/{slug}</span> in the group.</p>
   {:else}
-    <span class="spinner" role="status" aria-label="Loading"></span>
+    <span class="skeleton loading-placeholder" role="status" aria-label="Loading"></span>
   {/if}
 </main>

@@ -106,5 +106,5 @@
     </div>
   </div>
 {:else}
-  <div class="page page--centered"><span class="spinner" role="status" aria-label="Loading"></span></div>
+  <div class="page page--centered"><span class="skeleton loading-placeholder" role="status" aria-label="Loading"></span></div>
 {/if}

@@ -52,7 +52,6 @@
       <div class="message message--danger"><span class="message__text">{build.error}</span></div>
     {:else if build.progress}
       <p class="row quiet">
-        {#if build.state === "running"}<span class="spinner" aria-hidden="true"></span>{/if}
         {build.progress}
       </p>
     {/if}
@@ -62,6 +61,6 @@
       <p class="empty">Nothing written yet.</p>
     {/if}
   {:else}
-    <span class="spinner" role="status" aria-label="Loading"></span>
+    <span class="skeleton loading-placeholder" role="status" aria-label="Loading"></span>
   {/if}
 </main>

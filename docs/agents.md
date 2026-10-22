@@ -122,10 +122,12 @@ With `--group`, writes affect that group's override; `unset` restores the
 next layer. `stemma config path` shows the settings file and `config edit`
 opens it in `$EDITOR`. `--json` provides structured explanations.
 
-In the app's This machine page, All groups edits general settings; each group
+In the app's This machine page, Every group edits general settings; each group
 shows its resolved values. Overrides say “Set for algebra” and can return to
 the general value. Environment-controlled fields say which variable sets
-them and are read-only. This page never changes the command line's active group.
+them and are read-only. Overview, Agents and Isolation show the same controls in either scope. The general
+"Answer for me" switch also starts or stops the service; "Answer in this group"
+only changes that group's setting. This page never changes the command line's active group.
 
 ## Environment and active group
 

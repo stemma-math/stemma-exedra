@@ -18,7 +18,7 @@ type Shared<'a> = State<'a, Mutex<()>>;
 type Result<T> = std::result::Result<T, String>;
 
 fn error(error: impl std::fmt::Display) -> String {
-    error.to_string()
+    format!("{error:#}")
 }
 
 fn local(window: &WebviewWindow) -> Result<()> {
@@ -41,8 +41,6 @@ struct Snapshot {
     hub_error: Option<String>,
     service: service::Status,
     settings: Vec<Explained>,
-    /// What each group changes, by key.
-    overrides: std::collections::BTreeMap<String, Vec<String>>,
     /// The names of the containers' sign-ins kept, never their values.
     secrets: Vec<String>,
     checks: Vec<doctor::Check>,
@@ -71,7 +69,6 @@ async fn snapshot(window: WebviewWindow, group: Option<String>) -> Result<Snapsh
         hub_error,
         service: service::status().await.map_err(error)?,
         settings,
-        overrides: loaded.overrides(),
         secrets,
         checks: doctor::run(group.as_deref()).await,
     })
@@ -114,6 +111,9 @@ enum Action {
     },
     Service {
         enabled: bool,
+    },
+    Image {
+        group: Option<String>,
     },
     ShowWorkspace {
         group: Option<String>,
@@ -160,6 +160,7 @@ async fn perform(action: Action) -> anyhow::Result<()> {
                 service::uninstall()?;
             }
         }
+        Action::Image { group } => stemma_worker::image::build_for(group.as_deref()).await?,
         Action::Secret { name, value } => {
             stemma_client::config::check_secret_name(&name)?;
             let path = stemma_client::config::path()?;
@@ -304,6 +305,15 @@ mod tests {
                 "tauri.conf.json version must match workspace.package.version in the root Cargo.toml"
             );
         }
+    }
+
+    #[test]
+    fn action_errors_keep_the_cause() {
+        let failure = anyhow::anyhow!("permission denied").context("Could not start the service");
+        assert_eq!(
+            super::error(failure),
+            "Could not start the service: permission denied"
+        );
     }
 
     #[test]

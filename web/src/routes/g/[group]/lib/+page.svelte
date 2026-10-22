@@ -77,7 +77,7 @@
   </div>
 
   {#if library === null}
-    <span class="spinner" role="status" aria-label="Loading"></span>
+    <span class="skeleton loading-placeholder" role="status" aria-label="Loading"></span>
   {:else if !library.available}
     <div class="card card--empty card__body">
       <p class="empty">This hub keeps no library for the group: it needs a forge.</p>
@@ -145,7 +145,7 @@
         </search>
         {#if module}<h2 class="identifier">{module}</h2>{/if}
         {#if declarations === null}
-          <span class="spinner" role="status" aria-label="Loading"></span>
+          <span class="skeleton loading-placeholder" role="status" aria-label="Loading"></span>
         {:else if declarations.length === 0}
           <div class="card card--empty card__body">
             <p class="empty">

@@ -60,7 +60,7 @@
       {/if}
     </div>
     {#if papers === null}
-      <span class="spinner" role="status" aria-label="Loading"></span>
+      <span class="skeleton loading-placeholder" role="status" aria-label="Loading"></span>
     {:else if papers.length === 0}
       <div class="card card--empty card__body">
         <p class="empty">
@@ -79,7 +79,7 @@
         <a class="button button--quiet button--small" href="/g/{group.slug}/forum">The forum</a>
       </div>
       {#if threads === null}
-        <span class="spinner" role="status" aria-label="Loading"></span>
+        <span class="skeleton loading-placeholder" role="status" aria-label="Loading"></span>
       {:else if threads.length === 0}
         <div class="card card--empty card__body">
           <p class="empty">
@@ -98,7 +98,7 @@
         <a class="button button--quiet button--small" href="/g/{group.slug}/chats">Every chat</a>
       </div>
       {#if chats === null}
-        <span class="spinner" role="status" aria-label="Loading"></span>
+        <span class="skeleton loading-placeholder" role="status" aria-label="Loading"></span>
       {:else if chats.length === 0}
         <div class="card card--empty card__body">
           <p class="empty">

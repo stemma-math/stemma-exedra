@@ -43,7 +43,7 @@
     state is its last build that passed.
   </p>
   {#if builds === null}
-    <span class="spinner" role="status" aria-label="Loading"></span>
+    <span class="skeleton loading-placeholder" role="status" aria-label="Loading"></span>
   {:else if builds.length === 0}
     <div class="card card--empty card__body"><p class="empty">No builds yet.</p></div>
   {:else}

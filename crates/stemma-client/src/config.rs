@@ -358,14 +358,6 @@ impl Settings {
         self.groups.keys()
     }
 
-    /// What each group changes, by key, as the file says.
-    pub fn overrides(&self) -> BTreeMap<String, Vec<String>> {
-        self.groups
-            .iter()
-            .map(|(group, values)| (group.clone(), values.keys().cloned().collect()))
-            .collect()
-    }
-
     pub fn explain(
         &self,
         group: Option<&str>,

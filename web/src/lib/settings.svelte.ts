@@ -2,7 +2,7 @@
 
 /** The pages every face has; the app adds this machine's after them. */
 export const PAGES = ["Profile", "Appearance", "Devices"] as const;
-export const MACHINE_PAGES = ["Overview", "Agents", "Isolation", "Groups"] as const;
+export const MACHINE_PAGES = ["This machine"] as const;
 export type SettingsPage = (typeof PAGES)[number] | (typeof MACHINE_PAGES)[number];
 
 export const settingsUI = $state<{ open: boolean; page: SettingsPage }>({

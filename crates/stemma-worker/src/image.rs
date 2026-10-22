@@ -105,6 +105,30 @@ pub fn write_context(dir: &Path) -> anyhow::Result<()> {
     Ok(())
 }
 
+/// Builds the image selected by the general or group settings.
+pub async fn build_for(group: Option<&str>) -> anyhow::Result<()> {
+    use crate::isolation;
+    let config = crate::WorkerConfig::load(group)?;
+    let mut isolation = config.isolation.clone();
+    isolation.runtime = Some(match isolation.runtime() {
+        isolation::Runtime::Podman => isolation::Runtime::Podman,
+        _ => isolation::Runtime::Docker,
+    });
+    let engine = isolation::find_engine(&isolation, std::env::var_os("PATH").as_deref())
+        .await
+        .ok_or_else(|| anyhow::anyhow!("Install and start Docker or Podman."))?;
+    build(
+        engine.as_ref(),
+        &Build {
+            tag: isolation.image(),
+            source: Source::for_this_machine(),
+            toolchain: TOOLCHAIN.into(),
+            version: env!("CARGO_PKG_VERSION").into(),
+        },
+    )
+    .await
+}
+
 /// Builds the image with `engine`, showing what it does.
 pub async fn build(engine: &dyn Engine, build: &Build) -> anyhow::Result<()> {
     let dir: PathBuf =

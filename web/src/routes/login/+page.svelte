@@ -24,7 +24,7 @@
 
   onMount(async () => {
     if (session.me) proceed();
-    else if ((await api.setupState()).needed) goto("/setup", { replaceState: true });
+    else try { if ((await api.setupState()).needed) goto("/setup", { replaceState: true }); } catch (e) { error = e instanceof Error ? e.message : String(e); }
   });
 
   async function submit(event: Event) {
@@ -75,7 +75,7 @@
         />
         {#if error}<span class="field__error" id="sign-in-error">{error}</span>{/if}
       </div>
-      <button type="submit" class="button button--primary" disabled={busy}>Log in</button>
+      <button type="submit" class="button button--primary" disabled={busy}>{#if busy}<span class="spinner" aria-hidden="true"></span>{/if}Log in</button>
     </form>
     <p class="quiet sign-in__aside">No account yet? <a href="/signup">Create one</a> with an invitation.</p>
   </div>

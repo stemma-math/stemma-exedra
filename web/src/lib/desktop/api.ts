@@ -24,8 +24,6 @@ export interface Snapshot {
     logs: string;
   };
   settings: Explained[];
-  /** What each group changes, by key. */
-  overrides: Record<string, string[]>;
   /** The names of the containers' sign-ins kept, never their values. */
   secrets: string[];
   checks: Check[];

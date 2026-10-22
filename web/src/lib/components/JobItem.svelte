@@ -34,7 +34,6 @@
   </div>
   {#if job.state === "running"}
     <p class="post__body row quiet">
-      <span class="spinner" aria-hidden="true"></span>
       {job.progress ?? "Starting"}
     </p>
   {:else if job.state === "queued" && job.note}

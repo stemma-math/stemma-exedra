@@ -20,16 +20,17 @@
 
   // This machine's pages read its state afresh each time the settings open.
   $effect(() => {
-    if (settingsUI.open)
+    if (settingsUI.open && settingsUI.page === "This machine")
       untrack(() => {
+        controls.scope = "";
         void controls.load().catch((error) => {
-          controls.error = String(error);
+          controls.error = error instanceof Error ? error.message : String(error);
         });
       });
   });
   // The first-run setup lasts until one leaves its page or closes it.
   $effect(() => {
-    if (!settingsUI.open || settingsUI.page !== "Overview") controls.settingUp = false;
+    if (!settingsUI.open || settingsUI.page !== "This machine") controls.settingUp = false;
   });
 
   $effect(() => {
@@ -39,11 +40,12 @@
       desktopUI.serviceConnected = controls.data.service.connected;
       desktopUI.serviceRunning = controls.data.service.running;
       desktopUI.signedOut = controls.data.service.signed_out;
-      desktopUI.agentsEnabled =
-        controls.data.settings.find((s) => s.key === "agents.enabled")?.value === true;
+      if (!controls.scope)
+        desktopUI.agentsEnabled =
+          controls.data.settings.find((s) => s.key === "agents.enabled")?.value === true;
       if (controls.data.me && controls.settingUp && !setupShown) {
         setupShown = true;
-        openSettings("Overview");
+        openSettings("This machine");
       }
       if (!controls.data.me) {
         settingsUI.open = false;
@@ -104,16 +106,14 @@
       <p class="message message--danger">{controls.error}</p>
       <button type="button" class="button" onclick={() => controls.refresh("")}>Try again</button>
     {:else}
-      <span class="spinner" role="status" aria-label="Loading"></span>
+      <div class="skeleton loading-placeholder" role="status" aria-label="Loading"></div>
     {/if}
   </main>
 {/if}
 {#if controls.data?.me}
   <SettingsDialog setup={controls.settingUp}>
-    {#snippet machine(
-      page,
-    )}
-      <MachinePane {controls} {page} />
+    {#snippet machine()}
+      <MachinePane {controls} />
     {/snippet}
   </SettingsDialog>
 {/if}

@@ -25,32 +25,51 @@
 
   /** Turns the agents, and the service that runs them, on or off. */
   function turn(value: boolean) {
-    return controls.run(async () => {
-      if (value && enabled?.value === false && enabled.source.kind !== "environment")
-        await action({ kind: "set", key: "agents.enabled", value: "true", group: null });
-      await action({ kind: "service", enabled: value });
-    }, "");
+    return controls.run(
+      async () => {
+        if (value && enabled?.value === false && enabled.source.kind !== "environment")
+          await action({ kind: "set", key: "agents.enabled", value: "true", group: null });
+        await action({ kind: "service", enabled: value });
+      },
+      "",
+      true,
+      "service",
+    );
   }
 </script>
 
 <ul class="card row-list">
-  <li class="row-list__item">
-    <span class="row-list__text">
-      <label class="row-list__name" for="machine-on">Answer for me</label>
-      <span class="row-list__description">{status}</span>
-    </span>
-    <span class="row-list__control">
-      <input
-        id="machine-on"
-        type="checkbox"
-        role="switch"
-        aria-checked={on}
-        checked={on}
-        disabled={controls.busy || data.service.signed_out}
-        onchange={(event) => turn(event.currentTarget.checked)}
-      />
-    </span>
-  </li>
+  {#if controls.scope && enabled}
+    <SettingField
+      {controls}
+      setting={enabled}
+      name="Answer in this group"
+      description="Whether this computer answers for you here."
+    />
+  {:else}
+    <li class="row-list__item">
+      <span class="row-list__text">
+        <label class="row-list__name" for="machine-on">Answer for me</label>
+        <span class="row-list__description">{status}</span>
+      </span>
+      <span class="row-list__control">
+        {#if controls.working === "service"}
+          <button type="button" class="button button--quiet" disabled aria-label="Changing service">
+            <span class="spinner" aria-hidden="true"></span>
+          </button>
+        {/if}
+        <input
+          id="machine-on"
+          type="checkbox"
+          role="switch"
+          aria-checked={on}
+          checked={on}
+          disabled={controls.busy || data.service.signed_out}
+          onchange={(event) => turn(event.currentTarget.checked)}
+        />
+      </span>
+    </li>
+  {/if}
   {#if priority}
     <SettingField
       {controls}
@@ -79,17 +98,21 @@
               class="button button--small"
               onclick={(event) => {
                 event.preventDefault();
-                controls.save({ kind: "show_workspace", group: null }, "");
+                controls.save({ kind: "show_workspace", group: controls.scope || null }, "");
               }}
+              disabled={controls.busy}
             >
+              {#if controls.working.includes("show_workspace")}
+                <span class="spinner" aria-hidden="true"></span>
+              {/if}
               Show in Finder
             </button>
           </span>
         </summary>
         <div class="row-list__body">
           <p class="quiet">
-            Each group's folder is inside it. Stemma manages it: look and open, but keep your own
-            work elsewhere.
+            {controls.scope ? "This group's folder." : "Each group's folder is inside it."}
+            Stemma manages it: look and open, but keep your own work elsewhere.
           </p>
           <SettingField {controls} setting={workspace} as="field" />
         </div>

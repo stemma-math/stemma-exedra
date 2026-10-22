@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { scriptedSelect } from "#lib/scripted-select.ts";
   import { openSettings } from "#lib/settings.svelte.ts";
   import { ask } from "#lib/ask.svelte.ts";
   import { goto } from "$app/navigation";
@@ -119,7 +120,7 @@
               <span class="identifier quiet">{member.username}</span>
             </span>
             {#if admin && member.id !== session.me?.id}
-              <select
+              <stemma-select><select use:scriptedSelect={[member.role]}
                 class="input"
                 aria-label="Role of {member.display_name}"
                 value={member.role}
@@ -128,7 +129,7 @@
                 {#each ROLES as option (option)}
                   <option value={option}>{ROLE_NAMES[option]}</option>
                 {/each}
-              </select>
+              </select></stemma-select>
             {:else}
               <span class="chip">{ROLE_NAMES[member.role]}</span>
             {/if}
@@ -170,28 +171,28 @@
         <div class="row">
           <div class="field grow">
             <label class="field__label" for="invitation-role">Joins as</label>
-            <select id="invitation-role" class="input" bind:value={role}>
+            <stemma-select><select use:scriptedSelect={[role]} id="invitation-role" class="input" bind:value={role}>
               {#each ROLES as option (option)}
                 <option value={option}>{ROLE_NAMES[option]}</option>
               {/each}
-            </select>
+            </select></stemma-select>
           </div>
           <div class="field grow">
             <label class="field__label" for="invitation-days">Expires after</label>
-            <select id="invitation-days" class="input" bind:value={days}>
+            <stemma-select><select use:scriptedSelect={[days]} id="invitation-days" class="input" bind:value={days}>
               <option value="1">A day</option>
               <option value="7">A week</option>
               <option value="30">A month</option>
               <option value="">Never</option>
-            </select>
+            </select></stemma-select>
           </div>
           <div class="field grow">
             <label class="field__label" for="invitation-uses">Uses</label>
-            <select id="invitation-uses" class="input" bind:value={uses}>
+            <stemma-select><select use:scriptedSelect={[uses]} id="invitation-uses" class="input" bind:value={uses}>
               <option value="1">One person</option>
               <option value="5">Five people</option>
               <option value="">Anyone with the link</option>
-            </select>
+            </select></stemma-select>
           </div>
         </div>
         <div class="row row--end"><button type="submit" class="button button--primary">Create a link</button></div>

@@ -146,6 +146,6 @@
       {/each}
     </section>
   {:else}
-    <span class="spinner" role="status" aria-label="Loading"></span>
+    <span class="skeleton loading-placeholder" role="status" aria-label="Loading"></span>
   {/if}
 </main>

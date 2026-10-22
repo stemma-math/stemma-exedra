@@ -40,7 +40,7 @@
     {/if}
   </div>
   {#if papers === null}
-    <span class="spinner" role="status" aria-label="Loading"></span>
+    <span class="skeleton loading-placeholder" role="status" aria-label="Loading"></span>
   {:else if papers.length === 0}
     <div class="card card--empty card__body">
       <p class="empty">No papers yet: a working paper is the readable account of what the group is doing, in LaTeX.</p>

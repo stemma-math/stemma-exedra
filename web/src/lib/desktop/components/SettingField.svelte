@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { scriptedSelect } from "#lib/scripted-select.ts";
   import type { Explained } from "../api.ts";
   import type { MachineControls } from "../machine.svelte.ts";
   import { fileLines, fromFileLines, fromLines, lines, nameOf } from "../settings.ts";
@@ -21,7 +22,7 @@
   let {
     controls,
     setting,
-    group = null,
+    group = controls.scope || null,
     as = "row",
     description,
     name,
@@ -69,6 +70,9 @@
       disabled={controls.busy}
       onclick={unset}
     >
+      {#if controls.busy && controls.working.includes(key)}
+        <span class="spinner" aria-hidden="true"></span>
+      {/if}
       {group ? "Use general value" : "Reset"}
     </button>
   {/if}
@@ -86,21 +90,24 @@
       onchange={(event) => save(String(event.currentTarget.checked))}
     />
   {:else if key === "agents.priority"}
-    <select
-      {id}
-      class="input"
-      value={custom ? "custom" : priority}
-      disabled={locked || controls.busy}
-      onchange={(event) => {
-        custom = event.currentTarget.value === "custom";
-        if (!custom) save(event.currentTarget.value);
-      }}
+    <stemma-select
+      ><select
+        use:scriptedSelect={[setting.value, controls.busy, custom]}
+        {id}
+        class="input"
+        value={custom ? "custom" : priority}
+        disabled={locked || controls.busy}
+        onchange={(event) => {
+          custom = event.currentTarget.value === "custom";
+          if (!custom) save(event.currentTarget.value);
+        }}
+      >
+        <option value="high">High</option>
+        <option value="normal">Normal</option>
+        <option value="low">Low</option>
+        <option value="custom">Custom</option>
+      </select></stemma-select
     >
-      <option value="high">High</option>
-      <option value="normal">Normal</option>
-      <option value="low">Low</option>
-      <option value="custom">Custom</option>
-    </select>
     {#if custom || priority === "custom"}
       <input
         class="input setting-field__number"
@@ -174,19 +181,19 @@
 {#if as === "row"}
   <li class="row-list__item">
     <span class="row-list__text">
-      <label class="row-list__name" for={id}>{name ?? nameOf(key)} {@render source()}</label>
+      <label class="row-list__name" for={id}>{name ?? nameOf(key)}</label>
       {#if description}
         <span class="row-list__description">{description}</span>
       {/if}
-      <span class="setting-field__reset">{@render reset()}</span>
+      <span class="row setting-field__reset">{@render source()}{@render reset()}</span>
     </span>
     <span class="row-list__control">{@render control()}</span>
   </li>
 {:else}
   <div class="field">
     <span class="row">
-      <label class="field__label grow" for={id}>{name ?? nameOf(key)} {@render source()}</label>
-      {@render reset()}
+      <label class="field__label grow" for={id}>{name ?? nameOf(key)}</label>
+      <span class="row setting-field__reset">{@render source()}{@render reset()}</span>
     </span>
     {@render control()}
     {#if description}

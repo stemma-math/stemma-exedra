@@ -71,7 +71,7 @@
         <button type="submit" class="button button--primary" disabled={busy}>Join {info.group_name}</button>
       </form>
     {:else}
-      <span class="spinner" role="status" aria-label="Loading"></span>
+      <span class="skeleton loading-placeholder" role="status" aria-label="Loading"></span>
     {/if}
   </div>
 </main>

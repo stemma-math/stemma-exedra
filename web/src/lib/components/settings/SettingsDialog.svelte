@@ -9,7 +9,7 @@
     machine,
     setup = false,
   }: {
-    /** This machine's pages, in the app; each renders its own heading. */
+    /** This machine panel, in the app; it renders its own heading. */
     machine?: Snippet<[SettingsPage]>;
     /** Whether the app is setting this machine up for the first time. */
     setup?: boolean;
@@ -51,12 +51,7 @@
             {#each PAGES as name (name)}{@render item(name)}{/each}
           </ul>
           {#if machine}
-            <!-- A heading only when it heads more than one page. -->
-            {#if MACHINE_PAGES.length > 1}
-              <p class="label settings__group">This machine</p>
-            {:else}
-              <hr class="settings__separator" />
-            {/if}
+            <hr class="settings__separator" />
             <ul class="nav-list">
               {#each MACHINE_PAGES as name (name)}{@render item(name)}{/each}
             </ul>

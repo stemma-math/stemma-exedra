@@ -654,7 +654,11 @@ stemma-toast-region {
   min-height: 0;
   height: min(70dvh, calc(var(--space-16) * 10));
 }
-.settings-dialog.is-setup .settings { height: auto; max-height: 70dvh; }
+/* Keep the scrollport bounded before asynchronous content arrives. */
+.settings-dialog[open] { display: flex; flex-direction: column; max-height: calc(100dvh - var(--space-12)); }
+.settings { flex: 1; grid-template-rows: minmax(0, 1fr); }
+.loading-placeholder { display: block; min-width: var(--space-16); min-height: var(--space-16); }
+.machine-tab[hidden] { display: none; }
 .settings__nav { padding: var(--space-5) var(--space-3); overflow: auto; overscroll-behavior: none; }
 .settings__group { margin: var(--space-5) 0 var(--space-2); padding-inline: var(--space-3); }
 .settings__separator { margin: var(--space-3) var(--space-3); border: 0; border-top: 1px solid var(--border); }
@@ -727,3 +731,7 @@ html .app .shell.is-resizing *::after {
 .setting-field__reset {
   align-self: flex-start;
 }
+
+/* Account pages keep their own bounded scroll area outside the group shell. */
+.app > .account-frame { min-height: 0; height: 100%; }
+.account-frame__body { min-height: 0; overflow: auto; overscroll-behavior: none; }

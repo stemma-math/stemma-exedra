@@ -30,10 +30,10 @@
           )
             await action({ kind: "set", key: "agents.enabled", value: String(run), group: null });
           if (run) {
+            controls.settingUp = true;
+            openSettings("This machine");
             await action({ kind: "service", enabled: true });
             await controls.load();
-            controls.settingUp = true;
-            openSettings("Overview");
           }
           if (controls.data?.me) await goto(homeOf(controls.data.me), { replaceState: true });
         } finally {
@@ -93,6 +93,9 @@
         />
       </label>
       <button type="submit" class="button button--primary" disabled={controls.busy}>
+        {#if controls.busy}
+          <span class="spinner" aria-hidden="true"></span>
+        {/if}
         {controls.busy ? "Connecting…" : "Sign in"}
       </button>
     </form>
