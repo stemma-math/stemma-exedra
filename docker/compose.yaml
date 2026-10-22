@@ -53,10 +53,13 @@ services:
       FORGEJO__security__INSTALL_LOCK: "true"
       FORGEJO__repository__DEFAULT_BRANCH: main
       FORGEJO__repository__DEFAULT_PRIVATE: private
-      # Accounts come from the hub, which people sign in through.
+      # Accounts come from the hub, which people sign in through: Forgejo
+      # has no password form of its own, and takes no password over HTTP.
       FORGEJO__service__DISABLE_REGISTRATION: "false"
       FORGEJO__service__ALLOW_ONLY_EXTERNAL_REGISTRATION: "true"
       FORGEJO__service__SHOW_REGISTRATION_BUTTON: "false"
+      FORGEJO__service__ENABLE_INTERNAL_SIGNIN: "false"
+      FORGEJO__service__ENABLE_BASIC_AUTHENTICATION: "false"
       FORGEJO__service__REQUIRE_SIGNIN_VIEW: "true"
       FORGEJO__service__DEFAULT_KEEP_EMAIL_PRIVATE: "true"
       FORGEJO__oauth2_client__ENABLE_AUTO_REGISTRATION: "true"

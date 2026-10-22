@@ -21,8 +21,12 @@ docker compose -f docker/compose.yaml logs hub   # the setup link
 Forgejo keeps the groups' repositories. Each group is an organization, with
 its library (`library`) and a repository per paper (`paper-<slug>`). People
 sign in to Forgejo with their Stemma account: the hub is its OpenID Connect
-provider. Git goes through the hub, under `/git`, which applies the group's
-roles.
+provider, and Forgejo's own password form is off (`ENABLE_INTERNAL_SIGNIN`),
+as are passwords over HTTP (`ENABLE_BASIC_AUTHENTICATION`); tokens still
+work. In Forgejo, a group's admins own its organization, its members write
+to its repositories and its guests read them: the hub keeps those teams as
+the roles are. Git goes through the hub, under `/git`, which applies the
+group's roles.
 
 ## Configuration
 
