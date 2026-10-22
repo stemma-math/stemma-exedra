@@ -167,6 +167,8 @@
             <li><a class="nav-item" href="{base}/t/{thread.number}" aria-current={current(`${base}/t/${thread.number}`)}>
               <span class="nav-item__label">{thread.title}</span>
             </a></li>
+          {:else}
+            <li class="quiet sidebar__empty">No threads yet.</li>
           {/each}
         </ul>
       </details>
@@ -192,6 +194,8 @@
                 <AgentAvatar name={chat.resident_agent ?? "Agent"} runner={chat.resident_runner} appearance="dark" small /><span class="nav-item__label">{chat.title}</span>
               </a>
             </li>
+          {:else}
+            <li class="quiet sidebar__empty">No chats yet.</li>
           {/each}
         </ul>
       </details>
