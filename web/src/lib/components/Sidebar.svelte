@@ -51,7 +51,7 @@
     loadChats();
     loadThreads();
     return listen(group.slug, (event) => {
-      if (event.type === "resync") {
+      if ((event.type === "resync" || event.type === "names_changed")) {
         loadPapers();
         loadChats();
         loadThreads();

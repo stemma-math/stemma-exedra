@@ -1,6 +1,6 @@
 <script lang="ts">
   import { onMount, tick } from "svelte";
-  import { afterNavigate } from "$app/navigation";
+  import { afterNavigate, goto } from "$app/navigation";
   import { page } from "$app/state";
   import { ApiError, api, type Group } from "#lib/api.ts";
   import Glyph from "#lib/components/Glyph.svelte";
@@ -9,7 +9,7 @@
   import { listen } from "#lib/events.ts";
   import { setGroupContext } from "#lib/group.svelte.ts";
   import { forgetReferences } from "#lib/references.ts";
-  import { rememberGroup } from "#lib/session.svelte.ts";
+  import { rememberGroup, loadSession, session } from "#lib/session.svelte.ts";
 
   let { children } = $props();
 
@@ -47,6 +47,7 @@
         if (wanted !== slug) return;
         group = found;
         rememberGroup(found.slug);
+        if (found.slug !== wanted) void goto(page.url.pathname.replace(`/g/${wanted}`, `/g/${found.slug}`) + page.url.search + page.url.hash, { replaceState: true });
       })
       .catch((error) => {
         if (error instanceof ApiError && error.status === 404) missing = true;
@@ -60,6 +61,14 @@
     const current = group.slug;
     return listen(current, (event) => {
       if (event.type !== "job_updated") forgetReferences(current);
+      if (event.type === "names_changed") {
+        void loadSession().then(() => {
+          const updated = session.me?.groups.find((g) => g.id === group?.id);
+          if (!updated) return;
+          group = updated;
+          if (updated.slug !== current) void goto(page.url.pathname.replace(`/g/${current}`, `/g/${updated.slug}`) + page.url.search + page.url.hash, { replaceState: true });
+        });
+      }
     });
   });
 

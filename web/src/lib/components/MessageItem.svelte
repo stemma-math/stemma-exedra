@@ -145,7 +145,7 @@
         </div>
       </form>
     {:else if message.body}
-      <Markdown text={message.body} {group} />
+      <Markdown text={message.body} missing={message.missing_references} {group} />
     {/if}
   </div>
 

@@ -27,7 +27,7 @@
   $effect(() => {
     load();
     return listen(group.slug, (event) => {
-      if (event.type === "resync") return load();
+      if ((event.type === "resync" || event.type === "names_changed")) return load();
       if (event.type === "paper_updated" && papers) {
         const index = papers.findIndex((p) => p.slug === event.paper.slug);
         if (index === -1) load();

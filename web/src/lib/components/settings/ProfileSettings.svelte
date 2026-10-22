@@ -1,9 +1,12 @@
 <script lang="ts">
+  import NameField from "#lib/components/NameField.svelte";
   import { api } from "#lib/api.ts";
   import { session, setSession } from "#lib/session.svelte.ts";
   import { toast, toastError } from "#lib/toast.ts";
   import { connection } from "#lib/transport.svelte.ts";
 
+  let username = $state(session.me?.username ?? "");
+  let available = $state(false);
   let displayName = $state(session.me?.display_name ?? "");
   let current = $state("");
   let next = $state("");
@@ -14,7 +17,7 @@
     event.preventDefault();
     savingName = true;
     try {
-      setSession(await api.updateMe(displayName));
+      setSession(await api.updateMe(displayName, username));
       toast("Your name is saved.", "success");
     } catch (error) {
       toastError(error);
@@ -35,12 +38,13 @@
 </script>
 
 <form class="setting form" onsubmit={saveName}>
+  <NameField id="username" label="Username" kind="user" bind:value={username} bind:available />
   <div class="field">
     <label class="field__label" for="display-name">Your name</label>
     <input id="display-name" class="input" bind:value={displayName} required maxlength="80" />
   </div>
   <p class="quiet">Signed in as <span class="identifier">{session.me?.username}</span>{#if __STEMMA_DESKTOP__ && connection.hub}, at <span class="identifier">{connection.hub}</span>{/if}.</p>
-  <div class="row row--end"><button type="submit" class="button" disabled={savingName}>{#if savingName}<span class="spinner" aria-hidden="true"></span>{/if}Save</button></div>
+  <div class="row row--end"><button type="submit" class="button" disabled={savingName || !available}>{#if savingName}<span class="spinner" aria-hidden="true"></span>{/if}Save</button></div>
 </form>
 
 <form class="setting form" onsubmit={changePassword}>

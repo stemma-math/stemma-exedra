@@ -11,6 +11,7 @@ import { addressPath, formatAddress, parseAddress } from "./address";
 export interface RenderEnv {
   /** The group references point into. */
   group: string;
+  missing?: string[];
 }
 
 const md = new MarkdownIt({ html: false, linkify: true, breaks: true });
@@ -35,7 +36,11 @@ md.renderer.rules.math_inline = (tokens, i) => math(tokens[i].content, tokens[i]
 md.renderer.rules.math_block = (tokens, i, _options, _env, self) =>
   `<p${self.renderAttrs(tokens[i])}>${math(tokens[i].content, true)}</p>\n`;
 md.renderer.rules.reference = (tokens, i, _options, env) =>
-  renderReference(tokens[i].content, String(env?.group ?? ""));
+  renderReference(
+    tokens[i].content,
+    String(env?.group ?? ""),
+    Array.isArray(env?.missing) ? env.missing : [],
+  );
 
 // Links that leave the hub open on their own.
 const defaultLinkOpen =
@@ -70,11 +75,24 @@ function math(tex: string, display: boolean): string {
   }
 }
 
-function renderReference(raw: string, group: string): string {
+function renderReference(raw: string, group: string, missing: string[]): string {
   const esc = md.utils.escapeHtml;
-  const address = parseAddress(raw.trim());
+  if (missing.includes(`[[${raw}]]`))
+    return `<span class="ref ref--unresolved" title="Not found">${esc(raw)}</span>`;
+  const written = raw.trim();
+  let address = parseAddress(written);
+  if (!address) {
+    const slash = written.indexOf("/");
+    const candidate = written.slice(0, slash);
+    if (slash > 0 && /^[a-z0-9]+(-[a-z0-9]+)*$/.test(candidate)) {
+      address = parseAddress(written.slice(slash + 1));
+      if (address) group = candidate;
+    }
+  }
   if (address === null) return esc(`[[${raw}]]`);
-  const text = esc(formatAddress(address));
+  const text = esc(
+    written.includes("/") && !raw.trim().startsWith("p/") ? written : formatAddress(address),
+  );
   return `<a class="ref" href="${esc(addressPath(address, group))}" data-ref="${text}">${text}</a>`;
 }
 

@@ -124,7 +124,7 @@
     replyTo = null;
     load();
     return listen(group.slug, (event) => {
-      if (event.type === "resync") return load();
+      if ((event.type === "resync" || event.type === "names_changed")) return load();
       if ((event.type === "message_created" || event.type === "message_updated") && event.thread === number) {
         upsert(event.message);
       } else if (event.type === "thread_deleted" && event.thread === number) {

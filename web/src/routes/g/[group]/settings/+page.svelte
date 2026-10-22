@@ -1,4 +1,5 @@
 <script lang="ts">
+  import NameField from "#lib/components/NameField.svelte";
   import { scriptedSelect } from "#lib/scripted-select.ts";
   import { openSettings } from "#lib/settings.svelte.ts";
   import { ask } from "#lib/ask.svelte.ts";
@@ -15,6 +16,21 @@
   const context = groupContext();
   const group = $derived(context.group);
   const admin = $derived(group.role === "admin");
+
+  let nextSlug = $state("");
+  let nextName = $state("");
+  let available = $state(false);
+  let saving = $state(false);
+  $effect(() => { nextSlug = group.slug; nextName = group.name; });
+  async function rename(event: Event) {
+    event.preventDefault(); saving = true;
+    try {
+      const renamed = await api.updateGroup(group.slug, nextName, nextSlug);
+      await loadSession();
+      await goto(`/g/${renamed.slug}/settings`, { replaceState: true });
+    } catch (error) { toastError(error); }
+    finally { saving = false; }
+  }
 
   let members = $state<Member[]>([]);
   /** The group's organization in the forge, if the hub has one. */
@@ -75,6 +91,19 @@
       account at the sidebar's foot.
     </p>
   </div>
+
+  {#if admin}
+    <form class="form" onsubmit={rename}>
+      <h2>Names</h2>
+      <div class="field">
+        <label class="field__label" for="group-name">Name</label>
+        <input id="group-name" class="input" bind:value={nextName} required maxlength="80" />
+      </div>
+      <NameField id="group-slug" label="Short name" kind="group" group={group.slug} bind:value={nextSlug} bind:available />
+      <p class="quiet">Former addresses keep leading here. Former names stay yours.</p>
+      <div class="row row--end"><button class="button" type="submit" disabled={saving || !available}>Save</button></div>
+    </form>
+  {/if}
 
   <section class="stack">
     <h2>Members</h2>

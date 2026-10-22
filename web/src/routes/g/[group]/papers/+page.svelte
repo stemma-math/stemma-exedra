@@ -25,7 +25,7 @@
     papers = null;
     load();
     return listen(group.slug, (event) => {
-      if (event.type === "resync" || event.type === "paper_updated" || event.type === "paper_deleted") load();
+      if ((event.type === "resync" || event.type === "names_changed") || event.type === "paper_updated" || event.type === "paper_deleted") load();
     });
   });
 </script>

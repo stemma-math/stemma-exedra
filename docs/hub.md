@@ -28,6 +28,13 @@ to its repositories and its guests read them: the hub keeps those teams as
 the roles are. Git goes through the hub, under `/git`, which applies the
 group's roles.
 
+Names can change in Stemma. Forgejo 16 provides `POST /orgs/{org}/rename`
+and the admin's `POST /admin/users/{username}/rename`; the hub uses them,
+preserving organizations, repositories and the account's OpenID Connect
+subject. It also keeps an organization's displayed name in step. Deleted
+accounts keep their forge history under a reserved tombstone name, freeing
+the username for a different identity.
+
 ## Configuration
 
 A TOML file (`--config`, or `STEMMA_CONFIG`), and environment variables

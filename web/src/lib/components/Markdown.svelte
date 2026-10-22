@@ -4,13 +4,14 @@
 
   interface Props {
     text: string;
+    missing?: string[];
     group: string;
   }
 
-  let { text, group }: Props = $props();
+  let { text, group, missing = [] }: Props = $props();
 
   let element: HTMLElement | undefined = $state();
-  const html = $derived(renderMarkdown(text, { group }));
+  const html = $derived(renderMarkdown(text, { group, missing }));
 
   $effect(() => {
     // Again whenever the text changes.

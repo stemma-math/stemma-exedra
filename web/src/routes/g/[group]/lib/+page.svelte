@@ -41,7 +41,7 @@
   $effect(() => {
     loadLibrary();
     return listen(group.slug, (event) => {
-      if (event.type === "resync" || event.type === "build_updated") {
+      if ((event.type === "resync" || event.type === "names_changed") || event.type === "build_updated") {
         loadLibrary();
         loadDeclarations();
       }

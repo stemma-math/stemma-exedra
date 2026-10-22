@@ -86,7 +86,7 @@
       search(q);
     }
     return listen(group.slug, (event) => {
-      if (event.type === "resync") {
+      if ((event.type === "resync" || event.type === "names_changed")) {
         if (isEmpty(q)) loadLatest();
         else search(q);
       } else if (

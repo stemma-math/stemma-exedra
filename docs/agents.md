@@ -265,6 +265,20 @@ Mathlib is neither fetched nor built again. While another answer or session
 holds that group's lock, no update occurs. Mathlib's own cache stays in
 `~/.cache/mathlib`, shared across groups.
 
+## Renamed groups and accounts
+
+The hub sends stable group IDs to computers. The app learns names when it
+refreshes the account; the service learns them on connection, from jobs and
+from regular identity updates. A managed workspace moves to the new short
+name, preserving its clones and caches. Its settings section and the active
+group state follow it. An exact custom workspace path stays where you chose
+it; its settings section still changes names. A busy workspace is retried
+when free, and an existing destination or settings section is never overwritten.
+
+The machine keeps the last names by hub and group ID under state, in
+`group-names.toml`. Personal-token responses refresh the username in matching
+`credentials.toml`; a token for a different hub or account cannot change it.
+
 ## Isolation
 
 With Docker or Podman, each answer runs in a container of its own, from the

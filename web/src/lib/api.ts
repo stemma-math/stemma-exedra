@@ -12,6 +12,7 @@ export interface User {
 export type Role = "admin" | "member" | "guest";
 
 export interface Group {
+  id: number;
   slug: string;
   name: string;
   role: Role;
@@ -129,6 +130,7 @@ export interface Attachment {
 }
 
 export interface Message {
+  missing_references: string[];
   number: number;
   author: User;
   agent: string | null;
@@ -213,6 +215,7 @@ export interface Job {
 }
 
 export type GroupEvent =
+  | { type: "names_changed" }
   | { type: "thread_created"; thread: Thread }
   | { type: "thread_updated"; thread: Thread }
   | { type: "message_created"; thread: number; message: Message }
@@ -387,13 +390,21 @@ const del = <T>(path: string) => request<T>("DELETE", path);
 const g = (group: string) => `/groups/${encodeURIComponent(group)}`;
 
 export const api = {
+  user: (username: string) => get<User>(`/users/${encodeURIComponent(username)}`),
   setupState: () => get<{ needed: boolean }>("/setup"),
   setup: (body: { token: string; username: string; display_name: string; password: string }) =>
     post<Me>("/setup", body),
   signIn: (username: string, password: string) => post<Me>("/session", { username, password }),
   signOut: () => del<void>("/session"),
   me: () => get<Me>("/me"),
-  updateMe: (display_name: string) => patch<Me>("/me", { display_name }),
+  updateMe: (display_name: string, username?: string) =>
+    patch<Me>("/me", { display_name, username }),
+  nameAvailability: (kind: "user" | "group", name: string, group?: string) =>
+    get<{ available: boolean; reason: string | null }>(
+      `/names/${kind}?${new URLSearchParams({ name, ...(group ? { group } : {}) })}`,
+    ),
+  updateGroup: (slug: string, name: string, next: string) =>
+    patch<Group>(`/groups/${slug}`, { name, slug: next }),
   changePassword: (current: string, next: string) =>
     post<void>("/me/password", { current, new: next }),
   tokens: () => get<ApiToken[]>("/me/tokens"),

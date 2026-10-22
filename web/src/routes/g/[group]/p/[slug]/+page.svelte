@@ -40,7 +40,7 @@
     missing = false;
     load();
     return listen(group.slug, (event) => {
-      if (event.type === "resync") return load();
+      if ((event.type === "resync" || event.type === "names_changed")) return load();
       // The log comes with the paper's page.
       if (event.type === "paper_updated" && event.paper.slug === slug) load();
       if (event.type === "paper_deleted" && event.paper === slug) gone = true;
