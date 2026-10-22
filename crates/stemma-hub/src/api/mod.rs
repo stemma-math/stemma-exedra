@@ -87,7 +87,13 @@ pub fn router(state: AppState) -> Router {
         )
         .route(
             "/groups/{group}/threads/{thread}",
-            get(forum::get_thread).patch(forum::update_thread),
+            get(forum::get_thread)
+                .patch(forum::update_thread)
+                .delete(forum::delete_thread),
+        )
+        .route(
+            "/groups/{group}/threads/{thread}/contents",
+            get(forum::thread_contents),
         )
         .route(
             "/groups/{group}/threads/{thread}/messages",
@@ -114,7 +120,14 @@ pub fn router(state: AppState) -> Router {
             "/groups/{group}/papers",
             get(papers::list).post(papers::create),
         )
-        .route("/groups/{group}/papers/{paper}", get(papers::get))
+        .route(
+            "/groups/{group}/papers/{paper}",
+            get(papers::get).delete(papers::delete),
+        )
+        .route(
+            "/groups/{group}/papers/{paper}/contents",
+            get(papers::contents),
+        )
         .route(
             "/groups/{group}/papers/{paper}/authors/{username}",
             put(papers::add_author).delete(papers::remove_author),

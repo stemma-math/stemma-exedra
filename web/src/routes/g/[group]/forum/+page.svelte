@@ -96,6 +96,8 @@
         event.thread.kind === "discussion"
       ) {
         threads = applyThreadEvent(threads, event);
+      } else if (threads && event.type === "thread_deleted") {
+        threads = applyThreadEvent(threads, event);
       }
     });
   });

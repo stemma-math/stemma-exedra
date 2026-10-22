@@ -2,21 +2,25 @@
   import { scriptedSelect } from "#lib/scripted-select.ts";
   import { ask as askFirst } from "#lib/ask.svelte.ts";
   import { hubUrl } from "#lib/transport.svelte.ts";
+  import { goto } from "$app/navigation";
   import { page } from "$app/state";
   import { api, type Member, type PaperPage } from "#lib/api.ts";
   import BuildChip from "#lib/components/BuildChip.svelte";
   import Glyph from "#lib/components/Glyph.svelte";
   import { listen } from "#lib/events.ts";
+  import { goesWith } from "#lib/contents.ts";
   import { exactly, fileSize } from "#lib/format.ts";
   import { groupContext } from "#lib/group.svelte.ts";
   import { session } from "#lib/session.svelte.ts";
-  import { toastError } from "#lib/toast.ts";
+  import { toast, toastError } from "#lib/toast.ts";
 
   const context = groupContext();
   const group = $derived(context.group);
   const slug = $derived(page.params.slug ?? "");
   let paper = $state<PaperPage | null>(null);
   let missing = $state(false);
+  /** Deleted while open, by someone else. */
+  let gone = $state(false);
   let members = $state<Member[]>([]);
   let adding = $state("");
 
@@ -39,12 +43,36 @@
       if (event.type === "resync") return load();
       // The log comes with the paper's page.
       if (event.type === "paper_updated" && event.paper.slug === slug) load();
+      if (event.type === "paper_deleted" && event.paper === slug) gone = true;
     });
   });
 
   const me = $derived(session.me?.id);
   const author = $derived(paper?.authors.some((a) => a.id === me) ?? false);
   const changesAuthors = $derived(author || group.role === "admin");
+  /** Whoever created it, or an admin, deletes it; other authors leave it. */
+  const deletes = $derived(paper?.created_by.id === me || group.role === "admin");
+
+  async function remove() {
+    if (!paper) return;
+    try {
+      const contents = goesWith(await api.paperContents(group.slug, paper.slug));
+      const yes = await askFirst({
+        title: `Delete “${paper.title}”?`,
+        text:
+          `Its repository, builds and PDFs go${contents ? `, and its ${contents}` : ""}, here and in ` +
+          "the forge. This cannot be undone.",
+        action: "Delete the paper",
+        danger: true,
+      });
+      if (!yes) return;
+      await api.deletePaper(group.slug, paper.slug);
+      toast("The paper was deleted.");
+      await goto(`/g/${group.slug}/papers`);
+    } catch (error) {
+      toastError(error);
+    }
+  }
 
   $effect(() => {
     if (!changesAuthors) return;
@@ -94,7 +122,10 @@
 <svelte:head><title>{paper?.title ?? slug} – {group.name}</title></svelte:head>
 
 <main class="page stack">
-  {#if paper}
+  {#if gone}
+    <h1>This paper was deleted</h1>
+    <p>Its repository went with it. <a class="link" href="/g/{group.slug}/papers">Back to the papers</a>.</p>
+  {:else if paper}
     <header class="stack stack--tight">
       <div class="thread-head">
         <h1>{paper.title}</h1>
@@ -121,6 +152,16 @@
         <Glyph name="group" /> Authors <span class="count">{paper.authors.length}</span>
       </button>
       <button type="button" class="button button--quiet" data-opens="paper-clone-dialog">Clone</button>
+      {#if deletes}
+        <stemma-menu>
+          <button type="button" class="button button--quiet button--icon" aria-label="More for this paper">
+            <Glyph name="more" />
+          </button>
+          <div class="menu">
+            <button type="button" class="menu__item menu__item--danger" onclick={remove}>Delete</button>
+          </div>
+        </stemma-menu>
+      {/if}
     </div>
 
     {#if paper.latest?.error}

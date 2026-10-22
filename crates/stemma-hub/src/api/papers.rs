@@ -4,7 +4,9 @@ use axum::body::Body;
 use axum::extract::{Path, State};
 use axum::http::{HeaderValue, StatusCode, header};
 use axum::response::{IntoResponse, Response};
-use stemma_core::api::{CreatePaper, Paper, PaperFileText, PaperPage, PaperSource};
+use stemma_core::api::{
+    Contents, CreatePaper, Event, Paper, PaperFileText, PaperPage, PaperSource,
+};
 
 use super::{Json, Membership};
 use crate::auth::Viewer;
@@ -47,6 +49,53 @@ pub async fn get(
         paper: row.to_api(&state).await?,
         log: papers::latest_log(&state, row.id).await?,
     }))
+}
+
+/// The paper, if the viewer may delete it: whoever created it, or a group
+/// admin. Its other authors only leave it.
+async fn deletable(
+    state: &AppState,
+    viewer: &Viewer,
+    slug: &str,
+    paper: &str,
+) -> ApiResult<(Membership, papers::PaperRow)> {
+    viewer.require_full()?;
+    let group = Membership::of(state, viewer, slug).await?;
+    let row = papers::find(state, group.group_id, paper).await?;
+    if row.created_by != viewer.id {
+        group.require_admin()?;
+    }
+    Ok((group, row))
+}
+
+/// What deleting a paper would take with it.
+pub async fn contents(
+    State(state): State<AppState>,
+    viewer: Viewer,
+    Path((slug, paper)): Path<(String, String)>,
+) -> ApiResult<Json<Contents>> {
+    let (_, row) = deletable(&state, &viewer, &slug, &paper).await?;
+    Ok(Json(crate::removal::paper_contents(&state, &row).await?))
+}
+
+/// Deletes a paper, with its own threads, builds, PDFs and repository.
+pub async fn delete(
+    State(state): State<AppState>,
+    viewer: Viewer,
+    Path((slug, paper)): Path<(String, String)>,
+) -> ApiResult<StatusCode> {
+    let (group, row) = deletable(&state, &viewer, &slug, &paper).await?;
+    for thread in crate::removal::paper_thread_numbers(&state, &row).await? {
+        state.publish(group.group_id, Event::ThreadDeleted { thread });
+    }
+    crate::removal::paper(&state, &row, &group.slug).await?;
+    state.publish(
+        group.group_id,
+        Event::PaperDeleted {
+            paper: row.slug.clone(),
+        },
+    );
+    Ok(StatusCode::NO_CONTENT)
 }
 
 /// Adds an author: the paper's authors, or an admin.

@@ -1,6 +1,10 @@
-//! Removing what holds work: a group, or an account. What goes is also
+//! Removing what holds work: a thread, a paper, a group, or an account.
+//! What goes is also
 //! what hangs from it, in the database, on disk and in the forge. Jobs on
 //! their way are stopped first, so no machine keeps working for nothing.
+
+use stemma_core::address::Address;
+use stemma_core::api::Contents;
 
 use crate::api::attachments;
 use crate::db;
@@ -54,6 +58,112 @@ pub async fn stop_jobs(state: &AppState, ids: Vec<i64>) {
             tracing::warn!(id, message = %error.message, "could not stop a job");
         }
     }
+}
+
+/// What deleting the threads `ids` would take with them.
+async fn contents_of(state: &AppState, ids: &[i64]) -> ApiResult<Contents> {
+    let mut contents = Contents::default();
+    for &id in ids {
+        let (messages, files): (i64, i64) = sqlx::query_as(
+            "SELECT (SELECT COUNT(*) FROM messages WHERE thread_id = ?1 AND deleted_at IS NULL),
+                    (SELECT COUNT(*) FROM attachments a JOIN messages m ON m.id = a.message_id
+                     WHERE m.thread_id = ?1)",
+        )
+        .bind(id)
+        .fetch_one(&state.db)
+        .await?;
+        contents.messages += messages as u32;
+        contents.files += files as u32;
+    }
+    Ok(contents)
+}
+
+/// The threads anchored to the paper `slug` of `group_id`: its own.
+async fn paper_threads(state: &AppState, group_id: i64, slug: &str) -> ApiResult<Vec<i64>> {
+    Ok(
+        sqlx::query_scalar("SELECT id FROM threads WHERE group_id = ? AND anchor = ?")
+            .bind(group_id)
+            .bind(Address::Paper(slug.to_owned()).to_string())
+            .fetch_all(&state.db)
+            .await?,
+    )
+}
+
+/// The numbers of a paper's own threads, which go with it.
+pub async fn paper_thread_numbers(
+    state: &AppState,
+    paper: &papers::PaperRow,
+) -> ApiResult<Vec<u32>> {
+    Ok(
+        sqlx::query_scalar("SELECT number FROM threads WHERE group_id = ? AND anchor = ?")
+            .bind(paper.group_id)
+            .bind(Address::Paper(paper.slug.clone()).to_string())
+            .fetch_all(&state.db)
+            .await?,
+    )
+}
+
+/// What deleting the thread `id` would take with it.
+pub async fn thread_contents(state: &AppState, id: i64) -> ApiResult<Contents> {
+    contents_of(state, &[id]).await
+}
+
+/// What deleting a paper would take with it: its own threads, and theirs.
+pub async fn paper_contents(state: &AppState, paper: &papers::PaperRow) -> ApiResult<Contents> {
+    let threads = paper_threads(state, paper.group_id, &paper.slug).await?;
+    Ok(Contents {
+        threads: threads.len() as u32,
+        ..contents_of(state, &threads).await?
+    })
+}
+
+/// Removes the thread `id`, with its messages, their files and its jobs.
+/// Its number is never given again: the group counts its threads apart.
+pub async fn thread(state: &AppState, id: i64) -> ApiResult<()> {
+    let waiting: Vec<i64> = sqlx::query_scalar(
+        "SELECT id FROM jobs WHERE thread_id = ? AND state IN ('queued', 'running', 'held')",
+    )
+    .bind(id)
+    .fetch_all(&state.db)
+    .await?;
+    stop_jobs(state, waiting).await;
+    let keys: Vec<String> = sqlx::query_scalar(
+        "SELECT a.storage_key FROM attachments a JOIN messages m ON m.id = a.message_id
+         WHERE m.thread_id = ?",
+    )
+    .bind(id)
+    .fetch_all(&state.db)
+    .await?;
+    sqlx::query("DELETE FROM threads WHERE id = ?")
+        .bind(id)
+        .execute(&state.db)
+        .await?;
+    attachments::remove_files(state, &keys).await;
+    Ok(())
+}
+
+/// Removes a paper, with its own threads, its builds and PDFs, and its
+/// repository in the forge.
+pub async fn paper(state: &AppState, paper: &papers::PaperRow, org: &str) -> ApiResult<()> {
+    for thread_id in paper_threads(state, paper.group_id, &paper.slug).await? {
+        thread(state, thread_id).await?;
+    }
+    let leftovers = Leftovers {
+        pdfs: sqlx::query_scalar(
+            "SELECT id FROM paper_builds WHERE paper_id = ? AND pdf_size IS NOT NULL",
+        )
+        .bind(paper.id)
+        .fetch_all(&state.db)
+        .await?,
+        repositories: vec![paper.repository.clone()],
+        ..Leftovers::default()
+    };
+    sqlx::query("DELETE FROM papers WHERE id = ?")
+        .bind(paper.id)
+        .execute(&state.db)
+        .await?;
+    leftovers.remove(state, org).await;
+    Ok(())
 }
 
 /// Removes the group `group_id`, whose short name is `slug`, with its

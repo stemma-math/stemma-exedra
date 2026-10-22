@@ -219,7 +219,16 @@ export type GroupEvent =
   | { type: "message_updated"; thread: number; message: Message }
   | { type: "job_updated"; job: Job }
   | { type: "build_updated"; build: Build }
-  | { type: "paper_updated"; paper: Paper };
+  | { type: "paper_updated"; paper: Paper }
+  | { type: "thread_deleted"; thread: number }
+  | { type: "paper_deleted"; paper: string };
+
+/** What goes with a thread or a paper when it is deleted. */
+export interface Contents {
+  messages: number;
+  files: number;
+  threads: number;
+}
 
 export type DeclarationState = "proved" | "sorry" | "missing";
 export type BuildState = "queued" | "running" | "succeeded" | "failed" | "cancelled";
@@ -451,6 +460,8 @@ export const api = {
   thread: (group: string, n: number) => get<ThreadPage>(`${g(group)}/threads/${n}`),
   renameThread: (group: string, n: number, title: string) =>
     patch<Thread>(`${g(group)}/threads/${n}`, { title }),
+  threadContents: (group: string, n: number) => get<Contents>(`${g(group)}/threads/${n}/contents`),
+  deleteThread: (group: string, n: number) => del<void>(`${g(group)}/threads/${n}`),
   postMessage: (
     group: string,
     n: number,
@@ -482,6 +493,10 @@ export const api = {
   build: (group: string, id: number) => get<BuildLog>(`${g(group)}/library/builds/${id}`),
 
   papers: (group: string) => get<Paper[]>(`${g(group)}/papers`),
+  paperContents: (group: string, slug: string) =>
+    get<Contents>(`${g(group)}/papers/${encodeURIComponent(slug)}/contents`),
+  deletePaper: (group: string, slug: string) =>
+    del<void>(`${g(group)}/papers/${encodeURIComponent(slug)}`),
   paper: (group: string, slug: string) =>
     get<PaperPage>(`${g(group)}/papers/${encodeURIComponent(slug)}`),
   createPaper: (group: string, slug: string, title: string) =>

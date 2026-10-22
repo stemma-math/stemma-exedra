@@ -1,9 +1,12 @@
 <script lang="ts">
+  import { goto } from "$app/navigation";
   import { page } from "$app/state";
   import { tick } from "svelte";
   import { addressPath, parseAddress } from "#lib/address.ts";
   import { ApiError, api, AGENTS, type Job, type Message, type Thread } from "#lib/api.ts";
   import Composer from "#lib/components/Composer.svelte";
+  import Glyph from "#lib/components/Glyph.svelte";
+  import { goesWith } from "#lib/contents.ts";
   import JobItem from "#lib/components/JobItem.svelte";
   import MessageItem from "#lib/components/MessageItem.svelte";
   import UnderConstruction from "#lib/components/UnderConstruction.svelte";
@@ -25,6 +28,8 @@
   let jobs = $state<Job[]>([]);
   let agents = $state<string[]>([]);
   let missing = $state(false);
+  /** Deleted while open, by someone else. */
+  let gone = $state(false);
   let replyTo = $state<number | null>(null);
   let renaming = $state(false);
   let title = $state("");
@@ -32,7 +37,8 @@
 
   const viewer = $derived(session.me?.id ?? 0);
   const admin = $derived(group.role === "admin");
-  const canRename = $derived(thread !== null && (admin || thread.created_by.id === viewer));
+  /** Whoever opened it, or an admin, renames and deletes it. */
+  const canManage = $derived(thread !== null && (admin || thread.created_by.id === viewer));
 
   async function load() {
     try {
@@ -121,6 +127,8 @@
       if (event.type === "resync") return load();
       if ((event.type === "message_created" || event.type === "message_updated") && event.thread === number) {
         upsert(event.message);
+      } else if (event.type === "thread_deleted" && event.thread === number) {
+        gone = true;
       } else if (event.type === "thread_updated" && event.thread.number === number) {
         thread = event.thread;
       } else if (event.type === "job_updated" && event.job.thread === number) {
@@ -164,6 +172,25 @@
     }
   }
 
+  async function remove() {
+    if (!thread) return;
+    try {
+      const contents = goesWith(await api.threadContents(group.slug, number));
+      const yes = await ask({
+        title: `Delete “${thread.title}”?`,
+        text: `${contents ? `Its ${contents} go with it. ` : ""}This cannot be undone.`,
+        action: "Delete the thread",
+        danger: true,
+      });
+      if (!yes) return;
+      await api.deleteThread(group.slug, number);
+      toast("The thread was deleted.");
+      await goto(`/g/${group.slug}/forum`);
+    } catch (error) {
+      toastError(error);
+    }
+  }
+
   function reply(to: number) {
     replyTo = to;
     composer?.focus();
@@ -177,7 +204,10 @@
   <UnderConstruction back="/g/{group.slug}" label="Back to the dashboard" />
 {:else}
 <main class="page page--narrow">
-  {#if missing}
+  {#if gone}
+    <h1>This thread was deleted</h1>
+    <p>Its messages went with it. <a class="link" href="/g/{group.slug}/forum">Back to the forum</a>.</p>
+  {:else if missing}
     <h1>Thread not found</h1>
     <p>There is no thread <span class="identifier">t{number}</span> in {group.name}.</p>
   {:else if thread}
@@ -201,17 +231,26 @@
           <span class="row" data-density="compact">
             <span class="identifier quiet">t{thread.number}</span>
             <stemma-copy-button value="t{thread.number}" label="Copy the address t{thread.number}"></stemma-copy-button>
-            {#if canRename}
-              <button
-                type="button"
-                class="button button--quiet button--small"
-                onclick={() => {
-                  title = thread?.title ?? "";
-                  renaming = true;
-                }}
-              >
-                Rename
-              </button>
+            {#if canManage}
+              <stemma-menu>
+                <button type="button" class="button button--quiet button--icon button--small" aria-label="More for this thread">
+                  <Glyph name="more" small />
+                </button>
+                <div class="menu">
+                  <button
+                    type="button"
+                    class="menu__item"
+                    onclick={() => {
+                      title = thread?.title ?? "";
+                      renaming = true;
+                    }}
+                  >
+                    <Glyph name="edit" small /> Rename
+                  </button>
+                  <hr class="menu__separator" />
+                  <button type="button" class="menu__item menu__item--danger" onclick={remove}>Delete</button>
+                </div>
+              </stemma-menu>
             {/if}
           </span>
         </div>

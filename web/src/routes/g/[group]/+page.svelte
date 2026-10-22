@@ -36,6 +36,8 @@
         if (event.thread.kind === "chat" && chats) chats = applyThreadEvent(chats, event).slice(0, SHOWN);
         if (event.thread.kind === "discussion" && threads)
           threads = applyThreadEvent(threads, event).slice(0, SHOWN);
+      } else if (event.type === "thread_deleted" || event.type === "paper_deleted") {
+        load();
       }
     });
   });

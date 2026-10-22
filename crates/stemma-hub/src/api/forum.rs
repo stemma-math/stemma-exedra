@@ -628,6 +628,45 @@ pub async fn edit_message(
     Ok(Json(message))
 }
 
+/// The thread `number`, if the viewer may delete it: whoever opened it,
+/// or a group admin. Agents never delete.
+async fn deletable_thread(
+    state: &AppState,
+    viewer: &Viewer,
+    slug: &str,
+    number: u32,
+) -> ApiResult<(Membership, ThreadRow)> {
+    viewer.require_full()?;
+    let group = Membership::of(state, viewer, slug).await?;
+    let row = find_thread(state, group.group_id, number).await?;
+    if row.creator.user_id != viewer.id {
+        group.require_admin()?;
+    }
+    Ok((group, row))
+}
+
+/// What deleting a thread would take with it.
+pub async fn thread_contents(
+    State(state): State<AppState>,
+    viewer: Viewer,
+    Path((slug, number)): Path<(String, u32)>,
+) -> ApiResult<Json<stemma_core::api::Contents>> {
+    let (_, row) = deletable_thread(&state, &viewer, &slug, number).await?;
+    Ok(Json(crate::removal::thread_contents(&state, row.id).await?))
+}
+
+/// Deletes a thread or a chat, with its messages, files and jobs.
+pub async fn delete_thread(
+    State(state): State<AppState>,
+    viewer: Viewer,
+    Path((slug, number)): Path<(String, u32)>,
+) -> ApiResult<StatusCode> {
+    let (group, row) = deletable_thread(&state, &viewer, &slug, number).await?;
+    crate::removal::thread(&state, row.id).await?;
+    state.publish(group.group_id, Event::ThreadDeleted { thread: number });
+    Ok(StatusCode::NO_CONTENT)
+}
+
 /// Deletes a message, with its files: its author or a group admin. The
 /// number stays, so references to it still say where it was.
 pub async fn delete_message(

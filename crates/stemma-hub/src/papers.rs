@@ -85,7 +85,7 @@ pub struct PaperRow {
     pub slug: String,
     pub title: String,
     pub repository: String,
-    created_by: i64,
+    pub created_by: i64,
     creator_username: String,
     creator_display_name: String,
     head: Option<String>,

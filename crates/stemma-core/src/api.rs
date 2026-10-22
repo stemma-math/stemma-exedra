@@ -417,6 +417,17 @@ pub struct Thread {
     pub last_message: u32,
 }
 
+/// What goes with a thread or a paper when it is deleted, to say so before.
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
+pub struct Contents {
+    /// Messages, not counting deleted ones.
+    pub messages: u32,
+    /// Files attached to them.
+    pub files: u32,
+    /// A paper's own threads, anchored to it.
+    pub threads: u32,
+}
+
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct CreateThread {
     pub title: String,
@@ -1070,5 +1081,13 @@ pub enum Event {
     /// A paper is new, or changed: its authors, or a build of it.
     PaperUpdated {
         paper: Box<Paper>,
+    },
+    /// A thread or a chat was deleted, with its messages.
+    ThreadDeleted {
+        thread: u32,
+    },
+    /// A paper was deleted, with its repository.
+    PaperDeleted {
+        paper: String,
     },
 }

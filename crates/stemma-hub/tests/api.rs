@@ -1285,6 +1285,27 @@ async fn agent_tokens_reach_only_what_their_tools_offer() {
             S::FORBIDDEN,
         ),
         (
+            Method::DELETE,
+            "/groups/geometry/threads/1".into(),
+            None,
+            S::FORBIDDEN,
+            S::FORBIDDEN,
+        ),
+        (
+            Method::GET,
+            "/groups/geometry/threads/1/contents".into(),
+            None,
+            S::FORBIDDEN,
+            S::FORBIDDEN,
+        ),
+        (
+            Method::DELETE,
+            "/groups/geometry/papers/notes".into(),
+            None,
+            S::FORBIDDEN,
+            S::FORBIDDEN,
+        ),
+        (
             Method::POST,
             "/groups/geometry/papers".into(),
             Some(json!({"slug": "notes", "title": "Notes"})),
@@ -3035,4 +3056,185 @@ async fn a_deleted_account_goes_and_what_it_wrote_stays() {
         .call(&ada, Method::DELETE, "/hub/people/999", None)
         .await;
     assert_eq!(reply.status, StatusCode::NOT_FOUND);
+}
+
+#[tokio::test]
+async fn whoever_opened_a_thread_or_an_admin_deletes_it() {
+    let hub = TestHub::new().await;
+    let ada = hub.admin_with_group().await;
+    let bob = hub.member(&ada, "bob").await;
+    let carol = hub.member(&ada, "carol").await;
+    let file = upload(&hub, &bob, "board.png", "image/png", b"\x89PNG")
+        .await
+        .json();
+    let reply = hub
+        .post(
+            &bob,
+            "/groups/geometry/threads",
+            json!({"title": "Gluing", "body": "First", "attachments": [file["id"]]}),
+        )
+        .await;
+    assert_eq!(reply.status, StatusCode::CREATED);
+    hub.post(
+        &carol,
+        "/groups/geometry/threads/1/messages",
+        json!({"body": "Second"}),
+    )
+    .await;
+    hub.post(
+        &bob,
+        "/groups/geometry/threads",
+        json!({"title": "Another", "body": "x"}),
+    )
+    .await;
+
+    let contents = hub
+        .get(&bob, "/groups/geometry/threads/1/contents")
+        .await
+        .json();
+    assert_eq!(contents, json!({"messages": 2, "files": 1, "threads": 0}));
+    // Not by another member.
+    for path in [
+        "/groups/geometry/threads/1",
+        "/groups/geometry/threads/1/contents",
+    ] {
+        let method = if path.ends_with("contents") {
+            Method::GET
+        } else {
+            Method::DELETE
+        };
+        let reply = hub.call(&carol, method, path, None).await;
+        assert_eq!(reply.status, StatusCode::FORBIDDEN, "{path}");
+    }
+
+    let reply = hub
+        .call(&bob, Method::DELETE, "/groups/geometry/threads/1", None)
+        .await;
+    assert_eq!(reply.status, StatusCode::NO_CONTENT);
+    assert_eq!(
+        hub.get(&bob, "/groups/geometry/threads/1").await.status,
+        StatusCode::NOT_FOUND
+    );
+    let messages: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM messages")
+        .fetch_one(&hub.state.db)
+        .await
+        .unwrap();
+    assert_eq!(messages, 1);
+    let files = std::fs::read_dir(hub.state.config.attachments_dir())
+        .unwrap()
+        .count();
+    assert_eq!(files, 0);
+    let found = hub
+        .get(&ada, "/groups/geometry/search?q=Second")
+        .await
+        .json();
+    assert_eq!(found, json!([]));
+
+    // An admin deletes anyone's; a new thread never takes a used number.
+    let reply = hub
+        .call(&ada, Method::DELETE, "/groups/geometry/threads/2", None)
+        .await;
+    assert_eq!(reply.status, StatusCode::NO_CONTENT);
+    let reply = hub
+        .post(
+            &carol,
+            "/groups/geometry/threads",
+            json!({"title": "Third", "body": "y"}),
+        )
+        .await;
+    assert_eq!(reply.json()["thread"]["number"], 3);
+}
+
+#[tokio::test]
+async fn whoever_created_a_paper_or_an_admin_deletes_it() {
+    let hub = TestHub::new().await;
+    let ada = hub.admin_with_group().await;
+    let bob = hub.member(&ada, "bob").await;
+    let carol = hub.member(&ada, "carol").await;
+    let reply = hub
+        .post(
+            &bob,
+            "/groups/geometry/papers",
+            json!({"slug": "notes", "title": "Notes"}),
+        )
+        .await;
+    assert_eq!(reply.status, StatusCode::CREATED, "{:?}", reply.json());
+    hub.call(
+        &bob,
+        Method::PUT,
+        "/groups/geometry/papers/notes/authors/carol",
+        None,
+    )
+    .await;
+    // Its own thread goes with it; another stays.
+    hub.post(
+        &carol,
+        "/groups/geometry/threads",
+        json!({"title": "On the notes", "body": "Typo", "anchor": "p/notes"}),
+    )
+    .await;
+    hub.post(
+        &carol,
+        "/groups/geometry/threads",
+        json!({"title": "Elsewhere", "body": "z"}),
+    )
+    .await;
+    assert!(hub.forge.repository_exists("geometry", "paper-notes"));
+
+    let contents = hub
+        .get(&bob, "/groups/geometry/papers/notes/contents")
+        .await
+        .json();
+    assert_eq!(contents, json!({"messages": 1, "files": 0, "threads": 1}));
+    // Another author only leaves it.
+    let reply = hub
+        .call(
+            &carol,
+            Method::DELETE,
+            "/groups/geometry/papers/notes",
+            None,
+        )
+        .await;
+    assert_eq!(reply.status, StatusCode::FORBIDDEN);
+
+    let reply = hub
+        .call(&bob, Method::DELETE, "/groups/geometry/papers/notes", None)
+        .await;
+    assert_eq!(reply.status, StatusCode::NO_CONTENT);
+    assert_eq!(
+        hub.get(&bob, "/groups/geometry/papers/notes").await.status,
+        StatusCode::NOT_FOUND
+    );
+    assert!(!hub.forge.repository_exists("geometry", "paper-notes"));
+    assert_eq!(
+        hub.get(&bob, "/groups/geometry/threads/1").await.status,
+        StatusCode::NOT_FOUND
+    );
+    assert_eq!(
+        hub.get(&bob, "/groups/geometry/threads/2").await.status,
+        StatusCode::OK
+    );
+    for count in [
+        "SELECT COUNT(*) FROM papers",
+        "SELECT COUNT(*) FROM paper_authors",
+        "SELECT COUNT(*) FROM paper_builds",
+    ] {
+        let left: i64 = sqlx::query_scalar(count)
+            .fetch_one(&hub.state.db)
+            .await
+            .unwrap();
+        assert_eq!(left, 0, "{count}");
+    }
+
+    // An admin deletes anyone's.
+    hub.post(
+        &carol,
+        "/groups/geometry/papers",
+        json!({"slug": "draft", "title": "Draft"}),
+    )
+    .await;
+    let reply = hub
+        .call(&ada, Method::DELETE, "/groups/geometry/papers/draft", None)
+        .await;
+    assert_eq!(reply.status, StatusCode::NO_CONTENT);
 }
