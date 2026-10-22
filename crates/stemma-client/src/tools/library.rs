@@ -11,6 +11,8 @@ pub fn definitions() -> Vec<ToolDef> {
     vec![
         ToolDef {
             name: "library_state",
+            terminal: &["library"],
+            positional: &[],
             description: "How the group's Lean library stands: its last build, how many \
                           declarations it has, which depend on sorry, and its modules.",
             input_schema: json!({
@@ -21,6 +23,8 @@ pub fn definitions() -> Vec<ToolDef> {
         },
         ToolDef {
             name: "library_lookup",
+            terminal: &["library", "lookup"],
+            positional: &["name"],
             description: "A declaration of the group's Lean library, by name (Foo.bar, or \
                           lean:Foo.bar): its kind, type, docstring, module and place, whether \
                           it is proved or depends on sorry, its axioms, the declarations it uses \
@@ -37,6 +41,8 @@ pub fn definitions() -> Vec<ToolDef> {
         },
         ToolDef {
             name: "library_search",
+            terminal: &["library", "search"],
+            positional: &["query"],
             description: "Search the group's Lean library for declarations whose name, type or \
                           docstring contain every word of the query, regardless of case.",
             input_schema: json!({

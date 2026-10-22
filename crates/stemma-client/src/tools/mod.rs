@@ -20,7 +20,7 @@ use crate::hub::{ApiError, Hub};
 const GROUP: &str = "The group's short name; the default group if absent.";
 
 /// Every tool, whatever it does.
-fn all_definitions() -> Vec<ToolDef> {
+pub fn all_definitions() -> Vec<ToolDef> {
     let mut tools = forum::definitions();
     tools.extend(library::definitions());
     tools.extend(papers::definitions());
@@ -41,6 +41,9 @@ pub fn read_only_names() -> Vec<&'static str> {
 #[derive(Clone, Debug)]
 pub struct ToolDef {
     pub name: &'static str,
+    /// Terminal command path and positional arguments, shared with MCP's schema.
+    pub terminal: &'static [&'static str],
+    pub positional: &'static [&'static str],
     pub description: &'static str,
     /// A JSON Schema for its arguments: an object.
     pub input_schema: Value,

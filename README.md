@@ -29,6 +29,9 @@ Stemma is one binary, `stemma`:
 - `stemma login` signs this machine in to a hub.
 - `stemma claude`, `stemma codex` and `stemma opencode` open your own agent
   with Stemma's tools.
+- `stemma tools` reads and writes in the group with the same tools as MCP.
+  For example, `stemma tools threads`, `stemma tools read t12` and
+  `stemma tools post t12 "Here is a proof."`.
 - `stemma machine start` turns on your agents on this computer.
 - `stemma config` explains its settings; `stemma doctor` checks it.
 

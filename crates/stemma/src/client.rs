@@ -1,11 +1,9 @@
 //! The client commands: signing in to a hub from this machine, a few plain
 //! commands for the forum, and the MCP server for agents.
 
-use std::io::{IsTerminal, Read, Write};
 use std::path::PathBuf;
 
 use clap::Args;
-use serde_json::{Value, json};
 use stemma_client::config::{self, Credentials};
 use stemma_client::mcp::StemmaServer;
 use stemma_client::tools::Toolbox;
@@ -32,89 +30,6 @@ pub struct GroupArg {
     /// The group's short name; the one chosen at login if absent.
     #[arg(long, short, env = "STEMMA_GROUP")]
     group: Option<String>,
-}
-
-#[derive(Args)]
-pub struct ThreadsArgs {
-    #[command(flatten)]
-    group: GroupArg,
-    /// Only chats.
-    #[arg(long)]
-    chats: bool,
-    /// How many.
-    #[arg(long, short = 'n', default_value_t = 30)]
-    limit: u32,
-}
-
-#[derive(Args)]
-pub struct ReadArgs {
-    /// What to read: t12, t12#45, t12#45-50, lean:Foo.bar, p/notes, or
-    /// a link to it.
-    pub address: String,
-    /// For a paper, the file of its source to read; its main file if
-    /// absent.
-    pub file: Option<String>,
-    #[command(flatten)]
-    group: GroupArg,
-}
-
-#[derive(Args)]
-pub struct PapersArgs {
-    #[command(flatten)]
-    group: GroupArg,
-}
-
-#[derive(Args)]
-pub struct PaperArgs {
-    #[command(subcommand)]
-    pub command: PaperCommand,
-    #[command(flatten)]
-    group: GroupArg,
-}
-
-#[derive(clap::Subcommand)]
-pub enum PaperCommand {
-    New {
-        /// Its short name, in its address: notes, for p/notes.
-        slug: String,
-        /// Its title.
-        #[arg(required = true)]
-        title: Vec<String>,
-    },
-}
-
-#[derive(Args)]
-pub struct PostArgs {
-    /// Where: a thread (t12), or the message to reply to (t12#45).
-    address: String,
-    /// The message, in Markdown; read from standard input if absent or `-`.
-    body: Vec<String>,
-    #[command(flatten)]
-    group: GroupArg,
-    /// The agent writing it for you, such as "Claude Code".
-    #[arg(long)]
-    agent: Option<String>,
-}
-
-#[derive(Args)]
-pub struct SearchArgs {
-    /// The words to find, and operators: `author:ada`, `since:7d`,
-    /// `in:chats`, `kind:message`.
-    #[arg(required = true)]
-    query: Vec<String>,
-    #[command(flatten)]
-    group: GroupArg,
-    #[arg(long, short = 'n', default_value_t = 20)]
-    limit: u32,
-}
-
-#[derive(Args)]
-pub struct LibraryArgs {
-    /// Words to search the declarations for; how the library stands if
-    /// absent.
-    query: Vec<String>,
-    #[command(flatten)]
-    group: GroupArg,
 }
 
 #[derive(Args)]
@@ -189,134 +104,6 @@ pub async fn logout() -> anyhow::Result<()> {
     }
     println!("Signed out.");
     Ok(())
-}
-
-/// The tools, as configured on this machine.
-fn toolbox(group: GroupArg) -> anyhow::Result<Toolbox> {
-    let config = Credentials::load()?.with_env();
-    Ok(Toolbox::new(
-        config.hub()?,
-        config::active_group(group.group)?,
-    ))
-}
-
-async fn run(
-    toolbox: &Toolbox,
-    tool: &str,
-    args: Value,
-    agent: Option<&str>,
-) -> anyhow::Result<()> {
-    let text = toolbox.call(tool, args, agent).await?;
-    crate::output::text(&text);
-    std::io::stdout().flush()?;
-    Ok(())
-}
-
-pub async fn threads(args: ThreadsArgs) -> anyhow::Result<()> {
-    let toolbox = toolbox(args.group)?;
-    let mut call = json!({"limit": args.limit});
-    if args.chats {
-        call["kind"] = json!("chat");
-    }
-    run(&toolbox, "list_threads", call, None).await
-}
-
-pub async fn read(args: ReadArgs) -> anyhow::Result<()> {
-    let toolbox = toolbox(args.group)?;
-    if let Some(file) = args.file {
-        return run(
-            &toolbox,
-            "read_paper",
-            json!({"address": args.address, "file": file}),
-            None,
-        )
-        .await;
-    }
-    run(
-        &toolbox,
-        "read_thread",
-        json!({"address": args.address}),
-        None,
-    )
-    .await
-}
-
-pub async fn papers(args: PapersArgs) -> anyhow::Result<()> {
-    let toolbox = toolbox(args.group)?;
-    run(&toolbox, "list_papers", json!({}), None).await
-}
-
-pub async fn paper(args: PaperArgs) -> anyhow::Result<()> {
-    let toolbox = toolbox(args.group)?;
-    let group = toolbox.group(None).await?;
-    match args.command {
-        PaperCommand::New { slug, title } => {
-            let slug = slug.strip_prefix("p/").unwrap_or(&slug);
-            let paper = toolbox
-                .hub()
-                .create_paper(&group, slug, &title.join(" "))
-                .await?;
-            println!(
-                "Created p/{}, “{}”: {}{}",
-                paper.slug,
-                paper.title,
-                toolbox.hub().base(),
-                stemma_core::Address::Paper(paper.slug.clone()).web_path(&group)
-            );
-            println!(
-                "Clone it with a personal token as the password: git clone {}{}",
-                toolbox.hub().base(),
-                paper.clone_path
-            );
-            if let Some(url) = &paper.forge_url {
-                println!("Or in the forge: {url}");
-            }
-        }
-    }
-    Ok(())
-}
-
-pub async fn post(args: PostArgs) -> anyhow::Result<()> {
-    let toolbox = toolbox(args.group)?;
-    let body = if args.body.is_empty() || args.body == ["-"] {
-        if std::io::stdin().is_terminal() {
-            eprintln!("Write the message, and end it with Ctrl-D.");
-        }
-        let mut body = String::new();
-        std::io::stdin().read_to_string(&mut body)?;
-        body
-    } else {
-        args.body.join(" ")
-    };
-    anyhow::ensure!(!body.trim().is_empty(), "the message is empty");
-    run(
-        &toolbox,
-        "post_message",
-        json!({"thread": args.address, "body": body}),
-        args.agent.as_deref(),
-    )
-    .await
-}
-
-pub async fn search(args: SearchArgs) -> anyhow::Result<()> {
-    let toolbox = toolbox(args.group)?;
-    run(
-        &toolbox,
-        "search",
-        json!({"query": args.query.join(" "), "limit": args.limit}),
-        None,
-    )
-    .await
-}
-
-pub async fn library(args: LibraryArgs) -> anyhow::Result<()> {
-    let toolbox = toolbox(args.group)?;
-    if args.query.is_empty() {
-        run(&toolbox, "library_state", json!({}), None).await
-    } else {
-        let query = args.query.join(" ");
-        run(&toolbox, "library_search", json!({"query": query}), None).await
-    }
 }
 
 pub async fn mcp(args: McpArgs) -> anyhow::Result<()> {

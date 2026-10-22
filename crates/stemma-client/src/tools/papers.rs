@@ -11,7 +11,21 @@ use crate::format;
 pub fn definitions() -> Vec<ToolDef> {
     vec![
         ToolDef {
+            name: "create_paper",
+            terminal: &["paper", "new"],
+            positional: &["slug", "title"],
+            description: "Create a working paper from the group's template.",
+            input_schema: json!({"type": "object", "properties": {
+                "group": {"type": "string", "description": GROUP},
+                "slug": {"type": "string", "description": "The paper's short name."},
+                "title": {"type": "string", "description": "The paper's title."}
+            }, "required": ["slug", "title"]}),
+            writes: true,
+        },
+        ToolDef {
             name: "list_papers",
+            terminal: &["papers"],
+            positional: &[],
             description: "List the group's working papers, the readable account of what the \
                           group is doing, each a LaTeX repository: their addresses (p/notes), \
                           titles, authors and how their PDFs stand.",
@@ -23,6 +37,8 @@ pub fn definitions() -> Vec<ToolDef> {
         },
         ToolDef {
             name: "read_paper",
+            terminal: &["papers", "read"],
+            positional: &["address"],
             description: "Read a working paper's LaTeX source, by address (p/notes), at its \
                           main: who writes it, how its PDF stands, its files, and its main \
                           file (main.tex), or the file asked for (sections/intro.tex).",
@@ -45,6 +61,7 @@ pub fn definitions() -> Vec<ToolDef> {
 /// Runs a papers' tool, if `name` is one.
 pub async fn call(toolbox: &Toolbox, name: &str, args: Value) -> Option<ToolResult> {
     Some(match name {
+        "create_paper" => create(toolbox, args).await,
         "list_papers" => list(toolbox, args).await,
         "read_paper" => read(toolbox, args).await,
         _ => return None,
@@ -114,5 +131,29 @@ pub async fn read(toolbox: &Toolbox, args: Value) -> ToolResult {
         &source,
         file,
         &text,
+    ))
+}
+
+#[derive(Deserialize)]
+struct Create {
+    group: Option<String>,
+    slug: String,
+    title: String,
+}
+async fn create(toolbox: &Toolbox, args: Value) -> ToolResult {
+    let args: Create = parse(args)?;
+    let group = toolbox.group(args.group.as_deref()).await?;
+    let paper = toolbox
+        .hub()
+        .create_paper(&group, args.slug.trim_start_matches("p/"), &args.title)
+        .await?;
+    Ok(format!(
+        "Created p/{}, “{}”: {}{}\nClone it with a personal token as the password: git clone {}{}\n",
+        paper.slug,
+        paper.title,
+        toolbox.hub().base(),
+        Address::Paper(paper.slug.clone()).web_path(&group),
+        toolbox.hub().base(),
+        paper.clone_path
     ))
 }

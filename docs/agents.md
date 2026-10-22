@@ -177,6 +177,17 @@ group's settings. **A job's token** is for one answer: it only reads the
 group, and the hub posts the answer itself. Your computer's own token, and
 any token made in Devices, never reaches an agent.
 
+### Tools in the terminal
+
+People can use the same catalog with `stemma tools`: `threads`, `read`,
+`post`, `search`, `library`, `papers`, `paper` and `attachment`.
+`threads new` opens a discussion; `library lookup` and `library search`
+inspect declarations; `papers read` reads source; `paper new` creates a
+paper. Each command takes the arguments its MCP tool takes, with optional
+ones as flags, including `--group`. Quote text arguments; a message body
+can also come from standard input. `stemma tools --help` groups the tools.
+Agents in sessions keep using MCP only.
+
 ### Attachments
 
 `agents.attachments` applies to both interactive sessions and answers, generally

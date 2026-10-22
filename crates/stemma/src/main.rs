@@ -5,6 +5,7 @@ mod launcher;
 mod machine;
 mod output;
 mod settings;
+mod tools;
 
 use std::io::{BufRead, IsTerminal};
 use std::path::PathBuf;
@@ -23,22 +24,14 @@ Your account:
   logout      Sign out
   group       Show or choose the active group
 
-The forum:
-  threads     List threads
-  read        Read a thread, declaration or paper
-  post        Post a message
-  search      Search the forum
-
-Library and papers:
-  library     Browse the library
-  papers      List working papers
-  paper       Create a working paper
-
 Your agents:
   claude      Open Claude Code
   codex       Open Codex
   opencode    Open OpenCode
   mcp         Serve Stemma's tools
+
+The group:
+  tools       Read and write in the group, as your agents do
 
 This computer:
   machine     Manage the agents' service and image
@@ -74,21 +67,8 @@ enum Command {
     Group(settings::GroupArgs),
     /// Explain and edit this computer's settings.
     Config(settings::ConfigArgs),
-    /// List a group's threads.
-    Threads(client::ThreadsArgs),
-    /// Read a thread, some of its messages, a declaration or a
-    /// paper's source: t12, t12#45-50, lean:Foo.bar, p/notes.
-    Read(client::ReadArgs),
-    /// Post a message in a thread, or in reply to a message.
-    Post(client::PostArgs),
-    /// Search a group's threads and messages.
-    Search(client::SearchArgs),
-    /// How the group's library stands, or search it.
-    Library(client::LibraryArgs),
-    /// List the group's working papers; read one with `stemma read p/notes`.
-    Papers(client::PapersArgs),
-    /// Create a working paper, from the template.
-    Paper(client::PaperArgs),
+    /// Read and write in the group, as your agents do.
+    Tools,
     /// Open your Claude Code, with Stemma's tools and instructions for the
     /// session.
     Claude(launcher::LaunchArgs),
@@ -144,8 +124,12 @@ async fn main() -> anyhow::Result<()> {
     policy.apply_to_console(stemma_design_terminal::Stream::Stderr);
     cliclack::set_theme(stemma_design_terminal::themes::cliclack::Theme::new(policy));
     let matches = Cli::command()
+        .mut_subcommand("tools", |_| tools::command())
         .help_template(output::help(HELP))
         .get_matches();
+    if let Some(("tools", args)) = matches.subcommand() {
+        return tools::run(args).await;
+    }
     let cli = Cli::from_arg_matches(&matches)?;
     // Standard output is for what commands print, and for MCP's messages:
     // logs go to standard error, and the client commands log only problems.
@@ -194,13 +178,7 @@ async fn main() -> anyhow::Result<()> {
         }
         Command::Group(args) => settings::group(args).await,
         Command::Config(args) => settings::config(args),
-        Command::Threads(args) => client::threads(args).await,
-        Command::Read(args) => client::read(args).await,
-        Command::Post(args) => client::post(args).await,
-        Command::Search(args) => client::search(args).await,
-        Command::Library(args) => client::library(args).await,
-        Command::Papers(args) => client::papers(args).await,
-        Command::Paper(args) => client::paper(args).await,
+        Command::Tools => unreachable!("tools are handled from the shared catalog"),
         Command::Mcp(args) => client::mcp(args).await,
         Command::Claude(args) => exit(launcher::launch(runners::CLAUDE_CODE, args).await?),
         Command::Codex(args) => exit(launcher::launch(runners::CODEX, args).await?),
@@ -250,9 +228,7 @@ fn read_password(from_stdin: bool) -> anyhow::Result<String> {
 
 #[cfg(test)]
 mod tests {
-    use clap::Parser;
-
-    use super::{Cli, Command};
+    use super::Cli;
 
     #[test]
     fn every_command_is_listed_once() {
@@ -267,45 +243,6 @@ mod tests {
                 "{}",
                 command.get_name()
             );
-        }
-    }
-
-    fn parse(args: &[&str]) -> Cli {
-        Cli::try_parse_from(args).unwrap_or_else(|e| panic!("{args:?}: {e}"))
-    }
-
-    #[test]
-    fn papers_are_listed_created_and_read() {
-        assert!(matches!(
-            parse(&["stemma", "papers", "--group", "geometry"]).command,
-            Command::Papers(_)
-        ));
-        match parse(&["stemma", "paper", "new", "notes", "Notes on gluing"]).command {
-            Command::Paper(args) => {
-                let crate::client::PaperCommand::New { slug, title } = args.command;
-                assert_eq!(slug, "notes");
-                assert_eq!(title, ["Notes on gluing"]);
-            }
-            _ => panic!("not a paper"),
-        }
-        match parse(&["stemma", "paper", "new", "notes", "Notes", "on", "gluing"]).command {
-            Command::Paper(args) => {
-                let crate::client::PaperCommand::New { title, .. } = args.command;
-                assert_eq!(title.join(" "), "Notes on gluing");
-            }
-            _ => panic!("not a paper"),
-        }
-        assert!(Cli::try_parse_from(["stemma", "paper", "new", "notes"]).is_err());
-        match parse(&["stemma", "read", "p/notes", "sections/intro.tex"]).command {
-            Command::Read(args) => {
-                assert_eq!(args.address, "p/notes");
-                assert_eq!(args.file.as_deref(), Some("sections/intro.tex"));
-            }
-            _ => panic!("not a read"),
-        }
-        match parse(&["stemma", "read", "p/notes"]).command {
-            Command::Read(args) => assert_eq!(args.file, None),
-            _ => panic!("not a read"),
         }
     }
 }

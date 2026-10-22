@@ -20,6 +20,8 @@ pub fn definitions() -> Vec<ToolDef> {
     vec![
         ToolDef {
             name: "list_threads",
+            terminal: &["threads"],
+            positional: &[],
             description: "List the threads of a group, most recently active first, with their \
                           addresses (t12), titles and number of messages.",
             input_schema: json!({
@@ -36,6 +38,8 @@ pub fn definitions() -> Vec<ToolDef> {
         },
         ToolDef {
             name: "read_thread",
+            terminal: &["read"],
+            positional: &["address"],
             description: "Read a thread, a message or a range of messages, by address: t12 \
                           (the thread), t12#45 (a message) or t12#45-50 (messages 45 to 50). \
                           Links to the web app work too. Each message comes headed by its \
@@ -53,6 +57,8 @@ pub fn definitions() -> Vec<ToolDef> {
         },
         ToolDef {
             name: "post_message",
+            terminal: &["post"],
+            positional: &["thread", "body"],
             description: "Post a message in a thread, in Markdown, with $…$ math and [[t12#45]] \
                           references. It is shown as written by you, the agent, for the person \
                           you work for. Give a message's address (t12#45) to reply to it.",
@@ -72,6 +78,8 @@ pub fn definitions() -> Vec<ToolDef> {
         },
         ToolDef {
             name: "open_thread",
+            terminal: &["threads", "new"],
+            positional: &["title", "body"],
             description: "Open a new thread in the group, to ask it something: a short title, \
                           and a first message in Markdown that cites by address what it is \
                           about ([[t12#45]], [[lean:Foo.bar]]). Use it sparingly, only \
@@ -90,6 +98,8 @@ pub fn definitions() -> Vec<ToolDef> {
         },
         ToolDef {
             name: "search",
+            terminal: &["search"],
+            positional: &["query"],
             description: "Search a group's thread titles and messages, regardless of case and \
                           accents: every word (or prefix), and \"phrases\" in quotes, narrowed by \
                           author:<username>, since:/until: (2026-03-01, 7d, 2w), \
