@@ -36,7 +36,7 @@ hub's admin.
 
 ## Administration
 
-Hub admins open **Hub** from the account menu to review group requests,
+Hub admins open **Hub administration** from the account menu to review group requests,
 see all groups and their member counts, and grant or remove hub admin access.
 The last hub admin cannot be removed. Group admin and hub admin are separate
 roles: approving a request makes its requester the new group's admin.

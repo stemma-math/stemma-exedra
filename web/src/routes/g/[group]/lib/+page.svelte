@@ -86,12 +86,7 @@
     <div class="library-layout">
       <aside class="stack">
         <LibraryStatus {library} group={group.slug} />
-        {#if library.forge}
-          <p class="row">
-            <a class="button button--link" href={library.forge.repository}>The library in the forge</a>
-            <a class="button button--link" href={library.forge.organization}>The group in the forge</a>
-          </p>
-        {/if}
+
         <details class="card disclosure">
           <summary>Work on it with git</summary>
           <p>It is a Lean project on Mathlib. Clone it with a personal token, from your settings, as the password:</p>

@@ -233,7 +233,7 @@
         <span class="identifier">{group.slug}</span>, where everyone signs in with their Stemma account and works as
         their role allows.
       </p>
-      <p><a class="button" href={forge} target="_blank" rel="noreferrer"><Glyph name="link" /> The group in the forge</a></p>
+      <p><a class="button" href={forge} target="_blank" rel="noopener noreferrer">The group in the forge <Glyph name="arrow-up-right" small /></a></p>
     {:else}
       <p class="quiet">This hub runs without a forge: the group has no repositories.</p>
     {/if}

@@ -154,7 +154,7 @@
       {#each images as image (image.id)}
         <li>
           <figure class="post__image">
-            <a href={hubUrl(image.url)} target="_blank" rel="noopener">
+            <a href={hubUrl(image.url)} target="_blank" rel="noopener noreferrer">
               <img src={hubUrl(image.url)} alt={image.name} loading="lazy" />
             </a>
             <figcaption class="quiet">{image.name}</figcaption>

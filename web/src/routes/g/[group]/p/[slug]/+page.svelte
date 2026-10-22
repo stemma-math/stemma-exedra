@@ -110,10 +110,7 @@
     </header>
 
     <div class="row">
-      {#if paper.forge_url}
-        <stemma-copy-button value={paper.forge_url} label="Copy repository address"></stemma-copy-button>
-        <span class="identifier truncate" title={paper.forge_url}>{paper.forge_url}</span>
-      {/if}
+
       <a class="button" href="/g/{group.slug}/p/{paper.slug}/edit"><Glyph name="edit" /> Editor</a>
 
       <button type="button" class="button" data-opens="paper-build">
@@ -147,7 +144,7 @@
         <object class="paper-pdf card" data={pdfUrl} type="application/pdf" title="The PDF of p/{paper.slug}">
           <div class="card__body stack">
             <p class="quiet">This browser cannot show the PDF here.</p>
-            <p><a class="button" href={pdfUrl} target="_blank" rel="noreferrer">Open the PDF</a></p>
+            <p><a class="button" href={pdfUrl} target="_blank" rel="noopener noreferrer">Open the PDF <Glyph name="arrow-up-right" small /></a></p>
           </div>
         </object>
       {:else if navigator.pdfViewerEnabled}
@@ -155,13 +152,13 @@
       {:else}
         <div class="card card__body stack">
           <p class="quiet">This browser cannot show the PDF here.</p>
-          <p><a class="button" href={pdfUrl} target="_blank" rel="noreferrer">Open the PDF</a></p>
+          <p><a class="button" href={pdfUrl} target="_blank" rel="noopener noreferrer">Open the PDF <Glyph name="arrow-up-right" small /></a></p>
         </div>
       {/if}
       <p class="quiet">
         Compiled from <span class="identifier">{paper.pdf.commit.slice(0, 10)}</span>,
         <time datetime={paper.pdf.built_at}>{exactly(paper.pdf.built_at)}</time>, {fileSize(paper.pdf.size)}.
-        <a class="button button--link" href={pdfUrl} target="_blank" rel="noreferrer">Open the PDF</a>
+        <a class="button button--link" href={pdfUrl} target="_blank" rel="noopener noreferrer">Open the PDF <Glyph name="arrow-up-right" small /></a>
       </p>
     {:else}
       <div class="card card--empty card__body">

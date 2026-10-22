@@ -22,11 +22,11 @@
   <main class="page page--narrow stack stack--loose">
     <header class="row"><h1 class="grow">Your groups</h1><button type="button" class="button button--primary" onclick={() => {open = true;}}>{session.me?.hub_admin ? "Create group" : "Request a group"}</button></header>
     <label class="field"><span class="field__label">Search groups</span><input class="input" type="search" bind:value={search} placeholder="Name or short name" /></label>
-    <ul class="card row-list">
+    <div class="card"><div class="table groups-list">
       {#each groups as group (group.slug)}
-        <li><a class="row-list__item" href="/g/{group.slug}"><span class="row-list__text"><span class="row-list__name">{group.name}</span><span class="row-list__description identifier">{group.slug}</span></span><span class="row-list__control"><span class="chip">{ROLE_NAMES[group.role]}</span><Glyph name="chevron-right" small /></span></a></li>
-      {:else}<li class="row-list__item"><span class="quiet">{search ? "No groups match your search." : "You are not in any group yet. Request one, or ask a group's admin for an invitation."}</span></li>{/each}
-    </ul>
+        <a class="table__row" href="/g/{group.slug}"><span class="row-list__text"><span class="row-list__name">{group.name}</span><span class="row-list__description identifier">{group.slug}</span></span><span class="row-list__control"><span class="chip">{ROLE_NAMES[group.role]}</span><Glyph name="chevron-right" small /></span></a>
+      {:else}<div class="table__row"><span class="quiet">{search ? "No groups match your search." : "You are not in any group yet. Request one, or ask a group's admin for an invitation."}</span></div>{/each}
+    </div></div>
     {#if loadingRequests}<div class="skeleton loading-placeholder" role="status" aria-label="Loading group requests"></div>
     {:else if requests.length}
       <section class="stack"><h2 class="label">Your requests</h2><ul class="card row-list">

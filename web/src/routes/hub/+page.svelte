@@ -29,7 +29,7 @@
 <svelte:head><title>Hub – Stemma</title></svelte:head>
 <AccountFrame>
   <main class="page page--narrow stack stack--loose">
-    <header class="row"><h1 class="grow">Hub</h1><a class="button button--quiet" href="/groups">Your groups</a></header>
+    <header class="row"><h1 class="grow">Hub</h1></header>
     {#if !session.me?.hub_admin}<p class="message message--danger" role="alert">Only the hub's admins can open this page.</p>
     {:else if error}<p class="message message--danger" role="alert">{error}</p><button type="button" class="button" onclick={refresh}>Try again</button>
     {:else if loading}<div class="skeleton loading-placeholder" role="status" aria-label="Loading hub"></div>

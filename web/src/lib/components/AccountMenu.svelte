@@ -37,7 +37,7 @@
       <button type="button" class="menu__item" onclick={() => openSettings()}><Glyph name="settings" small /> Settings</button>
       {#if session.me.hub_admin}
         <hr class="menu__separator" />
-        <a class="menu__item" href="/hub"><span class="grow">Hub</span><Glyph name="arrow-right" small /></a>
+        <a class="menu__item" href="/hub"><Glyph name="shield" small /><span class="grow">Hub administration</span><Glyph name="arrow-right" small /></a>
       {/if}
       <hr class="menu__separator" />
       <button type="button" class="menu__item" onclick={leave}><Glyph name="log-out" small /> Log out</button>

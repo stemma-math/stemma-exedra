@@ -18,6 +18,7 @@
 
   const RECENT = 6;
   let papers = $state<Paper[]>([]);
+  let forge = $state<string | null>(null);
   let chats = $state<Thread[]>([]);
   let threads = $state<Thread[]>([]);
 
@@ -45,6 +46,7 @@
 
   $effect(() => {
     void group.slug;
+    void api.library(group.slug).then((library) => { forge = library.forge?.organization ?? null; }).catch(() => { forge = null; });
     loadPapers();
     loadChats();
     loadThreads();
@@ -80,6 +82,8 @@
         <Glyph name="chevron-up-down" small />
       </button>
       <div class="menu">
+        <a class="menu__item" href="{base}/settings"><Glyph name="settings" small /><span class="grow">Group settings</span><Glyph name="arrow-right" small /></a>
+        <hr class="menu__separator" />
         <p class="menu__heading">Your groups</p>
         {#each session.me?.groups ?? [] as other (other.slug)}
           <a class="menu__item" href="/g/{other.slug}" aria-current={other.slug === group.slug ? "true" : undefined}>
@@ -113,11 +117,9 @@
           <Glyph name="book" /><span class="nav-item__label">Library</span>
         </a>
       </li>
-      <li>
-        <a class="nav-item" href="{base}/settings" aria-current={current(`${base}/settings`)}>
-          <Glyph name="settings" /><span class="nav-item__label">Group settings</span>
-        </a>
-      </li>
+      {#if forge}
+        <li><a class="nav-item" href={forge} target="_blank" rel="noopener noreferrer"><Glyph name="anvil" /><span class="nav-item__label">Forge</span><Glyph name="arrow-up-right" small /></a></li>
+      {/if}
     </ul>
 
     <div class="sidebar__section nav-section__head">
@@ -203,7 +205,7 @@
         {#if desktopUI.signedOut}
           <span class="chip chip--warning">Signed out</span>
         {:else}
-          <span class="chip" class:chip--success={desktopUI.serviceConnected}>{desktopUI.serviceConnected && desktopUI.agentsEnabled ? "Agents on" : "Agents off"}</span>
+          <span class="indicator" class:indicator--active={!!desktopUI.serviceConnected && desktopUI.agentsEnabled}><span class="indicator__dot" aria-hidden="true"></span>{desktopUI.serviceConnected && desktopUI.agentsEnabled ? "Agents on" : "Agents off"}</span>
         {/if}
       </div>
     {/if}
