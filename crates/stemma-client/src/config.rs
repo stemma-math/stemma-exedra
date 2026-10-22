@@ -84,7 +84,7 @@ impl Credentials {
             .token
             .clone()
             .context("no token for the hub: run `stemma login <hub>`")?;
-        Hub::new(url, Some(token))
+        Ok(Hub::new(url, Some(token))?.local(Paths::discover()?))
     }
 }
 
@@ -901,5 +901,247 @@ mod attachment_tests {
         .unwrap();
         assert_eq!(settings.attachments(Some("algebra")).unwrap(), Rule::Mine);
         assert!(parse("[agents]\nattachments = 'all'", BTreeMap::new()).is_err());
+    }
+}
+
+impl Paths {
+    /// Reconcile names by stable ID. A busy workspace is retried on the next
+    /// hub exchange; a pre-existing destination is never overwritten.
+    pub fn reconcile_groups(
+        &self,
+        hub: &str,
+        groups: &[stemma_core::api::Group],
+    ) -> anyhow::Result<()> {
+        std::fs::create_dir_all(&self.state)?;
+        let guard = std::fs::OpenOptions::new()
+            .create(true)
+            .truncate(false)
+            .read(true)
+            .write(true)
+            .open(self.state.join("names.lock"))?;
+        guard.lock()?;
+        let registry = self.state.join("group-names.toml");
+        let mut known: BTreeMap<String, BTreeMap<String, String>> = read_optional(&registry)?
+            .map(|s| toml::from_str(&s))
+            .transpose()?
+            .unwrap_or_default();
+        let names = known.entry(hub.into()).or_default();
+        for group in groups {
+            validate_slug(&group.slug)?;
+            let key = group.id.to_string();
+            if let Some(old) = names.get(&key).filter(|old| *old != &group.slug) {
+                validate_slug(old)?;
+                let settings_path = self.config.join("config.toml");
+                let text = read_optional(&settings_path)?.unwrap_or_default();
+                let mut doc = text.parse::<DocumentMut>()?;
+                if doc.get("groups").and_then(|v| v.get(&group.slug)).is_some() {
+                    anyhow::bail!(
+                        "Cannot rename {old} to {}: settings already exist for that name",
+                        group.slug
+                    );
+                }
+                let settings = Settings::parse(
+                    settings_path.clone(),
+                    &text,
+                    self,
+                    std::env::vars().collect(),
+                )?;
+                let from = settings.workspace(old)?;
+                let mut to = settings.workspace(&group.slug)?;
+                if matches!(
+                    settings.get("agents.workspace", Some(old))?.source,
+                    Source::Group(_)
+                ) {
+                    // An exact custom workspace is the person's chosen path.
+                    to = from.clone();
+                }
+                let locks = self.state.join("groups");
+                std::fs::create_dir_all(&locks)?;
+                let open = |slug: &str, suffix: &str| {
+                    std::fs::OpenOptions::new()
+                        .create(true)
+                        .truncate(false)
+                        .read(true)
+                        .write(true)
+                        .open(locks.join(format!("{slug}{suffix}")))
+                };
+                let update = open(&key, ".update.lock")?;
+                let lease = open(&key, ".lock")?;
+                if update.try_lock().is_err() || lease.try_lock().is_err() {
+                    continue;
+                }
+                if from != to && from.exists() {
+                    anyhow::ensure!(
+                        !to.exists(),
+                        "Cannot rename {}: {} already exists",
+                        from.display(),
+                        to.display()
+                    );
+                    if let Some(parent) = to.parent() {
+                        std::fs::create_dir_all(parent)?;
+                    }
+                    std::fs::rename(&from, &to)?;
+                }
+                if let Some(table) = doc.get_mut("groups").and_then(|g| g.as_table_mut())
+                    && let Some(value) = table.remove(old)
+                {
+                    table.insert(&group.slug, value);
+                    private_write(&settings_path, doc.to_string().as_bytes())?;
+                }
+                if read_optional(&self.state.join("group"))?.is_some_and(|s| s.trim() == old) {
+                    self.use_group(&group.slug)?;
+                }
+            }
+            names.insert(key, group.slug.clone());
+        }
+        private_write(&registry, toml::to_string(&known)?.as_bytes())
+    }
+    /// A busy group's workspace keeps its last local name until it can move.
+    pub fn group_slug(&self, hub: &str, id: i64, current: &str) -> anyhow::Result<String> {
+        let known: BTreeMap<String, BTreeMap<String, String>> =
+            read_optional(&self.state.join("group-names.toml"))?
+                .map(|s| toml::from_str(&s))
+                .transpose()?
+                .unwrap_or_default();
+        Ok(known
+            .get(hub)
+            .and_then(|groups| groups.get(&id.to_string()))
+            .cloned()
+            .unwrap_or_else(|| current.into()))
+    }
+    pub fn update_username(&self, hub: &str, token: &str, username: &str) -> anyhow::Result<()> {
+        let path = self.config.join("credentials.toml");
+        let mut credentials = Credentials::load_from(&path)?;
+        if credentials
+            .hub
+            .as_deref()
+            .is_some_and(|url| url.trim_end_matches('/') == hub.trim_end_matches('/'))
+            && credentials.token.as_deref() == Some(token)
+            && credentials.username.as_deref() != Some(username)
+        {
+            credentials.username = Some(username.into());
+            credentials.save_to(&path)?;
+        }
+        Ok(())
+    }
+}
+
+#[cfg(test)]
+mod name_tests {
+    use super::*;
+    #[test]
+    fn renaming_a_group_preserves_settings_and_work_and_refuses_overwrite() {
+        let root = tempfile::tempdir().unwrap();
+        let paths = Paths {
+            config: root.path().join("config"),
+            state: root.path().join("state"),
+            data: root.path().join("data"),
+        };
+        let mut group = stemma_core::api::Group {
+            id: 3,
+            slug: "algebra".into(),
+            name: "Algebra".into(),
+            role: stemma_core::api::Role::Admin,
+            created_at: time::OffsetDateTime::UNIX_EPOCH,
+        };
+        paths
+            .reconcile_groups("http://test", &[group.clone()])
+            .unwrap();
+        std::fs::create_dir_all(&paths.config).unwrap();
+        std::fs::write(
+            paths.config.join("config.toml"),
+            "# Keep this comment\n[groups.algebra.agents]\npriority = 'high'\n",
+        )
+        .unwrap();
+        std::fs::create_dir_all(paths.data.join("groups/algebra/library/.lake")).unwrap();
+        std::fs::write(
+            paths.data.join("groups/algebra/library/.lake/cache"),
+            "keep",
+        )
+        .unwrap();
+        paths.use_group("algebra").unwrap();
+        group.slug = "geometry".into();
+        std::fs::create_dir_all(paths.state.join("groups")).unwrap();
+        let lease = std::fs::OpenOptions::new()
+            .create(true)
+            .truncate(false)
+            .read(true)
+            .write(true)
+            .open(paths.state.join("groups/3.lock"))
+            .unwrap();
+        lease.lock_shared().unwrap();
+        paths
+            .reconcile_groups("http://test", &[group.clone()])
+            .unwrap();
+        assert_eq!(
+            paths.group_slug("http://test", 3, "geometry").unwrap(),
+            "algebra"
+        );
+        assert!(
+            paths
+                .data
+                .join("groups/algebra/library/.lake/cache")
+                .exists()
+        );
+        drop(lease);
+        std::fs::create_dir_all(paths.data.join("groups/geometry")).unwrap();
+        assert!(
+            paths
+                .reconcile_groups("http://test", &[group.clone()])
+                .is_err()
+        );
+        assert!(
+            paths
+                .data
+                .join("groups/algebra/library/.lake/cache")
+                .exists()
+        );
+        std::fs::remove_dir(paths.data.join("groups/geometry")).unwrap();
+        paths.reconcile_groups("http://test", &[group]).unwrap();
+        assert_eq!(
+            std::fs::read_to_string(paths.data.join("groups/geometry/library/.lake/cache"))
+                .unwrap(),
+            "keep"
+        );
+        let text = std::fs::read_to_string(paths.config.join("config.toml")).unwrap();
+        assert!(text.contains("# Keep this comment"));
+        assert!(text.contains("groups.geometry.agents"), "{text}");
+        assert!(!text.contains("groups.algebra"));
+        assert_eq!(
+            std::fs::read_to_string(paths.state.join("group")).unwrap(),
+            "geometry\n"
+        );
+    }
+    #[test]
+    fn username_updates_only_the_matching_credentials() {
+        let root = tempfile::tempdir().unwrap();
+        let paths = Paths {
+            config: root.path().join("config"),
+            state: root.path().join("state"),
+            data: root.path().join("data"),
+        };
+        let file = paths.config.join("credentials.toml");
+        Credentials {
+            hub: Some("http://test".into()),
+            token: Some("test-token".into()),
+            username: Some("ada".into()),
+            ..Default::default()
+        }
+        .save_to(&file)
+        .unwrap();
+        paths
+            .update_username("http://other", "test-token", "wrong")
+            .unwrap();
+        assert_eq!(
+            Credentials::load_from(&file).unwrap().username.as_deref(),
+            Some("ada")
+        );
+        paths
+            .update_username("http://test", "test-token", "augusta")
+            .unwrap();
+        assert_eq!(
+            Credentials::load_from(&file).unwrap().username.as_deref(),
+            Some("augusta")
+        );
     }
 }

@@ -104,6 +104,9 @@ async fn serve(state: AppState, machine: MachineRow, mut socket: WebSocket) -> a
     send(
         &mut socket,
         &HubMessage::Welcome(Welcome {
+            groups: super::groups::groups_of(&state, machine.owner_id)
+                .await
+                .map_err(|e| anyhow::anyhow!(e.message))?,
             protocol: PROTOCOL_VERSION,
             name: machine.name.clone(),
             owner: machine.owner(),
@@ -161,6 +164,7 @@ async fn talk(
     outbox: &mut mpsc::UnboundedReceiver<HubMessage>,
 ) -> anyhow::Result<()> {
     let mut ping = tokio::time::interval(PING_EVERY);
+    ping.tick().await;
     let mut heard = Instant::now();
     loop {
         tokio::select! {
@@ -209,6 +213,8 @@ async fn talk(
                 if heard.elapsed() > SILENCE_LIMIT {
                     anyhow::bail!("the machine went silent");
                 }
+                let owner: i64 = sqlx::query_scalar("SELECT user_id FROM api_tokens WHERE id = ?").bind(worker_id).fetch_one(&state.db).await?;
+                send(socket, &HubMessage::Identity(super::account::me_of(state, owner).await.map_err(|e| anyhow::anyhow!(e.message))?)).await?;
                 socket.send(WsMessage::Ping(Default::default())).await?;
             }
         }

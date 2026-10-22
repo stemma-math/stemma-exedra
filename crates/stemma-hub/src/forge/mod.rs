@@ -59,6 +59,17 @@ pub fn email_of(username: &str) -> String {
 pub fn is_reserved(name: &str) -> bool {
     const RESERVED: &[&str] = &[
         "admin",
+        "g",
+        "git",
+        "groups",
+        "hub",
+        "invite",
+        "settings",
+        "setup",
+        "sign-up",
+        "logout",
+        "me",
+        "u",
         "api",
         "assets",
         "attachments",
@@ -90,7 +101,9 @@ pub fn is_reserved(name: &str) -> bool {
         "v2",
     ];
     const RESERVED_SUFFIXES: &[&str] = &[".keys", ".gpg", ".rss", ".atom", ".png"];
-    RESERVED.contains(&name) || RESERVED_SUFFIXES.iter().any(|s| name.ends_with(s))
+    RESERVED.contains(&name)
+        || name.starts_with("stemma-deleted-")
+        || RESERVED_SUFFIXES.iter().any(|s| name.ends_with(s))
 }
 
 /// The forge, or why a group cannot be made without it.

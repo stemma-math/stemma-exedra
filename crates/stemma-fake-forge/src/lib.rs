@@ -332,8 +332,13 @@ fn router(inner: Arc<Inner>) -> Router {
     Router::new()
         .route("/api/v1/user", get(me))
         .route("/api/v1/admin/users", get(search_users).post(create_user))
+        .route("/api/v1/admin/users/{login}/rename", post(rename_user))
+        .route("/api/v1/orgs/{org}/rename", post(rename_org))
         .route("/api/v1/orgs", post(create_org))
-        .route("/api/v1/orgs/{org}", get(get_org).delete(delete_org))
+        .route(
+            "/api/v1/orgs/{org}",
+            get(get_org).delete(delete_org).patch(get_org),
+        )
         .route("/api/v1/orgs/{org}/teams", get(teams).post(create_team))
         .route("/api/v1/orgs/{org}/repos", post(create_repo))
         .route("/api/v1/teams/{id}/members", get(team_members))
@@ -1237,4 +1242,57 @@ async fn backend(
     *response.status_mut() = status;
     *response.headers_mut() = response_headers;
     Ok((response, child))
+}
+
+async fn rename_user(
+    State(inner): State<Arc<Inner>>,
+    UrlPath(old): UrlPath<String>,
+    axum::Json(body): axum::Json<Value>,
+) -> Response {
+    let new = body["new_username"].as_str().unwrap_or_default();
+    let mut data = inner.data.lock().unwrap();
+    if data.name_taken(new) {
+        return message(StatusCode::UNPROCESSABLE_ENTITY, "name taken");
+    }
+    let Some(user) = data.users.iter_mut().find(|u| u.login == old) else {
+        return StatusCode::NOT_FOUND.into_response();
+    };
+    user.login = new.into();
+    for teams in data.orgs.values_mut() {
+        for team in teams {
+            if team.members.remove(&old) {
+                team.members.insert(new.into());
+            }
+        }
+    }
+    StatusCode::NO_CONTENT.into_response()
+}
+async fn rename_org(
+    State(inner): State<Arc<Inner>>,
+    UrlPath(old): UrlPath<String>,
+    axum::Json(body): axum::Json<Value>,
+) -> Response {
+    let new = body["new_name"].as_str().unwrap_or_default();
+    let mut data = inner.data.lock().unwrap();
+    if data.name_taken(new) {
+        return message(StatusCode::UNPROCESSABLE_ENTITY, "name taken");
+    }
+    let Some(teams) = data.orgs.remove(&old) else {
+        return StatusCode::NOT_FOUND.into_response();
+    };
+    if inner.root.join(&old).exists() {
+        std::fs::rename(inner.root.join(&old), inner.root.join(new)).unwrap();
+    }
+    data.orgs.insert(new.into(), teams);
+    let repositories: Vec<_> = data
+        .repos
+        .keys()
+        .filter(|(owner, _)| owner == &old)
+        .cloned()
+        .collect();
+    for key in repositories {
+        let repo = data.repos.remove(&key).unwrap();
+        data.repos.insert((new.into(), key.1), repo);
+    }
+    StatusCode::NO_CONTENT.into_response()
 }

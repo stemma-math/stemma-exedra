@@ -146,6 +146,9 @@ async fn signals_drain_streams_and_machines_and_exit_successfully() {
                         break;
                     }
                     Some(Ok(Message::Ping(_))) => { socket.flush().await.unwrap(); }
+                    Some(Ok(Message::Text(text))) => {
+                        assert!(matches!(serde_json::from_str::<HubMessage>(&text).unwrap(), HubMessage::Identity(_)));
+                    }
                     other => panic!("expected normal close, got {other:?}"),
                 }
             }

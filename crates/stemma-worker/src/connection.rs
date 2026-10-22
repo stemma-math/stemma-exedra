@@ -123,6 +123,21 @@ async fn session(context: &Arc<Context>, token: &str) -> Ended {
     }
     match welcome(&mut socket).await {
         Ok(Ok(welcome)) => {
+            if let Err(error) = context
+                .config
+                .paths
+                .reconcile_groups(&context.hub, &welcome.groups)
+                .and_then(|()| {
+                    context.config.paths.update_username(
+                        &context.hub,
+                        token,
+                        &welcome.owner.username,
+                    )
+                })
+            {
+                tracing::warn!(%error, "could not reconcile names; will retry");
+            }
+
             tracing::info!(
                 "connected to {} as {}, one of {}'s machines; runners: {}; Lean: {}; LaTeX: {}",
                 context.hub,
@@ -204,8 +219,12 @@ async fn work(context: &Arc<Context>, socket: &mut Socket, mut jobs: RunningJobs
                     Ok(HubMessage::Job(spec)) => {
                         let id = spec.id;
                         tracing::info!(job = id, kind = spec.kind().as_str(), "job received");
+                        let group = stemma_core::api::Group { id: spec.group.id, slug: spec.group.slug.clone(), name: spec.group.name.clone(), role: stemma_core::api::Role::Member, created_at: time::OffsetDateTime::UNIX_EPOCH };
+                        if let Err(error) = context.config.paths.reconcile_groups(&context.hub, &[group]) { tracing::warn!(%error, "could not reconcile a job's group name"); }
+                        if let Ok(updated) = stemma_client::config::Settings::load() { settings = updated; }
+                        let local = match context.config.paths.group_slug(&context.hub, spec.group.id, &spec.group.slug) { Ok(local) => local, Err(error) => break error };
                         let credentials = stemma_client::config::Credentials { hub: Some(context.hub.clone()), ..Default::default() };
-                        let config = match crate::config::WorkerConfig::resolve(&settings, &context.config.paths, &credentials, Some(&spec.group.slug)) { Ok(c) => c, Err(error) => { break error; } };
+                        let config = match crate::config::WorkerConfig::resolve(&settings, &context.config.paths, &credentials, Some(&local)) { Ok(c) => c, Err(error) => { break error; } };
                         if !jobs.accepts(id, spec.kind(), config.concurrency) {
                             let message = WorkerMessage::Finished {
                                 job: id,
@@ -239,6 +258,14 @@ async fn work(context: &Arc<Context>, socket: &mut Socket, mut jobs: RunningJobs
                         }
                     }
                     Ok(HubMessage::Refused { reason }) => break anyhow::anyhow!("the hub refused: {reason}"),
+                    Ok(HubMessage::Identity(me)) => {
+                        let token = stemma_client::config::Credentials::load().ok().and_then(|c| c.with_env().token).unwrap_or_default();
+                        if let Err(error) = context.config.paths.update_username(&context.hub, &token, &me.user.username) { tracing::warn!(%error, "could not update the saved username"); }
+                        if let Err(error) = context.config.paths.reconcile_groups(&context.hub, &me.groups) {
+                                tracing::warn!(%error, "could not reconcile names; will retry");
+                            }
+                        if let Ok(updated) = stemma_client::config::Settings::load() { settings = updated; }
+                    }
                     Ok(HubMessage::Welcome(_)) => {}
                     Err(error) => tracing::warn!(%error, "unreadable message from the hub"),
                 }

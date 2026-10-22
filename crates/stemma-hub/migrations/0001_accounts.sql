@@ -2,7 +2,7 @@
 -- milliseconds since the Unix epoch, in UTC.
 
 CREATE TABLE users (
-    id INTEGER PRIMARY KEY,
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
     username TEXT NOT NULL UNIQUE,
     display_name TEXT NOT NULL,
     password_hash TEXT NOT NULL,
@@ -30,7 +30,7 @@ CREATE TABLE sessions (
 CREATE INDEX sessions_user ON sessions (user_id);
 
 CREATE TABLE groups (
-    id INTEGER PRIMARY KEY,
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
     slug TEXT NOT NULL UNIQUE,
     name TEXT NOT NULL,
     last_thread INTEGER NOT NULL DEFAULT 0,
@@ -38,13 +38,45 @@ CREATE TABLE groups (
     created_at INTEGER NOT NULL
 );
 
+-- Former names belong to the same identity until it is deleted.
+CREATE TABLE user_names (
+    name TEXT PRIMARY KEY,
+    user_id INTEGER NOT NULL REFERENCES users (id) ON DELETE CASCADE
+);
+CREATE TABLE group_names (
+    name TEXT PRIMARY KEY,
+    group_id INTEGER NOT NULL REFERENCES groups (id) ON DELETE CASCADE
+);
+-- Current and former names share Forgejo's account/organization namespace.
+CREATE TRIGGER users_name_insert BEFORE INSERT ON users BEGIN
+    SELECT RAISE(ABORT, 'UNIQUE name') WHERE EXISTS (SELECT 1 FROM user_names WHERE name = NEW.username)
+        OR EXISTS (SELECT 1 FROM group_names WHERE name = NEW.username)
+        OR EXISTS (SELECT 1 FROM groups WHERE slug = NEW.username);
+END;
+CREATE TRIGGER users_name_update BEFORE UPDATE OF username ON users BEGIN
+    SELECT RAISE(ABORT, 'UNIQUE name') WHERE EXISTS (SELECT 1 FROM user_names WHERE name = NEW.username AND user_id != NEW.id)
+        OR EXISTS (SELECT 1 FROM group_names WHERE name = NEW.username)
+        OR EXISTS (SELECT 1 FROM groups WHERE slug = NEW.username);
+END;
+CREATE TRIGGER groups_name_insert BEFORE INSERT ON groups BEGIN
+    SELECT RAISE(ABORT, 'UNIQUE name') WHERE EXISTS (SELECT 1 FROM group_names WHERE name = NEW.slug)
+        OR EXISTS (SELECT 1 FROM user_names WHERE name = NEW.slug)
+        OR EXISTS (SELECT 1 FROM users WHERE username = NEW.slug);
+END;
+CREATE TRIGGER groups_name_update BEFORE UPDATE OF slug ON groups BEGIN
+    SELECT RAISE(ABORT, 'UNIQUE name') WHERE EXISTS (SELECT 1 FROM group_names WHERE name = NEW.slug AND group_id != NEW.id)
+        OR EXISTS (SELECT 1 FROM user_names WHERE name = NEW.slug)
+        OR EXISTS (SELECT 1 FROM users WHERE username = NEW.slug);
+END;
+
 -- Requests remain visible to their requester after a decision.
 CREATE TABLE group_requests (
-    id INTEGER PRIMARY KEY,
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
     user_id INTEGER NOT NULL REFERENCES users (id),
     slug TEXT NOT NULL,
     name TEXT NOT NULL,
     purpose TEXT NOT NULL,
+    purpose_ids TEXT,
     status TEXT NOT NULL DEFAULT 'open' CHECK (status IN ('open', 'approved', 'declined')),
     created_at INTEGER NOT NULL
 );
@@ -64,7 +96,7 @@ CREATE INDEX memberships_user ON memberships (user_id);
 -- A link that lets people in. A group's adds an existing account to the
 -- group, with its role; the hub's, with no group, makes an account.
 CREATE TABLE invitations (
-    id INTEGER PRIMARY KEY,
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
     group_id INTEGER REFERENCES groups (id) ON DELETE CASCADE,
     token_hash TEXT NOT NULL UNIQUE,
     role TEXT CHECK (role IN ('admin', 'member', 'guest')),

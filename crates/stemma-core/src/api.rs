@@ -79,6 +79,7 @@ pub struct NewAccount {
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct UpdateMe {
+    pub username: Option<String>,
     pub display_name: String,
 }
 
@@ -289,6 +290,7 @@ impl Role {
 /// A group, as one of its members sees it.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Group {
+    pub id: i64,
     pub slug: String,
     pub name: String,
     /// The role of the person asking.
@@ -452,6 +454,8 @@ pub struct UpdateThread {
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Message {
+    #[serde(default)]
+    pub missing_references: Vec<String>,
     /// Its number in the thread: the `45` of `t12#45`. Never reused.
     pub number: u32,
     pub author: User,
@@ -832,6 +836,7 @@ pub struct PaperSource {
 /// One file of a paper's source, as text.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct PaperFileText {
+    pub missing_references: Vec<String>,
     pub path: String,
     pub commit: String,
     pub text: String,
@@ -1057,6 +1062,7 @@ pub struct Job {
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum Event {
+    NamesChanged,
     ThreadCreated {
         thread: Thread,
     },

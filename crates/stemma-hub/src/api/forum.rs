@@ -183,15 +183,18 @@ pub async fn create_thread(
     .bind(group.group_id)
     .fetch_one(&mut *tx)
     .await?;
+    let title_ids = crate::text::encode(&mut tx, group.group_id, &title).await?;
+    let (title, _) = crate::text::render_with(&mut tx, &title_ids).await?;
     let thread_id = sqlx::query(
-        "INSERT INTO threads (group_id, number, title, kind, resident_agent, resident_runner,
+        "INSERT INTO threads (group_id, number, title, title_ids, kind, resident_agent, resident_runner,
                               anchor, created_by,
                               created_at, last_activity_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
     )
     .bind(group.group_id)
     .bind(number)
     .bind(&title)
+    .bind(title_ids)
     .bind(body.kind.as_str())
     .bind(&resident_agent)
     .bind(&resident_runner)
@@ -270,8 +273,11 @@ pub async fn update_thread(
         group.require_admin()?;
     }
     let title = required_text(&body.title, "The title", 200)?;
-    sqlx::query("UPDATE threads SET title = ? WHERE id = ?")
+    let ids = crate::text::encode(&mut *state.db.acquire().await?, group.group_id, &title).await?;
+    let (title, _) = crate::text::render(&state, &ids).await?;
+    sqlx::query("UPDATE threads SET title = ?, title_ids = ? WHERE id = ?")
         .bind(&title)
+        .bind(ids)
         .bind(row.id)
         .execute(&state.db)
         .await?;
@@ -477,16 +483,19 @@ async fn insert_message(
     .bind(thread_id)
     .fetch_one(&mut **tx)
     .await?;
+    let stored = crate::text::encode(&mut *tx, group.group_id, text).await?;
+    let (rendered, _) = crate::text::render_with(&mut *tx, &stored).await?;
     let message_id = sqlx::query(
-        "INSERT INTO messages (thread_id, number, author_id, agent, agent_runner, body, reply_to, created_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+        "INSERT INTO messages (thread_id, number, author_id, agent, agent_runner, body, body_ids, reply_to, created_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
     )
     .bind(thread_id)
     .bind(number)
     .bind(author_id)
     .bind(agent)
     .bind(agent_runner)
-    .bind(text)
+    .bind(rendered)
+    .bind(stored)
     .bind(reply_to)
     .bind(now)
     .execute(&mut **tx)
@@ -519,6 +528,7 @@ struct MessageRow {
     agent: Option<String>,
     agent_runner: Option<String>,
     body: String,
+    body_ids: Option<String>,
     reply_to: Option<i64>,
     created_at: i64,
     edited_at: Option<i64>,
@@ -535,7 +545,7 @@ pub(crate) async fn load_messages(
     to: u32,
 ) -> ApiResult<Vec<Message>> {
     let rows: Vec<MessageRow> = sqlx::query_as(
-        "SELECT m.id, m.number, m.agent, m.agent_runner, m.body, m.reply_to, m.created_at, m.edited_at,
+        "SELECT m.id, m.number, m.agent, m.agent_runner, m.body, m.body_ids, m.reply_to, m.created_at, m.edited_at,
                 m.deleted_at, u.id AS user_id, u.username, u.display_name
          FROM messages m JOIN users u ON u.id = m.author_id
          WHERE m.thread_id = ? AND m.number BETWEEN ? AND ?
@@ -547,13 +557,19 @@ pub(crate) async fn load_messages(
     .fetch_all(&state.db)
     .await?;
     let mut files = attachments_of(state, group, thread_id, from, to).await?;
-    Ok(rows
-        .into_iter()
-        .map(|row| {
-            let attachments = files.remove(&row.id).unwrap_or_default();
-            to_message(row, attachments)
-        })
-        .collect())
+    let mut messages = Vec::new();
+    for mut row in rows {
+        let (text, missing) = match row.body_ids.as_deref() {
+            Some(ids) => crate::text::render(state, ids).await?,
+            None => (row.body.clone(), Vec::new()),
+        };
+        row.body = text;
+        let attachments = files.remove(&row.id).unwrap_or_default();
+        let mut message = to_message(row, attachments);
+        message.missing_references = missing;
+        messages.push(message);
+    }
+    Ok(messages)
 }
 
 pub(crate) async fn load_message(
@@ -575,6 +591,7 @@ fn to_message(row: MessageRow, attachments: Vec<stemma_core::api::Attachment>) -
         agent: row.agent,
         agent_runner: row.agent_runner,
         body: row.body,
+        missing_references: Vec::new(),
         reply_to: row.reply_to.map(|n| n as u32),
         attachments,
         created_at: db::from_millis(row.created_at),
@@ -611,8 +628,11 @@ pub async fn edit_message(
         return Err(ApiError::forbidden("Only its author can edit a message"));
     }
     let text = check_body(&body.body)?;
-    sqlx::query("UPDATE messages SET body = ?, edited_at = ? WHERE id = ?")
+    let ids = crate::text::encode(&mut *state.db.acquire().await?, group.group_id, &text).await?;
+    let (text, _) = crate::text::render(&state, &ids).await?;
+    sqlx::query("UPDATE messages SET body = ?, body_ids = ?, edited_at = ? WHERE id = ?")
         .bind(text)
+        .bind(ids)
         .bind(db::now())
         .bind(id)
         .execute(&state.db)
@@ -682,7 +702,7 @@ pub async fn delete_message(
         group.require_admin()?;
     }
     let mut tx = state.db.begin().await?;
-    sqlx::query("UPDATE messages SET body = '', deleted_at = ? WHERE id = ?")
+    sqlx::query("UPDATE messages SET body = '', body_ids = NULL, deleted_at = ? WHERE id = ?")
         .bind(db::now())
         .bind(id)
         .execute(&mut *tx)
@@ -714,15 +734,15 @@ pub async fn resolve(
     Path(slug): Path<String>,
     Json(body): Json<Resolve>,
 ) -> ApiResult<Json<Vec<Resolved>>> {
-    let group = Membership::of(&state, &viewer, &slug).await?;
+    let default_group = Membership::of(&state, &viewer, &slug).await?;
     if body.addresses.len() > 200 {
         return Err(ApiError::invalid("Resolve at most 200 addresses at once"));
     }
-    let mut threads: HashMap<u32, Option<(String, u32)>> = HashMap::new();
+    let mut threads: HashMap<(i64, u32), Option<(String, u32)>> = HashMap::new();
     let mut resolved = Vec::with_capacity(body.addresses.len());
     for raw in body.addresses {
-        let address = match raw.trim().parse::<Address>() {
-            Ok(address) => address,
+        let located = match stemma_core::locate(&raw) {
+            Ok(located) => located,
             Err(error) => {
                 resolved.push(Resolved {
                     address: raw,
@@ -737,6 +757,32 @@ pub async fn resolve(
                 continue;
             }
         };
+        let group = match &located.group {
+            Some(slug) => match Membership::of(&state, &viewer, slug).await {
+                Ok(group) => group,
+                Err(_) => {
+                    resolved.push(Resolved {
+                        address: raw,
+                        canonical: None,
+                        kind: None,
+                        exists: false,
+                        path: None,
+                        title: None,
+                        note: Some("Group not found".into()),
+                        state: None,
+                    });
+                    continue;
+                }
+            },
+            None => Membership {
+                group_id: default_group.group_id,
+                slug: default_group.slug.clone(),
+                name: default_group.name.clone(),
+                created_at: default_group.created_at,
+                role: default_group.role,
+            },
+        };
+        let address = located.address;
         let mut entry = Resolved {
             address: raw,
             canonical: Some(address.to_string()),
@@ -749,7 +795,7 @@ pub async fn resolve(
         };
         match address.thread() {
             Some(number) => {
-                if let Entry::Vacant(slot) = threads.entry(number) {
+                if let Entry::Vacant(slot) = threads.entry((group.group_id, number)) {
                     let found = match find_thread(&state, group.group_id, number).await {
                         Ok(row) => Some((row.title, row.last_message as u32)),
                         Err(e) if e.status == StatusCode::NOT_FOUND => None,
@@ -757,7 +803,7 @@ pub async fn resolve(
                     };
                     slot.insert(found);
                 }
-                match &threads[&number] {
+                match &threads[&(group.group_id, number)] {
                     Some((title, last)) => {
                         let last_needed = match address {
                             Address::Message { message, .. }

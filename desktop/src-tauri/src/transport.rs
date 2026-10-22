@@ -145,7 +145,17 @@ async fn forward(
     request: Request<Vec<u8>>,
 ) -> anyhow::Result<(u16, reqwest::header::HeaderMap, Vec<u8>)> {
     let (base, token) = credentials()?;
-    forward_to(request, &base, &token).await
+    let identity = request.uri().path() == "/api/v1/me";
+    let reply = forward_to(request, &base, &token).await?;
+    let paths = stemma_client::config::Paths::discover()?;
+    if let Some(username) = reply.1.get("x-stemma-user").and_then(|v| v.to_str().ok()) {
+        paths.update_username(&base, &token, username)?;
+    }
+    if identity && reply.0 == 200 {
+        let me: stemma_core::api::Me = serde_json::from_slice(&reply.2)?;
+        paths.reconcile_groups(&base, &me.groups)?;
+    }
+    Ok(reply)
 }
 
 async fn forward_to(
@@ -154,22 +164,60 @@ async fn forward_to(
     token: &str,
 ) -> anyhow::Result<(u16, reqwest::header::HeaderMap, Vec<u8>)> {
     let path = request.uri().path_and_query().context("Missing path")?;
-    let mut outgoing = client()?
-        .request(request.method().clone(), format!("{base}{path}"))
-        .bearer_auth(token)
-        .timeout(Duration::from_secs(120));
-    for key in [header::CONTENT_TYPE, header::ACCEPT, header::RANGE] {
-        if let Some(value) = request.headers().get(&key) {
-            outgoing = outgoing.header(key, value);
+    let client = client()?;
+    let mut path = path.to_string();
+    let mut redirects = 0;
+    let reply = loop {
+        let mut outgoing = client
+            .request(request.method().clone(), format!("{base}{path}"))
+            .bearer_auth(token)
+            .timeout(Duration::from_secs(120));
+        for key in [header::CONTENT_TYPE, header::ACCEPT, header::RANGE] {
+            if let Some(value) = request.headers().get(&key) {
+                outgoing = outgoing.header(key, value);
+            }
         }
-    }
-    let reply = outgoing.body(request.into_body()).send().await?;
-    if reply.status().is_redirection() {
-        bail!("The hub redirected a credentialed request");
-    }
+        let reply = outgoing.body(request.body().clone()).send().await?;
+        if !reply.status().is_redirection() {
+            break reply;
+        }
+        let location = reply
+            .headers()
+            .get(header::LOCATION)
+            .and_then(|v| v.to_str().ok())
+            .unwrap_or_default();
+        if reply.status() != reqwest::StatusCode::PERMANENT_REDIRECT
+            || redirects >= 3
+            || !canonical_name_redirect(&path, location)
+        {
+            bail!("The hub redirected a credentialed request outside its canonical address");
+        }
+        path = location.into();
+        redirects += 1;
+    };
     let status = reply.status().as_u16();
     let headers = reply.headers().clone();
     Ok((status, headers, reply.bytes().await?.to_vec()))
+}
+
+fn canonical_name_redirect(old: &str, new: &str) -> bool {
+    for prefix in ["/api/v1/groups/", "/api/v1/users/"] {
+        if let (Some(old), Some(new)) = (old.strip_prefix(prefix), new.strip_prefix(prefix)) {
+            let split = |s: &str| {
+                let end = s.find(['/', '?']).unwrap_or(s.len());
+                (s[..end].to_owned(), s[end..].to_owned())
+            };
+            let (old_name, old_suffix) = split(old);
+            let (new_name, new_suffix) = split(new);
+            let safe = |s: &str| {
+                !s.is_empty()
+                    && s.bytes()
+                        .all(|b| b.is_ascii_alphanumeric() || b"._-".contains(&b))
+            };
+            return old_suffix == new_suffix && safe(&old_name) && safe(&new_name);
+        }
+    }
+    false
 }
 
 #[derive(Clone, Serialize)]
@@ -296,6 +344,25 @@ pub fn unsubscribe(window: WebviewWindow, subscription: String) -> super::Result
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn only_canonical_name_redirects_keep_credentials() {
+        assert!(canonical_name_redirect(
+            "/api/v1/groups/old/threads?limit=2",
+            "/api/v1/groups/new/threads?limit=2"
+        ));
+        for target in [
+            "https://evil.test/api/v1/groups/new",
+            "//evil.test/",
+            "/api/v1/me",
+            "/api/v1/groups/new/../me",
+            "/api/v1/groups/new/threads?limit=3",
+        ] {
+            assert!(!canonical_name_redirect(
+                "/api/v1/groups/old/threads?limit=2",
+                target
+            ));
+        }
+    }
     #[test]
     fn only_local_app_can_read_and_write_api() {
         for method in ["GET", "POST", "PUT", "DELETE", "OPTIONS"] {

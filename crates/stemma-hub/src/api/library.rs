@@ -186,14 +186,17 @@ pub async fn declaration(
         .bind(build)
         .fetch_one(&state.db)
         .await?;
-    let reference = format!("[[lean:{name}]]");
+
     let messages: Vec<(i64, i64, String)> = sqlx::query_as(
         "SELECT t.number, m.number, t.title FROM messages m JOIN threads t ON t.id = m.thread_id
-         WHERE t.group_id = ? AND m.deleted_at IS NULL AND instr(m.body, ?) > 0
+         WHERE t.group_id = ? AND m.deleted_at IS NULL AND EXISTS (SELECT 1 FROM json_each(m.body_ids, '$.parts') part
+             WHERE json_extract(part.value, '$.Named.target.Reference.group') = ?
+               AND json_extract(part.value, '$.Named.target.Reference.object.Declaration') = ?)
          ORDER BY m.created_at DESC LIMIT 50",
     )
     .bind(group.group_id)
-    .bind(&reference)
+    .bind(group.group_id)
+    .bind(&name)
     .fetch_all(&state.db)
     .await?;
     // The threads about it, as "Discuss it" starts them.

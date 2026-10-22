@@ -283,9 +283,15 @@ async fn ask(
     let paths = &context.config.paths;
     let settings = &context.config.settings;
     let hub = stemma_client::Hub::new(&context.hub, Some(job.token.clone()))?;
-    let workspace =
-        crate::workspace::Workspace::open(settings, paths, &hub, &job.group.slug, &job.token)
-            .await?;
+    let workspace = crate::workspace::Workspace::open(
+        settings,
+        paths,
+        &hub,
+        &job.group.slug,
+        job.group.id,
+        &job.token,
+    )
+    .await?;
     let scratch = crate::workspace::Scratch::create(&workspace.path, job.id)?;
     let host = context.host();
     let mut container = None;

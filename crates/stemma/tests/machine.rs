@@ -51,6 +51,11 @@ fn settings_round_trip_and_removed_commands_fail() {
     ] {
         assert!(!cli(dir.path(), &command).status.success());
     }
+    for command in [
+        "read", "threads", "post", "search", "library", "papers", "paper",
+    ] {
+        assert!(!cli(dir.path(), &[command, "--help"]).status.success());
+    }
 }
 
 #[test]
@@ -346,6 +351,63 @@ printf 'Read in the workspace.\n' > "$answer"
     })
     .await
     .expect("restoring a runner dispatches waiting work");
+    assert_eq!(
+        state.connections.load(std::sync::atomic::Ordering::Relaxed),
+        connections
+    );
+    // The connected worker learns the new name by ID, without a reconnect.
+    let paths = stemma_client::config::Paths {
+        config: config_dir.clone(),
+        state: temp.path().join("state"),
+        data: temp.path().join("data"),
+    };
+    paths.use_group("algebra").unwrap();
+    let renamed = http
+        .patch(format!("{url}/api/v1/groups/algebra"))
+        .bearer_auth(&token.secret)
+        .json(&json!({"slug":"geometry", "name":"Geometry"}))
+        .send()
+        .await
+        .unwrap();
+    assert!(
+        renamed.status().is_success(),
+        "{}",
+        renamed.text().await.unwrap()
+    );
+    let renamed = http
+        .patch(format!("{url}/api/v1/me"))
+        .bearer_auth(&token.secret)
+        .json(&json!({"username":"augusta", "display_name":"Ada"}))
+        .send()
+        .await
+        .unwrap();
+    assert!(renamed.status().is_success());
+    tokio::time::timeout(Duration::from_secs(30), async {
+        loop {
+            let settings = std::fs::read_to_string(config_dir.join("config.toml")).unwrap();
+            if temp
+                .path()
+                .join("data/groups/geometry/library/.git")
+                .is_dir()
+                && settings.contains("groups.geometry")
+                && std::fs::read_to_string(paths.state.join("group"))
+                    .is_ok_and(|s| s.trim() == "geometry")
+            {
+                assert!(!temp.path().join("data/groups/algebra").exists());
+                assert!(!settings.contains("groups.algebra"));
+                assert_eq!(
+                    std::fs::read_to_string(paths.state.join("group"))
+                        .unwrap()
+                        .trim(),
+                    "geometry"
+                );
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+    })
+    .await
+    .expect("worker reconciles the stable group ID");
     assert_eq!(
         state.connections.load(std::sync::atomic::Ordering::Relaxed),
         connections

@@ -56,18 +56,8 @@ pub async fn setup(
 
 /// Validates a new account and creates it.
 pub async fn create_user(state: &AppState, account: NewAccount, hub_admin: bool) -> ApiResult<i64> {
-    let username = account.username.trim().to_lowercase();
-    if !valid_username(&username) {
-        return Err(ApiError::invalid(
-            "A username is 1 to 32 lowercase letters, digits, '.', '_' or '-', starting and \
-             ending with a letter or digit, with no two of '.', '_' and '-' in a row",
-        ));
-    }
-    if crate::forge::is_reserved(&username) {
-        return Err(ApiError::invalid(format!(
-            "{username} is a name the forge keeps for itself"
-        )));
-    }
+    let _guard = state.group_changes.lock().await;
+    let username = crate::names::available(state, "user", &account.username, None).await?;
     let display_name = required_text(&account.display_name, "The name", 80)?;
     check_password(&account.password)?;
     let hash = auth::hash_password(account.password).await?;
@@ -189,12 +179,61 @@ pub async fn update_me(
     Json(body): Json<UpdateMe>,
 ) -> ApiResult<Json<Me>> {
     viewer.require_full()?;
+    let _guard = state.group_changes.lock().await;
+    let _forge_guard = state.forge_sync.lock().await;
+    let current_username: String =
+        sqlx::query_scalar("SELECT username FROM users WHERE id = ? AND deleted_at IS NULL")
+            .bind(viewer.id)
+            .fetch_optional(&state.db)
+            .await?
+            .ok_or_else(ApiError::unauthenticated)?;
+    let username = match body.username {
+        Some(value) => crate::names::available(&state, "user", &value, Some(viewer.id)).await?,
+        None => current_username.clone(),
+    };
     let display_name = required_text(&body.display_name, "The name", 80)?;
-    sqlx::query("UPDATE users SET display_name = ? WHERE id = ?")
+    let mut old_login = None;
+    if username != current_username
+        && let Some(forge) = state.forge.as_ref()
+    {
+        let (known, subject): (Option<String>, String) =
+            sqlx::query_as("SELECT forge_login, subject FROM users WHERE id = ?")
+                .bind(viewer.id)
+                .fetch_one(&state.db)
+                .await?;
+        let login = match known {
+            Some(login) => Some(login),
+            None => forge
+                .linked_user(&subject)
+                .await
+                .map_err(crate::forge::api_error)?
+                .map(|u| u.login),
+        };
+        if let Some(login) = login {
+            forge
+                .rename_user(&login, &username)
+                .await
+                .map_err(crate::forge::api_error)?;
+            old_login = Some(login);
+        }
+    }
+    let mut tx = state.db.begin().await?;
+    if username != current_username {
+        sqlx::query("INSERT OR IGNORE INTO user_names (name, user_id) VALUES (?, ?)")
+            .bind(&current_username)
+            .bind(viewer.id)
+            .execute(&mut *tx)
+            .await?;
+    }
+    sqlx::query("UPDATE users SET username = ?, display_name = ?, forge_login = COALESCE(?, forge_login) WHERE id = ?")
+        .bind(&username)
         .bind(display_name)
+        .bind(old_login.as_ref().map(|_| &username))
         .bind(viewer.id)
-        .execute(&state.db)
+        .execute(&mut *tx)
         .await?;
+    tx.commit().await?;
+    crate::text::names_changed(&state).await?;
     Ok(Json(me_of(&state, viewer.id).await?))
 }
 

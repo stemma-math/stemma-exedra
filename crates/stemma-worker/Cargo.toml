@@ -22,6 +22,7 @@ stemma-client.workspace = true
 stemma-core.workspace = true
 tempfile.workspace = true
 thiserror.workspace = true
+time.workspace = true
 tokio = { workspace = true, features = ["net", "process", "time"] }
 tokio-tungstenite.workspace = true
 toml.workspace = true

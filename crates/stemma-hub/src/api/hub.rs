@@ -98,9 +98,11 @@ pub async fn request(
     let slug = groups::available_slug(&state, &body.slug).await?;
     let name = required_text(&body.name, "The name", 80)?;
     let purpose = required_text(&body.purpose, "What the group is for", 2000)?;
+    let ids = crate::text::encode(&mut *state.db.acquire().await?, 0, &purpose).await?;
+    let (purpose, _) = crate::text::render(&state, &ids).await?;
     let created_at = db::now();
-    let result = sqlx::query("INSERT INTO group_requests (user_id, slug, name, purpose, created_at) VALUES (?, ?, ?, ?, ?)")
-        .bind(viewer.id).bind(&slug).bind(&name).bind(&purpose).bind(created_at).execute(&state.db).await;
+    let result = sqlx::query("INSERT INTO group_requests (user_id, slug, name, purpose, purpose_ids, created_at) VALUES (?, ?, ?, ?, ?, ?)")
+        .bind(viewer.id).bind(&slug).bind(&name).bind(&purpose).bind(ids).bind(created_at).execute(&state.db).await;
     match result {
         Ok(done) => Ok((
             StatusCode::CREATED,

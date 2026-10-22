@@ -1,10 +1,11 @@
 -- The forum: threads, their messages and the files attached to them.
 
 CREATE TABLE threads (
-    id INTEGER PRIMARY KEY,
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
     group_id INTEGER NOT NULL REFERENCES groups (id) ON DELETE CASCADE,
     number INTEGER NOT NULL,
     title TEXT NOT NULL,
+    title_ids TEXT,
     kind TEXT NOT NULL CHECK (kind IN ('discussion', 'chat')),
     -- The agent that answers every message of a chat.
     resident_agent TEXT,
@@ -23,7 +24,7 @@ CREATE INDEX threads_activity ON threads (group_id, last_activity_at DESC);
 CREATE INDEX threads_anchor ON threads (group_id, anchor);
 
 CREATE TABLE messages (
-    id INTEGER PRIMARY KEY,
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
     thread_id INTEGER NOT NULL REFERENCES threads (id) ON DELETE CASCADE,
     number INTEGER NOT NULL,
     author_id INTEGER NOT NULL REFERENCES users (id),
@@ -31,6 +32,7 @@ CREATE TABLE messages (
     agent TEXT,
     agent_runner TEXT,
     body TEXT NOT NULL,
+    body_ids TEXT,
     reply_to INTEGER,
     created_at INTEGER NOT NULL,
     edited_at INTEGER,
@@ -39,7 +41,7 @@ CREATE TABLE messages (
 );
 
 CREATE TABLE attachments (
-    id INTEGER PRIMARY KEY,
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
     group_id INTEGER NOT NULL REFERENCES groups (id) ON DELETE CASCADE,
     -- Unset between the upload and the message that carries it.
     message_id INTEGER REFERENCES messages (id) ON DELETE CASCADE,

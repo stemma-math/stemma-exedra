@@ -6,7 +6,7 @@ pub use crate::api::JobKind;
 use crate::api::{AgentProfile, Message, ThreadKind, User};
 
 /// The version of this protocol. A hub refuses workers that speak another.
-pub const PROTOCOL_VERSION: u32 = 11;
+pub const PROTOCOL_VERSION: u32 = 12;
 
 /// The path of the workers' WebSocket, under the API's prefix.
 pub const WORKER_PATH: &str = "/worker";
@@ -92,6 +92,7 @@ impl Usage {
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum HubMessage {
     Welcome(Welcome),
+    Identity(crate::api::Me),
     /// The hub will not work with this worker; the connection closes.
     Refused {
         reason: String,
@@ -105,6 +106,7 @@ pub enum HubMessage {
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Welcome {
+    pub groups: Vec<crate::api::Group>,
     pub protocol: u32,
     /// The machine's name, as registered.
     pub name: String,
@@ -161,6 +163,7 @@ pub struct Conversation {
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct GroupRef {
+    pub id: i64,
     pub slug: String,
     pub name: String,
 }

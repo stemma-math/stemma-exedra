@@ -1,7 +1,7 @@
 //! The JSON API, version 1, under `/api/v1`.
 
 mod account;
-pub use account::create_user;
+pub use account::{create_user, valid_username};
 pub(crate) mod attachments;
 mod events;
 pub(crate) mod forum;
@@ -36,6 +36,8 @@ pub fn router(state: AppState) -> Router {
         .route("/setup", get(account::setup_state).post(account::setup))
         .route("/session", post(account::sign_in).delete(account::sign_out))
         .route("/me", get(account::me).patch(account::update_me))
+        .route("/names/{kind}", get(crate::names::check))
+        .route("/users/{username}", get(crate::names::user))
         .route("/me/token", get(account::token_identity))
         .route("/me/password", post(account::change_password))
         .route(
@@ -67,7 +69,7 @@ pub fn router(state: AppState) -> Router {
             patch(hub::update_person).delete(hub::delete_person),
         )
         .route("/groups", get(groups::list).post(groups::create))
-        .route("/groups/{group}", get(groups::get))
+        .route("/groups/{group}", get(groups::get).patch(groups::update))
         .route("/groups/{group}/members", get(groups::members))
         .route(
             "/groups/{group}/members/{user}",
@@ -217,7 +219,7 @@ impl Membership {
         let row: Option<(i64, String, String, i64, String)> = sqlx::query_as(
             "SELECT g.id, g.slug, g.name, g.created_at, m.role
              FROM groups g JOIN memberships m ON m.group_id = g.id
-             WHERE g.slug = ? AND m.user_id = ?",
+             WHERE g.id = (SELECT id FROM groups WHERE slug = ?1 UNION SELECT group_id FROM group_names WHERE name = ?1) AND m.user_id = ?2",
         )
         .bind(slug)
         .bind(viewer.id)
@@ -267,6 +269,7 @@ impl Membership {
 
     pub fn group(&self) -> stemma_core::api::Group {
         stemma_core::api::Group {
+            id: self.group_id,
             slug: self.slug.clone(),
             name: self.name.clone(),
             role: self.role,

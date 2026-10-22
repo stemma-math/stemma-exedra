@@ -20,6 +20,7 @@ pub fn definitions() -> Vec<ToolDef> {
     vec![
         ToolDef {
             name: "list_threads",
+            handler: |toolbox, args, _agent| Box::pin(list_threads(toolbox, args)),
             terminal: &["threads"],
             positional: &[],
             description: "List the threads of a group, most recently active first, with their \
@@ -38,6 +39,7 @@ pub fn definitions() -> Vec<ToolDef> {
         },
         ToolDef {
             name: "read_thread",
+            handler: |toolbox, args, _agent| Box::pin(read_thread(toolbox, args)),
             terminal: &["read"],
             positional: &["address"],
             description: "Read a thread, a message or a range of messages, by address: t12 \
@@ -48,7 +50,8 @@ pub fn definitions() -> Vec<ToolDef> {
             input_schema: json!({
                 "type": "object",
                 "properties": {
-                    "address": {"type": "string", "description": "t12, t12#45 or t12#45-50."},
+                    "address": {"type": "string", "description": "t12, t12#45, t12#45-50, lean:Name or p/notes."},
+                    "file": {"type": "string", "description": "For a paper, the source file to read."},
                     "group": {"type": "string", "description": GROUP}
                 },
                 "required": ["address"]
@@ -57,6 +60,7 @@ pub fn definitions() -> Vec<ToolDef> {
         },
         ToolDef {
             name: "post_message",
+            handler: |toolbox, args, agent| Box::pin(post_message(toolbox, args, agent)),
             terminal: &["post"],
             positional: &["thread", "body"],
             description: "Post a message in a thread, in Markdown, with $…$ math and [[t12#45]] \
@@ -78,6 +82,7 @@ pub fn definitions() -> Vec<ToolDef> {
         },
         ToolDef {
             name: "open_thread",
+            handler: |toolbox, args, _agent| Box::pin(open_thread(toolbox, args)),
             terminal: &["threads", "new"],
             positional: &["title", "body"],
             description: "Open a new thread in the group, to ask it something: a short title, \
@@ -98,6 +103,7 @@ pub fn definitions() -> Vec<ToolDef> {
         },
         ToolDef {
             name: "search",
+            handler: |toolbox, args, _agent| Box::pin(search(toolbox, args)),
             terminal: &["search"],
             positional: &["query"],
             description: "Search a group's thread titles and messages, regardless of case and \
@@ -119,23 +125,6 @@ pub fn definitions() -> Vec<ToolDef> {
             writes: false,
         },
     ]
-}
-
-/// Runs a forum tool, if `name` is one.
-pub async fn call(
-    toolbox: &Toolbox,
-    name: &str,
-    args: Value,
-    agent: Option<&str>,
-) -> Option<ToolResult> {
-    Some(match name {
-        "list_threads" => list_threads(toolbox, args).await,
-        "read_thread" => read_thread(toolbox, args).await,
-        "post_message" => post_message(toolbox, args, agent).await,
-        "open_thread" => open_thread(toolbox, args).await,
-        "search" => search(toolbox, args).await,
-        _ => return None,
-    })
 }
 
 #[derive(Deserialize)]
@@ -188,6 +177,7 @@ async fn list_threads(toolbox: &Toolbox, args: Value) -> ToolResult {
 
 #[derive(Deserialize)]
 struct ReadThread {
+    file: Option<String>,
     address: String,
     group: Option<String>,
 }
@@ -227,7 +217,7 @@ async fn read_thread(toolbox: &Toolbox, args: Value) -> ToolResult {
         }
 
         Address::Paper(slug) => {
-            let args = json!({"address": format!("p/{slug}"), "group": group});
+            let args = json!({"address": format!("p/{slug}"), "file": args.file, "group": group});
             return super::papers::read(toolbox, args).await;
         }
     };

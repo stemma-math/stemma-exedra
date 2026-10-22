@@ -12,6 +12,7 @@ pub fn definitions() -> Vec<ToolDef> {
     vec![
         ToolDef {
             name: "create_paper",
+            handler: |toolbox, args, _agent| Box::pin(create(toolbox, args)),
             terminal: &["paper", "new"],
             positional: &["slug", "title"],
             description: "Create a working paper from the group's template.",
@@ -24,6 +25,7 @@ pub fn definitions() -> Vec<ToolDef> {
         },
         ToolDef {
             name: "list_papers",
+            handler: |toolbox, args, _agent| Box::pin(list(toolbox, args)),
             terminal: &["papers"],
             positional: &[],
             description: "List the group's working papers, the readable account of what the \
@@ -37,6 +39,7 @@ pub fn definitions() -> Vec<ToolDef> {
         },
         ToolDef {
             name: "read_paper",
+            handler: |toolbox, args, _agent| Box::pin(read(toolbox, args)),
             terminal: &["papers", "read"],
             positional: &["address"],
             description: "Read a working paper's LaTeX source, by address (p/notes), at its \
@@ -56,16 +59,6 @@ pub fn definitions() -> Vec<ToolDef> {
             writes: false,
         },
     ]
-}
-
-/// Runs a papers' tool, if `name` is one.
-pub async fn call(toolbox: &Toolbox, name: &str, args: Value) -> Option<ToolResult> {
-    Some(match name {
-        "create_paper" => create(toolbox, args).await,
-        "list_papers" => list(toolbox, args).await,
-        "read_paper" => read(toolbox, args).await,
-        _ => return None,
-    })
 }
 
 #[derive(Deserialize)]
@@ -113,8 +106,8 @@ pub async fn read(toolbox: &Toolbox, args: Value) -> ToolResult {
         .map(|f| f.trim().trim_start_matches("./"))
         .filter(|f| !f.is_empty())
         .unwrap_or(PAPER_MAIN);
-    let text = match hub.paper_file(&group, &slug, file).await {
-        Ok(found) => found.text,
+    let (text, missing) = match hub.paper_file(&group, &slug, file).await {
+        Ok(found) => (found.text, found.missing_references),
         Err(error) if error.status() == Some(reqwest::StatusCode::NOT_FOUND) => {
             let files: Vec<&str> = source.files.iter().map(|f| f.path.as_str()).collect();
             return Err(ToolError::invalid(format!(
@@ -124,14 +117,11 @@ pub async fn read(toolbox: &Toolbox, args: Value) -> ToolResult {
         }
         Err(error) => return Err(error.into()),
     };
-    Ok(format::paper(
-        hub.base(),
-        &group,
-        &page,
-        &source,
-        file,
-        &text,
-    ))
+    let mut output = format::paper(hub.base(), &group, &page, &source, file, &text);
+    if !missing.is_empty() {
+        output.push_str(&format!("\nNot found: {}\n", missing.join(", ")));
+    }
+    Ok(output)
 }
 
 #[derive(Deserialize)]

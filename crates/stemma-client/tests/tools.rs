@@ -275,7 +275,7 @@ async fn mcp_serves_the_tools_and_names_the_agent() {
         let annotations = tool.annotations.as_ref().expect("tool annotations");
         let writes = matches!(
             tool.name.as_ref(),
-            "post_message" | "open_thread" | "create_task"
+            "post_message" | "open_thread" | "create_paper"
         );
         assert_eq!(annotations.read_only_hint, Some(!writes), "{}", tool.name);
         assert_eq!(annotations.destructive_hint, Some(false));
@@ -294,6 +294,7 @@ async fn mcp_serves_the_tools_and_names_the_agent() {
             "library_state",
             "library_lookup",
             "library_search",
+            "create_paper",
             "list_papers",
             "read_paper",
             "download_attachment",

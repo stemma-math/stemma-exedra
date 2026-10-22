@@ -13,12 +13,14 @@ pub mod forge;
 pub mod git;
 pub mod jobs;
 pub mod library;
+pub mod names;
 pub mod oidc;
 pub mod papers;
 pub mod removal;
 pub mod search;
 pub mod secret;
 pub mod state;
+pub mod text;
 pub mod web;
 
 use std::sync::Arc;
@@ -40,9 +42,13 @@ pub fn app(state: AppState) -> Router {
         .with_state(state.clone());
     api::router(state.clone())
         .merge(git::router(state.clone()))
-        .merge(oidc::router(state))
+        .merge(oidc::router(state.clone()))
         .merge(hook)
         .fallback(web::serve)
+        .layer(axum::middleware::from_fn_with_state(
+            state.clone(),
+            names::redirect,
+        ))
         .layer(TraceLayer::new_for_http())
 }
 

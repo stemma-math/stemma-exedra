@@ -37,6 +37,14 @@ pub fn read_only_names() -> Vec<&'static str> {
         .collect()
 }
 
+/// Both front ends invoke the handler carried by the catalog entry.
+pub type ToolHandler =
+    for<'a> fn(
+        &'a Toolbox,
+        Value,
+        Option<&'a str>,
+    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = ToolResult> + Send + 'a>>;
+
 /// A tool, as agents see it.
 #[derive(Clone, Debug)]
 pub struct ToolDef {
@@ -49,6 +57,7 @@ pub struct ToolDef {
     pub input_schema: Value,
     /// Whether it changes anything, so that a read-only toolbox leaves it out.
     pub writes: bool,
+    pub handler: ToolHandler,
 }
 
 /// Why a tool could not do what it was asked, in words for the agent.
@@ -141,24 +150,7 @@ impl Toolbox {
         } else {
             args
         };
-        if tool.name == "download_attachment" {
-            let content = attachments::download(self, args, false).await?;
-            return Ok(content
-                .iter()
-                .filter_map(|c| c.as_text().map(|t| t.text.as_str()))
-                .collect::<Vec<_>>()
-                .join("\n"));
-        }
-        if let Some(result) = forum::call(self, tool.name, args.clone(), agent).await {
-            return result;
-        }
-        if let Some(result) = papers::call(self, tool.name, args.clone()).await {
-            return result;
-        }
-        match library::call(self, tool.name, args).await {
-            Some(result) => result,
-            None => Err(ToolError::Unknown(name.to_owned())),
-        }
+        (tool.handler)(self, args, agent).await
     }
 
     /// The group a call is about: the one it names, or the default, or the

@@ -81,18 +81,18 @@ impl Session {
     pub async fn open(hub: &Hub, options: Options) -> anyhow::Result<Session> {
         let me = hub.me().await.context("reaching the hub")?;
         let group = match &options.group {
-            Some(slug) => me
-                .groups
-                .iter()
-                .find(|g| &g.slug == slug)
+            Some(slug) => hub
+                .group(slug)
+                .await
                 .with_context(|| format!("you are not in a group {slug}"))?,
             None => match me.groups.as_slice() {
-                [only] => only,
+                [only] => only.clone(),
                 [] => anyhow::bail!("you are in no group yet"),
                 _ => anyhow::bail!("you are in several groups: name one with --group"),
             },
-        }
-        .clone();
+        };
+        let paths = stemma_client::config::Paths::discover()?;
+        let local = paths.group_slug(hub.base(), group.id, &group.slug)?;
         let agent = AgentProfile::default_of_runner(&options.runner).context("unknown runner")?;
         let workspace = if options.workspace {
             let settings = stemma_client::config::Settings::load()?;
@@ -104,6 +104,7 @@ impl Session {
                     &paths,
                     hub,
                     &group.slug,
+                    group.id,
                     credentials.token.as_deref().context("signed out")?,
                 )
                 .await?,
@@ -116,7 +117,7 @@ impl Session {
                 &group.slug,
                 &options.runner,
                 &options.host,
-                stemma_client::config::Settings::load()?.attachments(Some(&group.slug))?,
+                stemma_client::config::Settings::load()?.attachments(Some(&local))?,
             )
             .await
             .context("making the session's token")?;
@@ -197,7 +198,9 @@ fn prepare(
                 agent.display_name.clone(),
             ],
         };
-        let config = crate::WorkerConfig::load(Some(&group.slug))?;
+        let paths = stemma_client::config::Paths::discover()?;
+        let local = paths.group_slug(hub, group.id, &group.slug)?;
+        let config = crate::WorkerConfig::load(Some(&local))?;
         let runner = config
             .runners
             .get(&options.runner)

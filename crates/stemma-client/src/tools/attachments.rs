@@ -13,6 +13,16 @@ const IMAGE_LIMIT: u64 = 1024 * 1024;
 pub fn definition() -> ToolDef {
     ToolDef {
         name: "download_attachment",
+        handler: |toolbox, args, _agent| {
+            Box::pin(async move {
+                Ok(download(toolbox, args, false)
+                    .await?
+                    .iter()
+                    .filter_map(|c| c.as_text().map(|t| t.text.as_str()))
+                    .collect::<Vec<_>>()
+                    .join("\n"))
+            })
+        },
         terminal: &["attachment"],
         positional: &["attachment"],
         description: "Read an attachment by its id from read_thread. Small text and images are returned inline; other or large files are saved and their path returned. The person's agents.attachments setting is enforced by the hub.",

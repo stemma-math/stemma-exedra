@@ -53,6 +53,13 @@ pub fn message(thread: u32, message: &Message) -> String {
         out.push_str(message.body.trim_end());
         out.push('\n');
     }
+    if !message.missing_references.is_empty() {
+        let _ = writeln!(
+            out,
+            "\nNot found: {}",
+            message.missing_references.join(", ")
+        );
+    }
     if !message.attachments.is_empty() {
         out.push_str("\nFiles:\n");
         for file in &message.attachments {
@@ -401,6 +408,7 @@ mod tests {
     #[test]
     fn messages_are_headed_by_their_address() {
         let message = Message {
+            missing_references: Vec::new(),
             number: 45,
             author: User {
                 id: 1,

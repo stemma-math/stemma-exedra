@@ -15,14 +15,13 @@ fn add(command: Command, path: &[&'static str], def: &ToolDef) -> Command {
             .as_object()
             .expect("properties")
         {
-            // Schemas and command names are static for the process's lifetime.
-            let key: &'static str = Box::leak(key.clone().into_boxed_str());
+            let key = key.as_str();
             let positional = def.positional.contains(&key);
             let required = def.input_schema["required"]
                 .as_array()
                 .is_some_and(|keys| keys.iter().any(|v| v == key));
-            let mut arg =
-                Arg::new(key).help(schema["description"].as_str().unwrap_or("").to_owned());
+            let mut arg = Arg::new(key.to_owned())
+                .help(schema["description"].as_str().unwrap_or("").to_owned());
             if positional {
                 arg = arg
                     .index(def.positional.iter().position(|&p| p == key).unwrap() + 1)
@@ -106,7 +105,9 @@ pub async fn run(matches: &ArgMatches) -> anyhow::Result<()> {
         args.insert("body".into(), Value::String(body));
     }
     let credentials = Credentials::load()?.with_env();
-    let toolbox = Toolbox::new(credentials.hub()?, config::active_group(None)?);
+    let hub = credentials.hub()?;
+    hub.me().await?;
+    let toolbox = Toolbox::new(hub, config::active_group(None)?);
     let text = toolbox
         .call(
             def.name,

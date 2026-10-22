@@ -44,6 +44,7 @@ pub struct Hub {
     /// A session cookie, while signing in to make a token.
     cookie: Option<String>,
     http: reqwest::Client,
+    local: Option<crate::config::Paths>,
 }
 
 /// Makes rustls use ring, once per process.
@@ -65,7 +66,14 @@ impl Hub {
             token,
             cookie: None,
             http,
+            local: None,
         })
+    }
+
+    /// Only a hub constructed from local credentials may update local files.
+    pub fn local(mut self, paths: crate::config::Paths) -> Self {
+        self.local = Some(paths);
+        self
     }
 
     /// Download an attachment by the id shown by the reading tools. The hub
@@ -135,6 +143,15 @@ impl Hub {
             .map_err(|source| self.unreachable(source))?;
         let status = response.status();
         let headers = response.headers().clone();
+        if let (Some(paths), Some(token), Some(username)) = (
+            &self.local,
+            &self.token,
+            headers.get("x-stemma-user").and_then(|v| v.to_str().ok()),
+        ) && let Err(error) = paths.update_username(&self.base, token, username)
+        {
+            tracing::warn!(%error, "could not update the saved username");
+        }
+
         if !status.is_success() {
             let text = response
                 .text()
@@ -193,8 +210,17 @@ impl Hub {
 
     // ── Accounts ──────────────────────────────────────────────────────
 
+    pub async fn group(&self, slug: &str) -> Result<stemma_core::api::Group> {
+        self.get(&format!("/groups/{}", encode(slug)), &[]).await
+    }
     pub async fn me(&self) -> Result<Me> {
-        self.get("/me", &[]).await
+        let me: Me = self.get("/me", &[]).await?;
+        if let Some(paths) = &self.local
+            && let Err(error) = paths.reconcile_groups(&self.base, &me.groups)
+        {
+            tracing::warn!(%error, "could not update group names; will retry");
+        }
+        Ok(me)
     }
 
     /// Signs in with a password, for what follows, until [`Hub::sign_out`].

@@ -2,7 +2,6 @@
 
 use axum::extract::{Path, State};
 use axum::http::StatusCode;
-use stemma_core::address::is_slug;
 use stemma_core::api::{CreateGroup, Group, Member, Role, UpdateMember};
 
 use super::{Json, Membership, UserColumns, required_text};
@@ -14,8 +13,8 @@ use crate::library;
 use crate::state::AppState;
 
 pub async fn groups_of(state: &AppState, user_id: i64) -> ApiResult<Vec<Group>> {
-    let rows: Vec<(String, String, String, i64)> = sqlx::query_as(
-        "SELECT g.slug, g.name, m.role, g.created_at
+    let rows: Vec<(i64, String, String, String, i64)> = sqlx::query_as(
+        "SELECT g.id, g.slug, g.name, m.role, g.created_at
          FROM groups g JOIN memberships m ON m.group_id = g.id
          WHERE m.user_id = ? ORDER BY g.name",
     )
@@ -24,7 +23,8 @@ pub async fn groups_of(state: &AppState, user_id: i64) -> ApiResult<Vec<Group>> 
     .await?;
     Ok(rows
         .into_iter()
-        .map(|(slug, name, role, created_at)| Group {
+        .map(|(id, slug, name, role, created_at)| Group {
+            id,
             slug,
             name,
             role: Role::parse(&role).unwrap_or(Role::Guest),
@@ -69,27 +69,7 @@ pub async fn create(
 }
 
 pub(super) async fn available_slug(state: &AppState, value: &str) -> ApiResult<String> {
-    let slug = value.trim().to_owned();
-    if !is_slug(&slug) || slug.len() > 40 {
-        return Err(ApiError::invalid(
-            "A group's short name is up to 40 lowercase letters, digits and inner dashes",
-        ));
-    }
-    if forge::is_reserved(&slug) {
-        return Err(ApiError::invalid(format!(
-            "{slug} is a name the forge keeps for itself"
-        )));
-    }
-    let taken: bool = sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM groups WHERE slug = ?)")
-        .bind(&slug)
-        .fetch_one(&state.db)
-        .await?;
-    if taken {
-        return Err(ApiError::conflict(format!(
-            "There is already a group {slug}"
-        )));
-    }
-    Ok(slug)
+    crate::names::available(state, "group", value, None).await
 }
 
 /// The caller serializes group changes; approval and membership are kept together.
@@ -267,4 +247,69 @@ pub async fn remove_member(
         .await?;
     forge::sync_members_or_log(&state, group.group_id).await;
     Ok(StatusCode::NO_CONTENT)
+}
+
+/// A group's admins may change either name, preserving its identity.
+pub async fn update(
+    State(state): State<AppState>,
+    viewer: Viewer,
+    Path(slug): Path<String>,
+    Json(body): Json<serde_json::Value>,
+) -> ApiResult<Json<Group>> {
+    viewer.require_full()?;
+    let _guard = state.group_changes.lock().await;
+    let _forge_guard = state.forge_sync.lock().await;
+    let group = Membership::of(&state, &viewer, &slug).await?;
+    group.require_admin()?;
+    let next = match body.get("slug") {
+        Some(value) => {
+            crate::names::available(
+                &state,
+                "group",
+                value.as_str().unwrap_or(""),
+                Some(group.group_id),
+            )
+            .await?
+        }
+        None => group.slug.clone(),
+    };
+    let name = required_text(
+        body.get("name")
+            .and_then(|v| v.as_str())
+            .unwrap_or(&group.name),
+        "The name",
+        80,
+    )?;
+    if let Some(forge) = state.forge.as_ref() {
+        forge
+            .edit_organization(&group.slug, &name)
+            .await
+            .map_err(forge::api_error)?;
+        if next != group.slug {
+            forge
+                .rename_organization(&group.slug, &next)
+                .await
+                .map_err(forge::api_error)?;
+        }
+    }
+    let mut workers = state.workers.lock().await;
+    let mut tx = state.db.begin().await?;
+    if next != group.slug {
+        sqlx::query("INSERT OR IGNORE INTO group_names (name, group_id) VALUES (?, ?)")
+            .bind(&group.slug)
+            .bind(group.group_id)
+            .execute(&mut *tx)
+            .await?;
+    }
+    sqlx::query("UPDATE groups SET slug = ?, name = ? WHERE id = ?")
+        .bind(&next)
+        .bind(&name)
+        .bind(group.group_id)
+        .execute(&mut *tx)
+        .await?;
+    tx.commit().await?;
+    workers.rename_group(&group.slug, &next);
+    drop(workers);
+    crate::text::names_changed(&state).await?;
+    Ok(Json(Membership::of(&state, &viewer, &next).await?.group()))
 }

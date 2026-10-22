@@ -49,6 +49,13 @@ impl Connected {
     }
 }
 impl Workers {
+    pub fn rename_group(&mut self, old: &str, new: &str) {
+        for worker in self.connected.values_mut() {
+            if let Some(scope) = worker.groups.remove(old) {
+                worker.groups.insert(new.into(), scope);
+            }
+        }
+    }
     pub fn runners(&self, token: i64) -> Vec<String> {
         self.connected
             .get(&token)
@@ -233,16 +240,18 @@ pub async fn of_thread(state: &AppState, thread_id: i64, viewer_id: i64) -> ApiR
     .fetch_all(&state.db)
     .await?;
     let workers = state.workers.lock().await;
-    Ok(rows
-        .iter()
-        .map(|row| {
-            let mut job = row.to_api(&workers);
-            if row.requester_id == viewer_id {
-                job.held = row.held_answer.as_deref().map(secrets::parts);
-            }
-            job
-        })
-        .collect())
+    let mut jobs = Vec::new();
+    for row in &rows {
+        let mut job = row.to_api(&workers);
+        if row.requester_id == viewer_id
+            && let Some(ids) = row.held_answer.as_deref()
+        {
+            let (text, _) = crate::text::render(state, ids).await?;
+            job.held = Some(secrets::parts(&text));
+        }
+        jobs.push(job);
+    }
+    Ok(jobs)
 }
 
 pub async fn summon(
@@ -255,7 +264,25 @@ pub async fn summon(
     if message.agent.is_some() || message.deleted {
         return Ok(());
     }
-    let mut handles = stemma_core::mentions(&message.body);
+    let ids: Option<String> =
+        sqlx::query_scalar("SELECT body_ids FROM messages WHERE thread_id = ? AND number = ?")
+            .bind(thread_id)
+            .bind(message.number)
+            .fetch_optional(&state.db)
+            .await?
+            .flatten();
+    let mut handles: Vec<String> = ids
+        .and_then(|s| serde_json::from_str::<stemma_core::text::StoredText>(&s).ok())
+        .map(|s| {
+            s.targets()
+                .filter_map(|t| match t {
+                    stemma_core::text::Target::Agent(kind) => Some(kind.clone()),
+                    _ => None,
+                })
+                .collect()
+        })
+        .unwrap_or_default();
+    handles.dedup();
     if thread.kind == ThreadKind::Chat
         && let Some(resident) = &thread.resident_agent
         && !handles.contains(resident)
@@ -390,6 +417,7 @@ async fn start(
     Ok(JobSpec {
         id: job.id,
         group: GroupRef {
+            id: group.group_id,
             slug: group.slug,
             name: group.name,
         },
@@ -554,6 +582,7 @@ async fn answered(state: &AppState, job: &JobRow, answer: &str) -> ApiResult<Opt
 /// Keeps an answer that seems to hold a secret, unposted, for its
 /// requester to decide.
 async fn hold(state: &AppState, job: &JobRow, text: &str) -> ApiResult<()> {
+    let text = crate::text::encode(&mut *state.db.acquire().await?, job.group_id, text).await?;
     sqlx::query(
         "UPDATE jobs SET state = 'held', held_answer = ?, progress = NULL, updated_at = ?
          WHERE id = ?",
@@ -578,7 +607,7 @@ async fn held_by(
         .filter(|job| job.group_id == group.group_id && job.requester_id == user_id)
         .ok_or_else(|| ApiError::not_found("Job"))?;
     match (job.state(), job.held_answer.clone()) {
-        (JobState::Held, Some(text)) => Ok((job, text)),
+        (JobState::Held, Some(text)) => Ok((job, crate::text::render(state, &text).await?.0)),
         _ => Err(ApiError::conflict("This answer is not held")),
     }
 }
@@ -652,13 +681,14 @@ async fn say(state: &AppState, job: &JobRow, text: &str) -> ApiResult<u32> {
 
 /// Registers a connected machine, replacing an older connection of it,
 /// whose jobs are queued again.
-pub async fn connected(state: &AppState, worker_id: i64, worker: Connected) -> ApiResult<()> {
+pub async fn connected(state: &AppState, worker_id: i64, mut worker: Connected) -> ApiResult<()> {
     let old = {
         let mut workers = state.workers.lock().await;
         let valid: bool = sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM api_tokens WHERE id = ? AND user_id = ? AND kind = 'personal' AND revoked_at IS NULL AND (expires_at IS NULL OR expires_at > ?))").bind(worker_id).bind(worker.owner_id).bind(db::now()).fetch_one(&state.db).await?;
         if !valid {
             return Err(ApiError::unauthenticated());
         }
+        worker.groups = canonical_groups(state, worker.groups).await?;
         workers.connected.insert(worker_id, worker)
     };
     if let Some(old) = old {
@@ -779,8 +809,22 @@ pub async fn hello(
     {
         worker.runners = hello.runners;
         worker.agents = hello.agents;
-        worker.groups = hello.groups;
+        worker.groups = canonical_groups(state, hello.groups).await?;
         worker.concurrency = hello.concurrency.max(1);
     }
     dispatch(state).await
+}
+
+/// Machines may still be using a former name while a workspace is leased.
+async fn canonical_groups(
+    state: &AppState,
+    groups: std::collections::BTreeMap<String, stemma_core::protocol::GroupAgents>,
+) -> ApiResult<std::collections::BTreeMap<String, stemma_core::protocol::GroupAgents>> {
+    let mut canonical = std::collections::BTreeMap::new();
+    for (slug, scope) in groups {
+        let current: Option<String> = sqlx::query_scalar("SELECT slug FROM groups WHERE slug = ?1 UNION SELECT g.slug FROM group_names n JOIN groups g ON g.id = n.group_id WHERE n.name = ?1")
+            .bind(&slug).fetch_optional(&state.db).await?;
+        canonical.insert(current.unwrap_or(slug), scope);
+    }
+    Ok(canonical)
 }

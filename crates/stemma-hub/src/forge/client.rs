@@ -273,6 +273,35 @@ impl Forge {
         .await
     }
 
+    /// Forgejo 16's admin rename keeps the external authentication link.
+    pub async fn rename_user(&self, old: &str, new: &str) -> ForgeResult<()> {
+        self.send(
+            "rename an account",
+            self.api(Method::POST, &format!("/admin/users/{old}/rename"))
+                .json(&json!({"new_username": new})),
+        )
+        .await?;
+        Ok(())
+    }
+    pub async fn rename_organization(&self, old: &str, new: &str) -> ForgeResult<()> {
+        self.send(
+            "rename an organization",
+            self.api(Method::POST, &format!("/orgs/{old}/rename"))
+                .json(&json!({"new_name": new})),
+        )
+        .await?;
+        Ok(())
+    }
+    pub async fn edit_organization(&self, slug: &str, name: &str) -> ForgeResult<()> {
+        self.send(
+            "update an organization",
+            self.api(Method::PATCH, &format!("/orgs/{slug}"))
+                .json(&json!({"full_name": name})),
+        )
+        .await?;
+        Ok(())
+    }
+
     // ── Organizations and teams ───────────────────────────────────────
 
     pub async fn organization_exists(&self, name: &str) -> ForgeResult<bool> {

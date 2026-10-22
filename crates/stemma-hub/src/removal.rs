@@ -138,6 +138,7 @@ pub async fn thread(state: &AppState, id: i64) -> ApiResult<()> {
         .bind(id)
         .execute(&state.db)
         .await?;
+    crate::text::refresh(state).await?;
     attachments::remove_files(state, &keys).await;
     Ok(())
 }
@@ -162,6 +163,7 @@ pub async fn paper(state: &AppState, paper: &papers::PaperRow, org: &str) -> Api
         .bind(paper.id)
         .execute(&state.db)
         .await?;
+    crate::text::refresh(state).await?;
     leftovers.remove(state, org).await;
     Ok(())
 }
@@ -201,6 +203,7 @@ pub async fn group(state: &AppState, group_id: i64, slug: &str) -> ApiResult<()>
         .bind(group_id)
         .execute(&state.db)
         .await?;
+    crate::text::refresh(state).await?;
     leftovers.remove(state, slug).await;
     if let Some(forge) = state.forge.as_ref()
         && let Err(error) = forge.delete_organization(slug).await
@@ -252,9 +255,53 @@ pub async fn account(state: &AppState, user_id: i64) -> ApiResult<()> {
         .fetch_all(&state.db)
         .await?;
 
+    // Release the forge's current username too, preserving the external
+    // account and any history under an unclaimable tombstone name.
+    let (known, subject, admin): (Option<String>, String, bool) =
+        sqlx::query_as("SELECT forge_login, subject, hub_admin FROM users WHERE id = ?")
+            .bind(user_id)
+            .fetch_one(&state.db)
+            .await?;
+    if admin {
+        let count: i64 = sqlx::query_scalar(
+            "SELECT COUNT(*) FROM users WHERE hub_admin = 1 AND deleted_at IS NULL",
+        )
+        .fetch_one(&state.db)
+        .await?;
+        if count <= 1 {
+            return Err(ApiError::conflict("The hub needs at least one admin."));
+        }
+    }
+    let retired = if let Some(forge) = &state.forge {
+        let _guard = state.forge_sync.lock().await;
+        let login = match known {
+            Some(login) => Some(login),
+            None => forge
+                .linked_user(&subject)
+                .await
+                .map_err(forge::api_error)?
+                .map(|u| u.login),
+        };
+        if let Some(login) = login {
+            let retired = format!(
+                "stemma-deleted-{}",
+                &crate::secret::token_hash(&subject)[..20]
+            );
+            forge
+                .rename_user(&login, &retired)
+                .await
+                .map_err(forge::api_error)?;
+            Some(retired)
+        } else {
+            None
+        }
+    } else {
+        None
+    };
     let now = db::now();
     let mut tx = state.db.begin().await?;
     for statement in [
+        "DELETE FROM user_names WHERE user_id = ?",
         "DELETE FROM sessions WHERE user_id = ?",
         "DELETE FROM api_tokens WHERE user_id = ?",
         "DELETE FROM memberships WHERE user_id = ?",
@@ -279,11 +326,12 @@ pub async fn account(state: &AppState, user_id: i64) -> ApiResult<()> {
     // at once.
     let done = sqlx::query(
         "UPDATE users SET username = '~' || id, display_name = 'A deleted account',
-                          password_hash = '', hub_admin = 0, deleted_at = ?
+                          password_hash = '', hub_admin = 0, forge_login = ?, deleted_at = ?
          WHERE id = ? AND deleted_at IS NULL
            AND (hub_admin = 0
                 OR (SELECT COUNT(*) FROM users WHERE hub_admin = 1 AND deleted_at IS NULL) > 1)",
     )
+    .bind(retired)
     .bind(now)
     .bind(user_id)
     .execute(&mut *tx)
@@ -292,6 +340,7 @@ pub async fn account(state: &AppState, user_id: i64) -> ApiResult<()> {
         return Err(ApiError::conflict("The hub needs at least one admin."));
     }
     tx.commit().await?;
+    crate::text::refresh(state).await?;
     for group in groups {
         forge::sync_members_or_log(state, group).await;
     }

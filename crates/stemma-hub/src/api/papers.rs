@@ -180,6 +180,11 @@ pub async fn file(
 ) -> ApiResult<Json<PaperFileText>> {
     let group = Membership::of(&state, &viewer, &slug).await?;
     let row = papers::find(&state, group.group_id, &paper).await?;
-    let (commit, text) = papers::source_file(&state, &row, &path).await?;
-    Ok(Json(PaperFileText { path, commit, text }))
+    let (commit, text, missing_references) = papers::source_file(&state, &row, &path).await?;
+    Ok(Json(PaperFileText {
+        path,
+        commit,
+        text,
+        missing_references,
+    }))
 }

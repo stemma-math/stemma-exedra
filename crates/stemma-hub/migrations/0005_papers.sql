@@ -1,10 +1,11 @@
 
 CREATE TABLE papers (
-    id INTEGER PRIMARY KEY,
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
     group_id INTEGER NOT NULL REFERENCES groups (id) ON DELETE CASCADE,
     -- Its address is `p/<slug>`.
     slug TEXT NOT NULL,
     title TEXT NOT NULL,
+    title_ids TEXT,
     -- The repository of the group's organization: `paper-<slug>`.
     repository TEXT NOT NULL,
     created_by INTEGER NOT NULL REFERENCES users (id),
@@ -25,7 +26,7 @@ CREATE TABLE paper_authors (
 );
 
 CREATE TABLE paper_builds (
-    id INTEGER PRIMARY KEY,
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
     paper_id INTEGER NOT NULL REFERENCES papers (id) ON DELETE CASCADE,
     commit_sha TEXT NOT NULL,
     succeeded INTEGER,
@@ -38,3 +39,13 @@ CREATE TABLE paper_builds (
 );
 
 CREATE INDEX paper_builds_paper ON paper_builds (paper_id, id DESC);
+
+-- The identity interpretation of source at a commit. The repository remains
+-- ordinary LaTeX; API and tools render names from this immutable snapshot.
+CREATE TABLE paper_texts (
+    paper_id INTEGER NOT NULL REFERENCES papers (id) ON DELETE CASCADE,
+    commit_sha TEXT NOT NULL,
+    path TEXT NOT NULL,
+    text_ids TEXT NOT NULL,
+    PRIMARY KEY (paper_id, commit_sha, path)
+);

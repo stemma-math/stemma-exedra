@@ -28,13 +28,13 @@ impl Workspace {
         paths: &Paths,
         hub: &Hub,
         group: &str,
+        group_id: i64,
         token: &str,
     ) -> anyhow::Result<Self> {
-        let path = settings.workspace(group)?;
         let locks = paths.state.join("groups");
         std::fs::create_dir_all(&locks)?;
-        let update = lock_file(&locks.join(format!("{group}.update.lock")))?;
-        let lease = lock_file(&locks.join(format!("{group}.lock")))?;
+        let update = lock_file(&locks.join(format!("{group_id}.update.lock")))?;
+        let lease = lock_file(&locks.join(format!("{group_id}.lock")))?;
         let (update, lease, refresh) = tokio::task::spawn_blocking(move || -> anyhow::Result<_> {
             update.lock()?;
             let refresh = match lease.try_lock() {
@@ -48,6 +48,10 @@ impl Workspace {
             Ok((update, lease, refresh))
         })
         .await??;
+        let local = paths.group_slug(hub.base(), group_id, group)?;
+        let latest = Settings::load_from(paths, std::env::vars().collect())
+            .unwrap_or_else(|_| settings.clone());
+        let path = latest.workspace(&local)?;
         if refresh {
             std::fs::create_dir_all(&path)?;
             checkout(

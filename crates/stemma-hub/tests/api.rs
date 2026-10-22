@@ -1370,6 +1370,20 @@ async fn agent_tokens_reach_only_what_their_tools_offer() {
         ),
         (
             Method::PATCH,
+            "/groups/geometry".into(),
+            Some(json!({"slug":"changed"})),
+            S::FORBIDDEN,
+            S::FORBIDDEN,
+        ),
+        (
+            Method::GET,
+            "/names/user?name=ada".into(),
+            None,
+            S::FORBIDDEN,
+            S::FORBIDDEN,
+        ),
+        (
+            Method::PATCH,
             "/me".into(),
             Some(json!({"display_name": "Eve"})),
             S::FORBIDDEN,
@@ -3237,4 +3251,417 @@ async fn whoever_created_a_paper_or_an_admin_deletes_it() {
         .call(&ada, Method::DELETE, "/groups/geometry/papers/draft", None)
         .await;
     assert_eq!(reply.status, StatusCode::NO_CONTENT);
+}
+
+#[tokio::test]
+async fn names_follow_identity_and_former_names_stay_owned() {
+    let hub = TestHub::new().await;
+    let ada = hub.admin_with_group().await;
+    let grace = hub.member(&ada, "grace").await;
+    let group_id = hub.get(&ada, "/groups/geometry").await.json()["id"].clone();
+    assert_eq!(
+        hub.post(&ada, "/groups", json!({"slug":"algebra", "name":"Algebra"}))
+            .await
+            .status,
+        StatusCode::CREATED
+    );
+    for name in [
+        "grace", "claude", "codex", "opencode", "admin", "login", "groups", "geometry",
+    ] {
+        let reply = hub
+            .call(
+                &ada,
+                Method::PATCH,
+                "/me",
+                Some(json!({"username": name, "display_name":"Ada"})),
+            )
+            .await;
+        assert!(!reply.status.is_success(), "{name}: {}", reply.json());
+        let available = hub
+            .get(&ada, &format!("/names/user?name={name}"))
+            .await
+            .json();
+        assert_eq!(available["available"], false, "{name}");
+        assert!(available["reason"].is_string());
+    }
+    for name in ["algebra", "admin", "hub", "grace"] {
+        assert!(
+            !hub.call(
+                &ada,
+                Method::PATCH,
+                "/groups/geometry",
+                Some(json!({"slug":name}))
+            )
+            .await
+            .status
+            .is_success()
+        );
+    }
+    assert_eq!(
+        hub.call(
+            &grace,
+            Method::PATCH,
+            "/groups/geometry",
+            Some(json!({"name":"Changed"}))
+        )
+        .await
+        .status,
+        StatusCode::FORBIDDEN
+    );
+    let subject: String = sqlx::query_scalar("SELECT subject FROM users WHERE username = 'ada'")
+        .fetch_one(&hub.state.db)
+        .await
+        .unwrap();
+    assert_eq!(
+        hub.call(
+            &ada,
+            Method::PATCH,
+            "/me",
+            Some(json!({"username":"augusta", "display_name":"Ada Lovelace"}))
+        )
+        .await
+        .status,
+        StatusCode::OK
+    );
+    let forge_user = hub
+        .state
+        .forge
+        .as_ref()
+        .unwrap()
+        .linked_user(&subject)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(forge_user.login, "augusta");
+    assert!(
+        hub.forge
+            .team_members("geometry", "Owners")
+            .contains(&"augusta".to_owned())
+    );
+    assert!(
+        !hub.call(
+            &grace,
+            Method::PATCH,
+            "/me",
+            Some(json!({"username":"ada", "display_name":"Grace"}))
+        )
+        .await
+        .status
+        .is_success()
+    );
+    let renamed = hub
+        .call(
+            &ada,
+            Method::PATCH,
+            "/groups/geometry",
+            Some(json!({"slug":"topology", "name":"Topology"})),
+        )
+        .await;
+    assert_eq!(renamed.status, StatusCode::OK, "{}", renamed.json());
+    assert_eq!(renamed.json()["id"], group_id);
+    assert!(hub.forge.repository_path("topology", "library").exists());
+    for (old, new) in [
+        ("/g/geometry/t/12?view=all", "/g/topology/t/12?view=all"),
+        (
+            "/api/v1/groups/geometry/threads",
+            "/api/v1/groups/topology/threads",
+        ),
+        (
+            "/git/geometry/library.git/info/refs?service=git-upload-pack",
+            "/git/topology/library.git/info/refs?service=git-upload-pack",
+        ),
+        ("/api/v1/users/ada", "/api/v1/users/augusta"),
+        ("/u/ada", "/u/augusta"),
+    ] {
+        let reply = hub.fetch(&ada, old).await;
+        assert_eq!(reply.status, StatusCode::PERMANENT_REDIRECT, "{old}");
+        assert_eq!(reply.headers[header::LOCATION], new);
+    }
+    assert!(
+        !hub.post(&ada, "/groups", json!({"slug":"geometry", "name":"Taken"}))
+            .await
+            .status
+            .is_success()
+    );
+    assert_eq!(
+        hub.call(
+            &ada,
+            Method::PATCH,
+            "/groups/topology",
+            Some(json!({"slug":"geometry"}))
+        )
+        .await
+        .status,
+        StatusCode::OK
+    );
+    assert_eq!(
+        hub.call(
+            &ada,
+            Method::PATCH,
+            "/me",
+            Some(json!({"username":"ada", "display_name":"Ada"}))
+        )
+        .await
+        .status,
+        StatusCode::OK
+    );
+    assert_eq!(hub.get(&ada, "/me").await.json()["username"], "ada");
+    assert_eq!(
+        hub.post(
+            &Client::default(),
+            "/session",
+            json!({"username":"ada", "password":"analytical"})
+        )
+        .await
+        .status,
+        StatusCode::OK
+    );
+}
+
+#[tokio::test]
+async fn prose_is_stored_by_id_and_shown_searched_and_edited_by_current_name() {
+    let hub = TestHub::new().await;
+    let ada = hub.admin_with_group().await;
+    let grace = hub.member(&ada, "grace").await;
+    hub.post(
+        &ada,
+        "/groups/geometry/papers",
+        json!({"slug":"notes", "title":"Notes"}),
+    )
+    .await;
+    hub.post(
+        &ada,
+        "/groups/geometry/threads",
+        json!({"title":"First", "body":"Target"}),
+    )
+    .await;
+    let typed = "@ada @grace @claude [[geometry/t1]] [[geometry/p/notes]] @nobody `@ada`\n```\n@ada [[geometry/t1]]\n```";
+    let reply = hub
+        .post(
+            &grace,
+            "/groups/geometry/threads",
+            json!({"title":"Second", "body":typed}),
+        )
+        .await;
+    assert_eq!(reply.status, StatusCode::CREATED, "{}", reply.json());
+    let internal: String = sqlx::query_scalar("SELECT body_ids FROM messages WHERE thread_id = (SELECT id FROM threads WHERE number = 2) AND number = 1").fetch_one(&hub.state.db).await.unwrap();
+    let stored: stemma_core::text::StoredText = serde_json::from_str(&internal).unwrap();
+    assert!(
+        stored
+            .targets()
+            .any(|t| matches!(t, stemma_core::text::Target::User(1)))
+    );
+    assert_eq!(
+        hub.call(
+            &ada,
+            Method::PATCH,
+            "/me",
+            Some(json!({"username":"augusta", "display_name":"Ada"}))
+        )
+        .await
+        .status,
+        StatusCode::OK
+    );
+    assert_eq!(
+        hub.call(
+            &ada,
+            Method::PATCH,
+            "/groups/geometry",
+            Some(json!({"slug":"topology"}))
+        )
+        .await
+        .status,
+        StatusCode::OK
+    );
+    let page = hub.get(&grace, "/groups/topology/threads/2").await.json();
+    let rendered = page["messages"][0]["body"].as_str().unwrap();
+    assert!(
+        rendered.starts_with(
+            "@augusta @grace @claude [[topology/t1]] [[topology/p/notes]] @nobody `@ada`"
+        ),
+        "{rendered}"
+    );
+    assert!(rendered.ends_with("@ada [[geometry/t1]]\n```"));
+    let search = hub.get(&grace, "/groups/topology/search?q=augusta").await;
+    assert_eq!(search.json().as_array().unwrap().len(), 1);
+    let edited = hub
+        .call(
+            &grace,
+            Method::PATCH,
+            "/groups/topology/threads/2/messages/1",
+            Some(json!({"body":format!("{rendered}\nEdited")})),
+        )
+        .await;
+    assert_eq!(edited.status, StatusCode::OK);
+    assert_eq!(
+        hub.call(&ada, Method::DELETE, "/groups/topology/threads/1", None)
+            .await
+            .status,
+        StatusCode::NO_CONTENT
+    );
+    assert_eq!(
+        hub.call(&ada, Method::DELETE, "/groups/topology/papers/notes", None)
+            .await
+            .status,
+        StatusCode::NO_CONTENT
+    );
+    hub.post(
+        &ada,
+        "/groups/topology/papers",
+        json!({"slug":"notes", "title":"A different paper"}),
+    )
+    .await;
+    let page = hub.get(&grace, "/groups/topology/threads/2").await.json();
+    assert_eq!(
+        page["messages"][0]["missing_references"],
+        json!(["[[topology/t1]]", "[[topology/p/notes]]"])
+    );
+    let grace_id = hub.get(&grace, "/me").await.json()["id"].as_i64().unwrap();
+    assert_eq!(
+        hub.call(
+            &ada,
+            Method::DELETE,
+            &format!("/hub/people/{grace_id}"),
+            None
+        )
+        .await
+        .status,
+        StatusCode::NO_CONTENT
+    );
+    let page = hub.get(&ada, "/groups/topology/threads/2").await.json();
+    assert!(
+        page["messages"][0]["body"]
+            .as_str()
+            .unwrap()
+            .contains("A deleted account")
+    );
+    assert_eq!(
+        page["messages"][0]["author"]["display_name"],
+        "A deleted account"
+    );
+}
+
+#[tokio::test]
+async fn deleted_accounts_release_current_and_former_usernames() {
+    let hub = TestHub::new().await;
+    let ada = hub.admin_with_group().await;
+    let grace = hub.member(&ada, "grace").await;
+    let id = hub.get(&grace, "/me").await.json()["id"].as_i64().unwrap();
+    assert_eq!(
+        hub.call(
+            &grace,
+            Method::PATCH,
+            "/me",
+            Some(json!({"username":"hopper", "display_name":"Grace"}))
+        )
+        .await
+        .status,
+        StatusCode::OK
+    );
+    assert_eq!(
+        hub.call(&ada, Method::DELETE, &format!("/hub/people/{id}"), None)
+            .await
+            .status,
+        StatusCode::NO_CONTENT
+    );
+    assert_eq!(
+        hub.get(&ada, "/names/user?name=grace").await.json()["available"],
+        true
+    );
+    assert_eq!(
+        hub.get(&ada, "/names/user?name=hopper").await.json()["available"],
+        true
+    );
+    let reclaimed = hub.member(&ada, "hopper").await;
+    let reclaimed_id = hub.get(&reclaimed, "/me").await.json()["id"]
+        .as_i64()
+        .unwrap();
+    let login =
+        stemma_hub::forge::ensure_user(&hub.state, hub.state.forge.as_ref().unwrap(), reclaimed_id)
+            .await
+            .unwrap();
+    assert_eq!(login, "hopper");
+    let replacement = hub.member(&ada, "grace").await;
+    assert_ne!(hub.get(&replacement, "/me").await.json()["id"], id);
+}
+
+#[tokio::test]
+async fn paper_source_keeps_identity_interpretation_across_names_and_commits() {
+    let hub = TestHub::new().await;
+    let ada = hub.admin_with_group().await;
+    let created = hub
+        .post(
+            &ada,
+            "/groups/geometry/papers",
+            json!({"slug":"notes", "title":"Notes"}),
+        )
+        .await;
+    assert_eq!(created.status, StatusCode::CREATED);
+    let paper_id: i64 = sqlx::query_scalar("SELECT id FROM papers WHERE slug = 'notes'")
+        .fetch_one(&hub.state.db)
+        .await
+        .unwrap();
+    hub.forge
+        .push_branch(
+            "geometry",
+            "paper-notes",
+            "main",
+            &[("main.tex", "By @ada. See [[geometry/t1]]. `@ada`.")],
+            &[],
+        )
+        .await;
+    stemma_hub::papers::refresh(&hub.state, paper_id, 1)
+        .await
+        .unwrap();
+    assert_eq!(
+        hub.call(
+            &ada,
+            Method::PATCH,
+            "/me",
+            Some(json!({"username":"augusta", "display_name":"Ada"}))
+        )
+        .await
+        .status,
+        StatusCode::OK
+    );
+    let source = hub
+        .get(&ada, "/groups/geometry/papers/notes/files/main.tex")
+        .await;
+    assert_eq!(
+        source.json()["text"],
+        "By @augusta. See [[geometry/t1]]. `@ada`."
+    );
+    // An unresolved reference stays literal rather than acquiring an identity later.
+    hub.post(
+        &ada,
+        "/groups/geometry/threads",
+        json!({"title":"New target"}),
+    )
+    .await;
+    let ids: String = sqlx::query_scalar("SELECT text_ids FROM paper_texts WHERE paper_id = ? AND path = 'main.tex' ORDER BY rowid DESC LIMIT 1").bind(paper_id).fetch_one(&hub.state.db).await.unwrap();
+    assert!(
+        !serde_json::from_str::<stemma_core::text::StoredText>(&ids)
+            .unwrap()
+            .targets()
+            .any(|t| matches!(t, stemma_core::text::Target::Reference { .. }))
+    );
+    hub.forge
+        .push_branch(
+            "geometry",
+            "paper-notes",
+            "main",
+            &[("other.tex", "Other text")],
+            &[],
+        )
+        .await;
+    stemma_hub::papers::refresh(&hub.state, paper_id, 1)
+        .await
+        .unwrap();
+    let source = hub
+        .get(&ada, "/groups/geometry/papers/notes/files/main.tex")
+        .await;
+    assert_eq!(
+        source.json()["text"],
+        "By @augusta. See [[geometry/t1]]. `@ada`."
+    );
 }

@@ -11,6 +11,7 @@ pub fn definitions() -> Vec<ToolDef> {
     vec![
         ToolDef {
             name: "library_state",
+            handler: |toolbox, args, _agent| Box::pin(state(toolbox, args)),
             terminal: &["library"],
             positional: &[],
             description: "How the group's Lean library stands: its last build, how many \
@@ -23,6 +24,7 @@ pub fn definitions() -> Vec<ToolDef> {
         },
         ToolDef {
             name: "library_lookup",
+            handler: |toolbox, args, _agent| Box::pin(lookup(toolbox, args)),
             terminal: &["library", "lookup"],
             positional: &["name"],
             description: "A declaration of the group's Lean library, by name (Foo.bar, or \
@@ -41,6 +43,7 @@ pub fn definitions() -> Vec<ToolDef> {
         },
         ToolDef {
             name: "library_search",
+            handler: |toolbox, args, _agent| Box::pin(search(toolbox, args)),
             terminal: &["library", "search"],
             positional: &["query"],
             description: "Search the group's Lean library for declarations whose name, type or \
@@ -58,16 +61,6 @@ pub fn definitions() -> Vec<ToolDef> {
             writes: false,
         },
     ]
-}
-
-/// Runs a library's tool, if `name` is one.
-pub async fn call(toolbox: &Toolbox, name: &str, args: Value) -> Option<ToolResult> {
-    Some(match name {
-        "library_state" => state(toolbox, args).await,
-        "library_lookup" => lookup(toolbox, args).await,
-        "library_search" => search(toolbox, args).await,
-        _ => return None,
-    })
 }
 
 #[derive(Deserialize)]
