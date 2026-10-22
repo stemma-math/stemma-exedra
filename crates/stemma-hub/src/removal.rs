@@ -138,7 +138,7 @@ pub async fn thread(state: &AppState, id: i64) -> ApiResult<()> {
         .bind(id)
         .execute(&state.db)
         .await?;
-    crate::text::refresh(state).await?;
+    crate::text::refresh(state, crate::text::Changed::Thread(id)).await?;
     attachments::remove_files(state, &keys).await;
     Ok(())
 }
@@ -163,7 +163,7 @@ pub async fn paper(state: &AppState, paper: &papers::PaperRow, org: &str) -> Api
         .bind(paper.id)
         .execute(&state.db)
         .await?;
-    crate::text::refresh(state).await?;
+    crate::text::refresh(state, crate::text::Changed::Paper(paper.id)).await?;
     leftovers.remove(state, org).await;
     Ok(())
 }
@@ -203,7 +203,7 @@ pub async fn group(state: &AppState, group_id: i64, slug: &str) -> ApiResult<()>
         .bind(group_id)
         .execute(&state.db)
         .await?;
-    crate::text::refresh(state).await?;
+    crate::text::refresh(state, crate::text::Changed::Group(group_id)).await?;
     leftovers.remove(state, slug).await;
     if let Some(forge) = state.forge.as_ref()
         && let Err(error) = forge.delete_organization(slug).await
@@ -340,7 +340,7 @@ pub async fn account(state: &AppState, user_id: i64) -> ApiResult<()> {
         return Err(ApiError::conflict("The hub needs at least one admin."));
     }
     tx.commit().await?;
-    crate::text::refresh(state).await?;
+    crate::text::refresh(state, crate::text::Changed::User(user_id)).await?;
     for group in groups {
         forge::sync_members_or_log(state, group).await;
     }

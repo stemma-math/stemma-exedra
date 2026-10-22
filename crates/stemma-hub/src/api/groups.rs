@@ -310,6 +310,8 @@ pub async fn update(
     tx.commit().await?;
     workers.rename_group(&group.slug, &next);
     drop(workers);
-    crate::text::names_changed(&state).await?;
+    if next != group.slug {
+        crate::text::names_changed(&state, crate::text::Changed::Group(group.group_id)).await?;
+    }
     Ok(Json(Membership::of(&state, &viewer, &next).await?.group()))
 }

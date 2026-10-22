@@ -233,7 +233,9 @@ pub async fn update_me(
         .execute(&mut *tx)
         .await?;
     tx.commit().await?;
-    crate::text::names_changed(&state).await?;
+    if username != current_username {
+        crate::text::names_changed(&state, crate::text::Changed::User(viewer.id)).await?;
+    }
     Ok(Json(me_of(&state, viewer.id).await?))
 }
 

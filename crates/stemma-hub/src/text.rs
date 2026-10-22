@@ -182,8 +182,31 @@ async fn current(db: &mut SqliteConnection, target: &Target) -> ApiResult<Option
     })
 }
 
-/// Materialized prose feeds SQLite's search index. IDs remain the source.
-pub async fn refresh(state: &AppState) -> ApiResult<()> {
+/// What a stored text can name that may change or go.
+#[derive(Clone, Copy, Debug)]
+pub enum Changed {
+    User(i64),
+    Group(i64),
+    Thread(i64),
+    Paper(i64),
+}
+
+impl Changed {
+    /// A `LIKE` pattern for the stored texts that name it.
+    fn pattern(self) -> String {
+        match self {
+            Changed::User(id) => format!("%{{\"User\":{id}}}%"),
+            Changed::Group(id) => format!("%\"group\":{id},%"),
+            Changed::Thread(id) => format!("%{{\"Thread\":{{\"id\":{id},%"),
+            Changed::Paper(id) => format!("%{{\"Paper\":{id}}}%"),
+        }
+    }
+}
+
+/// Writes out again, with today's names, the texts that name what
+/// `changed`: the written-out text feeds SQLite's search index, while the
+/// identities stay the source. Only those texts are touched.
+pub async fn refresh(state: &AppState, changed: Changed) -> ApiResult<()> {
     for (table, text, ids) in [
         ("messages", "body", "body_ids"),
         ("threads", "title", "title_ids"),
@@ -191,8 +214,9 @@ pub async fn refresh(state: &AppState) -> ApiResult<()> {
         ("group_requests", "purpose", "purpose_ids"),
     ] {
         let rows: Vec<(i64, String)> = sqlx::query_as(sqlx::AssertSqlSafe(format!(
-            "SELECT id, {ids} FROM {table} WHERE {ids} IS NOT NULL"
+            "SELECT id, {ids} FROM {table} WHERE {ids} LIKE ?"
         )))
+        .bind(changed.pattern())
         .fetch_all(&state.db)
         .await?;
         for (id, stored) in rows {
@@ -210,8 +234,9 @@ pub async fn refresh(state: &AppState) -> ApiResult<()> {
     Ok(())
 }
 
-pub async fn names_changed(state: &AppState) -> ApiResult<()> {
-    refresh(state).await?;
+/// After a rename: refreshes the texts that name it, and tells every group.
+pub async fn names_changed(state: &AppState, changed: Changed) -> ApiResult<()> {
+    refresh(state, changed).await?;
     let groups: Vec<i64> = sqlx::query_scalar("SELECT id FROM groups")
         .fetch_all(&state.db)
         .await?;
@@ -219,4 +244,48 @@ pub async fn names_changed(state: &AppState) -> ApiResult<()> {
         state.publish(id, stemma_core::api::Event::NamesChanged);
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::Changed;
+    use stemma_core::Address;
+    use stemma_core::text::{Object, StoredText, Target};
+
+    /// A pattern finds what names it, and not what names another id that
+    /// starts with the same digits.
+    #[test]
+    fn patterns_find_what_names_them() {
+        let stored = |target: Target| {
+            serde_json::to_string(&StoredText::resolve(
+                "@x",
+                |_| Some(target.clone()),
+                |_| None,
+            ))
+            .unwrap()
+        };
+        let reference = |object: Object| Target::Reference {
+            group: 3,
+            object,
+            qualified: true,
+        };
+        let like = |pattern: String, text: &str| {
+            let inner = pattern.trim_matches('%');
+            text.contains(inner)
+        };
+        let ada = stored(Target::User(7));
+        assert!(like(Changed::User(7).pattern(), &ada));
+        assert!(!like(Changed::User(70).pattern(), &ada));
+        let thread = stored(reference(Object::Thread {
+            id: 4,
+            address: "t12".parse::<Address>().unwrap(),
+        }));
+        assert!(like(Changed::Thread(4).pattern(), &thread));
+        assert!(!like(Changed::Thread(40).pattern(), &thread));
+        assert!(like(Changed::Group(3).pattern(), &thread));
+        assert!(!like(Changed::Group(30).pattern(), &thread));
+        let paper = stored(reference(Object::Paper(9)));
+        assert!(like(Changed::Paper(9).pattern(), &paper));
+        assert!(!like(Changed::Paper(90).pattern(), &paper));
+    }
 }
