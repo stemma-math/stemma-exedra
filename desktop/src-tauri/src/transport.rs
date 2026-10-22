@@ -278,6 +278,13 @@ pub async fn subscribe(
             if let Ok(reply) = result
                 && reply.status().is_success()
             {
+                // The hub took the stream: reached, whatever it sends first.
+                send(
+                    &window,
+                    &subscription,
+                    &group,
+                    serde_json::json!({"type":"connection", "connected":true}),
+                );
                 let mut events = reply.bytes_stream().eventsource();
                 while let Some(Ok(event)) = events.next().await {
                     match event.event.as_str() {
@@ -291,12 +298,6 @@ pub async fn subscribe(
                                 );
                             }
                             connected = true;
-                            send(
-                                &window,
-                                &subscription,
-                                &group,
-                                serde_json::json!({"type":"connection", "connected":true}),
-                            );
                         }
                         "resync" => send(
                             &window,

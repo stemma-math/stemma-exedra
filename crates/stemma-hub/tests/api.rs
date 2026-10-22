@@ -1064,7 +1064,9 @@ async fn events_are_live() {
             seen.push_str(std::str::from_utf8(&data).unwrap());
         }
     }
-    assert!(seen.contains("event: ready"));
+    // With data: an event without any is never dispatched, by browsers or
+    // the app.
+    assert!(seen.starts_with("event: ready\ndata: {}\n\n"), "{seen}");
     assert!(seen.contains(r#""type":"thread_created""#));
     assert!(seen.contains("Hello, $x$"));
 }

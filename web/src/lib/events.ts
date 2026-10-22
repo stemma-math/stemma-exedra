@@ -62,8 +62,9 @@ function open(group: string): Stream {
   source.addEventListener("ready", () => {
     if (opened) send({ type: "resync" });
     opened = true;
-    reached(true);
   });
+  // The hub took the stream: reached, whatever it sends first.
+  source.addEventListener("open", () => reached(true));
   // The browser tries again by itself; it shows only if that takes long.
   source.addEventListener("error", () => reached(false));
   source.addEventListener("resync", () => send({ type: "resync" }));
