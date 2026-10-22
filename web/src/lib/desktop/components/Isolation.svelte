@@ -122,8 +122,9 @@
               <span class="chip chip--small chip--info chip--live"
                 ><span class="chip__dot" aria-hidden="true"></span>Building</span
               >
-            {:else if !image}
-              <!-- Not checked yet, as just after choosing a container: no state to say. -->
+            {:else if !image || controls.checking}
+              <!-- Not checked yet, or being checked again after a change: the
+                   state from before would say what is no longer known. -->
               {#if controls.checking}
                 <span class="spinner" role="status" aria-label="Checking the image"></span>
               {/if}
@@ -202,7 +203,9 @@
                 >
               </span>
               <span class="row-list__control">
-                {#if signIn?.status === "success"}
+                {#if controls.checking}
+                  <span class="spinner" role="status" aria-label="Checking its sign-in"></span>
+                {:else if signIn?.status === "success"}
                   <span class="chip chip--small chip--success">Ready</span>
                 {:else if signIn}
                   <span class="chip chip--small chip--warning">Needs a sign-in</span>
