@@ -53,6 +53,9 @@ export async function hubFetch(path: string, options: RequestInit): Promise<Resp
     const response = await fetch(hubUrl(path), {
       ...options,
       credentials: desktop ? "omit" : "same-origin",
+      // What the hub says now, never a kept answer: the app's web view may
+      // keep its own scheme's answers whatever they say.
+      cache: "no-store",
     });
     return response;
   } finally {
