@@ -20,7 +20,8 @@
 <li class="post" role="status" aria-label={jobStatus(job)}>
   <AgentAvatar name={job.agent_name} />
   <div class="post__head">
-    <span class="post__author">{jobStatus(job)}</span>
+    <!-- While it answers, its dots come one at a time. -->
+    <span class="post__author" class:ellipsis={job.state === "running"}>{jobStatus(job)}</span>
     <span class="post__attribution">
       for {job.requester.display_name}{#if job.machine}, on {job.machine}{/if}{#if job.trigger}, to <a class="post__number" href="#{job.trigger}">#{job.trigger}</a>{/if}
     </span>
@@ -33,7 +34,7 @@
     {/if}
   </div>
   {#if job.state === "running"}
-    <p class="post__body row quiet">
+    <p class="post__body shimmer">
       {job.progress ?? "Starting"}
     </p>
   {:else if job.state === "queued" && job.note}

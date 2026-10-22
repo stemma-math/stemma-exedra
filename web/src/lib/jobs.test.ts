@@ -47,7 +47,7 @@ describe("jobs", () => {
   });
 
   it("says what the agent is doing", () => {
-    expect(jobStatus(job(1, "running"))).toBe("Claude is answering…");
+    expect(jobStatus(job(1, "running"))).toBe("Claude is answering");
     expect(jobStatus(job(1, "queued"))).toBe("Claude will answer");
   });
 });

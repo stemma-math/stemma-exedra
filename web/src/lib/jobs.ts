@@ -22,7 +22,7 @@ export function applyJob(jobs: Job[], job: Job): Job[] {
 export function jobStatus(job: Job): string {
   switch (job.state) {
     case "running":
-      return `${job.agent_name} is answering…`;
+      return `${job.agent_name} is answering`;
     case "queued":
       return `${job.agent_name} will answer`;
     case "held":
