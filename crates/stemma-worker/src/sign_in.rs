@@ -163,7 +163,11 @@ pub async fn test(handle: &str, group: Option<&str>) -> anyhow::Result<String> {
     else {
         anyhow::bail!("Answers do not run in containers: choose Docker or Podman first");
     };
-    let work = tempfile::tempdir()?;
+    // In Stemma's own folder, as an answer's: the runtime may not see the
+    // system's temporary folder (Docker Desktop on macOS does not).
+    let tests = config.paths.state.join("tests");
+    std::fs::create_dir_all(&tests)?;
+    let work = tempfile::tempdir_in(&tests)?;
     let (env, mut mounts) = containers.sign_in(runner, dirs::home_dir().as_deref())?;
     mounts.extend(self::mounts(&config.paths, handle));
     mounts.insert(
