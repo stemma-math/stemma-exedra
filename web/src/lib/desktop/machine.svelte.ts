@@ -29,7 +29,7 @@ export class MachineControls {
       this.busy = false;
     }
   }
-  save(command: object, message = "Saved.") {
+  save(command: object, message = "") {
     return this.run(() => action(command), message);
   }
   refresh(message = "") {

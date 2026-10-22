@@ -708,3 +708,22 @@ html .app .shell.is-resizing *::after {
   white-space: pre-wrap;
   overflow-wrap: anywhere;
 }
+
+/* A number in a row of settings needs only a few digits, and a text there
+ * no more than a model's or a command's name. */
+.setting-field__number {
+  width: 6rem;
+}
+
+.row-list__control > .input:not(.setting-field__number) {
+  width: 16rem;
+  max-width: 100%;
+}
+
+.setting-field__reset:empty {
+  display: none;
+}
+
+.setting-field__reset {
+  align-self: flex-start;
+}

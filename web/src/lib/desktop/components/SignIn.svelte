@@ -33,7 +33,7 @@
             await action({ kind: "service", enabled: true });
             await controls.load();
             controls.settingUp = true;
-            openSettings("This machine");
+            openSettings("Overview");
           }
           if (controls.data?.me) await goto(homeOf(controls.data.me), { replaceState: true });
         } finally {

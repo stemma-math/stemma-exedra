@@ -29,7 +29,7 @@
   });
   // The first-run setup lasts until one leaves its page or closes it.
   $effect(() => {
-    if (!settingsUI.open || settingsUI.page !== "This machine") controls.settingUp = false;
+    if (!settingsUI.open || settingsUI.page !== "Overview") controls.settingUp = false;
   });
 
   $effect(() => {
@@ -43,7 +43,7 @@
         controls.data.settings.find((s) => s.key === "agents.enabled")?.value === true;
       if (controls.data.me && controls.settingUp && !setupShown) {
         setupShown = true;
-        openSettings("This machine");
+        openSettings("Overview");
       }
       if (!controls.data.me) {
         settingsUI.open = false;

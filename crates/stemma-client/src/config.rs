@@ -88,6 +88,18 @@ impl Credentials {
     }
 }
 
+/// Whether `name` may name a variable a container is given, whose value
+/// the credentials keep: Stemma's own settings never enter a container.
+pub fn check_secret_name(name: &str) -> anyhow::Result<()> {
+    anyhow::ensure!(
+        !name.is_empty()
+            && name.bytes().all(|c| c.is_ascii_alphanumeric() || c == b'_')
+            && !name.to_uppercase().starts_with("STEMMA_"),
+        "{name} cannot be a container's variable"
+    );
+    Ok(())
+}
+
 /// Reads a token kept in a file, as a job's runner gives it.
 pub fn read_token_file(path: &Path) -> anyhow::Result<String> {
     let token = std::fs::read_to_string(path)
@@ -344,6 +356,14 @@ impl Settings {
 
     pub fn groups(&self) -> impl Iterator<Item = &String> {
         self.groups.keys()
+    }
+
+    /// What each group changes, by key, as the file says.
+    pub fn overrides(&self) -> BTreeMap<String, Vec<String>> {
+        self.groups
+            .iter()
+            .map(|(group, values)| (group.clone(), values.keys().cloned().collect()))
+            .collect()
     }
 
     pub fn explain(

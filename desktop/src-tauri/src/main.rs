@@ -41,6 +41,10 @@ struct Snapshot {
     hub_error: Option<String>,
     service: service::Status,
     settings: Vec<Explained>,
+    /// What each group changes, by key.
+    overrides: std::collections::BTreeMap<String, Vec<String>>,
+    /// The names of the containers' sign-ins kept, never their values.
+    secrets: Vec<String>,
     checks: Vec<doctor::Check>,
 }
 
@@ -55,9 +59,11 @@ async fn snapshot(window: WebviewWindow, group: Option<String>) -> Result<Snapsh
         },
         Err(e) => (None, Some(error(e))),
     };
-    let settings = Settings::load()
-        .and_then(|s| s.explain(group.as_deref(), &Default::default()))
+    let loaded = Settings::load().map_err(error)?;
+    let settings = loaded
+        .explain(group.as_deref(), &Default::default())
         .map_err(error)?;
+    let secrets = credentials.secrets.keys().cloned().collect();
     Ok(Snapshot {
         hub: credentials.hub,
         username: credentials.username,
@@ -65,6 +71,8 @@ async fn snapshot(window: WebviewWindow, group: Option<String>) -> Result<Snapsh
         hub_error,
         service: service::status().await.map_err(error)?,
         settings,
+        overrides: loaded.overrides(),
+        secrets,
         checks: doctor::run(group.as_deref()).await,
     })
 }
@@ -110,6 +118,11 @@ enum Action {
     ShowWorkspace {
         group: Option<String>,
     },
+    /// Keeps, or forgets, the value of a variable a container is given.
+    Secret {
+        name: String,
+        value: Option<String>,
+    },
 }
 
 #[tauri::command]
@@ -146,6 +159,16 @@ async fn perform(action: Action) -> anyhow::Result<()> {
             } else {
                 service::uninstall()?;
             }
+        }
+        Action::Secret { name, value } => {
+            stemma_client::config::check_secret_name(&name)?;
+            let path = stemma_client::config::path()?;
+            let mut credentials = Credentials::load_from(&path)?;
+            match value.map(|v| v.trim().to_owned()).filter(|v| !v.is_empty()) {
+                Some(value) => credentials.secrets.insert(name, value),
+                None => credentials.secrets.remove(&name),
+            };
+            credentials.save_to(&path)?;
         }
         Action::ShowWorkspace { group } => {
             let settings = Settings::load()?;

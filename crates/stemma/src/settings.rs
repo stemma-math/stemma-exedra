@@ -58,12 +58,7 @@ fn secret(command: SecretCommand) -> anyhow::Result<()> {
     let mut credentials = Credentials::load_from(&config::path()?)?;
     match command {
         SecretCommand::Set { name } => {
-            anyhow::ensure!(
-                !name.is_empty()
-                    && name.bytes().all(|c| c.is_ascii_alphanumeric() || c == b'_')
-                    && !name.to_uppercase().starts_with("STEMMA_"),
-                "{name} cannot be a container's variable"
-            );
+            config::check_secret_name(&name)?;
             let value = if std::io::stdin().is_terminal() {
                 cliclack::password(format!("Value of {name}")).interact()?
             } else {
