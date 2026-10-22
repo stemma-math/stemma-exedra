@@ -1,16 +1,38 @@
 //! Group proposals and the hub's administration, always acting as a person.
 
-use axum::extract::{Path, State};
+use axum::extract::{Path, Query, State};
 use axum::http::StatusCode;
 use stemma_core::api::{
-    CreateGroup, CreateGroupRequest, Group, GroupRequest, HubGroup, HubPerson, UpdateHubPerson,
+    CreateGroup, CreateGroupRequest, Group, GroupRequest, HubGroup, HubPage, HubPerson, HubSearch,
+    UpdateHubPerson,
 };
 
 use super::{Json, UserColumns, groups, required_text};
 use crate::auth::{Scope, Viewer};
 use crate::db;
 use crate::error::{ApiError, ApiResult};
+use crate::removal;
 use crate::state::AppState;
+
+/// How many groups or people a page of the hub's page shows.
+const PAGE: u32 = 25;
+
+/// A `LIKE` pattern for text that holds `q` as written.
+fn holding(q: &str) -> String {
+    let escaped = q
+        .trim()
+        .replace('\\', "\\\\")
+        .replace('%', "\\%")
+        .replace('_', "\\_");
+    format!("%{escaped}%")
+}
+
+/// A page of `rows`, fetched one past the page to know if there is more.
+fn page<T>(mut rows: Vec<T>) -> HubPage<T> {
+    let more = rows.len() > PAGE as usize;
+    rows.truncate(PAGE as usize);
+    HubPage { items: rows, more }
+}
 
 #[derive(sqlx::FromRow)]
 struct RequestRow {
@@ -151,15 +173,22 @@ pub async fn decline(
 pub async fn all_groups(
     State(state): State<AppState>,
     viewer: Viewer,
-) -> ApiResult<Json<Vec<HubGroup>>> {
+    Query(search): Query<HubSearch>,
+) -> ApiResult<Json<HubPage<HubGroup>>> {
     viewer.require_hub_admin()?;
     let rows: Vec<(String, String, i64, i64)> = sqlx::query_as(
-        "SELECT g.slug, g.name, COUNT(m.user_id), g.created_at FROM groups g
-         LEFT JOIN memberships m ON m.group_id = g.id GROUP BY g.id ORDER BY g.name",
+        "SELECT g.slug, g.name,
+                (SELECT COUNT(*) FROM memberships m WHERE m.group_id = g.id), g.created_at
+         FROM groups g
+         WHERE g.name LIKE ?1 ESCAPE '\\' OR g.slug LIKE ?1 ESCAPE '\\'
+         ORDER BY g.name COLLATE NOCASE, g.id LIMIT ?2 OFFSET ?3",
     )
+    .bind(holding(&search.q))
+    .bind(PAGE + 1)
+    .bind(search.offset)
     .fetch_all(&state.db)
     .await?;
-    Ok(Json(
+    Ok(Json(page(
         rows.into_iter()
             .map(|(slug, name, members, created_at)| HubGroup {
                 slug,
@@ -168,20 +197,27 @@ pub async fn all_groups(
                 created_at: db::from_millis(created_at),
             })
             .collect(),
-    ))
+    )))
 }
 
 pub async fn people(
     State(state): State<AppState>,
     viewer: Viewer,
-) -> ApiResult<Json<Vec<HubPerson>>> {
+    Query(search): Query<HubSearch>,
+) -> ApiResult<Json<HubPage<HubPerson>>> {
     viewer.require_hub_admin()?;
     let rows: Vec<(i64, String, String, bool)> = sqlx::query_as(
-        "SELECT id, username, display_name, hub_admin FROM users ORDER BY display_name, id",
+        "SELECT id, username, display_name, hub_admin FROM users
+         WHERE deleted_at IS NULL
+           AND (username LIKE ?1 ESCAPE '\\' OR display_name LIKE ?1 ESCAPE '\\')
+         ORDER BY display_name COLLATE NOCASE, id LIMIT ?2 OFFSET ?3",
     )
+    .bind(holding(&search.q))
+    .bind(PAGE + 1)
+    .bind(search.offset)
     .fetch_all(&state.db)
     .await?;
-    Ok(Json(
+    Ok(Json(page(
         rows.into_iter()
             .map(|(id, username, display_name, hub_admin)| HubPerson {
                 user: stemma_core::api::User {
@@ -192,7 +228,50 @@ pub async fn people(
                 hub_admin,
             })
             .collect(),
-    ))
+    )))
+}
+
+/// Deletes a group and everything in it.
+pub async fn delete_group(
+    State(state): State<AppState>,
+    viewer: Viewer,
+    Path(slug): Path<String>,
+) -> ApiResult<StatusCode> {
+    viewer.require_hub_admin()?;
+    let _guard = state.group_changes.lock().await;
+    let id: i64 = sqlx::query_scalar("SELECT id FROM groups WHERE slug = ?")
+        .bind(&slug)
+        .fetch_optional(&state.db)
+        .await?
+        .ok_or_else(|| ApiError::not_found("Group"))?;
+    removal::group(&state, id, &slug).await?;
+    Ok(StatusCode::NO_CONTENT)
+}
+
+/// Deletes an account, keeping what it wrote.
+pub async fn delete_person(
+    State(state): State<AppState>,
+    viewer: Viewer,
+    Path(id): Path<i64>,
+) -> ApiResult<StatusCode> {
+    viewer.require_hub_admin()?;
+    if id == viewer.id {
+        return Err(ApiError::conflict(
+            "You cannot delete your own account here.",
+        ));
+    }
+    let exists: bool = sqlx::query_scalar(
+        "SELECT EXISTS(SELECT 1 FROM users WHERE id = ? AND deleted_at IS NULL)",
+    )
+    .bind(id)
+    .fetch_one(&state.db)
+    .await?;
+    if !exists {
+        return Err(ApiError::not_found("Person"));
+    }
+    let _guard = state.group_changes.lock().await;
+    removal::account(&state, id).await?;
+    Ok(StatusCode::NO_CONTENT)
 }
 
 pub async fn update_person(
@@ -203,13 +282,15 @@ pub async fn update_person(
 ) -> ApiResult<StatusCode> {
     viewer.require_hub_admin()?;
     // A single write checks the invariant even when two admins step down together.
-    let done = sqlx::query("UPDATE users SET hub_admin = ? WHERE id = ? AND (? OR hub_admin = 0 OR (SELECT COUNT(*) FROM users WHERE hub_admin = 1) > 1)")
+    let done = sqlx::query("UPDATE users SET hub_admin = ? WHERE id = ? AND deleted_at IS NULL AND (? OR hub_admin = 0 OR (SELECT COUNT(*) FROM users WHERE hub_admin = 1 AND deleted_at IS NULL) > 1)")
         .bind(body.hub_admin).bind(id).bind(body.hub_admin).execute(&state.db).await?;
     if done.rows_affected() == 0 {
-        let exists: bool = sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM users WHERE id = ?)")
-            .bind(id)
-            .fetch_one(&state.db)
-            .await?;
+        let exists: bool = sqlx::query_scalar(
+            "SELECT EXISTS(SELECT 1 FROM users WHERE id = ? AND deleted_at IS NULL)",
+        )
+        .bind(id)
+        .fetch_one(&state.db)
+        .await?;
         return Err(if exists {
             ApiError::conflict("The hub needs at least one admin.")
         } else {

@@ -225,7 +225,7 @@ pub(super) async fn attachments_of(
 }
 
 /// Removes stored files; a file already gone is fine.
-pub(super) async fn remove_files(state: &AppState, keys: &[String]) {
+pub(crate) async fn remove_files(state: &AppState, keys: &[String]) {
     let dir = state.config.attachments_dir();
     for key in keys {
         if let Err(error) = tokio::fs::remove_file(dir.join(key)).await

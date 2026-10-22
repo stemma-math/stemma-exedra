@@ -10,6 +10,8 @@ export interface Question {
   dismiss?: string;
   /** Whether the action loses something. */
   danger?: boolean;
+  /** Text to type before the action is allowed, for what cannot be undone. */
+  typed?: { label: string; value: string };
 }
 
 export const asking = $state<{

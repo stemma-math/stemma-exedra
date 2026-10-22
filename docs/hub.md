@@ -50,10 +50,21 @@ tokens, which keep their own lifetimes.
 
 ## Administration
 
-Hub admins open **Hub administration** from the account menu to review group requests,
-see all groups and their member counts, and grant or remove hub admin access.
-The last hub admin cannot be removed. Group admin and hub admin are separate
-roles: approving a request makes its requester the new group's admin.
+Hub admins open **Hub administration** from the account menu. There they
+review group requests, make the hub's invitation links, and search the
+hub's groups and people, a page at a time. They grant or remove hub admin
+access, and delete:
+
+- **a group**, with everything in it: threads, chats, papers, files, jobs,
+  links, and its organization in the forge, with the library and the
+  papers' repositories. Its short name must be typed to confirm.
+- **an account**: its sign-in, tokens, memberships and authorships go; what
+  it wrote stays, shown as written by a deleted account. An account that is
+  a group's only admin cannot be deleted until someone else is one.
+
+The last hub admin cannot be removed or deleted. Group admin and hub admin
+are separate roles: approving a request makes its requester the new
+group's admin.
 
 Any signed-in person can request a group from **Your groups**. A name, short
 name and purpose go to the hub's admins. Each person can have one open request

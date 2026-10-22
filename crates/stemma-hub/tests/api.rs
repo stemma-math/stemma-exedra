@@ -1320,6 +1320,20 @@ async fn agent_tokens_reach_only_what_their_tools_offer() {
             S::FORBIDDEN,
         ),
         (
+            Method::DELETE,
+            "/hub/groups/algebra".into(),
+            None,
+            S::FORBIDDEN,
+            S::FORBIDDEN,
+        ),
+        (
+            Method::DELETE,
+            "/hub/people/2".into(),
+            None,
+            S::FORBIDDEN,
+            S::FORBIDDEN,
+        ),
+        (
             Method::PATCH,
             "/groups/geometry/members/1".into(),
             Some(json!({"role": "member"})),
@@ -2607,7 +2621,7 @@ async fn group_requests_are_private_and_decided_by_hub_admins() {
             .status,
         StatusCode::NOT_FOUND
     );
-    let all = hub.get(&ada, "/hub/groups").await.json();
+    let all = &hub.get(&ada, "/hub/groups").await.json()["items"];
     assert_eq!(all.as_array().unwrap().len(), 2);
     assert_eq!(all[0]["slug"], "algebra");
     assert_eq!(all[0]["members"], 1);
@@ -2632,9 +2646,7 @@ async fn hub_admins_manage_people_and_always_keep_one_admin() {
         .status
     };
     assert_eq!(
-        hub.get(&ada, "/hub/people")
-            .await
-            .json()
+        hub.get(&ada, "/hub/people").await.json()["items"]
             .as_array()
             .unwrap()
             .len(),
@@ -2798,4 +2810,229 @@ async fn session_and_dispatched_job_tokens_enforce_attachment_rules() {
     }
     let invalid = hub.post(&device, "/me/agent-tokens", json!({"group": "geometry", "runner": "claude-code", "host": "test", "attachments": "all"})).await;
     assert_eq!(invalid.status, StatusCode::BAD_REQUEST);
+}
+
+#[tokio::test]
+async fn the_hub_searches_groups_and_people_a_page_at_a_time() {
+    let hub = TestHub::new().await;
+    let ada = hub.admin_with_group().await;
+    for n in 0..30 {
+        let reply = hub
+            .post(
+                &ada,
+                "/groups",
+                json!({"slug": format!("seminar-{n:02}"), "name": format!("Seminar {n:02}")}),
+            )
+            .await;
+        assert_eq!(reply.status, StatusCode::CREATED);
+    }
+    let first = hub.get(&ada, "/hub/groups?q=seminar").await.json();
+    assert_eq!(first["items"].as_array().unwrap().len(), 25);
+    assert_eq!(first["more"], true);
+    assert_eq!(first["items"][0]["slug"], "seminar-00");
+    let rest = hub
+        .get(&ada, "/hub/groups?q=seminar&offset=25")
+        .await
+        .json();
+    assert_eq!(rest["items"].as_array().unwrap().len(), 5);
+    assert_eq!(rest["more"], false);
+    // By short name too; and a pattern's characters are only text.
+    let found = hub.get(&ada, "/hub/groups?q=geometry").await.json();
+    assert_eq!(found["items"][0]["name"], "Geometry");
+    assert_eq!(found["items"][0]["members"], 1);
+    let none = hub.get(&ada, "/hub/groups?q=%25").await.json();
+    assert_eq!(none["items"], json!([]));
+
+    hub.account(&ada, "bob").await;
+    let people = hub.get(&ada, "/hub/people?q=bo").await.json();
+    assert_eq!(people["items"].as_array().unwrap().len(), 1);
+    assert_eq!(people["items"][0]["username"], "bob");
+    let everyone = hub.get(&ada, "/hub/people").await.json();
+    assert_eq!(everyone["items"].as_array().unwrap().len(), 2);
+}
+
+#[tokio::test]
+async fn a_hub_admin_deletes_a_group_and_all_it_holds() {
+    let hub = TestHub::new().await;
+    let ada = hub.admin_with_group().await;
+    let bob = hub.member(&ada, "bob").await;
+    let file = upload(&hub, &ada, "board.png", "image/png", b"\x89PNG")
+        .await
+        .json();
+    let reply = hub
+        .post(
+            &ada,
+            "/groups/geometry/threads",
+            json!({"title": "Gluing", "body": "First", "attachments": [file["id"]]}),
+        )
+        .await;
+    assert_eq!(reply.status, StatusCode::CREATED);
+    let reply = hub
+        .post(
+            &ada,
+            "/groups/geometry/papers",
+            json!({"slug": "notes", "title": "Notes"}),
+        )
+        .await;
+    assert_eq!(reply.status, StatusCode::CREATED, "{:?}", reply.json());
+    assert!(hub.forge.repository_exists("geometry", "paper-notes"));
+    let files = std::fs::read_dir(hub.state.config.attachments_dir())
+        .unwrap()
+        .count();
+    assert_eq!(files, 1);
+
+    // Not by a group's admin who is not the hub's, nor an unknown group.
+    let reply = hub
+        .call(&bob, Method::DELETE, "/hub/groups/geometry", None)
+        .await;
+    assert_eq!(reply.status, StatusCode::FORBIDDEN);
+    let reply = hub
+        .call(&ada, Method::DELETE, "/hub/groups/nowhere", None)
+        .await;
+    assert_eq!(reply.status, StatusCode::NOT_FOUND);
+
+    let reply = hub
+        .call(&ada, Method::DELETE, "/hub/groups/geometry", None)
+        .await;
+    assert_eq!(reply.status, StatusCode::NO_CONTENT);
+    assert_eq!(
+        hub.get(&bob, "/groups/geometry").await.status,
+        StatusCode::NOT_FOUND
+    );
+    assert_eq!(hub.get(&ada, "/me").await.json()["groups"], json!([]));
+    // Nothing is left: rows, files or the organization.
+    for count in [
+        "SELECT COUNT(*) FROM threads",
+        "SELECT COUNT(*) FROM messages",
+        "SELECT COUNT(*) FROM attachments",
+        "SELECT COUNT(*) FROM papers",
+        "SELECT COUNT(*) FROM memberships",
+        "SELECT COUNT(*) FROM invitations WHERE group_id IS NOT NULL",
+        "SELECT COUNT(*) FROM libraries",
+    ] {
+        let left: i64 = sqlx::query_scalar(count)
+            .fetch_one(&hub.state.db)
+            .await
+            .unwrap();
+        assert_eq!(left, 0, "{count}");
+    }
+    let found: i64 =
+        sqlx::query_scalar("SELECT COUNT(*) FROM messages_fts WHERE messages_fts MATCH 'First'")
+            .fetch_one(&hub.state.db)
+            .await
+            .unwrap();
+    assert_eq!(found, 0);
+    let files = std::fs::read_dir(hub.state.config.attachments_dir())
+        .unwrap()
+        .count();
+    assert_eq!(files, 0);
+    assert!(!hub.forge.repository_exists("geometry", "paper-notes"));
+    assert!(!hub.forge.repository_exists("geometry", "library"));
+    assert!(!hub.forge.organization_exists("geometry"));
+    // Its short name is free again.
+    let reply = hub
+        .post(
+            &ada,
+            "/groups",
+            json!({"slug": "geometry", "name": "Geometry"}),
+        )
+        .await;
+    assert_eq!(reply.status, StatusCode::CREATED);
+}
+
+#[tokio::test]
+async fn a_deleted_account_goes_and_what_it_wrote_stays() {
+    let hub = TestHub::new().await;
+    let ada = hub.admin_with_group().await;
+    let bob = hub.member(&ada, "bob").await;
+    let bob_id = hub.get(&bob, "/me").await.json()["id"].as_i64().unwrap();
+    let ada_id = hub.get(&ada, "/me").await.json()["id"].as_i64().unwrap();
+    let device = with_token(&hub, &bob).await;
+    hub.post(
+        &bob,
+        "/groups/geometry/threads",
+        json!({"title": "Bob's", "body": "Mine"}),
+    )
+    .await;
+
+    // Not oneself, nor the only admin of a group.
+    let reply = hub
+        .call(&ada, Method::DELETE, &format!("/hub/people/{ada_id}"), None)
+        .await;
+    assert_eq!(reply.status, StatusCode::CONFLICT);
+    hub.post(&ada, "/groups", json!({"slug": "logic", "name": "Logic"}))
+        .await;
+    hub.accept_role(&ada, &bob, "logic", "member").await;
+    hub.call(
+        &ada,
+        Method::PATCH,
+        &format!("/groups/logic/members/{bob_id}"),
+        Some(json!({"role": "admin"})),
+    )
+    .await;
+    hub.call(
+        &ada,
+        Method::DELETE,
+        &format!("/groups/logic/members/{ada_id}"),
+        None,
+    )
+    .await;
+    let reply = hub
+        .call(&ada, Method::DELETE, &format!("/hub/people/{bob_id}"), None)
+        .await;
+    assert_eq!(reply.status, StatusCode::CONFLICT);
+    assert!(
+        reply.json()["error"]["message"]
+            .as_str()
+            .unwrap()
+            .contains("Logic"),
+        "{:?}",
+        reply.json()
+    );
+    // Someone else steps in; then the account goes.
+    let carol = hub.account(&ada, "carol").await;
+    hub.accept_role(&bob, &carol, "logic", "admin").await;
+    let reply = hub
+        .call(&bob, Method::DELETE, &format!("/hub/people/{bob_id}"), None)
+        .await;
+    assert_eq!(reply.status, StatusCode::FORBIDDEN);
+    let reply = hub
+        .call(&ada, Method::DELETE, &format!("/hub/people/{bob_id}"), None)
+        .await;
+    assert_eq!(reply.status, StatusCode::NO_CONTENT, "{:?}", reply.json());
+
+    // Its session and tokens no longer work, nor can it sign in.
+    assert_eq!(hub.get(&bob, "/me").await.status, StatusCode::UNAUTHORIZED);
+    assert_eq!(
+        hub.get(&device, "/me").await.status,
+        StatusCode::UNAUTHORIZED
+    );
+    let reply = hub
+        .post(
+            &Client::default(),
+            "/session",
+            json!({"username": "bob", "password": "password1"}),
+        )
+        .await;
+    assert_eq!(reply.status, StatusCode::UNAUTHORIZED);
+    // It is in no group, and not among the hub's people.
+    let members = hub.get(&ada, "/groups/geometry/members").await.json();
+    assert_eq!(members.as_array().unwrap().len(), 1);
+    let people = hub.get(&ada, "/hub/people?q=bob").await.json();
+    assert_eq!(people["items"], json!([]));
+    // What it wrote stays, by a deleted account.
+    let thread = hub.get(&ada, "/groups/geometry/threads/1").await.json();
+    assert_eq!(thread["messages"][0]["body"], "Mine");
+    assert_eq!(
+        thread["messages"][0]["author"]["display_name"],
+        "A deleted account"
+    );
+    // Its username is free again.
+    hub.account(&ada, "bob").await;
+
+    // The last hub admin stays.
+    let reply = hub
+        .call(&ada, Method::DELETE, "/hub/people/999", None)
+        .await;
+    assert_eq!(reply.status, StatusCode::NOT_FOUND);
 }

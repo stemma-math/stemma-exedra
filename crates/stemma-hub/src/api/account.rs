@@ -120,11 +120,12 @@ pub async fn sign_in(
     State(state): State<AppState>,
     Json(body): Json<SignIn>,
 ) -> ApiResult<impl IntoResponse> {
-    let row: Option<(i64, String)> =
-        sqlx::query_as("SELECT id, password_hash FROM users WHERE username = ?")
-            .bind(body.username.trim().to_lowercase())
-            .fetch_optional(&state.db)
-            .await?;
+    let row: Option<(i64, String)> = sqlx::query_as(
+        "SELECT id, password_hash FROM users WHERE username = ? AND deleted_at IS NULL",
+    )
+    .bind(body.username.trim().to_lowercase())
+    .fetch_optional(&state.db)
+    .await?;
     // Without the account, check a password all the same, so that the time
     // taken does not tell which usernames exist.
     let (user_id, hash) = match row {

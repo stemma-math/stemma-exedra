@@ -2,7 +2,7 @@
 
 mod account;
 pub use account::create_user;
-mod attachments;
+pub(crate) mod attachments;
 mod events;
 pub(crate) mod forum;
 mod groups;
@@ -60,8 +60,12 @@ pub fn router(state: AppState) -> Router {
         .route("/group-requests/{id}/approve", post(hub::approve))
         .route("/group-requests/{id}/decline", post(hub::decline))
         .route("/hub/groups", get(hub::all_groups))
+        .route("/hub/groups/{group}", delete(hub::delete_group))
         .route("/hub/people", get(hub::people))
-        .route("/hub/people/{id}", patch(hub::update_person))
+        .route(
+            "/hub/people/{id}",
+            patch(hub::update_person).delete(hub::delete_person),
+        )
         .route("/groups", get(groups::list).post(groups::create))
         .route("/groups/{group}", get(groups::get))
         .route("/groups/{group}/members", get(groups::members))

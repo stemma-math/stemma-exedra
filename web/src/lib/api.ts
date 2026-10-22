@@ -42,6 +42,12 @@ export interface HubPerson extends User {
   hub_admin: boolean;
 }
 
+/** A page of what the hub's page searched, and whether there is more. */
+export interface HubPage<T> {
+  items: T[];
+  more: boolean;
+}
+
 export interface Member extends User {
   role: Role;
   joined_at: string;
@@ -401,8 +407,12 @@ export const api = {
     post<void>("/group-requests", { slug, name, purpose }),
   approveGroup: (id: number) => post<Group>(`/group-requests/${id}/approve`, {}),
   declineGroup: (id: number) => post<void>(`/group-requests/${id}/decline`, {}),
-  hubGroups: () => get<HubGroup[]>("/hub/groups"),
-  hubPeople: () => get<HubPerson[]>("/hub/people"),
+  hubGroups: (q: string, offset: number) =>
+    get<HubPage<HubGroup>>(`/hub/groups?q=${encodeURIComponent(q)}&offset=${offset}`),
+  hubPeople: (q: string, offset: number) =>
+    get<HubPage<HubPerson>>(`/hub/people?q=${encodeURIComponent(q)}&offset=${offset}`),
+  deleteHubGroup: (slug: string) => del<void>(`/hub/groups/${encodeURIComponent(slug)}`),
+  deleteHubPerson: (id: number) => del<void>(`/hub/people/${id}`),
   updateHubPerson: (id: number, hub_admin: boolean) =>
     patch<void>(`/hub/people/${id}`, { hub_admin }),
   createGroup: (slug: string, name: string) => post<Group>("/groups", { slug, name }),

@@ -228,6 +228,23 @@ pub struct HubPerson {
     pub hub_admin: bool,
 }
 
+/// What the hub's page asks for: those whose names hold `q`, a page at a
+/// time.
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
+pub struct HubSearch {
+    #[serde(default)]
+    pub q: String,
+    #[serde(default)]
+    pub offset: u32,
+}
+
+/// A page of what the hub's page searched, and whether there is more.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct HubPage<T> {
+    pub items: Vec<T>,
+    pub more: bool,
+}
+
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct UpdateHubPerson {
     pub hub_admin: bool,

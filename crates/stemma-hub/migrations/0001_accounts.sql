@@ -13,7 +13,10 @@ CREATE TABLE users (
     subject TEXT NOT NULL UNIQUE,
     -- The login of their account in the forge, once the hub has made it.
     forge_login TEXT UNIQUE,
-    created_at INTEGER NOT NULL
+    created_at INTEGER NOT NULL,
+    -- Set when the account is deleted. Its row stays, for what it wrote,
+    -- with a username no one can have and no password.
+    deleted_at INTEGER
 );
 
 -- Secrets are stored as the hex SHA-256 of what the client holds.
