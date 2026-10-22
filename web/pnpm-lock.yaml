@@ -167,11 +167,11 @@ importers:
   .:
     dependencies:
       '@stemma-math/design':
-        specifier: https://github.com/stemma-math/design/releases/download/v0.13.0/stemma-math-design-0.13.0.tgz
-        version: https://github.com/stemma-math/design/releases/download/v0.13.0/stemma-math-design-0.13.0.tgz
+        specifier: https://github.com/stemma-math/design/releases/download/v0.14.0/stemma-math-design-0.14.0.tgz
+        version: https://github.com/stemma-math/design/releases/download/v0.14.0/stemma-math-design-0.14.0.tgz
       '@stemma-math/design-elements':
-        specifier: https://github.com/stemma-math/design/releases/download/v0.13.0/stemma-math-design-elements-0.13.0.tgz
-        version: https://github.com/stemma-math/design/releases/download/v0.13.0/stemma-math-design-elements-0.13.0.tgz(@stemma-math/design@https://github.com/stemma-math/design/releases/download/v0.13.0/stemma-math-design-0.13.0.tgz)
+        specifier: https://github.com/stemma-math/design/releases/download/v0.14.0/stemma-math-design-elements-0.14.0.tgz
+        version: https://github.com/stemma-math/design/releases/download/v0.14.0/stemma-math-design-elements-0.14.0.tgz(@stemma-math/design@https://github.com/stemma-math/design/releases/download/v0.14.0/stemma-math-design-0.14.0.tgz)
       '@tauri-apps/api':
         specifier: ^2.12.4
         version: 2.12.4
@@ -396,15 +396,15 @@ packages:
   '@standard-schema/spec@1.1.0':
     resolution: {integrity: sha512-l2aFy5jALhniG5HgqrD6jXLi/rUWrKvqN/qJx6yoJsgKhblVd+iqqU4RCXavm/jPityDo5TCvKMnpjKnOriy0w==}
 
-  '@stemma-math/design-elements@https://github.com/stemma-math/design/releases/download/v0.13.0/stemma-math-design-elements-0.13.0.tgz':
-    resolution: {integrity: sha512-rCqfr9e+dZbAKt7HXHOGap+htMofVLMpQxTHH5Nf8mznMjyjBwtEncwRcOy9nVNUm/iyYdsFR+WE6lncidekow==, tarball: https://github.com/stemma-math/design/releases/download/v0.13.0/stemma-math-design-elements-0.13.0.tgz}
-    version: 0.13.0
+  '@stemma-math/design-elements@https://github.com/stemma-math/design/releases/download/v0.14.0/stemma-math-design-elements-0.14.0.tgz':
+    resolution: {integrity: sha512-eXUk3HCTQEPN2H7KBSQ6o7wIEq9jTRbSZIzjxPkYcH4bVcYHpuZMZ94olgr1RX/Zd7Eyi6gSCyHYtPPWB0OMDw==, tarball: https://github.com/stemma-math/design/releases/download/v0.14.0/stemma-math-design-elements-0.14.0.tgz}
+    version: 0.14.0
     peerDependencies:
-      '@stemma-math/design': 0.13.0
+      '@stemma-math/design': 0.14.0
 
-  '@stemma-math/design@https://github.com/stemma-math/design/releases/download/v0.13.0/stemma-math-design-0.13.0.tgz':
-    resolution: {integrity: sha512-tZXpnetU5NK6XSMFsLHR+xNORv6I+zXJ4U5wgnBwE6sgxYoQXiQtllUgki5m1pQ7doDI28IAD+dWeUYnsu99YQ==, tarball: https://github.com/stemma-math/design/releases/download/v0.13.0/stemma-math-design-0.13.0.tgz}
-    version: 0.13.0
+  '@stemma-math/design@https://github.com/stemma-math/design/releases/download/v0.14.0/stemma-math-design-0.14.0.tgz':
+    resolution: {integrity: sha512-eEdTp2HZqxf1u7ReBLgJWYtZQNsYS3o0n7knBYLZDMrKviLmyNI3HiiahPdk2KlXRm7APD1pZ6Xh2E3dp0S77w==, tarball: https://github.com/stemma-math/design/releases/download/v0.14.0/stemma-math-design-0.14.0.tgz}
+    version: 0.14.0
 
   '@sveltejs/acorn-typescript@1.0.13':
     resolution: {integrity: sha512-wgKggnhZVL9Bfx1OaKKTrYY9BFRk6C8UAkQNUcIv1+llzYrIqy+RZm5HPKzn0NpEBvTVhTqB4kQyllZywsRBRQ==}
@@ -970,11 +970,11 @@ snapshots:
 
   '@standard-schema/spec@1.1.0': {}
 
-  '@stemma-math/design-elements@https://github.com/stemma-math/design/releases/download/v0.13.0/stemma-math-design-elements-0.13.0.tgz(@stemma-math/design@https://github.com/stemma-math/design/releases/download/v0.13.0/stemma-math-design-0.13.0.tgz)':
+  '@stemma-math/design-elements@https://github.com/stemma-math/design/releases/download/v0.14.0/stemma-math-design-elements-0.14.0.tgz(@stemma-math/design@https://github.com/stemma-math/design/releases/download/v0.14.0/stemma-math-design-0.14.0.tgz)':
     dependencies:
-      '@stemma-math/design': https://github.com/stemma-math/design/releases/download/v0.13.0/stemma-math-design-0.13.0.tgz
+      '@stemma-math/design': https://github.com/stemma-math/design/releases/download/v0.14.0/stemma-math-design-0.14.0.tgz
 
-  '@stemma-math/design@https://github.com/stemma-math/design/releases/download/v0.13.0/stemma-math-design-0.13.0.tgz': {}
+  '@stemma-math/design@https://github.com/stemma-math/design/releases/download/v0.14.0/stemma-math-design-0.14.0.tgz': {}
 
   '@sveltejs/acorn-typescript@1.0.13(acorn@8.19.0)':
     dependencies:
