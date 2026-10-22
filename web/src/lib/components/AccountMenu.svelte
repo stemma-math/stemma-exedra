@@ -7,17 +7,20 @@
   import Avatar from "./Avatar.svelte";
   import Glyph from "./Glyph.svelte";
   let { role }: { role?: string } = $props();
+  let leaving = $state(false);
   async function leave() {
     if (__STEMMA_DESKTOP__ && !await ask({ title: "Log out?", text: "This app and the command line on this machine are both signed out of the hub.", action: "Log out" })) return;
-    try { await signOut(); await goto("/"); } catch (error) { toastError(error); }
+    leaving = true;
+    try { await signOut(); await goto("/"); } catch (error) { toastError(error); } finally { leaving = false; }
   }
 </script>
 
 {#if session.me}
   <stemma-menu match-width>
-    <button type="button" class="account account--menu" aria-label="Your account, {session.me.display_name}">
+    <button type="button" class="account account--menu" disabled={leaving} aria-label="Your account, {session.me.display_name}">
       <Avatar user={session.me} />
       <span class="account__details"><span class="account__name">{session.me.display_name}</span></span>
+      {#if leaving}<span class="spinner" aria-hidden="true"></span>{/if}
       <Glyph name="chevron-down" class="account__chevron" small />
     </button>
     <div class="menu">

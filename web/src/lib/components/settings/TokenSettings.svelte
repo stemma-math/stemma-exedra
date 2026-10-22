@@ -7,23 +7,27 @@
   import { onMount } from "svelte";
 
   let tokens = $state<ApiToken[]>([]);
+  let loading = $state(true);
+  let creating = $state(false);
+  let revoking = $state<number | null>(null);
   let tokenName = $state("");
   let created = $state<CreatedToken | null>(null);
   const hub = $derived(connection.hub || location.origin);
 
   onMount(async () => {
-    tokens = await api.tokens().catch(() => []);
+    try { tokens = await api.tokens(); } catch (error) { toastError(error); } finally { loading = false; }
   });
 
   async function createToken(event: Event) {
     event.preventDefault();
+    creating = true;
     try {
       created = await api.createToken(tokenName);
       tokens = [created, ...tokens];
       tokenName = "";
     } catch (error) {
       toastError(error);
-    }
+    } finally { creating = false; }
   }
 
   async function revoke(token: ApiToken) {
@@ -34,13 +38,14 @@
       danger: true,
     });
     if (!yes) return;
+    revoking = token.id;
     try {
       await api.revokeToken(token.id);
       tokens = tokens.filter((t) => t.id !== token.id);
       if (created?.id === token.id) created = null;
     } catch (error) {
       toastError(error);
-    }
+    } finally { revoking = null; }
   }
 </script>
 
@@ -76,10 +81,11 @@
     required
     maxlength="80"
   />
-  <button type="submit" class="button">New token</button>
+  <button type="submit" class="button" disabled={creating}>{#if creating}<span class="spinner" aria-hidden="true"></span>{/if}New token</button>
 </form>
 
-{#if tokens.length}
+{#if loading}<div class="skeleton loading-placeholder" role="status" aria-label="Loading devices"></div>
+{:else if tokens.length}
   <div class="card">
     <div class="table settings-table tokens-table">
       <div class="table__head"><span>Device</span><span>Last used</span><span></span></div>
@@ -99,8 +105,8 @@
           <span class="quiet" title={token.last_used_at ? exactly(token.last_used_at) : undefined}>
             {token.last_used_at ? when(token.last_used_at) : "Never"}
           </span>
-          <button type="button" class="button button--small button--danger" onclick={() => revoke(token)}>
-            Revoke
+          <button type="button" class="button button--small button--danger" disabled={revoking !== null} onclick={() => revoke(token)}>
+            {#if revoking === token.id}<span class="spinner" aria-hidden="true"></span>{/if}Revoke
           </button>
         </div>
       {/each}

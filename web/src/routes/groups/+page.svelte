@@ -10,9 +10,10 @@
   import { toastError } from "#lib/toast.ts";
   let search = $state("");
   let open = $state(false);
+  let loadingRequests = $state(true);
   let requests = $state<GroupRequest[]>([]);
   const groups = $derived((session.me?.groups ?? []).filter((g) => `${g.name} ${g.slug}`.toLocaleLowerCase().includes(search.toLocaleLowerCase().trim())));
-  async function refresh() { try { requests = await api.myGroupRequests(); } catch (error) { toastError(error); } }
+  async function refresh() { try { requests = await api.myGroupRequests(); } catch (error) { toastError(error); } finally { loadingRequests = false; } }
   onMount(() => { open = page.url.searchParams.has("new"); void refresh(); });
 </script>
 
@@ -26,7 +27,8 @@
         <li><a class="row-list__item" href="/g/{group.slug}"><span class="row-list__text"><span class="row-list__name">{group.name}</span><span class="row-list__description identifier">{group.slug}</span></span><span class="row-list__control"><span class="chip">{ROLE_NAMES[group.role]}</span><Glyph name="chevron-right" small /></span></a></li>
       {:else}<li class="row-list__item"><span class="quiet">{search ? "No groups match your search." : "You are not in any group yet. Request one, or ask a group's admin for an invitation."}</span></li>{/each}
     </ul>
-    {#if requests.length}
+    {#if loadingRequests}<div class="skeleton loading-placeholder" role="status" aria-label="Loading group requests"></div>
+    {:else if requests.length}
       <section class="stack"><h2 class="label">Your requests</h2><ul class="card row-list">
         {#each requests as request (request.id)}<li class="row-list__item"><span class="row-list__text"><span class="row-list__name">{request.name}</span><span class="row-list__description">{request.slug} – {request.status === "open" ? "Waiting for the hub's admins" : request.status === "approved" ? "Approved. Your group is ready." : "Declined by the hub's admins."}</span></span></li>{/each}
       </ul></section>
