@@ -10,9 +10,9 @@ export const settingsUI = $state<{ open: boolean; page: SettingsPage }>({
   page: "Appearance",
 });
 
-/** Opens the settings at `page`; "Settings" alone opens the first page the
- * account menu has no item of its own for. */
-export function openSettings(page: SettingsPage = "Devices") {
+/** Opens the settings at `page`; "Settings" alone opens the page the
+ * account menu has no item of its own for: in the app, this machine's. */
+export function openSettings(page: SettingsPage = __STEMMA_DESKTOP__ ? "This machine" : "Devices") {
   settingsUI.page = page;
   settingsUI.open = true;
 }
