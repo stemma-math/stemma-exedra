@@ -22,6 +22,15 @@ pub fn locate(input: &str) -> Result<Located, AddressError> {
     if let Some(located) = web_link(s) {
         return located;
     }
+    if let Some((group, address)) = s.split_once('/')
+        && crate::address::is_slug(group)
+        && let Ok(address) = normalize(address).parse()
+    {
+        return Ok(Located {
+            group: Some(group.into()),
+            address,
+        });
+    }
     Ok(Located {
         group: None,
         address: normalize(s).parse()?,
