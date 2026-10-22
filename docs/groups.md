@@ -1,6 +1,7 @@
 # Groups
 
-A group has admins, members and guests. Admins manage memberships and invitations.
+A group has admins, members and guests. Admins manage memberships and the
+invitations that bring existing accounts in.
 Members and admins create working papers; everyone reads and discusses.
 
 The forum has numbered threads and messages, in Markdown with mathematics.

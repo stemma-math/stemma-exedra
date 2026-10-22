@@ -522,6 +522,15 @@ stemma-toast-region {
   --columns: auto minmax(0, 1fr) auto auto;
 }
 
+/* A custom expiry or number of uses makes its field taller. */
+.invitation-limits {
+  align-items: flex-start;
+}
+
+.invitation-limits > .field {
+  min-width: 12rem;
+}
+
 .invitations-table,
 .tokens-table {
   --columns: minmax(0, 1fr) auto auto;

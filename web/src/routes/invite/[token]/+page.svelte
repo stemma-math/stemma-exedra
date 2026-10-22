@@ -2,16 +2,12 @@
   import { goto } from "$app/navigation";
   import { page } from "$app/state";
   import { api, type InvitationInfo } from "#lib/api.ts";
-  import AccountFields from "#lib/components/AccountFields.svelte";
   import { session, setSession } from "#lib/session.svelte.ts";
   import { onMount } from "svelte";
 
   const token = $derived(page.params.token ?? "");
   let info = $state<InvitationInfo | null>(null);
   let invalid = $state("");
-  let username = $state("");
-  let displayName = $state("");
-  let password = $state("");
   let error = $state("");
   let busy = $state(false);
 
@@ -34,8 +30,7 @@
     busy = true;
     error = "";
     try {
-      const account = session.me ? undefined : { username, display_name: displayName, password };
-      setSession(await api.acceptInvitation(token, account));
+      setSession(await api.acceptInvitation(token));
       goto(`/g/${info.group_slug}`, { replaceState: true });
     } catch (e) {
       error = e instanceof Error ? e.message : String(e);
@@ -60,15 +55,15 @@
         <h2>Join {info.group_name}</h2>
         {#if session.me}
           <p>You will join as {session.me.display_name}{joinsAs}.</p>
+          {#if error}<p class="message message--danger"><span class="message__text">{error}</span></p>{/if}
+          <button type="submit" class="button button--primary" disabled={busy}>
+            {#if busy}<span class="spinner" aria-hidden="true"></span>{/if}
+            Join {info.group_name}
+          </button>
         {:else}
-          <p>
-            Create your account to join{joinsAs}. Already have one?
-            <a class="button button--link" href="/login?next={encodeURIComponent(page.url.pathname)}">Log in</a> first.
-          </p>
-          <AccountFields bind:username bind:displayName bind:password />
+          <p>Log in with your account on this hub to join{joinsAs}.</p>
+          <a class="button button--primary" href="/login?next={encodeURIComponent(page.url.pathname)}">Log in to join</a>
         {/if}
-        {#if error}<p class="message message--danger"><span class="message__text">{error}</span></p>{/if}
-        <button type="submit" class="button button--primary" disabled={busy}>Join {info.group_name}</button>
       </form>
     {:else}
       <span class="skeleton loading-placeholder" role="status" aria-label="Loading"></span>

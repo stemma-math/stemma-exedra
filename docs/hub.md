@@ -34,6 +34,20 @@ and set its public address.
 On its first start the hub prints a setup link for the first account, the
 hub's admin.
 
+## Accounts and invitations
+
+No one makes an account on their own. There are two kinds of link, both
+with an expiry and a number of uses, and both revocable:
+
+- **The hub's**, from Hub administration, makes an account on the hub and
+  nothing else. Its page is the sign-up page.
+- **A group's**, from the group's settings, adds an existing account to
+  the group, with the role it gives. Opened signed out, it asks to log in
+  first; it never makes an account.
+
+A browser stays signed in for a day. Computers and scripts use personal
+tokens, which keep their own lifetimes.
+
 ## Administration
 
 Hub admins open **Hub administration** from the account menu to review group requests,

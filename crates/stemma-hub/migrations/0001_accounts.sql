@@ -58,18 +58,20 @@ CREATE TABLE memberships (
 
 CREATE INDEX memberships_user ON memberships (user_id);
 
--- An invitation grants its role to whoever accepts it.
+-- A link that lets people in. A group's adds an existing account to the
+-- group, with its role; the hub's, with no group, makes an account.
 CREATE TABLE invitations (
     id INTEGER PRIMARY KEY,
-    group_id INTEGER NOT NULL REFERENCES groups (id) ON DELETE CASCADE,
+    group_id INTEGER REFERENCES groups (id) ON DELETE CASCADE,
     token_hash TEXT NOT NULL UNIQUE,
-    role TEXT NOT NULL CHECK (role IN ('admin', 'member', 'guest')),
+    role TEXT CHECK (role IN ('admin', 'member', 'guest')),
     created_by INTEGER NOT NULL REFERENCES users (id),
     created_at INTEGER NOT NULL,
     expires_at INTEGER,
     max_uses INTEGER,
     uses INTEGER NOT NULL DEFAULT 0,
-    revoked_at INTEGER
+    revoked_at INTEGER,
+    CHECK ((group_id IS NULL) = (role IS NULL))
 );
 
 CREATE INDEX invitations_group ON invitations (group_id);

@@ -7,6 +7,7 @@ mod events;
 pub(crate) mod forum;
 mod groups;
 mod hub;
+mod invitations;
 mod jobs;
 mod library;
 mod papers;
@@ -43,11 +44,17 @@ pub fn router(state: AppState) -> Router {
         )
         .route("/me/tokens/{id}", delete(account::revoke_token))
         .route("/me/agent-tokens", post(account::create_agent_token))
-        .route("/invitations/{token}", get(groups::invitation_info))
+        .route("/invitations/{token}", get(invitations::info))
+        .route("/invitations/{token}/accept", post(invitations::accept))
         .route(
-            "/invitations/{token}/accept",
-            post(groups::accept_invitation),
+            "/sign-up/{token}",
+            get(invitations::sign_up_info).post(invitations::sign_up),
         )
+        .route(
+            "/hub/invitations",
+            get(invitations::hub_list).post(invitations::hub_create),
+        )
+        .route("/hub/invitations/{id}", delete(invitations::hub_revoke))
         .route("/group-requests", get(hub::list).post(hub::request))
         .route("/me/group-requests", get(hub::mine))
         .route("/group-requests/{id}/approve", post(hub::approve))
@@ -64,11 +71,11 @@ pub fn router(state: AppState) -> Router {
         )
         .route(
             "/groups/{group}/invitations",
-            get(groups::invitations).post(groups::create_invitation),
+            get(invitations::group_list).post(invitations::group_create),
         )
         .route(
             "/groups/{group}/invitations/{id}",
-            delete(groups::revoke_invitation),
+            delete(invitations::group_revoke),
         )
         .route(
             "/groups/{group}/threads",

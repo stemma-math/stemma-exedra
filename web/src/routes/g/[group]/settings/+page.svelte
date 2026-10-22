@@ -3,33 +3,25 @@
   import { openSettings } from "#lib/settings.svelte.ts";
   import { ask } from "#lib/ask.svelte.ts";
   import { goto } from "$app/navigation";
-  import { api, type CreatedInvitation, type Invitation, type Member, type Role } from "#lib/api.ts";
-  import { exactly, when } from "#lib/format.ts";
+  import { api, type Member, type Role } from "#lib/api.ts";
   import { groupContext } from "#lib/group.svelte.ts";
   import { ROLE_NAMES, ROLES } from "#lib/roles.ts";
   import { loadSession, session } from "#lib/session.svelte.ts";
   import { toastError } from "#lib/toast.ts";
   import Avatar from "#lib/components/Avatar.svelte";
   import Glyph from "#lib/components/Glyph.svelte";
+  import InvitationLinks from "#lib/components/InvitationLinks.svelte";
 
   const context = groupContext();
   const group = $derived(context.group);
   const admin = $derived(group.role === "admin");
 
   let members = $state<Member[]>([]);
-  let invitations = $state<Invitation[]>([]);
-  let created = $state<CreatedInvitation | null>(null);
-  let role = $state<Role>("member");
-  let days = $state("7");
-  let uses = $state("");
   /** The group's organization in the forge, if the hub has one. */
   let forge = $state<string | null>(null);
 
-  const link = $derived(created ? `${location.origin}/invite/${created.token}` : "");
-
   async function load() {
     members = await api.members(group.slug);
-    if (admin) invitations = await api.invitations(group.slug);
   }
 
   $effect(() => {
@@ -41,30 +33,6 @@
       })
       .catch(() => {});
   });
-
-  async function invite(event: Event) {
-    event.preventDefault();
-    try {
-      created = await api.createInvitation(group.slug, {
-        role,
-        expires_in_days: days ? Number(days) : undefined,
-        max_uses: uses ? Number(uses) : undefined,
-      });
-      invitations = [created, ...invitations];
-    } catch (error) {
-      toastError(error);
-    }
-  }
-
-  async function revoke(invitation: Invitation) {
-    try {
-      await api.revokeInvitation(group.slug, invitation.id);
-      invitations = invitations.filter((i) => i.id !== invitation.id);
-      if (created?.id === invitation.id) created = null;
-    } catch (error) {
-      toastError(error);
-    }
-  }
 
   async function setRole(member: Member, next: Role) {
     try {
@@ -150,78 +118,19 @@
     <section class="stack">
       <h2>Invitations</h2>
       <p>
-        An invitation is a link: whoever opens it can create an account and join {group.name}, with the
+        An invitation is a link: whoever opens it, with an account on this hub, joins {group.name} with the
         role it grants. Admins manage the group; members create papers; guests read and
         converse, summoning only their own agents. Send it the way you like.
       </p>
 
-      {#if created}
-        <div class="message message--success" role="status">
-          <span class="message__text stack stack--tight">
-            <span>Copy the link now: it will not be shown again.</span>
-            <span class="row">
-              <code class="identifier grow" id="invitation-link">{link}</code>
-              <stemma-copy-button for="invitation-link" label="Copy the link"></stemma-copy-button>
-            </span>
-          </span>
-        </div>
-      {/if}
-
-      <form class="card card__body form" onsubmit={invite}>
-        <div class="row">
-          <div class="field grow">
-            <label class="field__label" for="invitation-role">Joins as</label>
-            <stemma-select><select use:scriptedSelect={[role]} id="invitation-role" class="input" bind:value={role}>
-              {#each ROLES as option (option)}
-                <option value={option}>{ROLE_NAMES[option]}</option>
-              {/each}
-            </select></stemma-select>
-          </div>
-          <div class="field grow">
-            <label class="field__label" for="invitation-days">Expires after</label>
-            <stemma-select><select use:scriptedSelect={[days]} id="invitation-days" class="input" bind:value={days}>
-              <option value="1">A day</option>
-              <option value="7">A week</option>
-              <option value="30">A month</option>
-              <option value="">Never</option>
-            </select></stemma-select>
-          </div>
-          <div class="field grow">
-            <label class="field__label" for="invitation-uses">Uses</label>
-            <stemma-select><select use:scriptedSelect={[uses]} id="invitation-uses" class="input" bind:value={uses}>
-              <option value="1">One person</option>
-              <option value="5">Five people</option>
-              <option value="">Anyone with the link</option>
-            </select></stemma-select>
-          </div>
-        </div>
-        <div class="row row--end"><button type="submit" class="button button--primary">Create a link</button></div>
-      </form>
-
-      {#if invitations.length}
-        <div class="card">
-          <div class="table settings-table invitations-table">
-            <div class="table__head"><span>Link</span><span>Used</span><span></span></div>
-            {#each invitations as invitation (invitation.id)}
-              <div class="table__row">
-                <span class="stack stack--tight">
-                  <span>
-                    {ROLE_NAMES[invitation.role]}, by {invitation.created_by.display_name},
-                    <span title={exactly(invitation.created_at)}>{when(invitation.created_at)}</span>
-                  </span>
-                  <span class="quiet">
-                    {invitation.expires_at ? `Expires ${exactly(invitation.expires_at)}` : "Does not expire"}
-                  </span>
-                </span>
-                <span class="numeric quiet">
-                  {invitation.uses}{invitation.max_uses ? ` of ${invitation.max_uses}` : ""}
-                </span>
-                <button type="button" class="button button--small button--danger" onclick={() => revoke(invitation)}>Revoke</button>
-              </div>
-            {/each}
-          </div>
-        </div>
-      {/if}
+      <InvitationLinks
+        id="invitation"
+        roles
+        load={() => api.invitations(group.slug)}
+        create={(limits) => api.createInvitation(group.slug, limits)}
+        revoke={(id) => api.revokeInvitation(group.slug, id)}
+        linkOf={(token) => `${location.origin}/invite/${token}`}
+      />
     </section>
   {/if}
 

@@ -49,7 +49,8 @@ export interface Member extends User {
 
 export interface Invitation {
   id: number;
-  role: Role;
+  /** A group's link gives a role; the hub's makes an account. */
+  role: Role | null;
   created_by: User;
   created_at: string;
   expires_at: string | null;
@@ -65,6 +66,17 @@ export interface InvitationInfo {
   group_slug: string;
   group_name: string;
   role: Role;
+}
+
+/** A new link's limits: when it stops working and how often it is used. */
+export interface LinkLimits {
+  role?: Role;
+  expires_at?: string;
+  max_uses?: number;
+}
+
+export interface SignUpInfo {
+  invited_by: User;
 }
 
 export interface ApiToken {
@@ -374,10 +386,14 @@ export const api = {
   revokeToken: (id: number) => del<void>(`/me/tokens/${id}`),
 
   invitation: (token: string) => get<InvitationInfo>(`/invitations/${encodeURIComponent(token)}`),
-  acceptInvitation: (
-    token: string,
-    account?: { username: string; display_name: string; password: string },
-  ) => post<Me>(`/invitations/${encodeURIComponent(token)}/accept`, { account }),
+  acceptInvitation: (token: string) =>
+    post<Me>(`/invitations/${encodeURIComponent(token)}/accept`, {}),
+  signUpInfo: (token: string) => get<SignUpInfo>(`/sign-up/${encodeURIComponent(token)}`),
+  signUp: (token: string, account: { username: string; display_name: string; password: string }) =>
+    post<Me>(`/sign-up/${encodeURIComponent(token)}`, account),
+  hubInvitations: () => get<Invitation[]>("/hub/invitations"),
+  createHubInvitation: (body: LinkLimits) => post<CreatedInvitation>("/hub/invitations", body),
+  revokeHubInvitation: (id: number) => del<void>(`/hub/invitations/${id}`),
 
   groupRequests: () => get<GroupRequest[]>("/group-requests"),
   myGroupRequests: () => get<GroupRequest[]>("/me/group-requests"),
@@ -396,10 +412,8 @@ export const api = {
     patch<void>(`${g(group)}/members/${user}`, { role }),
   removeMember: (group: string, user: number) => del<void>(`${g(group)}/members/${user}`),
   invitations: (group: string) => get<Invitation[]>(`${g(group)}/invitations`),
-  createInvitation: (
-    group: string,
-    body: { role?: Role; expires_in_days?: number; max_uses?: number },
-  ) => post<CreatedInvitation>(`${g(group)}/invitations`, body),
+  createInvitation: (group: string, body: LinkLimits) =>
+    post<CreatedInvitation>(`${g(group)}/invitations`, body),
   revokeInvitation: (group: string, id: number) => del<void>(`${g(group)}/invitations/${id}`),
 
   threads: (

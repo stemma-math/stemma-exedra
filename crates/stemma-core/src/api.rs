@@ -300,11 +300,14 @@ pub struct UpdateMember {
     pub role: Role,
 }
 
-/// A link that lets people join a group. Its secret is shown once.
+/// A link that lets people in. Its secret is shown once.
+///
+/// A group's link adds an existing account to the group, with its role. The
+/// hub's makes an account, and nothing else: it has no role.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Invitation {
     pub id: i64,
-    pub role: Role,
+    pub role: Option<Role>,
     pub created_by: User,
     #[serde(with = "time::serde::rfc3339")]
     pub created_at: OffsetDateTime,
@@ -316,9 +319,12 @@ pub struct Invitation {
 
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
 pub struct CreateInvitation {
+    /// A group's link: the role it gives, a member's if absent. The hub's
+    /// links take none.
     pub role: Option<Role>,
-    /// Days until it expires; never, if absent.
-    pub expires_in_days: Option<u32>,
+    /// When it stops working; never, if absent.
+    #[serde(default, with = "time::serde::rfc3339::option")]
+    pub expires_at: Option<OffsetDateTime>,
     /// How many people may use it; any number, if absent.
     pub max_uses: Option<u32>,
 }
@@ -327,11 +333,12 @@ pub struct CreateInvitation {
 pub struct CreatedInvitation {
     #[serde(flatten)]
     pub invitation: Invitation,
-    /// The secret of the link: `/invite/<token>` on the hub.
+    /// The secret of the link: `/invite/<token>` for a group's,
+    /// `/signup?token=<token>` for the hub's.
     pub token: String,
 }
 
-/// What anyone with an invitation's link may know about it.
+/// What anyone with a group's link may know about it.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct InvitationInfo {
     pub group_slug: String,
@@ -339,10 +346,10 @@ pub struct InvitationInfo {
     pub role: Role,
 }
 
-/// Accepts an invitation: as the person signed in, or with a new account.
-#[derive(Clone, Debug, Default, Serialize, Deserialize)]
-pub struct AcceptInvitation {
-    pub account: Option<NewAccount>,
+/// What anyone with the hub's link may know about it.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct SignUpInfo {
+    pub invited_by: User,
 }
 
 // ── The forum ─────────────────────────────────────────────────────────

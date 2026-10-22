@@ -167,25 +167,44 @@ impl TestHub {
     /// Someone new in `geometry` with `role`, through an invitation from
     /// `admin`.
     async fn join(&self, admin: &Client, username: &str, role: &str) -> Client {
+        let client = self.account(admin, username).await;
+        self.accept_role(admin, &client, "geometry", role).await;
+        client
+    }
+
+    /// A new account, through the hub's link from `admin`, a hub admin.
+    async fn account(&self, admin: &Client, username: &str) -> Client {
+        let reply = self
+            .post(admin, "/hub/invitations", json!({"max_uses": 1}))
+            .await;
+        assert_eq!(reply.status, StatusCode::CREATED, "{:?}", reply.json());
+        let token = reply.json()["token"].as_str().unwrap().to_owned();
+        let reply = self
+            .post(
+                &Client::default(),
+                &format!("/sign-up/{token}"),
+                json!({"username": username, "display_name": username, "password": "password1"}),
+            )
+            .await;
+        assert_eq!(reply.status, StatusCode::CREATED, "{:?}", reply.json());
+        signed_in(&reply)
+    }
+
+    /// `client` joins `group` with `role`, through a link from `admin`.
+    async fn accept_role(&self, admin: &Client, client: &Client, group: &str, role: &str) {
         let reply = self
             .post(
                 admin,
-                "/groups/geometry/invitations",
+                &format!("/groups/{group}/invitations"),
                 json!({"max_uses": 1, "role": role}),
             )
             .await;
         assert_eq!(reply.status, StatusCode::CREATED);
         let token = reply.json()["token"].as_str().unwrap().to_owned();
-        let account = json!({"account": {"username": username, "display_name": username, "password": "password1"}});
         let reply = self
-            .post(
-                &Client::default(),
-                &format!("/invitations/{token}/accept"),
-                account,
-            )
+            .post(client, &format!("/invitations/{token}/accept"), json!({}))
             .await;
         assert_eq!(reply.status, StatusCode::OK, "{:?}", reply.json());
-        signed_in(&reply)
     }
 }
 
@@ -287,6 +306,8 @@ async fn signing_in_and_out() {
 async fn invitations_bring_people_in() {
     let hub = TestHub::new().await;
     let admin = hub.admin_with_group().await;
+    let bob = hub.account(&admin, "bob").await;
+    assert_eq!(hub.get(&bob, "/me").await.json()["groups"], json!([]));
 
     let reply = hub
         .post(
@@ -301,47 +322,32 @@ async fn invitations_bring_people_in() {
         .await;
     assert_eq!(info.json()["group_name"], "Geometry");
 
-    // Without an account or a session, accepting needs one.
+    // A group's link never makes an account: it takes someone signed in.
     let reply = hub
         .post(
             &Client::default(),
             &format!("/invitations/{token}/accept"),
-            json!({}),
+            json!({"account": {"username": "eve", "display_name": "Eve", "password": "long enough"}}),
         )
         .await;
     assert_eq!(reply.status, StatusCode::UNAUTHORIZED);
+    assert_eq!(
+        hub.get(&Client::default(), &format!("/sign-up/{token}"))
+            .await
+            .status,
+        StatusCode::NOT_FOUND
+    );
 
-    let account =
-        json!({"account": {"username": "bob", "display_name": "Bob", "password": "short"}});
     let reply = hub
-        .post(
-            &Client::default(),
-            &format!("/invitations/{token}/accept"),
-            account,
-        )
-        .await;
-    assert_eq!(reply.status, StatusCode::UNPROCESSABLE_ENTITY);
-
-    let account =
-        json!({"account": {"username": "bob", "display_name": "Bob", "password": "long enough"}});
-    let reply = hub
-        .post(
-            &Client::default(),
-            &format!("/invitations/{token}/accept"),
-            account.clone(),
-        )
+        .post(&bob, &format!("/invitations/{token}/accept"), json!({}))
         .await;
     assert_eq!(reply.status, StatusCode::OK);
-    let bob = signed_in(&reply);
     assert_eq!(reply.json()["groups"][0]["role"], "member");
 
     // Used up.
+    let carol = hub.account(&admin, "carol").await;
     let reply = hub
-        .post(
-            &Client::default(),
-            &format!("/invitations/{token}/accept"),
-            account,
-        )
+        .post(&carol, &format!("/invitations/{token}/accept"), json!({}))
         .await;
     assert_eq!(reply.status, StatusCode::NOT_FOUND);
     assert!(
@@ -385,6 +391,140 @@ async fn invitations_bring_people_in() {
     assert_eq!(reply.status, StatusCode::NO_CONTENT);
     assert_eq!(
         hub.get(&Client::default(), &format!("/invitations/{token}"))
+            .await
+            .status,
+        StatusCode::NOT_FOUND
+    );
+
+    // A link that has expired does not work, nor can one expire in the past.
+    let reply = hub
+        .post(
+            &admin,
+            "/groups/geometry/invitations",
+            json!({"expires_at": "2001-01-01T00:00:00Z"}),
+        )
+        .await;
+    assert_eq!(reply.status, StatusCode::UNPROCESSABLE_ENTITY);
+    let reply = hub
+        .post(
+            &admin,
+            "/groups/geometry/invitations",
+            json!({"expires_at": "2999-01-01T00:00:00Z"}),
+        )
+        .await;
+    assert_eq!(reply.status, StatusCode::CREATED);
+    assert_eq!(reply.json()["expires_at"], "2999-01-01T00:00:00Z");
+    let token = reply.json()["token"].as_str().unwrap().to_owned();
+    sqlx::query("UPDATE invitations SET expires_at = 1")
+        .execute(&hub.state.db)
+        .await
+        .unwrap();
+    let reply = hub
+        .post(&carol, &format!("/invitations/{token}/accept"), json!({}))
+        .await;
+    assert_eq!(reply.status, StatusCode::NOT_FOUND);
+}
+
+#[tokio::test]
+async fn the_hubs_links_make_accounts_and_nothing_else() {
+    let hub = TestHub::new().await;
+    let admin = hub.admin_with_group().await;
+
+    // Only hub admins make them, and they give no role.
+    let bob = hub.account(&admin, "bob").await;
+    let reply = hub.post(&bob, "/hub/invitations", json!({})).await;
+    assert_eq!(reply.status, StatusCode::FORBIDDEN);
+    let reply = hub
+        .post(&admin, "/hub/invitations", json!({"role": "member"}))
+        .await;
+    assert_eq!(reply.status, StatusCode::UNPROCESSABLE_ENTITY);
+
+    let reply = hub
+        .post(&admin, "/hub/invitations", json!({"max_uses": 2}))
+        .await;
+    assert_eq!(reply.status, StatusCode::CREATED);
+    assert_eq!(reply.json()["role"], Value::Null);
+    let (id, token) = (
+        reply.json()["id"].as_i64().unwrap(),
+        reply.json()["token"].as_str().unwrap().to_owned(),
+    );
+    let info = hub
+        .get(&Client::default(), &format!("/sign-up/{token}"))
+        .await;
+    assert_eq!(info.json()["invited_by"]["username"], "ada");
+    // It is not a group's link.
+    assert_eq!(
+        hub.get(&Client::default(), &format!("/invitations/{token}"))
+            .await
+            .status,
+        StatusCode::NOT_FOUND
+    );
+    assert_eq!(
+        hub.post(&bob, &format!("/invitations/{token}/accept"), json!({}))
+            .await
+            .status,
+        StatusCode::NOT_FOUND
+    );
+
+    // A bad account does not use it up.
+    let sign_up = async |username: &str, password: &str| {
+        hub.post(
+            &Client::default(),
+            &format!("/sign-up/{token}"),
+            json!({"username": username, "display_name": username, "password": password}),
+        )
+        .await
+    };
+    assert_eq!(
+        sign_up("eve", "short").await.status,
+        StatusCode::UNPROCESSABLE_ENTITY
+    );
+    let reply = sign_up("eve", "long enough").await;
+    assert_eq!(reply.status, StatusCode::CREATED);
+    // The account is in no group.
+    assert_eq!(reply.json()["groups"], json!([]));
+    let eve = signed_in(&reply);
+    assert_eq!(hub.get(&eve, "/me").await.json()["username"], "eve");
+    assert_eq!(
+        hub.get(&admin, "/hub/invitations").await.json()[0]["uses"],
+        1
+    );
+    assert_eq!(
+        sign_up("fay", "long enough").await.status,
+        StatusCode::CREATED
+    );
+    // Used up.
+    assert_eq!(
+        sign_up("gil", "long enough").await.status,
+        StatusCode::NOT_FOUND
+    );
+    assert!(
+        hub.get(&admin, "/hub/invitations")
+            .await
+            .json()
+            .as_array()
+            .unwrap()
+            .is_empty()
+    );
+
+    // Revoked.
+    let reply = hub.post(&admin, "/hub/invitations", json!({})).await;
+    let (id2, token) = (
+        reply.json()["id"].as_i64().unwrap(),
+        reply.json()["token"].as_str().unwrap().to_owned(),
+    );
+    assert_ne!(id, id2);
+    let reply = hub
+        .call(
+            &admin,
+            Method::DELETE,
+            &format!("/hub/invitations/{id2}"),
+            None,
+        )
+        .await;
+    assert_eq!(reply.status, StatusCode::NO_CONTENT);
+    assert_eq!(
+        hub.get(&Client::default(), &format!("/sign-up/{token}"))
             .await
             .status,
         StatusCode::NOT_FOUND
@@ -1159,6 +1299,27 @@ async fn agent_tokens_reach_only_what_their_tools_offer() {
             S::FORBIDDEN,
         ),
         (
+            Method::GET,
+            "/hub/invitations".into(),
+            None,
+            S::FORBIDDEN,
+            S::FORBIDDEN,
+        ),
+        (
+            Method::POST,
+            "/hub/invitations".into(),
+            Some(json!({})),
+            S::FORBIDDEN,
+            S::FORBIDDEN,
+        ),
+        (
+            Method::DELETE,
+            "/hub/invitations/1".into(),
+            None,
+            S::FORBIDDEN,
+            S::FORBIDDEN,
+        ),
+        (
             Method::PATCH,
             "/groups/geometry/members/1".into(),
             Some(json!({"role": "member"})),
@@ -1486,18 +1647,8 @@ async fn search_stays_in_the_viewers_groups() {
         json!({"slug": "algebra", "name": "Algebra"}),
     )
     .await;
-    let reply = hub
-        .post(&ada, "/groups/algebra/invitations", json!({"max_uses": 1}))
-        .await;
-    let token = reply.json()["token"].as_str().unwrap().to_owned();
-    let reply = hub
-        .post(
-            &Client::default(),
-            &format!("/invitations/{token}/accept"),
-            json!({"account": {"username": "eve", "display_name": "Eve", "password": "password1"}}),
-        )
-        .await;
-    let eve = signed_in(&reply);
+    let eve = hub.account(&ada, "eve").await;
+    hub.accept_role(&ada, &eve, "algebra", "member").await;
 
     let reply = hub.get(&eve, "/groups/geometry/search?q=secret").await;
     assert_eq!(reply.status, StatusCode::NOT_FOUND);
@@ -1638,17 +1789,11 @@ async fn invitations_grant_their_role() {
         .get(&Client::default(), &format!("/invitations/{token}"))
         .await;
     assert_eq!(info.json()["role"], "guest");
-    let account =
-        json!({"account": {"username": "gus", "display_name": "Gus", "password": "password1"}});
+    let gus = hub.account(&ada, "gus").await;
     let reply = hub
-        .post(
-            &Client::default(),
-            &format!("/invitations/{token}/accept"),
-            account,
-        )
+        .post(&gus, &format!("/invitations/{token}/accept"), json!({}))
         .await;
     assert_eq!(reply.json()["groups"][0]["role"], "guest");
-    let gus = signed_in(&reply);
     assert_eq!(
         hub.get(&gus, "/groups/geometry").await.json()["role"],
         "guest"
@@ -1964,16 +2109,14 @@ async fn a_group_the_forge_cannot_hold_is_not_made() {
 async fn names_the_forge_keeps_are_not_usernames() {
     let hub = TestHub::new().await;
     let ada = hub.admin_with_group().await;
-    let reply = hub
-        .post(&ada, "/groups/geometry/invitations", json!({}))
-        .await;
+    let reply = hub.post(&ada, "/hub/invitations", json!({})).await;
     let token = reply.json()["token"].as_str().unwrap().to_owned();
     for username in ["admin", "explore", "ada.", "a--b"] {
         let reply = hub
             .post(
                 &Client::default(),
-                &format!("/invitations/{token}/accept"),
-                json!({"account": {"username": username, "display_name": "X", "password": "password1"}}),
+                &format!("/sign-up/{token}"),
+                json!({"username": username, "display_name": "X", "password": "password1"}),
             )
             .await;
         assert_eq!(reply.status, StatusCode::UNPROCESSABLE_ENTITY, "{username}");
