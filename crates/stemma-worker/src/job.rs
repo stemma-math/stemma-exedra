@@ -21,17 +21,18 @@ pub const REPLY_INSTRUCTIONS: &str = include_str!("../prompts/reply.md");
 
 /// What an answer in a container of its own is told of its workspace.
 const CONTAINED: &str = "\
-- You work in the group's workspace, in a container of your own:
-  `library/` and `papers/<slug>/` are clones of its repositories at `main`,
-  and you start in a scratch folder. You may run anything there, such as
-  `lake build` or `latexmk`, to check your answer. Nothing you write there
-  is kept.";
+- You work in the group's workspace, `/stemma`, in a container of your
+  own: `/stemma/library/` and `/stemma/papers/<slug>/` are clones of its
+  repositories at `main`, and you start in a scratch folder under
+  `/stemma/scratch/`. You may run anything, such as `lake build` or
+  `latexmk`, to check your answer. Nothing you write is kept.";
 
 /// What an answer on its person's computer is told.
 const ON_THE_COMPUTER: &str = "\
-- You can read the group's workspace (`library/` and `papers/<slug>/`,
-  clones of its repositories at `main`), but you cannot run commands or
-  edit files: answer from what you read and reason.
+- You can read the group's workspace, two folders above the one you start
+  in (`../../library/` and `../../papers/<slug>/`, clones of its
+  repositories at `main`), but you cannot run commands or edit files:
+  answer from what you read and reason.
 - If you are asked to run something, or would need to, say that you cannot
   because your person's computer answers here without isolation: with
   Docker or Podman (`agents.isolation`, in This machine › Isolation), its
