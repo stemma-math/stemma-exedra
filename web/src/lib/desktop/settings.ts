@@ -88,6 +88,15 @@ export function fromFileLines(text: string): string {
     .join(", ")}]`;
 }
 
+/** A setting's value as its control writes it, to compare with what the
+ * control is about to write. */
+export function asInput(key: string, value: unknown): string {
+  if (typeof value === "boolean" || typeof value === "number") return String(value);
+  if (key.endsWith(".container.files")) return fromFileLines(fileLines(value));
+  if (Array.isArray(value)) return fromLines(lines(value));
+  return String(value);
+}
+
 /** The doctor's check named `name`, if it ran. */
 export function check(data: Snapshot, name: string): Check | undefined {
   return data.checks.find((c) => c.name === name);

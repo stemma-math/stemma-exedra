@@ -4,6 +4,7 @@
   import type { Explained } from "../api.ts";
   import type { MachineControls } from "../machine.svelte.ts";
   import {
+    asInput,
     fileLines,
     filesFromLines,
     fromFileLines,
@@ -47,8 +48,16 @@
     PRIORITIES.includes(String(setting.value)) ? String(setting.value) : "custom",
   );
 
+  /** Whether the value is written here: in the file, or for the group. */
+  const stored = $derived(setting.source.kind === (group ? "group" : "file"));
+
   function save(value: string, optimistic?: Explained["value"]) {
     if (value === "" && typeof setting.value === "string") return unset();
+    // The value it would have anyway is not written: the setting follows its
+    // default, or the general value in a group, again.
+    if (setting.reset && value === asInput(key, setting.reset.value)) {
+      return stored ? unset() : undefined;
+    }
     return controls.save({ kind: "set", key, value, group }, "", optimistic);
   }
 
@@ -71,8 +80,7 @@
 {/snippet}
 
 {#snippet reset()}
-  {#if !locked &&
-    ((group && setting.source.kind === "group") || (!group && setting.source.kind === "file"))}
+  {#if !locked && stored}
     <button
       type="button"
       class="button button--quiet button--icon"
