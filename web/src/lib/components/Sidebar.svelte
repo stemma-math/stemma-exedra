@@ -218,9 +218,13 @@
   <div class="sidebar__foot stack stack--tight">
     {#if __STEMMA_DESKTOP__}
       <div class="sidebar__connection" role="status">
-        <span class="chip chip--{connection.online ? 'success chip--live' : 'warning'}">
-          <span class="chip__dot" aria-hidden="true"></span>{connection.online ? "Connected" : "Offline"}
-        </span>
+        {#if connection.online === null}
+          <span class="chip"><span class="chip__dot" aria-hidden="true"></span>Connecting</span>
+        {:else}
+          <span class="chip chip--{connection.online ? 'success chip--live' : 'warning'}">
+            <span class="chip__dot" aria-hidden="true"></span>{connection.online ? "Connected" : "Offline"}
+          </span>
+        {/if}
         {#if desktopUI.signedOut}
           <span class="chip chip--warning"><span class="chip__dot" aria-hidden="true"></span>Signed out</span>
         {:else if desktopUI.serviceConnected && desktopUI.agentsEnabled}

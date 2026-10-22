@@ -2,7 +2,30 @@ import { untrack } from "svelte";
 
 /** All hub addresses and requests pass here, in both builds. */
 export const desktop = __STEMMA_DESKTOP__;
-export const connection = $state({ online: false, pending: 0, hub: "" });
+/** Whether this face reaches the hub, as its event stream says: `null`
+ * until it has said. */
+export const connection = $state<{ online: boolean | null; pending: number; hub: string }>({
+  online: null,
+  pending: 0,
+  hub: "",
+});
+
+/** How long a lost stream may take to come back before it shows. */
+const GRACE = 5000;
+let away: ReturnType<typeof setTimeout> | undefined;
+
+/** The event stream reached the hub, or lost it. Losing it shows only if
+ * it does not come back soon: a stream that reconnects at once is not
+ * being offline, nor is one request that failed. */
+export function reached(value: boolean) {
+  clearTimeout(away);
+  away = undefined;
+  if (value) connection.online = true;
+  else
+    away = setTimeout(() => {
+      connection.online = false;
+    }, GRACE);
+}
 
 const base = desktop
   ? typeof navigator !== "undefined" && /Windows|Android/.test(navigator.userAgent)
@@ -31,11 +54,7 @@ export async function hubFetch(path: string, options: RequestInit): Promise<Resp
       ...options,
       credentials: desktop ? "omit" : "same-origin",
     });
-    connection.online = response.status !== 502;
     return response;
-  } catch (error) {
-    connection.online = false;
-    throw error;
   } finally {
     untrack(() => {
       connection.pending--;

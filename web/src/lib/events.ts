@@ -1,6 +1,6 @@
 // Live updates: one event stream per group, shared by whatever listens.
 
-import { connection } from "./transport.svelte.ts";
+import { reached } from "./transport.svelte.ts";
 import { api, type GroupEvent } from "./api";
 
 export type Listener = (event: GroupEvent | { type: "resync" }) => void;
@@ -44,9 +44,7 @@ function open(group: string): Stream {
         stop = await subscribe(group, send);
         if (closed) stop();
       })
-      .catch(() => {
-        connection.online = false;
-      });
+      .catch(() => reached(false));
     return {
       source: {
         close() {
@@ -64,7 +62,10 @@ function open(group: string): Stream {
   source.addEventListener("ready", () => {
     if (opened) send({ type: "resync" });
     opened = true;
+    reached(true);
   });
+  // The browser tries again by itself; it shows only if that takes long.
+  source.addEventListener("error", () => reached(false));
   source.addEventListener("resync", () => send({ type: "resync" }));
   source.addEventListener("message", (e) => {
     try {
