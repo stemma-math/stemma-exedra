@@ -142,6 +142,8 @@ export class MachineControls {
       if (
         command.kind === "image" ||
         command.kind === "secret" ||
+        command.kind === "sign_in" ||
+        command.kind === "sign_out" ||
         /^(agents\.(isolation|image|workspace)|agents\.[^.]+\.(command|container\..+))$/.test(
           command.key ?? "",
         )

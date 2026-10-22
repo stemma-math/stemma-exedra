@@ -5,7 +5,7 @@ use serde::{Deserialize, Serialize};
 use stemma_client::config::{Explained, Settings, Source};
 use stemma_client::{Hub, config::Credentials};
 use stemma_core::api::Me;
-use stemma_worker::{doctor, service};
+use stemma_worker::{doctor, service, sign_in};
 use tauri::menu::{Menu, MenuItem, MenuItemKind, PredefinedMenuItem};
 use tauri::{Emitter, Manager, State, WebviewWindow};
 use transport::{subscribe, unsubscribe};
@@ -46,6 +46,8 @@ struct Snapshot {
     checks: Vec<doctor::Check>,
     /// The name of Stemma's own agents' image; another is the person's own.
     stemma_image: String,
+    /// The agents signed in for their containers.
+    signed_in: Vec<String>,
 }
 
 #[tauri::command]
@@ -78,6 +80,7 @@ async fn snapshot(window: WebviewWindow, group: Option<String>) -> Result<Snapsh
         secrets,
         checks: Vec::new(),
         stemma_image: stemma_worker::isolation::default_image(),
+        signed_in: signed_in(),
     })
 }
 
@@ -101,6 +104,21 @@ struct Diagnostics {
     checks: Vec<doctor::Check>,
     service: service::Status,
     secrets: Vec<String>,
+    /// The agents signed in for their containers.
+    signed_in: Vec<String>,
+}
+
+/// The agents signed in for their containers.
+fn signed_in() -> Vec<String> {
+    stemma_client::config::Paths::discover()
+        .map(|paths| {
+            sign_in::AGENTS
+                .into_iter()
+                .filter(|handle| sign_in::signed_in(&paths, handle))
+                .map(str::to_owned)
+                .collect()
+        })
+        .unwrap_or_default()
 }
 #[tauri::command]
 async fn diagnostics(window: WebviewWindow, group: Option<String>) -> Result<Diagnostics> {
@@ -114,7 +132,19 @@ async fn diagnostics(window: WebviewWindow, group: Option<String>) -> Result<Dia
             .keys()
             .cloned()
             .collect(),
+        signed_in: signed_in(),
     })
+}
+
+/// Asks an agent, in a container as an answer's, for one word.
+#[tauri::command]
+async fn test_sign_in(
+    window: WebviewWindow,
+    agent: String,
+    group: Option<String>,
+) -> Result<String> {
+    local(&window)?;
+    sign_in::test(&agent, group.as_deref()).await.map_err(error)
 }
 
 #[tauri::command]
@@ -186,6 +216,15 @@ enum Action {
         name: String,
         value: Option<String>,
     },
+    /// Signs an agent in for its containers, apart from the person's own
+    /// sign-in: Codex, whose sign-in opens the browser.
+    SignIn {
+        agent: String,
+    },
+    /// Forgets an agent's sign-in for its containers.
+    SignOut {
+        agent: String,
+    },
 }
 
 #[tauri::command]
@@ -199,7 +238,7 @@ async fn action(
     // must not hold up an unrelated setting.
     let _guard = if matches!(
         action,
-        Action::Set { .. } | Action::Unset { .. } | Action::Secret { .. }
+        Action::Set { .. } | Action::Unset { .. } | Action::Secret { .. } | Action::SignOut { .. }
     ) {
         Some(state.lock().await)
     } else {
@@ -209,6 +248,43 @@ async fn action(
 }
 async fn perform(action: Action) -> anyhow::Result<Option<PanelSetting>> {
     match action {
+        Action::SignIn { agent } => {
+            anyhow::ensure!(
+                agent == "codex",
+                "Sign {agent} in from a terminal: stemma machine sign-in {agent}"
+            );
+            let paths = stemma_client::config::Paths::discover()?;
+            let program = Settings::load()?
+                .get("agents.codex.command", None)?
+                .value
+                .as_str()
+                .unwrap_or("codex")
+                .to_owned();
+            let mut command =
+                tokio::process::Command::from(sign_in::command(&paths, &agent, &program)?);
+            command
+                .stdin(std::process::Stdio::null())
+                .stdout(std::process::Stdio::null())
+                .stderr(std::process::Stdio::piped())
+                .kill_on_drop(true);
+            // Codex opens the browser and waits for the person there.
+            let output =
+                tokio::time::timeout(std::time::Duration::from_secs(600), command.output())
+                    .await
+                    .context("Codex's sign-in did not finish within ten minutes")??;
+            anyhow::ensure!(
+                output.status.success() && sign_in::signed_in(&paths, &agent),
+                "Codex did not sign in: {}",
+                String::from_utf8_lossy(&output.stderr)
+                    .lines()
+                    .last()
+                    .unwrap_or("")
+            );
+        }
+        Action::SignOut { agent } => {
+            sign_in::runner_of(&agent)?;
+            sign_in::forget(&stemma_client::config::Paths::discover()?, &agent)?;
+        }
         Action::Set { key, value, group } => {
             let settings = Settings::load()?;
             anyhow::ensure!(
@@ -370,6 +446,7 @@ fn main() {
             open_external,
             login,
             action,
+            test_sign_in,
             sign_out,
             subscribe,
             unsubscribe

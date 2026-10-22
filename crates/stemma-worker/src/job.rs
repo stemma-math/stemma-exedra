@@ -296,9 +296,15 @@ async fn ask(
     let host = context.host();
     let mut container = None;
     let mut contained_program = None;
+    // The agent's sign-in for containers, held while it answers.
+    let mut _held = None;
     if let Some(Isolator::Containers(containers)) = &context.isolator {
         use crate::isolation::owner_of;
-        let (env, files) = containers.sign_in(&agent.runner, dirs::home_dir().as_deref())?;
+        let (env, mut files) = containers.sign_in(&agent.runner, dirs::home_dir().as_deref())?;
+        if let Some(handle) = crate::sign_in::handle_of(&agent.runner) {
+            files.extend(crate::sign_in::mounts(paths, handle));
+            _held = crate::sign_in::hold(paths, handle).await?;
+        }
         let mounts = answer_mounts(&workspace.path, &dir.path, files);
         let mut spec = containers.spec(
             job.id,
@@ -314,20 +320,7 @@ async fn ask(
         );
         // The sign-in's values, from the person's credentials, or else the
         // computer's environment.
-        let secrets = stemma_client::config::Credentials::load()
-            .map(|c| c.secrets)
-            .unwrap_or_default();
-        spec.pass_values = spec
-            .pass_env
-            .iter()
-            .filter_map(|name| {
-                secrets
-                    .get(name)
-                    .cloned()
-                    .or_else(|| std::env::var(name).ok())
-                    .map(|value| (name.clone(), value))
-            })
-            .collect();
+        spec.pass_values = crate::sign_in::values(&spec.pass_env);
         container = Some(containers.start(&spec, &workspace.path).await?);
         contained_program = containers.program(&agent.runner);
     }

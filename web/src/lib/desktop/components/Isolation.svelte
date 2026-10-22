@@ -1,5 +1,5 @@
 <script lang="ts">
-  import type { Snapshot } from "../api.ts";
+  import { type Snapshot, testSignIn } from "../api.ts";
   import type { MachineControls } from "../machine.svelte.ts";
   import { check, RUNNERS, setting } from "../settings.ts";
   import SettingField from "./SettingField.svelte";
@@ -15,12 +15,86 @@
   /** The values being typed, by variable, until they are kept. */
   let typed = $state<Record<string, string>>({});
 
+  /** What each agent said when tested, or why it could not. */
+  let tested = $state<Record<string, { ok: boolean; text: string }>>({});
+  let testing = $state("");
+
+  async function test(agent: string) {
+    testing = agent;
+    try {
+      tested[agent] = {
+        ok: true,
+        text: `It answered: ${await testSignIn(agent, controls.scope || null)}`,
+      };
+    } catch (error) {
+      tested[agent] = { ok: false, text: String(error) };
+    } finally {
+      testing = "";
+    }
+  }
+
+  const TOKEN = "CLAUDE_CODE_OAUTH_TOKEN";
+
   function keep(name: string) {
     const value = typed[name] ?? "";
     typed[name] = "";
     return controls.save({ kind: "secret", name, value }, "");
   }
 </script>
+
+{#snippet secret(
+  name: string,
+)}
+  {@const kept = data.secrets.includes(name)}
+  <div class="field">
+    <span class="row">
+      <label class="field__label grow" for="secret-{name}">
+        <code>{name}</code>
+        <span class="chip chip--small {kept ? "chip--success" : "chip--warning"}"
+          >{kept ? "Kept" : "Not kept"}</span
+        >
+      </label>
+      {#if kept}
+        <button
+          type="button"
+          class="button button--quiet button--small"
+          disabled={controls.saving(`secret:${name}`) || !!controls.scope}
+          onclick={() => controls.save({ kind: "secret", name, value: null }, "")}
+        >
+          {#if controls.saving(`secret:${name}`)}
+            <span class="spinner" aria-hidden="true"></span>
+          {/if}
+          Forget
+        </button>
+      {/if}
+    </span>
+    {#if controls.scope}
+      <span class="field__hint">The same in every group.</span>
+    {/if}
+    <span class="row">
+      <input
+        id="secret-{name}"
+        class="input grow"
+        type="password"
+        autocomplete="off"
+        disabled={controls.saving(`secret:${name}`) || !!controls.scope}
+        placeholder={kept ? "Replace its value" : "Its value"}
+        bind:value={typed[name]}
+      />
+      <button
+        type="button"
+        class="button"
+        disabled={controls.saving(`secret:${name}`) || !!controls.scope || !typed[name]}
+        onclick={() => keep(name)}
+      >
+        {#if controls.saving(`secret:${name}`)}
+          <span class="spinner" aria-hidden="true"></span>
+        {/if}
+        Keep
+      </button>
+    </span>
+  </div>
+{/snippet}
 
 <p class="quiet">
   With a container, an answer runs with no limits inside one of its own, which holds only the
@@ -131,80 +205,99 @@
               </span>
             </summary>
             <div class="row-list__body">
-              {#if env}
-                <SettingField
-                  {controls}
-                  setting={env}
-                  as="field"
-                  description="Their names, one per line; their values are kept below, never in the settings."
-                />
-              {/if}
-              {#each names as name (name)}
-                {@const kept = data.secrets.includes(name)}
-                <div class="field">
-                  <span class="row">
-                    <label class="field__label grow" for="secret-{name}">
-                      <code>{name}</code>
-                      <span class="chip chip--small {kept ? "chip--success" : "chip--warning"}"
-                        >{kept ? "Kept" : "Not kept"}</span
-                      >
-                    </label>
-                    {#if kept}
-                      <button
-                        type="button"
-                        class="button button--quiet button--small"
-                        disabled={controls.saving(`secret:${name}`) || !!controls.scope}
-                        onclick={() => controls.save({ kind: "secret", name, value: null }, "")}
-                      >
-                        {#if controls.saving(`secret:${name}`)}
-                          <span class="spinner" aria-hidden="true"></span>
-                        {/if}
-                        Forget
-                      </button>
-                    {/if}
-                  </span>
-                  {#if controls.scope}
-                    <span class="field__hint">The same in every group.</span>
-                  {/if}
-                  <span class="row">
-                    <input
-                      id="secret-{name}"
-                      class="input grow"
-                      type="password"
-                      autocomplete="off"
-                      disabled={controls.saving(`secret:${name}`) || !!controls.scope}
-                      placeholder={kept ? "Replace its value" : "Its value"}
-                      bind:value={typed[name]}
-                    />
+              {#if runner.key === "claude"}
+                <p class="quiet">
+                  It signs in with a token: run <code>claude setup-token</code> in a terminal, and
+                  keep what it prints here.
+                </p>
+                {@render secret(TOKEN)}
+              {:else}
+                {@const own = data.signed_in.includes(runner.key)}
+                <p class="quiet">
+                  {own
+                    ? `Signed in for its containers, apart from your own ${runner.name}: answers renew it, one at a time.`
+                    : runner.key === "codex"
+                      ? "It signs in for its containers apart from your own Codex: your browser opens, and you finish there."
+                      : "It signs in for its containers apart from your own OpenCode, choosing a provider: run stemma machine sign-in opencode in a terminal."}
+                </p>
+                <span class="row">
+                  {#if own}
                     <button
                       type="button"
                       class="button"
-                      disabled={controls.saving(`secret:${name}`) ||
-                        !!controls.scope ||
-                        !typed[name]}
-                      onclick={() => keep(name)}
+                      disabled={controls.saving(`sign_out:`) || !!controls.scope}
+                      onclick={() => controls.save({ kind: "sign_out", agent: runner.key }, "")}
                     >
-                      {#if controls.saving(`secret:${name}`)}
+                      Forget
+                    </button>
+                  {:else if runner.key === "codex"}
+                    <button
+                      type="button"
+                      class="button button--primary"
+                      disabled={controls.saving("sign_in:") || !!controls.scope}
+                      onclick={() => controls.save({ kind: "sign_in", agent: runner.key }, "")}
+                    >
+                      {#if controls.saving("sign_in:")}
                         <span class="spinner" aria-hidden="true"></span>
                       {/if}
-                      Keep
+                      Sign in
                     </button>
-                  </span>
+                  {/if}
+                </span>
+              {/if}
+              <span class="row">
+                <button
+                  type="button"
+                  class="button"
+                  disabled={!!testing || !signIn || signIn.status !== "success"}
+                  onclick={() => test(runner.key)}
+                >
+                  {#if testing === runner.key}
+                    <span class="spinner" aria-hidden="true"></span>
+                  {/if}
+                  Test
+                </button>
+                <span class="quiet">Asks it for one word, in a container as an answer's.</span>
+              </span>
+              {#if tested[runner.key]}
+                <p
+                  class="message {tested[runner.key].ok ? "message--success" : "message--danger"}"
+                  role="status"
+                >
+                  <span class="message__text">{tested[runner.key].text}</span>
+                </p>
+              {/if}
+              <details class="disclosure">
+                <summary>Other ways to sign in</summary>
+                <div class="stack">
+                  {#if env}
+                    <SettingField
+                      {controls}
+                      setting={env}
+                      as="field"
+                      description="Variables, by name, one per line; their values are kept below, never in the settings."
+                    />
+                  {/if}
+                  {#each names.filter(
+                    (name) => runner.key !== "claude" || name !== TOKEN,
+                  ) as name (name)}
+                    {@render secret(name)}
+                  {/each}
+                  {#each ["files", "command"] as key (key)}
+                    {@const value = setting(data, `agents.${runner.key}.container.${key}`)}
+                    {#if value}
+                      <SettingField
+                        {controls}
+                        setting={value}
+                        as="field"
+                        description={key === "files"
+                          ? "One per line: the file here, or the file here → where it goes in the container."
+                          : "The agent's program in the image."}
+                      />
+                    {/if}
+                  {/each}
                 </div>
-              {/each}
-              {#each ["files", "command"] as key (key)}
-                {@const value = setting(data, `agents.${runner.key}.container.${key}`)}
-                {#if value}
-                  <SettingField
-                    {controls}
-                    setting={value}
-                    as="field"
-                    description={key === "files"
-                      ? "One per line: the file here, or the file here → where it goes in the container."
-                      : "The agent's program in the image."}
-                  />
-                {/if}
-              {/each}
+              </details>
             </div>
           </details>
         </li>

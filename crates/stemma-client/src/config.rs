@@ -301,7 +301,15 @@ impl Settings {
                 ("args", Value::Array(vec![])),
                 ("model", Value::String(String::new())),
                 ("timeout_minutes", Value::Integer(15)),
-                ("container.env", Value::Array(vec![])),
+                (
+                    "container.env",
+                    // Claude Code signs in inside with a token kept by name.
+                    Value::Array(if runner == "claude" {
+                        vec![Value::String("CLAUDE_CODE_OAUTH_TOKEN".into())]
+                    } else {
+                        vec![]
+                    }),
+                ),
                 ("container.files", Value::Array(vec![])),
                 (
                     "container.command",

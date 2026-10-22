@@ -16,6 +16,7 @@ const data = (username: string): Snapshot => ({
   secrets: [],
   checks: [],
   stemma_image: "stemma-agents:0.1.1",
+  signed_in: [],
   service: { installed: false, running: false, connected: false, signed_out: false, logs: "" },
 });
 function deferred<T>() {
@@ -29,7 +30,12 @@ function deferred<T>() {
 }
 beforeEach(() => {
   vi.resetAllMocks();
-  vi.mocked(diagnostics).mockResolvedValue({ checks: [], secrets: [], service: data("").service });
+  vi.mocked(diagnostics).mockResolvedValue({
+    checks: [],
+    secrets: [],
+    signed_in: [],
+    service: data("").service,
+  });
 });
 describe("machine controls", () => {
   it("shows loading immediately and ignores an older scope's late snapshot", async () => {
@@ -102,12 +108,17 @@ describe("machine controls", () => {
     const old = deferred<Awaited<ReturnType<typeof diagnostics>>>();
     vi.mocked(diagnostics)
       .mockReturnValueOnce(old.promise)
-      .mockResolvedValueOnce({ service: data("").service, secrets: ["NEW"], checks: [] });
+      .mockResolvedValueOnce({
+        service: data("").service,
+        secrets: ["NEW"],
+        signed_in: [],
+        checks: [],
+      });
     const checking = controls.check();
     vi.mocked(action).mockResolvedValueOnce(setting("agents.isolation", "docker"));
     await controls.save({ kind: "set", key: "agents.isolation", value: "docker" });
     expect(controls.saving("agents.isolation")).toBe(false);
-    old.resolve({ service: data("").service, secrets: ["OLD"], checks: [] });
+    old.resolve({ service: data("").service, secrets: ["OLD"], signed_in: [], checks: [] });
     await checking;
     expect(controls.data.secrets).toEqual(["NEW"]);
   });

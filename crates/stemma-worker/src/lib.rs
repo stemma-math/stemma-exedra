@@ -11,6 +11,7 @@ pub mod machine;
 pub mod runners;
 pub mod service;
 pub mod session;
+pub mod sign_in;
 pub mod workspace;
 
 use anyhow::Context as _;

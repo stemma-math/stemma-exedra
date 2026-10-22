@@ -134,20 +134,15 @@ fn container_sign_in(settings: &Settings, group: Option<&str>, handle: &str) -> 
             _ => "OpenCode",
         }
     );
-    let how = match handle {
-        "claude" => {
-            "Run claude setup-token, keep what it prints with stemma config secret set \
-             CLAUDE_CODE_OAUTH_TOKEN, and stemma config set agents.claude.container.env \
-             CLAUDE_CODE_OAUTH_TOKEN."
-        }
-        "codex" => {
-            "stemma config set agents.codex.container.files \"[{ from = '~/.codex/auth.json' }]\"."
-        }
-        _ => {
-            "Keep its providers' keys with stemma config secret set <NAME>, and list their \
-             names in agents.opencode.container.env."
-        }
-    };
+    let how = format!("Sign it in with stemma machine sign-in {handle}, or in This machine.");
+    let how = how.as_str();
+    // A sign-in of its own, made for the containers.
+    if let Ok(paths) = Paths::discover()
+        && crate::sign_in::folder(&paths, handle).is_some()
+        && crate::sign_in::signed_in(&paths, handle)
+    {
+        return check(&name, true, "Signed in for containers", how);
+    }
     if variables.is_empty() && files.is_empty() {
         return check(&name, false, "No sign-in for its container", how);
     }

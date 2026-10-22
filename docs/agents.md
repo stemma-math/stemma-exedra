@@ -294,29 +294,30 @@ add: Stemma does not build it, and `stemma machine image` refuses to build
 its own under that name. `stemma doctor` starts it once to check that it
 has `stemma` and each agent's program.
 
-Each runner signs in inside as you configure it, by variable names and file
-paths, never values in `config.toml`:
+Each agent signs in inside apart from your own sign-in on this computer,
+which a container never reads:
+
+- **Claude Code** takes a token: `stemma machine sign-in claude` runs
+  `claude setup-token` and keeps what it prints as `CLAUDE_CODE_OAUTH_TOKEN`,
+  the variable its containers are given by default.
+- **Codex** and **OpenCode** keep a sign-in of their own for the containers,
+  in Stemma's data folder (`sign-ins/<agent>`): `stemma machine sign-in
+  codex` runs `codex login` there, and `stemma machine sign-in opencode`
+  runs `opencode auth login` there. It is mounted read-write, so that the
+  agent renews it as it works, and one answer at a time uses it.
+
+`stemma machine test <agent>` starts a container as an answer's and asks
+the agent for one word, to know that it signs in. `stemma machine sign-out
+<agent>` forgets its sign-in. In the app, This machine › Isolation does the
+same for each agent.
+
+Other ways remain, per agent: variables passed by name, files mounted
+read-only, and the program in the image.
 
 ```toml
-[agents]
-isolation = "docker"
-
-[agents.claude.container]
-env = ["CLAUDE_CODE_OAUTH_TOKEN"]
-
-[agents.codex.container]
-files = [{ from = "~/.codex/auth.json" }]
-
 [agents.opencode.container]
 env = ["OPENROUTER_API_KEY"]
 ```
-
-- **Claude Code**: run `claude setup-token`, keep what it prints with
-  `stemma config secret set CLAUDE_CODE_OAUTH_TOKEN` (it asks for the value,
-  or reads it from standard input), and list the variable as above.
-- **Codex**: mount its `~/.codex/auth.json`, as above.
-- **OpenCode**: keep its providers' keys with `stemma config secret set`,
-  and list their names.
 
 `stemma config secret` keeps these values in `credentials.toml`, the only
 file with secrets: the service, which has only its search path and settings

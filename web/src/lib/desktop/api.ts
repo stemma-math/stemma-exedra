@@ -28,6 +28,8 @@ export interface Snapshot {
   settings: Explained[];
   /** The names of the containers' sign-ins kept, never their values. */
   secrets: string[];
+  /** The agents signed in for their containers. */
+  signed_in: string[];
   checks: Check[];
   /** The name of Stemma's own agents' image; another is the person's own. */
   stemma_image: string;
@@ -39,5 +41,8 @@ export const login = (url: string, username: string, password: string) =>
 export const signOut = () => invoke<string | null>("sign_out");
 
 export const diagnostics = (group: string | null = null) =>
-  invoke<Pick<Snapshot, "checks" | "service" | "secrets">>("diagnostics", { group });
+  invoke<Pick<Snapshot, "checks" | "service" | "secrets" | "signed_in">>("diagnostics", { group });
+/** Asks an agent, in a container as an answer's, for one word; what it said. */
+export const testSignIn = (agent: string, group: string | null) =>
+  invoke<string>("test_sign_in", { agent, group });
 export const openExternal = (url: string) => invoke<void>("open_external", { url });
