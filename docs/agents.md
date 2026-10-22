@@ -287,10 +287,13 @@ with the runners, git, Lean and LaTeX. It runs as you, never root, with no
 capabilities and limits on memory, CPUs and processes, and is removed when
 the answer ends.
 
-Stemma's image is `stemma-agents:<version>`, so that updating Stemma asks
-for it to be built again. Its `stemma` is the release's; a `stemma` built
-from source that is still on the computer builds the image from that same
-source instead, so that its containers run the same code. `agents.image` can name an image of your own
+Stemma's image is `stemma-agents:<version>`, with the `stemma` of that
+release, so that updating Stemma asks for it to be built again.
+
+While developing Stemma, `stemma machine image --dev`, run in a checkout,
+builds `stemma-agents:dev` from that checkout as it is, uncommitted changes
+included; `stemma config set agents.image stemma-agents:dev` makes agents
+use it. `agents.image` can name an image of your own
 instead, built from Stemma's (`FROM stemma-agents:<version>`) with what you
 add: Stemma does not build it, and `stemma machine image` refuses to build
 its own under that name. `stemma doctor` starts it once to check that it

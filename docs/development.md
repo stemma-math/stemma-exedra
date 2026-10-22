@@ -20,6 +20,10 @@ STEMMA_TEST_FORGEJO=http://127.0.0.1:3000 cargo test -p stemma-hub --test forgej
 
 ## Desktop
 
+Answers in containers run the `stemma` of their image. With a development
+build, `stemma machine image --dev`, run in the checkout, builds
+`stemma-agents:dev` from it as it is; set `agents.image` to it.
+
 With the CLI installed, `pnpm --dir desktop tauri dev` starts the desktop app;
 `pnpm --dir desktop tauri build` builds it on macOS (Xcode command line tools).
 Its Rust crate is a separate Cargo project with its own lockfile. `just check`

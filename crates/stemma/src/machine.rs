@@ -16,7 +16,12 @@ enum MachineCommand {
     /// Run the service in this terminal.
     Run,
     /// Build the agents' image for Docker or Podman.
-    Image,
+    Image {
+        /// Build the development image, stemma-agents:dev, from the checkout
+        /// of Stemma in this folder, as it is.
+        #[arg(long)]
+        dev: bool,
+    },
     /// Sign an agent in for its containers, apart from your own sign-in.
     SignIn {
         /// claude, codex or opencode.
@@ -56,8 +61,16 @@ pub async fn machine(args: MachineArgs) -> anyhow::Result<()> {
             println!("Service stopped and removed.");
         }
         Some(MachineCommand::Run) => stemma_worker::machine::run(std::env::current_exe()?).await?,
-        Some(MachineCommand::Image) => {
+        Some(MachineCommand::Image { dev: false }) => {
             image::build_for(None).await?;
+        }
+        Some(MachineCommand::Image { dev: true }) => {
+            image::build_dev(&std::env::current_dir()?, None).await?;
+            println!(
+                "Built {}. Agents use it with: stemma config set agents.image {}",
+                image::DEV_IMAGE,
+                image::DEV_IMAGE
+            );
         }
         Some(MachineCommand::SignIn { agent }) => sign_in(&agent)?,
         Some(MachineCommand::SignOut { agent }) => {
