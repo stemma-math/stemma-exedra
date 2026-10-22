@@ -10,6 +10,12 @@ const base = desktop
     : "hub://localhost"
   : "";
 
+/** The hub's own address for `path`, as people open and share it: in the
+ * app, the hub's, never the app's own origin. */
+export function publicUrl(path: string): string {
+  return `${desktop ? connection.hub : location.origin}${path}`;
+}
+
 /** API-owned resources must never resolve against the privileged app origin. */
 export function hubUrl(path: string): string {
   if (!path.startsWith("/api/v1/")) throw new Error("Invalid hub resource address");

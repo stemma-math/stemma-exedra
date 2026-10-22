@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { publicUrl } from "#lib/transport.svelte.ts";
   import NameField from "#lib/components/NameField.svelte";
   import { scriptedSelect } from "#lib/scripted-select.ts";
   import { openSettings } from "#lib/settings.svelte.ts";
@@ -158,7 +159,7 @@
         load={() => api.invitations(group.slug)}
         create={(limits) => api.createInvitation(group.slug, limits)}
         revoke={(id) => api.revokeInvitation(group.slug, id)}
-        linkOf={(token) => `${location.origin}/invite/${token}`}
+        linkOf={(token) => publicUrl(`/invite/${token}`)}
       />
     </section>
   {/if}

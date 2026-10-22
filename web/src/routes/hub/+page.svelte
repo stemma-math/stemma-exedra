@@ -1,4 +1,6 @@
 <script lang="ts">
+  import Loading from "#lib/components/Loading.svelte";
+  import { publicUrl } from "#lib/transport.svelte.ts";
   import { onMount } from "svelte";
   import { api, type GroupRequest, type HubGroup, type HubPerson } from "#lib/api.ts";
   import { ask } from "#lib/ask.svelte.ts";
@@ -112,7 +114,7 @@
       <section class="stack">
         <h2>Requests</h2>
         {#if requests === null}
-          <div class="skeleton loading-placeholder" role="status" aria-label="Loading requests"></div>
+          <Loading label="Loading requests" />
         {:else}
           <ul class="card row-list">
             {#each requests as request (request.id)}
@@ -158,7 +160,7 @@
           load={api.hubInvitations}
           create={api.createHubInvitation}
           revoke={api.revokeHubInvitation}
-          linkOf={(token) => `${location.origin}/signup?token=${token}`}
+          linkOf={(token) => publicUrl(`/signup?token=${token}`)}
         />
       </section>
 
