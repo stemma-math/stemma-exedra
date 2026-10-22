@@ -114,13 +114,22 @@ pub async fn build_for(group: Option<&str>) -> anyhow::Result<()> {
         isolation::Runtime::Podman => isolation::Runtime::Podman,
         _ => isolation::Runtime::Docker,
     });
+    // Stemma builds only its own image. Another name is the person's own
+    // image, which they build; building Stemma's under it would hide that.
+    let tag = isolation.image();
+    anyhow::ensure!(
+        tag == isolation::default_image(),
+        "agents.image names your own image, {tag}: Stemma builds only its own, {}. \
+         Build yours yourself, or go back to Stemma's with: stemma config unset agents.image",
+        isolation::default_image()
+    );
     let engine = isolation::find_engine(&isolation, std::env::var_os("PATH").as_deref())
         .await
         .ok_or_else(|| anyhow::anyhow!("Install and start Docker or Podman."))?;
     build(
         engine.as_ref(),
         &Build {
-            tag: isolation.image(),
+            tag,
             source: Source::for_this_machine(),
             toolchain: TOOLCHAIN.into(),
             version: env!("CARGO_PKG_VERSION").into(),

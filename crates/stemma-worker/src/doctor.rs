@@ -45,6 +45,69 @@ async fn program(name: &str, command: &str, remedy: &str) -> Check {
     }
 }
 
+/// Whether the person's own image has what an answer runs: `stemma`, for
+/// the agents' tools, and the agents' programs, `commands`. It starts a
+/// container of it to look, which only an image of one's own needs.
+async fn own_image(runtime: &str, image: &str, commands: &[String]) -> Check {
+    let wanted: Vec<&str> = std::iter::once("stemma")
+        .chain(commands.iter().map(String::as_str))
+        .collect();
+    // Prints each program that is missing.
+    let script = "for p in \"$@\"; do command -v \"$p\" >/dev/null || echo \"$p\"; done";
+    let output = tokio::time::timeout(
+        std::time::Duration::from_secs(60),
+        tokio::process::Command::new(runtime)
+            .args([
+                "run",
+                "--rm",
+                "--network",
+                "none",
+                "--entrypoint",
+                "sh",
+                image,
+            ])
+            .args(["-c", script, "sh"])
+            .args(&wanted)
+            .stdin(std::process::Stdio::null())
+            .output(),
+    )
+    .await;
+    let detail = format!("{image}, your own");
+    match output {
+        Ok(Ok(out)) if out.status.success() => {
+            let missing: Vec<String> = String::from_utf8_lossy(&out.stdout)
+                .lines()
+                .map(str::trim)
+                .filter(|l| !l.is_empty())
+                .map(str::to_owned)
+                .collect();
+            if missing.is_empty() {
+                check("Agents' image", true, detail, "")
+            } else {
+                let mut lacking = check(
+                    "Agents' image",
+                    false,
+                    format!("{detail}: it lacks {}", missing.join(", ")),
+                    "",
+                );
+                lacking.remedy = Some(format!(
+                    "It lacks {}: build your image from Stemma's, which has them, or go back to \
+                     Stemma's with stemma config unset agents.image.",
+                    missing.join(", ")
+                ));
+                lacking
+            }
+        }
+        _ => check(
+            "Agents' image",
+            false,
+            format!("{detail}: it could not be started"),
+            "Check that the image runs a shell, or go back to Stemma's with \
+             stemma config unset agents.image.",
+        ),
+    }
+}
+
 /// Whether `handle`'s agent can sign in inside a container: the variables
 /// and files it is given, set and present here.
 fn container_sign_in(settings: &Settings, group: Option<&str>, handle: &str) -> Check {
@@ -212,12 +275,32 @@ pub async fn run(group: Option<&str>) -> Vec<Check> {
             )
             .await
             .is_ok_and(|r| r.is_ok_and(|o| o.status.success()));
-            checks.push(check(
-                "Agents' image",
-                present,
-                image,
-                "Build the image with stemma machine image.",
-            ));
+            let own = image != crate::isolation::default_image();
+            checks.push(if !present {
+                check(
+                    "Agents' image",
+                    false,
+                    image,
+                    if own {
+                        "Build your image, or go back to Stemma's with stemma config unset agents.image."
+                    } else {
+                        "Build the image with stemma machine image."
+                    },
+                )
+            } else if own {
+                let commands: Vec<String> = found
+                    .iter()
+                    .filter_map(|handle| {
+                        settings
+                            .get(&format!("agents.{handle}.container.command"), group)
+                            .ok()
+                            .and_then(|v| v.value.as_str().map(str::to_owned))
+                    })
+                    .collect();
+                own_image(runtime, &image, &commands).await
+            } else {
+                check("Agents' image", true, image, "")
+            });
             for handle in &found {
                 checks.push(container_sign_in(settings, group, handle));
             }

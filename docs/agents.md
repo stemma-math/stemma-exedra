@@ -287,6 +287,13 @@ with the runners, git, Lean and LaTeX. It runs as you, never root, with no
 capabilities and limits on memory, CPUs and processes, and is removed when
 the answer ends.
 
+Stemma's image is `stemma-agents:<version>`, so that updating Stemma asks
+for it to be built again. `agents.image` can name an image of your own
+instead, built from Stemma's (`FROM stemma-agents:<version>`) with what you
+add: Stemma does not build it, and `stemma machine image` refuses to build
+its own under that name. `stemma doctor` starts it once to check that it
+has `stemma` and each agent's program.
+
 Each runner signs in inside as you configure it, by variable names and file
 paths, never values in `config.toml`:
 

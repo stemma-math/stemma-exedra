@@ -227,11 +227,14 @@
   </li>
 {:else}
   <div class="field">
-    <label class="field__label" for={id}>{name ?? nameOf(key)}</label>
+    <span class="row">
+      <label class="field__label grow" for={id}>{name ?? nameOf(key)}</label>
+      {@render reset()}
+    </span>
     {#if description}
       <span class="field__hint">{description}</span>
     {/if}
     <span class="row setting-field__source">{@render source()}</span>
-    <div class="row">{@render reset()}{@render control()}</div>
+    {@render control()}
   </div>
 {/if}

@@ -10,6 +10,8 @@
   const contained = $derived(isolation !== undefined && isolation.value !== "none");
   const image = $derived(check(data, "Agents' image"));
   const imageSetting = $derived(setting(data, "agents.image"));
+  /** An image of the person's own, which Stemma does not build. */
+  const ownImage = $derived(imageSetting !== undefined && imageSetting.value !== data.stemma_image);
   /** The values being typed, by variable, until they are kept. */
   let typed = $state<Record<string, string>>({});
 
@@ -47,26 +49,54 @@
                 ><span class="chip__dot" aria-hidden="true"></span>Building</span
               >
             {:else if image?.status === "success"}
-              <span class="chip chip--small chip--success">Built</span>
+              <span class="chip chip--small chip--success">{ownImage ? "Ready" : "Built"}</span>
             {:else}
-              <span class="chip chip--small chip--warning">Not built</span>
+              <span class="chip chip--small chip--warning"
+                >{ownImage ? "Not ready" : "Not built"}</span
+              >
             {/if}
           </span>
         </summary>
         <div class="row-list__body">
-          <SettingField {controls} setting={imageSetting} as="field" />
-          <button
-            type="button"
-            class="button"
-            disabled={controls.saving("image:")}
-            onclick={() =>
-              controls.save({ kind: "image", group: controls.scope || null }, "Image built.")}
-          >
-            {#if controls.saving("image:")}
-              <span class="spinner" aria-hidden="true"></span>
-            {/if}
-            Build image
-          </button>
+          {#if ownImage}
+            <p class="quiet">
+              Your own image: Stemma does not build it. It needs
+              <span class="identifier">stemma</span>
+              and the agents' programs; the checks say if something is missing. Go back to Stemma's
+              image with the reset beside its name.
+            </p>
+            <SettingField {controls} setting={imageSetting} as="field" name="Your own image" />
+          {:else}
+            <p class="quiet">
+              Stemma's image has the agents, Lean, LaTeX, git and this version of
+              <span class="identifier">stemma</span>. Build it again after Stemma is updated.
+            </p>
+            <button
+              type="button"
+              class="button"
+              disabled={controls.saving("image:")}
+              onclick={() =>
+                controls.save({ kind: "image", group: controls.scope || null }, "Image built.")}
+            >
+              {#if controls.saving("image:")}
+                <span class="spinner" aria-hidden="true"></span>
+              {/if}
+              Build image
+            </button>
+            <details class="disclosure">
+              <summary>Use your own image</summary>
+              <div class="stack">
+                <p class="quiet">
+                  An image on this computer, built from Stemma's (<span class="identifier"
+                    >FROM {data.stemma_image}</span
+                  >) with what you add. Stemma does not build it, and checks that it has
+                  <span class="identifier">stemma</span>
+                  and the agents' programs.
+                </p>
+                <SettingField {controls} setting={imageSetting} as="field" name="Your own image" />
+              </div>
+            </details>
+          {/if}
         </div>
       </details>
     </li>

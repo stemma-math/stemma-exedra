@@ -15,6 +15,7 @@ const data = (username: string): Snapshot => ({
   settings: [setting(), setting("agents.priority", "normal")],
   secrets: [],
   checks: [],
+  stemma_image: "stemma-agents:0.1.1",
   service: { installed: false, running: false, connected: false, signed_out: false, logs: "" },
 });
 function deferred<T>() {

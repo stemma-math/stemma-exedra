@@ -44,6 +44,8 @@ struct Snapshot {
     /// The names of the containers' sign-ins kept, never their values.
     secrets: Vec<String>,
     checks: Vec<doctor::Check>,
+    /// The name of Stemma's own agents' image; another is the person's own.
+    stemma_image: String,
 }
 
 #[tauri::command]
@@ -75,6 +77,7 @@ async fn snapshot(window: WebviewWindow, group: Option<String>) -> Result<Snapsh
         settings,
         secrets,
         checks: Vec::new(),
+        stemma_image: stemma_worker::isolation::default_image(),
     })
 }
 
