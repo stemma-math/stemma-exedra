@@ -122,9 +122,13 @@
       <summary>
         <span class="row-list__text"
           ><span class="row-list__name row">
-            <span style:color={failing.length ? "var(--warning-text)" : "var(--success-text)"}
-              ><Glyph name={failing.length ? "warning" : "check"} small /></span
-            >
+            {#if controls.checking && !data.checks.length}
+              <span class="spinner" aria-hidden="true"></span>
+            {:else if data.checks.length}
+              <span style:color={failing.length ? "var(--warning-text)" : "var(--success-text)"}
+                ><Glyph name={failing.length ? "warning" : "check"} small /></span
+              >
+            {/if}
             {controls.checking && !data.checks.length
               ? "Checking this machine"
               : !data.checks.length

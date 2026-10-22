@@ -41,7 +41,12 @@
             {/if}
           </span>
           <span class="row-list__control">
-            {#if image?.status === "success"}
+            <!-- While it builds, an image already there says nothing of the new one. -->
+            {#if controls.saving("image:")}
+              <span class="chip chip--small chip--info chip--live"
+                ><span class="chip__dot" aria-hidden="true"></span>Building</span
+              >
+            {:else if image?.status === "success"}
               <span class="chip chip--small chip--success">Built</span>
             {:else}
               <span class="chip chip--small chip--warning">Not built</span>
