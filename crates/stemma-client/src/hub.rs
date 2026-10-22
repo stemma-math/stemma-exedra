@@ -21,15 +21,15 @@ pub enum ApiError {
         code: String,
         message: String,
     },
-    #[error("could not reach the hub: {0}")]
-    Unreachable(#[from] reqwest::Error),
+    #[error("Could not reach {url}: {source}")]
+    Unreachable { url: String, source: reqwest::Error },
 }
 
 impl ApiError {
     pub fn status(&self) -> Option<StatusCode> {
         match self {
             ApiError::Hub { status, .. } => Some(*status),
-            ApiError::Unreachable(_) => None,
+            ApiError::Unreachable { .. } => None,
         }
     }
 }
@@ -73,6 +73,13 @@ impl Hub {
         &self.base
     }
 
+    fn unreachable(&self, source: reqwest::Error) -> ApiError {
+        ApiError::Unreachable {
+            url: self.base.clone(),
+            source,
+        }
+    }
+
     async fn send<T: DeserializeOwned>(
         &self,
         method: Method,
@@ -93,11 +100,17 @@ impl Hub {
         if let Some(body) = body {
             request = request.json(body);
         }
-        let response = request.send().await?;
+        let response = request
+            .send()
+            .await
+            .map_err(|source| self.unreachable(source))?;
         let status = response.status();
         let headers = response.headers().clone();
         if !status.is_success() {
-            let text = response.text().await.unwrap_or_default();
+            let text = response
+                .text()
+                .await
+                .map_err(|source| self.unreachable(source))?;
             return Err(match serde_json::from_str::<ErrorBody>(&text) {
                 Ok(body) => ApiError::Hub {
                     status,
@@ -107,11 +120,17 @@ impl Hub {
                 Err(_) => ApiError::Hub {
                     status,
                     code: "unknown".into(),
-                    message: format!("The hub answered {status}"),
+                    message: format!(
+                        "{} did not answer as a Stemma hub (HTTP {status}).",
+                        self.base
+                    ),
                 },
             });
         }
-        let text = response.text().await?;
+        let text = response
+            .text()
+            .await
+            .map_err(|source| self.unreachable(source))?;
         let text = if text.trim().is_empty() {
             "null"
         } else {
@@ -120,7 +139,7 @@ impl Hub {
         let value = serde_json::from_str(text).map_err(|e| ApiError::Hub {
             status,
             code: "unreadable".into(),
-            message: format!("Could not read the hub's answer: {e}"),
+            message: format!("{} did not answer as a Stemma hub: {e}", self.base),
         })?;
         Ok((value, headers))
     }
@@ -157,7 +176,19 @@ impl Hub {
         };
         let (me, headers): (Me, _) = self
             .send(Method::POST, "/session", &[], Some(&body))
-            .await?;
+            .await
+            .map_err(|error| match error {
+                ApiError::Hub {
+                    status: StatusCode::UNAUTHORIZED,
+                    ref code,
+                    ..
+                } if code == "wrong_credentials" => ApiError::Hub {
+                    status: StatusCode::UNAUTHORIZED,
+                    code: "invalid_credentials".into(),
+                    message: "That username and password don't match.".into(),
+                },
+                other => other,
+            })?;
         self.cookie = headers
             .get_all(reqwest::header::SET_COOKIE)
             .iter()

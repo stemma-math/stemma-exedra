@@ -55,10 +55,7 @@ pub async fn password(
     group: Option<String>,
 ) -> anyhow::Result<Credentials> {
     let mut client = Hub::new(&normalize_url(hub)?, None)?;
-    client
-        .sign_in(username, password)
-        .await
-        .context("signing in")?;
+    client.sign_in(username, password).await?;
     let created = client.create_token(device).await?;
     let _ = client.sign_out().await;
     save(hub, created.secret, Some(created.token.id), group).await

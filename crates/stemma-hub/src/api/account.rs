@@ -136,7 +136,7 @@ pub async fn sign_in(
         return Err(ApiError::new(
             StatusCode::UNAUTHORIZED,
             "wrong_credentials",
-            "Wrong username or password",
+            "That username and password don't match.",
         ));
     };
     let cookie = auth::start_session(&state, user_id).await?;
