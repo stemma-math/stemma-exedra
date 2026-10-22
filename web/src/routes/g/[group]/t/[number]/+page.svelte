@@ -178,7 +178,7 @@
       const contents = goesWith(await api.threadContents(group.slug, number));
       const yes = await ask({
         title: `Delete “${thread.title}”?`,
-        text: `${contents ? `Its ${contents} go with it. ` : ""}This cannot be undone.`,
+        text: `${contents ? `This also deletes ${contents}. ` : ""}It cannot be undone.`,
         action: "Delete the thread",
         danger: true,
       });

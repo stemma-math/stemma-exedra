@@ -60,8 +60,8 @@
       const yes = await askFirst({
         title: `Delete “${paper.title}”?`,
         text:
-          `Its repository, builds and PDFs go${contents ? `, and its ${contents}` : ""}, here and in ` +
-          "the forge. This cannot be undone.",
+          `This also deletes its repository, builds and PDFs${contents ? `, and ${contents}` : ""}, ` +
+          "here and in the forge. It cannot be undone.",
         action: "Delete the paper",
         danger: true,
       });
