@@ -1,4 +1,5 @@
 <script lang="ts">
+  import type { StemmaTabs } from "@stemma-math/design-elements/tabs.js";
   import { scriptedSelect } from "#lib/scripted-select.ts";
   import Glyph from "#lib/components/Glyph.svelte";
   import type { MachineControls } from "../machine.svelte.ts";
@@ -7,6 +8,10 @@
   import Overview from "./Overview.svelte";
 
   let { controls }: { controls: MachineControls } = $props();
+
+  const TABS = ["Overview", "Agents", "Isolation"] as const;
+  // The tab stays when the scope changes.
+  let tab = $state<string>("Overview");
 </script>
 
 <header class="row">
@@ -55,43 +60,44 @@
 {#if controls.data?.hub_error}
   <p class="message message--warning">{controls.data.hub_error}</p>
 {/if}
-{#key controls.scope}
-  <stemma-tabs label="This machine" class="stack">
-    <div class="tabs">
-      {#each ["Overview", "Agents", "Isolation"] as tab (tab)}
-        <button
-          type="button"
-          class="tabs__tab"
-          role="tab"
-          value={tab}
-          aria-selected={tab === "Overview"}
-        >
-          {tab}
-        </button>
-      {/each}
-    </div>
-    {#each ["Overview", "Agents", "Isolation"] as tab (tab)}
-      <section data-tab={tab} class="machine-tab" aria-busy={controls.loading}>
-        {#if controls.loading}
-          <div class="stack" role="status" aria-label="Loading machine settings">
-            {#each [1, 2, 3, 4] as row (row)}
-              <div class="skeleton loading-placeholder" aria-hidden="true"></div>
-            {/each}
-          </div>
-        {:else if controls.data}
-          <div class="stack">
-            {#if tab === "Overview"}
-              <Overview {controls} data={controls.data} />
-            {:else if tab === "Agents"}
-              <Agents {controls} data={controls.data} />
-            {:else}
-              <Isolation {controls} data={controls.data} />
-            {/if}
-          </div>
-        {:else}
-          <p class="quiet">Could not read this machine’s settings. Refresh to try again.</p>
-        {/if}
-      </section>
+<stemma-tabs
+  label="This machine"
+  class="stack"
+  onchange={(event: Event) => (tab = (event.currentTarget as StemmaTabs).value)}
+>
+  <div class="tabs">
+    {#each TABS as name (name)}
+      <button type="button" class="tabs__tab" role="tab" value={name} aria-selected={name === tab}>
+        {name}
+      </button>
     {/each}
-  </stemma-tabs>
-{/key}
+  </div>
+  {#each TABS as panel (panel)}
+    <section
+      data-tab={panel}
+      hidden={panel !== tab}
+      class="machine-tab"
+      aria-busy={controls.loading}
+    >
+      {#if controls.loading}
+        <div class="stack" role="status" aria-label="Loading machine settings">
+          {#each [1, 2, 3, 4] as row (row)}
+            <div class="skeleton loading-placeholder" aria-hidden="true"></div>
+          {/each}
+        </div>
+      {:else if controls.data}
+        <div class="stack">
+          {#if panel === "Overview"}
+            <Overview {controls} data={controls.data} />
+          {:else if panel === "Agents"}
+            <Agents {controls} data={controls.data} />
+          {:else}
+            <Isolation {controls} data={controls.data} />
+          {/if}
+        </div>
+      {:else}
+        <p class="quiet">Could not read this machine’s settings. Refresh to try again.</p>
+      {/if}
+    </section>
+  {/each}
+</stemma-tabs>
