@@ -9,6 +9,7 @@
     "allow-open-external",
     "allow-login",
     "allow-action",
+    "allow-test-sign-in",
     "allow-sign-out",
     "allow-subscribe",
     "allow-unsubscribe",

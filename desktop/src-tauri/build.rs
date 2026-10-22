@@ -6,6 +6,7 @@ fn main() {
             "open_external",
             "login",
             "action",
+            "test_sign_in",
             "sign_out",
             "subscribe",
             "unsubscribe",
