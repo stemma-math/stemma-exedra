@@ -1,7 +1,8 @@
 <script lang="ts">
+  import Loading from "#lib/components/Loading.svelte";
   import { scriptedSelect } from "#lib/scripted-select.ts";
   import { ask as askFirst } from "#lib/ask.svelte.ts";
-  import { hubUrl } from "#lib/transport.svelte.ts";
+  import { hubUrl, publicUrl } from "#lib/transport.svelte.ts";
   import { goto } from "$app/navigation";
   import { page } from "$app/state";
   import { api, type Member, type PaperPage } from "#lib/api.ts";
@@ -91,7 +92,7 @@
 
   // The browser's own PDF viewer shows it; a new build's PDF is a new address.
   const pdfUrl = $derived(paper?.pdf ? `${hubUrl(paper.pdf.url)}?build=${paper.pdf.build}` : "");
-  const cloneUrl = $derived(paper ? `${location.origin}${paper.clone_path}` : "");
+  const cloneUrl = $derived(paper ? publicUrl(paper.clone_path) : "");
 
   async function addAuthor(event: SubmitEvent) {
     event.preventDefault();
@@ -299,6 +300,6 @@
     <h1>Paper not found</h1>
     <p>There is no paper <span class="identifier">p/{slug}</span> in the group.</p>
   {:else}
-    <span class="skeleton loading-placeholder" role="status" aria-label="Loading"></span>
+    <Loading label="Loading" />
   {/if}
 </main>

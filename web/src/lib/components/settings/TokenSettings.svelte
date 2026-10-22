@@ -1,4 +1,5 @@
 <script lang="ts">
+  import Loading from "#lib/components/Loading.svelte";
   import { ask } from "#lib/ask.svelte.ts";
   import { api, type ApiToken, type CreatedToken, RUNNER_NAMES } from "#lib/api.ts";
   import { exactly, when } from "#lib/format.ts";
@@ -84,7 +85,7 @@
   <button type="submit" class="button" disabled={creating}>{#if creating}<span class="spinner" aria-hidden="true"></span>{/if}New token</button>
 </form>
 
-{#if loading}<div class="skeleton loading-placeholder" role="status" aria-label="Loading devices"></div>
+{#if loading}<Loading label="Loading devices" />
 {:else if tokens.length}
   <div class="card">
     <div class="table settings-table tokens-table">

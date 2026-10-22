@@ -32,20 +32,27 @@
     return here ? "page" : undefined;
   }
 
+  /** Whether each list has arrived: until then, it is not known empty. */
+  let loaded = $state({ papers: false, chats: false, threads: false });
+
   async function loadPapers() {
     papers = await api.papers(group.slug).catch(() => []);
+    loaded.papers = true;
   }
 
   async function loadChats() {
     chats = await api.threads(group.slug, { kind: "chat", limit: RECENT }).catch(() => []);
+    loaded.chats = true;
   }
 
   async function loadThreads() {
     threads = await api.threads(group.slug, { kind: "discussion", limit: RECENT }).catch(() => []);
+    loaded.threads = true;
   }
 
   $effect(() => {
     void group.slug;
+    loaded = { papers: false, chats: false, threads: false };
     void api.library(group.slug).then((library) => { forge = library.forge?.organization ?? null; }).catch(() => { forge = null; });
     loadPapers();
     loadChats();
@@ -145,7 +152,7 @@
               </a>
             </li>
           {:else}
-            <li class="quiet sidebar__empty">No papers yet.</li>
+            {#if loaded.papers}<li class="quiet sidebar__empty">No papers yet.</li>{/if}
           {/each}
         </ul>
       </details>
@@ -168,7 +175,7 @@
               <span class="nav-item__label">{thread.title}</span>
             </a></li>
           {:else}
-            <li class="quiet sidebar__empty">No threads yet.</li>
+            {#if loaded.threads}<li class="quiet sidebar__empty">No threads yet.</li>{/if}
           {/each}
         </ul>
       </details>
@@ -195,7 +202,7 @@
               </a>
             </li>
           {:else}
-            <li class="quiet sidebar__empty">No chats yet.</li>
+            {#if loaded.chats}<li class="quiet sidebar__empty">No chats yet.</li>{/if}
           {/each}
         </ul>
       </details>

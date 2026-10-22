@@ -122,7 +122,12 @@
               <span class="chip chip--small chip--info chip--live"
                 ><span class="chip__dot" aria-hidden="true"></span>Building</span
               >
-            {:else if image?.status === "success"}
+            {:else if !image}
+              <!-- Not checked yet, as just after choosing a container: no state to say. -->
+              {#if controls.checking}
+                <span class="spinner" role="status" aria-label="Checking the image"></span>
+              {/if}
+            {:else if image.status === "success"}
               <span class="chip chip--small chip--success">{ownImage ? "Ready" : "Built"}</span>
             {:else}
               <span class="chip chip--small chip--warning"

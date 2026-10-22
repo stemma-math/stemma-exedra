@@ -1,4 +1,5 @@
 <script lang="ts">
+  import Loading from "#lib/components/Loading.svelte";
   import { scriptedSelect } from "#lib/scripted-select.ts";
   import { goto } from "$app/navigation";
   import { page } from "$app/state";
@@ -210,7 +211,7 @@
       {#if error}
         <p class="message message--warning"><span class="message__text">{error}</span></p>
       {:else if hits === null}
-        <span class="skeleton loading-placeholder" role="status" aria-label="Searching"></span>
+        <Loading label="Searching" />
       {:else if hits.length === 0}
         <div class="card card--empty card__body"><p class="empty">Nothing found.</p></div>
       {:else}
@@ -243,7 +244,7 @@
     <section class="stack">
       <h2 class="label">Latest threads</h2>
       {#if threads === null}
-        <span class="skeleton loading-placeholder" role="status" aria-label="Loading"></span>
+        <Loading label="Loading" />
       {:else if threads.length === 0}
         <div class="card card--empty card__body">
           <p class="empty">

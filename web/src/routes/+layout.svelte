@@ -52,7 +52,7 @@
     {#if !session.me && isPublic}<PublicFrame>{@render children()}</PublicFrame>{:else}{@render children()}{/if}
   {:else}
     <div class="page page--centered" aria-busy="true">
-      <span class="skeleton loading-placeholder" role="status" aria-label="Loading"></span>
+      <stemma-mark class="startup-mark" role="status" aria-label="Loading Stemma"></stemma-mark>
     </div>
   {/if}
 

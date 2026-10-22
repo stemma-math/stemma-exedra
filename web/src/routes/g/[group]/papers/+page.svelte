@@ -1,4 +1,5 @@
 <script lang="ts">
+  import Loading from "#lib/components/Loading.svelte";
   import { api, type Paper } from "#lib/api.ts";
   import Glyph from "#lib/components/Glyph.svelte";
   import PaperList from "#lib/components/PaperList.svelte";
@@ -40,7 +41,7 @@
     {/if}
   </div>
   {#if papers === null}
-    <span class="skeleton loading-placeholder" role="status" aria-label="Loading"></span>
+    <Loading label="Loading" />
   {:else if papers.length === 0}
     <div class="card card--empty card__body">
       <p class="empty">No papers yet: a working paper is the readable account of what the group is doing, in LaTeX.</p>

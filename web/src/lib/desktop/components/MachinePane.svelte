@@ -1,4 +1,5 @@
 <script lang="ts">
+  import Loading from "#lib/components/Loading.svelte";
   import type { StemmaTabs } from "@stemma-math/design-elements/tabs.js";
   import { scriptedSelect } from "#lib/scripted-select.ts";
   import Glyph from "#lib/components/Glyph.svelte";
@@ -80,11 +81,7 @@
       aria-busy={controls.loading}
     >
       {#if controls.loading}
-        <div class="stack" role="status" aria-label="Loading machine settings">
-          {#each [1, 2, 3, 4] as row (row)}
-            <div class="skeleton loading-placeholder" aria-hidden="true"></div>
-          {/each}
-        </div>
+        <Loading label="Loading machine settings" lines={4} />
       {:else if controls.data}
         <div class="stack">
           {#if panel === "Overview"}

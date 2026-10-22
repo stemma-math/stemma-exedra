@@ -1,4 +1,5 @@
 <script lang="ts">
+  import Loading from "#lib/components/Loading.svelte";
   import { api, type Build } from "#lib/api.ts";
   import BuildChip from "#lib/components/BuildChip.svelte";
   import { listen } from "#lib/events.ts";
@@ -43,7 +44,7 @@
     state is its last build that passed.
   </p>
   {#if builds === null}
-    <span class="skeleton loading-placeholder" role="status" aria-label="Loading"></span>
+    <Loading label="Loading" />
   {:else if builds.length === 0}
     <div class="card card--empty card__body"><p class="empty">No builds yet.</p></div>
   {:else}

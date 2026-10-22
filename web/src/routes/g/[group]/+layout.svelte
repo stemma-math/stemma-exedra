@@ -115,5 +115,5 @@
     </div>
   </div>
 {:else}
-  <div class="page page--centered"><span class="skeleton loading-placeholder" role="status" aria-label="Loading"></span></div>
+  <div class="page page--centered" aria-busy="true"><stemma-mark class="startup-mark" role="status" aria-label="Loading Stemma"></stemma-mark></div>
 {/if}

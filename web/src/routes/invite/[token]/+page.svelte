@@ -1,4 +1,5 @@
 <script lang="ts">
+  import Loading from "#lib/components/Loading.svelte";
   import { goto } from "$app/navigation";
   import { page } from "$app/state";
   import { api, type InvitationInfo } from "#lib/api.ts";
@@ -66,7 +67,7 @@
         {/if}
       </form>
     {:else}
-      <span class="skeleton loading-placeholder" role="status" aria-label="Loading"></span>
+      <Loading label="Loading" />
     {/if}
   </div>
 </main>

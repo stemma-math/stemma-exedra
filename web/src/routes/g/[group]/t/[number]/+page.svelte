@@ -1,4 +1,5 @@
 <script lang="ts">
+  import Loading from "#lib/components/Loading.svelte";
   import { goto } from "$app/navigation";
   import { page } from "$app/state";
   import { tick } from "svelte";
@@ -298,7 +299,7 @@
       {agents}
     />
   {:else}
-    <span class="skeleton loading-placeholder" role="status" aria-label="Loading"></span>
+    <Loading label="Loading" />
   {/if}
 </main>
 {/if}

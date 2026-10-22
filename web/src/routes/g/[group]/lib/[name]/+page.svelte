@@ -1,4 +1,5 @@
 <script lang="ts">
+  import Loading from "#lib/components/Loading.svelte";
   import DottedName from "#lib/components/DottedName.svelte";
   import { page } from "$app/state";
   import { addressPath, parseAddress } from "#lib/address.ts";
@@ -146,6 +147,6 @@
       {/each}
     </section>
   {:else}
-    <span class="skeleton loading-placeholder" role="status" aria-label="Loading"></span>
+    <Loading label="Loading" />
   {/if}
 </main>

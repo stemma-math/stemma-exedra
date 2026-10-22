@@ -1,4 +1,5 @@
 <script lang="ts">
+  import Loading from "#lib/components/Loading.svelte";
   import { page } from "$app/state";
   import { api, type BuildLog } from "#lib/api.ts";
   import BuildChip from "#lib/components/BuildChip.svelte";
@@ -61,6 +62,6 @@
       <p class="empty">Nothing written yet.</p>
     {/if}
   {:else}
-    <span class="skeleton loading-placeholder" role="status" aria-label="Loading"></span>
+    <Loading label="Loading" />
   {/if}
 </main>

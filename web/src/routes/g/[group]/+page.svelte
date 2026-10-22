@@ -1,4 +1,5 @@
 <script lang="ts">
+  import Loading from "#lib/components/Loading.svelte";
   import { api, type Paper, type Thread } from "#lib/api.ts";
   import Glyph from "#lib/components/Glyph.svelte";
   import PaperList from "#lib/components/PaperList.svelte";
@@ -62,7 +63,7 @@
       {/if}
     </div>
     {#if papers === null}
-      <span class="skeleton loading-placeholder" role="status" aria-label="Loading"></span>
+      <Loading label="Loading" />
     {:else if papers.length === 0}
       <div class="card card--empty card__body">
         <p class="empty">
@@ -81,7 +82,7 @@
         <a class="button button--quiet button--small" href="/g/{group.slug}/forum">The forum</a>
       </div>
       {#if threads === null}
-        <span class="skeleton loading-placeholder" role="status" aria-label="Loading"></span>
+        <Loading label="Loading" />
       {:else if threads.length === 0}
         <div class="card card--empty card__body">
           <p class="empty">
@@ -100,7 +101,7 @@
         <a class="button button--quiet button--small" href="/g/{group.slug}/chats">Every chat</a>
       </div>
       {#if chats === null}
-        <span class="skeleton loading-placeholder" role="status" aria-label="Loading"></span>
+        <Loading label="Loading" />
       {:else if chats.length === 0}
         <div class="card card--empty card__body">
           <p class="empty">

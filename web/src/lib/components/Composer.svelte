@@ -188,7 +188,7 @@
     <ul class="row plain-list" aria-label="Files">
       {#each uploads as upload (upload.key)}
         <li class="chip chip--outline">
-          {#if !upload.attachment}<span class="skeleton loading-placeholder" role="status" aria-label="Uploading"></span>{/if}
+          {#if !upload.attachment}<span class="skeleton upload-placeholder" role="status" aria-label="Uploading"></span>{/if}
           <span class="identifier">{upload.name}</span>
           <span class="quiet numeric">{fileSize(upload.size)}</span>
           <button
