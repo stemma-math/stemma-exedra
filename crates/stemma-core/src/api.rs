@@ -117,10 +117,58 @@ pub struct CreateToken {
     pub expires_in_minutes: Option<u32>,
 }
 
+/// Whose attachments an agent may download, fixed when its token is made.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum AttachmentRule {
+    None,
+    #[default]
+    Mine,
+    Group,
+}
+impl AttachmentRule {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::None => "none",
+            Self::Mine => "mine",
+            Self::Group => "group",
+        }
+    }
+    pub fn allows(self, owner: i64, author: i64) -> bool {
+        match self {
+            Self::None => false,
+            Self::Mine => owner == author,
+            Self::Group => true,
+        }
+    }
+    pub fn refusal(self) -> &'static str {
+        match self {
+            Self::None => {
+                "Not allowed to read this file: your settings do not let agents read anyone's attachments (`agents.attachments`)."
+            }
+            _ => {
+                "Not allowed to read this file: your settings let agents read only your own attachments (`agents.attachments`)."
+            }
+        }
+    }
+}
+impl std::str::FromStr for AttachmentRule {
+    type Err = &'static str;
+    fn from_str(value: &str) -> Result<Self, Self::Err> {
+        match value {
+            "none" => Ok(Self::None),
+            "mine" => Ok(Self::Mine),
+            "group" => Ok(Self::Group),
+            _ => Err("attachments must be none, mine or group"),
+        }
+    }
+}
+
 /// A token for a session with one of the person's agents, in one group:
 /// it reads the group, and posts and opens threads there as the agent.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct CreateAgentToken {
+    pub attachments: AttachmentRule,
     pub group: String,
     /// One of [`runners::ALL`]: whose agent the session is with.
     pub runner: String,
@@ -415,6 +463,7 @@ pub struct ThreadPage {
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Attachment {
+    pub author: User,
     pub id: i64,
     pub name: String,
     pub content_type: String,

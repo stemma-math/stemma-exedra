@@ -296,6 +296,7 @@ async fn mcp_serves_the_tools_and_names_the_agent() {
             "library_search",
             "list_papers",
             "read_paper",
+            "download_attachment",
         ]
     );
 
@@ -333,4 +334,135 @@ async fn mcp_serves_the_tools_and_names_the_agent() {
             .all(|t| t.name != "post_message" && t.name != "create_task")
     );
     client.cancel().await.unwrap();
+}
+
+#[tokio::test]
+async fn attachments_return_text_images_or_a_saved_file_and_explain_refusals() {
+    let (url, token, _data) = hub_with_ada().await;
+    raw_post(
+        &url,
+        &token,
+        "/groups",
+        json!({"slug": "geometry", "name": "Geometry"}),
+    )
+    .await;
+    let mut ids = Vec::new();
+    for (name, content_type, bytes) in [
+        (
+            "notes.tex",
+            "application/x-tex",
+            b"A proof of the lemma.".to_vec(),
+        ),
+        ("board.png", "image/png", b"\x89PNG\r\n\x1a\n".to_vec()),
+        ("archive.bin", "application/octet-stream", vec![1, 2, 3]),
+        ("large.txt", "text/plain", vec![b'x'; 65 * 1024]),
+    ] {
+        let mut body = format!("--test-boundary\r\nContent-Disposition: form-data; name=\"file\"; filename=\"{name}\"\r\nContent-Type: {content_type}\r\n\r\n").into_bytes();
+        body.extend_from_slice(&bytes);
+        body.extend_from_slice(b"\r\n--test-boundary--\r\n");
+        let uploaded: Value = reqwest::Client::new()
+            .post(format!("{url}/api/v1/groups/geometry/attachments"))
+            .bearer_auth(&token)
+            .header(
+                "content-type",
+                "multipart/form-data; boundary=test-boundary",
+            )
+            .body(body)
+            .send()
+            .await
+            .unwrap()
+            .json()
+            .await
+            .unwrap();
+        ids.push(uploaded["id"].as_i64().expect("uploaded attachment"));
+    }
+    raw_post(
+        &url,
+        &token,
+        "/groups/geometry/threads",
+        json!({"title": "Files", "body": "Read these", "attachments": ids}),
+    )
+    .await;
+    let files = tempfile::tempdir().unwrap();
+    let hub = Hub::new(&url, Some(token)).unwrap();
+    let session = hub
+        .create_agent_token(
+            "geometry",
+            "claude-code",
+            "test",
+            stemma_core::api::AttachmentRule::Mine,
+        )
+        .await
+        .unwrap();
+    let tools = Toolbox::new(
+        Hub::new(&url, Some(session.secret)).unwrap(),
+        Some("geometry".into()),
+    )
+    .read_only(true)
+    .attachment_dir(files.path().into());
+    let read = tools
+        .call("read_thread", json!({"address": "t1"}), None)
+        .await
+        .unwrap();
+    assert!(
+        read.contains(&format!("Attachment {}:", ids[0]))
+            && read.contains("notes.tex")
+            && read.contains("application/x-tex")
+            && read.contains("21 bytes")
+            && read.contains("Ada (@ada)"),
+        "{read}"
+    );
+    let text = tools
+        .call_content("download_attachment", json!({"attachment": ids[0]}), None)
+        .await
+        .unwrap();
+    assert!(
+        text[0]
+            .as_text()
+            .unwrap()
+            .text
+            .contains("A proof of the lemma.")
+    );
+    let image = tools
+        .call_content("download_attachment", json!({"attachment": ids[1]}), None)
+        .await
+        .unwrap();
+    let image = image[0].as_image().unwrap();
+    assert_eq!(image.mime_type, "image/png");
+    assert_eq!(image.data, "iVBORw0KGgo=");
+    for (id, expected) in [(ids[2], vec![1, 2, 3]), (ids[3], vec![b'x'; 65 * 1024])] {
+        let result = tools
+            .call_content("download_attachment", json!({"attachment": id}), None)
+            .await
+            .unwrap();
+        let text = &result[0].as_text().unwrap().text;
+        let path = std::path::Path::new(text.split(" to ").nth(1).unwrap());
+        assert!(path.starts_with(files.path()));
+        assert_eq!(std::fs::read(path).unwrap(), expected);
+    }
+    // Inline content leaves no files; only the two saved attachments remain.
+    assert_eq!(std::fs::read_dir(files.path()).unwrap().count(), 2);
+    let session = hub
+        .create_agent_token(
+            "geometry",
+            "claude-code",
+            "test",
+            stemma_core::api::AttachmentRule::None,
+        )
+        .await
+        .unwrap();
+    let tools = Toolbox::new(
+        Hub::new(&url, Some(session.secret)).unwrap(),
+        Some("geometry".into()),
+    )
+    .attachment_dir(files.path().into());
+    let error = tools
+        .call_content("download_attachment", json!({"attachment": ids[0]}), None)
+        .await
+        .unwrap_err();
+    assert_eq!(
+        error.to_string(),
+        stemma_core::api::AttachmentRule::None.refusal()
+    );
+    assert_eq!(std::fs::read_dir(files.path()).unwrap().count(), 2);
 }

@@ -50,6 +50,7 @@ pub enum Scope {
 pub struct AgentScope {
     /// The token's own id, which its job records.
     pub token_id: i64,
+    pub attachments: stemma_core::api::AttachmentRule,
     pub group_id: i64,
     /// The thread it may post in, if it may post.
     pub thread_id: Option<i64>,
@@ -126,6 +127,7 @@ struct TokenRow {
     thread_id: Option<i64>,
     agent: Option<String>,
     can_post: bool,
+    attachments: String,
 }
 
 impl FromRequestParts<AppState> for Viewer {
@@ -156,7 +158,7 @@ async fn authenticate(headers: &HeaderMap, state: &AppState) -> Result<Option<Vi
         let hash = secret::token_hash(&token);
         let row = sqlx::query_as::<_, TokenRow>(
             "SELECT u.id, u.username, u.display_name, u.hub_admin, t.id AS token_id,
-                    t.kind, t.group_id, t.thread_id, t.agent, t.can_post
+                    t.kind, t.group_id, t.thread_id, t.agent, t.can_post, t.attachments
              FROM api_tokens t JOIN users u ON u.id = t.user_id
              WHERE t.token_hash = ? AND t.revoked_at IS NULL
                AND (t.expires_at IS NULL OR t.expires_at > ?)",
@@ -185,6 +187,7 @@ async fn authenticate(headers: &HeaderMap, state: &AppState) -> Result<Option<Vi
         let scope = match (row.kind.as_str(), row.group_id) {
             (kind @ ("job" | "agent"), Some(group_id)) => Scope::Agent(AgentScope {
                 token_id: row.token_id,
+                attachments: row.attachments.parse().map_err(ApiError::internal)?,
                 group_id,
                 thread_id: row.thread_id,
                 agent: row.agent.unwrap_or_else(|| "Agent".into()),
@@ -252,13 +255,14 @@ pub async fn create_job_token(
     group_id: i64,
     agent: &str,
     expires_at: i64,
+    attachments: stemma_core::api::AttachmentRule,
 ) -> Result<(i64, String), ApiError> {
     let secret = secret::token(JOB_TOKEN_PREFIX);
     let prefix: String = secret.chars().take(JOB_TOKEN_PREFIX.len() + 6).collect();
     let id = sqlx::query(
         "INSERT INTO api_tokens (user_id, name, token_hash, prefix, created_at, kind, group_id,
-                                 agent, can_post, expires_at)
-         VALUES (?, ?, ?, ?, ?, 'job', ?, ?, 0, ?)",
+                                 agent, can_post, expires_at, attachments)
+         VALUES (?, ?, ?, ?, ?, 'job', ?, ?, 0, ?, ?)",
     )
     .bind(user_id)
     .bind(format!("{agent}, for a job"))
@@ -268,6 +272,7 @@ pub async fn create_job_token(
     .bind(group_id)
     .bind(agent)
     .bind(expires_at)
+    .bind(attachments.as_str())
     .execute(db)
     .await?
     .last_insert_rowid();
@@ -286,6 +291,7 @@ pub async fn create_agent_token(
     group_id: i64,
     agent: &str,
     name: &str,
+    attachments: stemma_core::api::AttachmentRule,
 ) -> Result<(i64, String, i64), ApiError> {
     let secret = secret::token(API_TOKEN_PREFIX);
     let prefix: String = secret.chars().take(API_TOKEN_PREFIX.len() + 6).collect();
@@ -293,8 +299,8 @@ pub async fn create_agent_token(
     let expires_at = now + AGENT_TOKEN_MILLIS;
     let id = sqlx::query(
         "INSERT INTO api_tokens (user_id, name, token_hash, prefix, created_at, kind, group_id,
-                                 agent, can_post, expires_at)
-         VALUES (?, ?, ?, ?, ?, 'agent', ?, ?, 1, ?)",
+                                 agent, can_post, expires_at, attachments)
+         VALUES (?, ?, ?, ?, ?, 'agent', ?, ?, 1, ?, ?)",
     )
     .bind(user_id)
     .bind(name)
@@ -304,6 +310,7 @@ pub async fn create_agent_token(
     .bind(group_id)
     .bind(agent)
     .bind(expires_at)
+    .bind(attachments.as_str())
     .execute(db)
     .await?
     .last_insert_rowid();

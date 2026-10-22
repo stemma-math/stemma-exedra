@@ -56,6 +56,7 @@ pub fn mcp_args(
     job: &JobSpec,
     agent: &AgentProfile,
     dir: &JobDir,
+    work_dir: &std::path::Path,
 ) -> Vec<String> {
     let args: Vec<String> = vec![
         "mcp".into(),
@@ -65,6 +66,16 @@ pub fn mcp_args(
         job.group.slug.clone(),
         "--token-file".into(),
         sandbox.path(&dir.token_file).display().to_string(),
+        "--attachment-dir".into(),
+        if sandbox.isolation().contained() {
+            sandbox
+                .path(work_dir)
+                .join("attachments")
+                .display()
+                .to_string()
+        } else {
+            dir.path.join("attachments").display().to_string()
+        },
         "--agent".into(),
         agent.display_name.clone(),
         "--read-only".into(),
@@ -89,7 +100,7 @@ pub fn prepared(
     let contained = sandbox.isolation().contained();
     let mcp = Mcp {
         command: sandbox.stemma(),
-        args: mcp_args(sandbox, job, agent, dir),
+        args: mcp_args(sandbox, job, agent, dir, work.dir),
     };
     let args = config.args.clone();
     // The machine's own program for it is not the container's.

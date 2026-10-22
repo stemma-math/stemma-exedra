@@ -1018,6 +1018,7 @@ async fn agent_tokens_reach_only_what_their_tools_offer() {
         group_id,
         "Claude",
         stemma_hub::db::now() + 60_000,
+        Default::default(),
     )
     .await
     .unwrap();
@@ -1030,7 +1031,7 @@ async fn agent_tokens_reach_only_what_their_tools_offer() {
         .post(
             &device,
             "/me/agent-tokens",
-            json!({"group": "geometry", "runner": "claude-code", "host": "laptop"}),
+            json!({"group": "geometry", "runner": "claude-code", "host": "laptop", "attachments": "mine"}),
         )
         .await;
     assert_eq!(reply.status, StatusCode::CREATED, "{:?}", reply.json());
@@ -1043,8 +1044,8 @@ async fn agent_tokens_reach_only_what_their_tools_offer() {
     let session_id = reply.json()["id"].as_i64().unwrap();
     // Not for a group one is not in, nor for a runner there is not.
     for body in [
-        json!({"group": "topology", "runner": "claude-code", "host": "laptop"}),
-        json!({"group": "geometry", "runner": "api", "host": "laptop"}),
+        json!({"group": "topology", "runner": "claude-code", "host": "laptop", "attachments": "mine"}),
+        json!({"group": "geometry", "runner": "api", "host": "laptop", "attachments": "mine"}),
     ] {
         let reply = hub.post(&device, "/me/agent-tokens", body).await;
         assert!(reply.status.is_client_error(), "{:?}", reply.json());
@@ -1199,7 +1200,9 @@ async fn agent_tokens_reach_only_what_their_tools_offer() {
         (
             Method::POST,
             "/me/agent-tokens".into(),
-            Some(json!({"group": "geometry", "runner": "codex", "host": "x"})),
+            Some(
+                json!({"group": "geometry", "runner": "codex", "host": "x", "attachments": "mine"}),
+            ),
             S::FORBIDDEN,
             S::FORBIDDEN,
         ),
@@ -2050,6 +2053,7 @@ async fn computer(
             owner_id: owner,
             runners: vec!["claude-code".into(), "codex".into()],
             agents: stemma_core::protocol::GroupAgents {
+                attachments: Default::default(),
                 enabled: true,
                 priority,
                 concurrency: None,
@@ -2159,6 +2163,7 @@ async fn personal_tokens_route_by_group_priority_capacity_and_connection_time() 
         runners: vec!["claude-code".into()],
         concurrency: 1,
         agents: stemma_core::protocol::GroupAgents {
+            attachments: Default::default(),
             enabled: true,
             priority: 0,
             concurrency: None,
@@ -2167,6 +2172,7 @@ async fn personal_tokens_route_by_group_priority_capacity_and_connection_time() 
         groups: std::collections::BTreeMap::from([(
             "geometry".into(),
             stemma_core::protocol::GroupAgents {
+                attachments: Default::default(),
                 enabled: false,
                 priority: 99,
                 concurrency: None,
@@ -2514,4 +2520,136 @@ async fn hub_admins_manage_people_and_always_keep_one_admin() {
         hub.get(demoted, "/hub/people").await.status,
         StatusCode::FORBIDDEN
     );
+}
+
+#[tokio::test]
+async fn session_and_dispatched_job_tokens_enforce_attachment_rules() {
+    use stemma_core::api::AttachmentRule;
+    use stemma_core::protocol::{GroupAgents, Hello, Outcome, PROTOCOL_VERSION};
+    let hub = TestHub::new().await;
+    let ada = hub.admin_with_group().await;
+    let bob = hub.member(&ada, "bob").await;
+    let own = upload(&hub, &ada, "own.txt", "text/plain", b"Ada's file")
+        .await
+        .json();
+    let other = upload(&hub, &bob, "other.txt", "text/plain", b"Bob's file")
+        .await
+        .json();
+    hub.post(
+        &ada,
+        "/groups/geometry/threads",
+        json!({"title": "Files", "body": "Mine", "attachments": [own["id"]]}),
+    )
+    .await;
+    hub.post(
+        &bob,
+        "/groups/geometry/threads/1/messages",
+        json!({"body": "Other", "attachments": [other["id"]]}),
+    )
+    .await;
+    let messages = hub.get(&ada, "/groups/geometry/threads/1").await.json();
+    assert_eq!(
+        messages["messages"][0]["attachments"][0]["author"]["username"],
+        "ada"
+    );
+    assert_eq!(
+        messages["messages"][1]["attachments"][0]["author"]["username"],
+        "bob"
+    );
+    let device = with_token(&hub, &ada).await;
+    let (computer, mut jobs) = computer(&hub, &ada, "Attachments test", 1, 0).await;
+    for rule in [
+        AttachmentRule::None,
+        AttachmentRule::Mine,
+        AttachmentRule::Group,
+    ] {
+        let created = hub.post(&device, "/me/agent-tokens", json!({"group": "geometry", "runner": "claude-code", "host": "test", "attachments": rule})).await;
+        assert_eq!(created.status, StatusCode::CREATED, "{:?}", created.json());
+        let session = Client {
+            cookie: None,
+            token: Some(created.json()["secret"].as_str().unwrap().into()),
+        };
+        // General and group rules deliberately differ. The dispatched job
+        // must carry the rule the computer announced for this group.
+        let scope = |attachments| GroupAgents {
+            attachments,
+            enabled: true,
+            priority: 0,
+            concurrency: None,
+            runners: None,
+        };
+        stemma_hub::jobs::hello(
+            &hub.state,
+            computer,
+            1,
+            Hello {
+                protocol: PROTOCOL_VERSION,
+                version: "test".into(),
+                runners: vec!["claude-code".into()],
+                concurrency: 1,
+                agents: scope(if rule == AttachmentRule::None {
+                    AttachmentRule::Group
+                } else {
+                    AttachmentRule::None
+                }),
+                groups: [("geometry".into(), scope(rule))].into(),
+            },
+        )
+        .await
+        .unwrap();
+        hub.post(
+            &ada,
+            "/groups/geometry/threads/1/messages",
+            json!({"body": "@claude read these files"}),
+        )
+        .await;
+        let job = dispatched(&mut jobs).expect("job dispatched with group's rule");
+        let agent = Client {
+            cookie: None,
+            token: Some(job.token.clone()),
+        };
+        for (who, client) in [("session", &session), ("job", &agent)] {
+            for (file, allowed) in [
+                (&own, rule != AttachmentRule::None),
+                (&other, rule == AttachmentRule::Group),
+            ] {
+                let result = hub.fetch(client, file["url"].as_str().unwrap()).await;
+                assert_eq!(
+                    result.status,
+                    if allowed {
+                        StatusCode::OK
+                    } else {
+                        StatusCode::FORBIDDEN
+                    },
+                    "{who}, {rule:?}, {}",
+                    file["name"]
+                );
+                if !allowed {
+                    assert_eq!(result.json()["error"]["message"], rule.refusal());
+                }
+            }
+        }
+        stemma_hub::jobs::finished(
+            &hub.state,
+            computer,
+            1,
+            job.id,
+            Outcome::Answer {
+                body: "Checked.".into(),
+            },
+            Default::default(),
+        )
+        .await
+        .unwrap();
+    }
+    for full in [&ada, &device, &bob] {
+        for file in [&own, &other] {
+            assert_eq!(
+                hub.fetch(full, file["url"].as_str().unwrap()).await.status,
+                StatusCode::OK
+            );
+        }
+    }
+    let invalid = hub.post(&device, "/me/agent-tokens", json!({"group": "geometry", "runner": "claude-code", "host": "test", "attachments": "all"})).await;
+    assert_eq!(invalid.status, StatusCode::BAD_REQUEST);
 }

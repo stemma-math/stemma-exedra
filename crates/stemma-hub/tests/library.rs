@@ -239,6 +239,7 @@ async fn libraries_are_made_cloned_and_pushed_without_building() {
         group_id,
         "Lean",
         stemma_hub::db::now() + 60_000,
+        Default::default(),
     )
     .await
     .unwrap();
@@ -259,6 +260,7 @@ async fn libraries_are_made_cloned_and_pushed_without_building() {
         group_id,
         "Claude",
         "a session",
+        Default::default(),
     )
     .await
     .unwrap();

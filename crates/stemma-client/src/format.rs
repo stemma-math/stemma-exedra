@@ -58,8 +58,14 @@ pub fn message(thread: u32, message: &Message) -> String {
         for file in &message.attachments {
             let _ = writeln!(
                 out,
-                "- t{thread}#{}/{} ({}, {} bytes)",
-                message.number, file.name, file.content_type, file.size
+                "- Attachment {}: t{thread}#{}/{} ({}, {} bytes), by {} (@{})",
+                file.id,
+                message.number,
+                file.name,
+                file.content_type,
+                file.size,
+                file.author.display_name,
+                file.author.username
             );
         }
     }

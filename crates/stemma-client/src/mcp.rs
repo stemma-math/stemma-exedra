@@ -109,8 +109,12 @@ impl ServerHandler for StemmaServer {
             None => agent_name(context.client_info().as_ref()),
         };
         let args = request.arguments.map(Value::Object).unwrap_or(Value::Null);
-        let result = match self.toolbox.call(&request.name, args, Some(&agent)).await {
-            Ok(text) => CallToolResult::success(vec![ContentBlock::text(text)]),
+        let result = match self
+            .toolbox
+            .call_content(&request.name, args, Some(&agent))
+            .await
+        {
+            Ok(content) => CallToolResult::success(content),
             Err(error) => CallToolResult::error(vec![ContentBlock::text(error.to_string())]),
         };
         Ok(result.into())

@@ -27,3 +27,9 @@ How to answer:
 {workspace}
 - Do not post anything yourself: the text you end with is your answer, and
   it is posted for you. Write only the answer.
+
+Read needed attachments with `download_attachment`, using the group and the
+attachment id listed by the reading tools. Small text and images come back
+inline; other files come back with a path you can open. If your person's
+`agents.attachments` setting prevents reading a file you needed, say so in
+your answer and explain what you could not check.

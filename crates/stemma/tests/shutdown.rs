@@ -107,6 +107,7 @@ async fn signals_drain_streams_and_machines_and_exit_successfully() {
                     version: env!("CARGO_PKG_VERSION").into(),
                     runners: vec![],
                     agents: stemma_core::protocol::GroupAgents {
+                        attachments: Default::default(),
                         enabled: true,
                         priority: 0,
                         concurrency: None,

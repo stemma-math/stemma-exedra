@@ -68,6 +68,35 @@ impl Hub {
         })
     }
 
+    /// Download an attachment by the id shown by the reading tools. The hub
+    /// checks both group membership and the token's attachment rule.
+    pub async fn download_attachment(&self, group: &str, id: i64) -> Result<reqwest::Response> {
+        let mut request = self.http.get(format!(
+            "{}{PREFIX}/groups/{group}/attachments/{id}/file",
+            self.base
+        ));
+        if let Some(token) = &self.token {
+            request = request.bearer_auth(token);
+        }
+        if let Some(cookie) = &self.cookie {
+            request = request.header(reqwest::header::COOKIE, cookie);
+        }
+        let response = request.send().await.map_err(|e| self.unreachable(e))?;
+        let status = response.status();
+        if !status.is_success() {
+            let body = response
+                .json::<ErrorBody>()
+                .await
+                .map_err(|e| self.unreachable(e))?;
+            return Err(ApiError::Hub {
+                status,
+                code: body.error.code,
+                message: body.error.message,
+            });
+        }
+        Ok(response)
+    }
+
     /// The hub's address, without a trailing slash.
     pub fn base(&self) -> &str {
         &self.base
@@ -221,8 +250,10 @@ impl Hub {
         group: &str,
         runner: &str,
         host: &str,
+        attachments: stemma_core::api::AttachmentRule,
     ) -> Result<CreatedToken> {
         let body = CreateAgentToken {
+            attachments,
             group: group.into(),
             runner: runner.into(),
             host: host.into(),

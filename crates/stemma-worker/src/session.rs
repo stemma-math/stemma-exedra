@@ -112,7 +112,12 @@ impl Session {
             None
         };
         let token = hub
-            .create_agent_token(&group.slug, &options.runner, &options.host)
+            .create_agent_token(
+                &group.slug,
+                &options.runner,
+                &options.host,
+                stemma_client::config::Settings::load()?.attachments(Some(&group.slug))?,
+            )
             .await
             .context("making the session's token")?;
         let token_id = token.token.id;
@@ -186,6 +191,8 @@ fn prepare(
                 group.slug.clone(),
                 "--token-file".into(),
                 token_file.display().to_string(),
+                "--attachment-dir".into(),
+                dir.join("attachments").display().to_string(),
                 "--agent".into(),
                 agent.display_name.clone(),
             ],

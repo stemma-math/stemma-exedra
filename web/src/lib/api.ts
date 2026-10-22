@@ -102,6 +102,7 @@ export interface Thread {
 }
 
 export interface Attachment {
+  author: User;
   id: number;
   name: string;
   content_type: string;

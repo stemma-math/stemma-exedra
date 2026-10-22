@@ -133,6 +133,9 @@ pub struct McpArgs {
     /// Read the token from this file, instead of the one signed in with.
     #[arg(long)]
     token_file: Option<PathBuf>,
+    /// Where downloaded attachments are saved.
+    #[arg(long)]
+    attachment_dir: Option<PathBuf>,
 }
 
 pub async fn login(args: LoginArgs) -> anyhow::Result<()> {
@@ -324,8 +327,14 @@ pub async fn mcp(args: McpArgs) -> anyhow::Result<()> {
     if let Some(path) = &args.token_file {
         config.token = Some(config::read_token_file(path)?);
     }
-    let toolbox = Toolbox::new(config.hub()?, config::active_group(args.group.group)?)
+    let mut toolbox = Toolbox::new(config.hub()?, config::active_group(args.group.group)?)
         .read_only(args.read_only);
+    if let Some(dir) = args.attachment_dir.or_else(|| {
+        args.token_file
+            .and_then(|p| p.parent().map(|p| p.join("attachments")))
+    }) {
+        toolbox = toolbox.attachment_dir(dir);
+    }
     StemmaServer::new(toolbox, args.agent).serve_stdio().await
 }
 

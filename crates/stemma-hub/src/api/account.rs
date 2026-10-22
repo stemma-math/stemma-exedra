@@ -356,6 +356,7 @@ pub async fn create_agent_token(
         group.group_id,
         &profile.display_name,
         &name,
+        body.attachments,
     )
     .await?;
     let prefix: String = secret.chars().take(API_TOKEN_PREFIX.len() + 6).collect();

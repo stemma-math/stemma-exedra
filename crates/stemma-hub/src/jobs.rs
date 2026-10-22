@@ -336,7 +336,16 @@ pub async fn dispatch(state: &AppState) -> ApiResult<()> {
             publish(state, &workers, job.id).await?;
             continue;
         };
-        match start(state, &job, worker_id).await {
+        match start(
+            state,
+            &job,
+            worker_id,
+            workers.connected[&worker_id]
+                .scope(&job.group_slug)
+                .attachments,
+        )
+        .await
+        {
             Ok(spec) => {
                 let worker = workers
                     .connected
@@ -359,7 +368,12 @@ pub async fn dispatch(state: &AppState) -> ApiResult<()> {
     }
     Ok(())
 }
-async fn start(state: &AppState, job: &JobRow, worker_id: i64) -> ApiResult<JobSpec> {
+async fn start(
+    state: &AppState,
+    job: &JobRow,
+    worker_id: i64,
+    attachments: stemma_core::api::AttachmentRule,
+) -> ApiResult<JobSpec> {
     let group = Membership::of_group(state, job.group_id).await?;
     let work = Work::Reply(Box::new(conversation(state, &group, job).await?));
     let (token_id, token) = auth::create_job_token(
@@ -368,6 +382,7 @@ async fn start(state: &AppState, job: &JobRow, worker_id: i64) -> ApiResult<JobS
         job.group_id,
         &job.profile()?.display_name,
         db::now() + JOB_TOKEN_MILLIS,
+        attachments,
     )
     .await?;
     sqlx::query("UPDATE jobs SET state = 'running', worker_id = ?, token_id = ?, attempts = attempts + 1, progress = NULL, updated_at = ? WHERE id = ? AND state = 'queued'")

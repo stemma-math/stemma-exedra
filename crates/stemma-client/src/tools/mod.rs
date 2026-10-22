@@ -6,6 +6,7 @@
 //! forum, the library, the papers. [`Toolbox`] offers
 //! them all.
 
+mod attachments;
 mod forum;
 mod library;
 mod papers;
@@ -23,6 +24,7 @@ fn all_definitions() -> Vec<ToolDef> {
     let mut tools = forum::definitions();
     tools.extend(library::definitions());
     tools.extend(papers::definitions());
+    tools.push(attachments::definition());
     tools
 }
 
@@ -72,6 +74,7 @@ pub struct Toolbox {
     /// The group to use when a call names none.
     default_group: Option<String>,
     read_only: bool,
+    attachment_dir: Option<std::path::PathBuf>,
 }
 
 impl Toolbox {
@@ -80,6 +83,7 @@ impl Toolbox {
             hub,
             default_group,
             read_only: false,
+            attachment_dir: None,
         }
     }
 
@@ -87,6 +91,26 @@ impl Toolbox {
     pub fn read_only(mut self, read_only: bool) -> Toolbox {
         self.read_only = read_only;
         self
+    }
+
+    /// Where files too large or unsuitable for inline MCP content are saved.
+    pub fn attachment_dir(mut self, path: std::path::PathBuf) -> Self {
+        self.attachment_dir = Some(path);
+        self
+    }
+
+    pub async fn call_content(
+        &self,
+        name: &str,
+        args: Value,
+        agent: Option<&str>,
+    ) -> Result<Vec<rmcp::model::ContentBlock>, ToolError> {
+        if name == "download_attachment" {
+            return attachments::download(self, args, true).await;
+        }
+        Ok(vec![rmcp::model::ContentBlock::text(
+            self.call(name, args, agent).await?,
+        )])
     }
 
     pub fn hub(&self) -> &Hub {
@@ -114,6 +138,14 @@ impl Toolbox {
         } else {
             args
         };
+        if tool.name == "download_attachment" {
+            let content = attachments::download(self, args, false).await?;
+            return Ok(content
+                .iter()
+                .filter_map(|c| c.as_text().map(|t| t.text.as_str()))
+                .collect::<Vec<_>>()
+                .join("\n"));
+        }
         if let Some(result) = forum::call(self, tool.name, args.clone(), agent).await {
             return result;
         }

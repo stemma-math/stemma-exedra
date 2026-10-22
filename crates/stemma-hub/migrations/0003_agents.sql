@@ -13,6 +13,7 @@ CREATE TABLE api_tokens (
     thread_id INTEGER REFERENCES threads (id) ON DELETE CASCADE,
     agent TEXT,
     can_post INTEGER NOT NULL DEFAULT 1,
+    attachments TEXT NOT NULL DEFAULT 'mine' CHECK (attachments IN ('none', 'mine', 'group')),
     expires_at INTEGER
 );
 

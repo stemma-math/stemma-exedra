@@ -280,6 +280,7 @@ impl Settings {
             ("concurrency", Value::Integer(1)),
             ("priority", Value::String("normal".into())),
             ("isolation", Value::String("none".into())),
+            ("attachments", Value::String("mine".into())),
             (
                 "image",
                 Value::String(format!("stemma-agents:{}", env!("CARGO_PKG_VERSION"))),
@@ -406,6 +407,31 @@ impl Settings {
             .into_iter()
             .find(|v| v.key == key)
             .with_context(|| format!("unknown key {key}"))
+    }
+
+    /// The value restored by removing this scope's override.
+    pub fn inherited(&self, key: &str, group: Option<&str>) -> anyhow::Result<Explained> {
+        let mut settings = self.clone();
+        if let Some(group) = group {
+            if let Some(values) = settings.groups.get_mut(group) {
+                values.remove(key);
+            }
+        } else {
+            settings.general.remove(key);
+        }
+        settings.get(key, group)
+    }
+
+    pub fn attachments(
+        &self,
+        group: Option<&str>,
+    ) -> anyhow::Result<stemma_core::api::AttachmentRule> {
+        self.get("agents.attachments", group)?
+            .value
+            .as_str()
+            .unwrap()
+            .parse()
+            .map_err(anyhow::Error::msg)
     }
 
     pub fn workspace(&self, group: &str) -> anyhow::Result<PathBuf> {
@@ -589,6 +615,13 @@ fn validate(key: &str, value: &Value) -> anyhow::Result<()> {
         }
     } else {
         anyhow::ensure!(value.is_str(), "{key} must be a string");
+    }
+    if key == "agents.attachments" {
+        value
+            .as_str()
+            .unwrap()
+            .parse::<stemma_core::api::AttachmentRule>()
+            .map_err(anyhow::Error::msg)?;
     }
     if key == "agents.isolation" {
         anyhow::ensure!(
@@ -817,5 +850,56 @@ mod tests {
                 0o700
             );
         }
+    }
+}
+
+#[cfg(test)]
+mod attachment_tests {
+    use super::*;
+    #[test]
+    fn attachment_rules_resolve_all_layers_and_validate_values() {
+        let temp = tempfile::tempdir().unwrap();
+        let paths = Paths {
+            config: temp.path().join("config"),
+            state: temp.path().join("state"),
+            data: temp.path().join("data"),
+        };
+        let parse =
+            |text, env| Settings::parse(paths.config.join("config.toml"), text, &paths, env);
+        use stemma_core::api::AttachmentRule as Rule;
+        assert_eq!(
+            parse("", BTreeMap::new())
+                .unwrap()
+                .attachments(None)
+                .unwrap(),
+            Rule::Mine
+        );
+        let text = "[agents]\nattachments = 'none'\n[groups.algebra.agents]\nattachments = 'group'";
+        let settings = parse(text, BTreeMap::new()).unwrap();
+        assert_eq!(settings.attachments(None).unwrap(), Rule::None);
+        assert_eq!(settings.attachments(Some("algebra")).unwrap(), Rule::Group);
+        assert_eq!(
+            settings
+                .inherited("agents.attachments", Some("algebra"))
+                .unwrap()
+                .value
+                .as_str(),
+            Some("none")
+        );
+        assert_eq!(
+            settings
+                .inherited("agents.attachments", Option::None)
+                .unwrap()
+                .value
+                .as_str(),
+            Some("mine")
+        );
+        let settings = parse(
+            text,
+            [("STEMMA_AGENTS_ATTACHMENTS".into(), "mine".into())].into(),
+        )
+        .unwrap();
+        assert_eq!(settings.attachments(Some("algebra")).unwrap(), Rule::Mine);
+        assert!(parse("[agents]\nattachments = 'all'", BTreeMap::new()).is_err());
     }
 }

@@ -299,6 +299,7 @@ async fn hello_from(settings: &stemma_client::config::Settings) -> anyhow::Resul
         |group| crate::config::WorkerConfig::resolve(settings, &paths, &credentials, group);
     let scope = |group| -> anyhow::Result<stemma_core::protocol::GroupAgents> {
         Ok(stemma_core::protocol::GroupAgents {
+            attachments: settings.attachments(group)?,
             enabled: settings
                 .get("agents.enabled", group)?
                 .value
@@ -329,6 +330,7 @@ async fn hello_from(settings: &stemma_client::config::Settings) -> anyhow::Resul
         if group.enabled != agents.enabled
             || group.priority != agents.priority
             || group.concurrency != agents.concurrency
+            || group.attachments != agents.attachments
             || group.runners.is_some()
         {
             groups.insert(slug.clone(), group);

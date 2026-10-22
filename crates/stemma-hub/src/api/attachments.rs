@@ -89,6 +89,7 @@ pub async fn upload(
         .await?
         .last_insert_rowid();
         let attachment = Attachment {
+            author: viewer.user(),
             id,
             url: url(&group.slug, id, &name),
             name,
@@ -110,15 +111,20 @@ pub async fn download(
     Path((slug, id, _name)): Path<(String, i64, String)>,
 ) -> ApiResult<Response> {
     let group = Membership::of(&state, &viewer, &slug).await?;
-    let row: Option<(String, String, i64, String)> = sqlx::query_as(
-        "SELECT name, content_type, size, storage_key FROM attachments
+    let row: Option<(String, String, i64, String, i64)> = sqlx::query_as(
+        "SELECT name, content_type, size, storage_key, uploader_id FROM attachments
          WHERE id = ? AND group_id = ? AND message_id IS NOT NULL",
     )
     .bind(id)
     .bind(group.group_id)
     .fetch_optional(&state.db)
     .await?;
-    let (name, content_type, size, key) = row.ok_or_else(|| ApiError::not_found("File"))?;
+    let (name, content_type, size, key, author) = row.ok_or_else(|| ApiError::not_found("File"))?;
+    if let Some(agent) = viewer.agent()
+        && !agent.attachments.allows(viewer.id, author)
+    {
+        return Err(ApiError::forbidden(agent.attachments.refusal()));
+    }
     let file = tokio::fs::File::open(state.config.attachments_dir().join(key))
         .await
         .map_err(|_| ApiError::not_found("File"))?;
@@ -159,6 +165,18 @@ fn shown_inline(content_type: &str) -> bool {
     content_type.starts_with("image/") || content_type == "application/pdf"
 }
 
+#[derive(sqlx::FromRow)]
+struct AttachmentRow {
+    message_id: i64,
+    id: i64,
+    name: String,
+    content_type: String,
+    size: i64,
+    user_id: i64,
+    username: String,
+    display_name: String,
+}
+
 /// The files of a thread's messages from `from` to `to`, by message id.
 pub(super) async fn attachments_of(
     state: &AppState,
@@ -167,9 +185,9 @@ pub(super) async fn attachments_of(
     from: u32,
     to: u32,
 ) -> ApiResult<HashMap<i64, Vec<Attachment>>> {
-    let rows: Vec<(i64, i64, String, String, i64)> = sqlx::query_as(
-        "SELECT a.message_id, a.id, a.name, a.content_type, a.size
-         FROM attachments a JOIN messages m ON m.id = a.message_id
+    let rows: Vec<AttachmentRow> = sqlx::query_as(
+        "SELECT a.message_id, a.id, a.name, a.content_type, a.size, u.id AS user_id, u.username, u.display_name
+         FROM attachments a JOIN messages m ON m.id = a.message_id JOIN users u ON u.id = a.uploader_id
          WHERE m.thread_id = ? AND m.number BETWEEN ? AND ?
          ORDER BY a.id",
     )
@@ -179,8 +197,23 @@ pub(super) async fn attachments_of(
     .fetch_all(&state.db)
     .await?;
     let mut by_message: HashMap<i64, Vec<Attachment>> = HashMap::new();
-    for (message_id, id, name, content_type, size) in rows {
+    for row in rows {
+        let AttachmentRow {
+            message_id,
+            id,
+            name,
+            content_type,
+            size,
+            user_id,
+            username,
+            display_name,
+        } = row;
         by_message.entry(message_id).or_default().push(Attachment {
+            author: stemma_core::api::User {
+                id: user_id,
+                username,
+                display_name,
+            },
             id,
             url: url(&group.slug, id, &name),
             name,

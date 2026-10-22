@@ -64,6 +64,7 @@ enabled = true
 concurrency = 2
 priority = "normal"
 isolation = "none"
+attachments = "mine"
 
 [agents.claude]
 model = "opus"
@@ -94,6 +95,7 @@ The keys under `[agents]` are:
 | `enabled` | `true` | Accept your reply jobs |
 | `concurrency` | `1` | Jobs at once |
 | `priority` | `"normal"` | `high` = 10, `normal` = 0, `low` = -10, or any integer |
+| `attachments` | `"mine"` | Whose files agents can read: `none`, `mine` or `group` |
 | `isolation` | `"none"` | `none`, `docker` or `podman` |
 | `image` | `"stemma-agents:<version>"` | Image used with isolation |
 | `workspace` | `<data>/groups` | Parent of each group's managed folder |
@@ -174,6 +176,27 @@ files, or reach your account, your tokens, invitations, members or the
 group's settings. **A job's token** is for one answer: it only reads the
 group, and the hub posts the answer itself. Your computer's own token, and
 any token made in Devices, never reaches an agent.
+
+### Attachments
+
+`agents.attachments` applies to both interactive sessions and answers, generally
+or under `[groups.<slug>.agents]`. `none` allows no attachments, including your
+own; `mine` (the default) allows only files you uploaded; `group` allows anyone's
+files in the group. `STEMMA_AGENTS_ATTACHMENTS` overrides both scopes.
+
+The machine gives the resolved rule to the hub when a session token is created
+or a job is dispatched. The hub fixes it on that token and checks it on every
+download. A later setting change applies to new sessions and jobs. Your browser
+and personal tokens keep their usual access.
+
+Reading tools list each message's attachments with id, name, type, size and
+author. `download_attachment` takes `group` and the numeric `attachment` id.
+It returns UTF-8 text up to 64 KiB as text, and PNG, JPEG, GIF or WebP images up
+to 1 MiB as image content. Other files and larger attachments are streamed to
+private files in the session's or job's attachment folder, or under `/stemma/scratch/<job>/attachments`
+in a container, and the tool returns their paths. The files go away with the
+session or job. Agents explain in their answer when the setting prevented them
+from reading a file they needed.
 
 ### Sessions
 

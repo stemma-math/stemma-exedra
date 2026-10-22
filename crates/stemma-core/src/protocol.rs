@@ -6,7 +6,7 @@ pub use crate::api::JobKind;
 use crate::api::{AgentProfile, Message, ThreadKind, User};
 
 /// The version of this protocol. A hub refuses workers that speak another.
-pub const PROTOCOL_VERSION: u32 = 10;
+pub const PROTOCOL_VERSION: u32 = 11;
 
 /// The path of the workers' WebSocket, under the API's prefix.
 pub const WORKER_PATH: &str = "/worker";
@@ -35,7 +35,7 @@ pub struct Hello {
     pub runners: Vec<String>,
     pub concurrency: u32,
     pub agents: GroupAgents,
-    /// Only groups whose effective enabled or priority differs from general settings.
+    /// Only groups whose effective capabilities differ from general settings.
     pub groups: std::collections::BTreeMap<String, GroupAgents>,
 }
 
@@ -189,6 +189,7 @@ pub enum ContextItem {
 /// Whether a computer runs agents in a group, and its scheduling priority there.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct GroupAgents {
+    pub attachments: crate::api::AttachmentRule,
     pub enabled: bool,
     pub priority: i64,
     #[serde(default, skip_serializing_if = "Option::is_none")]
