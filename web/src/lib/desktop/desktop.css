@@ -62,21 +62,26 @@ html[data-desktop]
 .panel {
   padding: var(--space-5);
 }
+/* The window may be smaller than the card: the entrance scrolls, and the
+ * card is centred only while it fits, so its top is never cut off. */
 .entrance {
   position: relative;
   isolation: isolate;
   display: grid;
-  place-items: center;
-  min-height: 100dvh;
+  justify-items: center;
+  height: 100dvh;
+  overflow-y: auto;
+  overscroll-behavior: none;
   padding: var(--space-12) var(--space-6);
 }
 .entrance__light {
-  position: absolute;
+  position: fixed;
   inset: 0;
   z-index: -1;
 }
 .entrance__card {
   width: min(100%, calc(var(--space-16) * 6));
+  margin-block: auto;
 }
 .entrance__card stemma-mark {
   width: var(--space-8);
