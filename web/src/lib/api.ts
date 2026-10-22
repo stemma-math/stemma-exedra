@@ -313,6 +313,14 @@ export class ApiError extends Error {
 
 const PREFIX = "/api/v1";
 
+let signedOut: (() => void) | null = null;
+
+/** Calls `then` when the hub says the browser is no longer signed in, as
+ * when its session ends. */
+export function onSignedOut(then: () => void) {
+  signedOut = then;
+}
+
 async function request<T>(method: string, path: string, body?: unknown): Promise<T> {
   let response: Response;
   try {
@@ -331,6 +339,7 @@ async function parse<T>(response: Response): Promise<T> {
   if (response.status === 204) return undefined as T;
   const data = await response.json().catch(() => null);
   if (!response.ok) {
+    if (data?.error?.code === "unauthenticated") signedOut?.();
     throw new ApiError(
       response.status,
       data?.error?.code ?? "unknown",

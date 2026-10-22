@@ -21,7 +21,9 @@ use crate::state::AppState;
 pub const SESSION_COOKIE: &str = "stemma_session";
 pub const API_TOKEN_PREFIX: &str = "stm_";
 pub const JOB_TOKEN_PREFIX: &str = "stj_";
-const SESSION_DAYS: i64 = 30;
+/// A browser session lasts a day from sign-in: an account can send work to
+/// its owner's computers. Tokens have their own lifetimes.
+const SESSION_HOURS: i64 = 24;
 
 /// The person making a request.
 #[derive(Clone, Debug)]
@@ -333,7 +335,7 @@ pub fn cookie<'a>(headers: &'a HeaderMap, name: &str) -> Option<&'a str> {
 pub async fn start_session(state: &AppState, user_id: i64) -> Result<HeaderMap, ApiError> {
     let token = secret::token("");
     let now = db::now();
-    let max_age = SESSION_DAYS * 24 * 60 * 60;
+    let max_age = SESSION_HOURS * 60 * 60;
     sqlx::query(
         "INSERT INTO sessions (token_hash, user_id, created_at, expires_at) VALUES (?, ?, ?, ?)",
     )

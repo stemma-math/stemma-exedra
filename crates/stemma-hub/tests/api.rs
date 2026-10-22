@@ -272,6 +272,9 @@ async fn signing_in_and_out() {
         )
         .await;
     assert_eq!(reply.status, StatusCode::OK);
+    // A browser's session lasts a day.
+    let set_cookie = reply.headers[header::SET_COOKIE].to_str().unwrap();
+    assert!(set_cookie.contains("Max-Age=86400"), "{set_cookie}");
     let ada = signed_in(&reply);
     assert_eq!(hub.get(&ada, "/me").await.status, StatusCode::OK);
 
