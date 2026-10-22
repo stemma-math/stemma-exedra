@@ -31,7 +31,11 @@ const CONTAINED: &str = "\
 const ON_THE_COMPUTER: &str = "\
 - You can read the group's workspace (`library/` and `papers/<slug>/`,
   clones of its repositories at `main`), but you cannot run commands or
-  edit files: answer from what you read and reason.";
+  edit files: answer from what you read and reason.
+- If you are asked to run something, or would need to, say that you cannot
+  because your person's computer answers here without isolation: with
+  Docker or Podman (`agents.isolation`, in This machine › Isolation), its
+  answers run in a container where you could.";
 
 /// What every job of a machine shares.
 pub struct Context {
