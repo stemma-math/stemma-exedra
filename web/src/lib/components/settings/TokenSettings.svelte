@@ -97,7 +97,7 @@
               <span class="identifier quiet">{token.prefix}…</span>
             </span>
             <span class="quiet" title={exactly(token.created_at)}>Created {when(token.created_at)}</span>
-            {#if token.connected}<span class="row"><span class="indicator indicator--active"><span class="indicator__dot" aria-hidden="true"></span>Agents on</span></span><span class="quiet">{token.runners.map((runner) => RUNNER_NAMES[runner] ?? runner).join(", ")}</span>{/if}
+            {#if token.connected}<span class="row"><span class="chip chip--success chip--live"><span class="chip__dot" aria-hidden="true"></span>Agents on</span></span><span class="quiet">{token.runners.map((runner) => RUNNER_NAMES[runner] ?? runner).join(", ")}</span>{/if}
             {#if token.expires_at}
               <span class="quiet">A session's, until {exactly(token.expires_at)}</span>
             {/if}
