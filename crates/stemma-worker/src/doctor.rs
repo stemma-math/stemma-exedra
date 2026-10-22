@@ -14,6 +14,7 @@ pub struct Check {
     pub name: String,
     pub status: Status,
     pub detail: String,
+    pub purpose: Option<String>,
     pub remedy: Option<String>,
 }
 fn check(name: &str, ok: bool, detail: impl Into<String>, remedy: &str) -> Check {
@@ -21,6 +22,7 @@ fn check(name: &str, ok: bool, detail: impl Into<String>, remedy: &str) -> Check
         name: name.into(),
         status: if ok { Status::Success } else { Status::Warning },
         detail: detail.into(),
+        purpose: None,
         remedy: (!ok).then(|| remedy.into()),
     }
 }
@@ -123,6 +125,7 @@ pub async fn run(group: Option<&str>) -> Vec<Check> {
             name: "Configuration".into(),
             status: Status::Danger,
             detail: format!("{error:#}"),
+            purpose: None,
             remedy: Some("Fix the named setting with stemma config edit.".into()),
         },
     });
@@ -182,14 +185,14 @@ pub async fn run(group: Option<&str>) -> Vec<Check> {
         ("lake", "checking Lean proofs"),
         ("latexmk", "checking LaTeX papers"),
     ] {
-        checks.push(
-            program(
-                &format!("{tool} – agents can use it for {purpose}"),
-                tool,
-                &format!("Install {tool} so agents can check their work."),
-            )
-            .await,
-        );
+        let mut result = program(
+            tool,
+            tool,
+            &format!("Install {tool} so agents can check their work."),
+        )
+        .await;
+        result.purpose = Some(format!("Agents can use it for {purpose}."));
+        checks.push(result);
     }
     if let Ok(settings) = &settings {
         if let Ok(value) = settings.get("agents.isolation", group)

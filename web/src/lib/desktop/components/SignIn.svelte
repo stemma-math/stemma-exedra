@@ -18,7 +18,7 @@
       async () => {
         try {
           await login(controls.url, controls.username, controls.password);
-          await controls.load();
+          await controls.load(false);
           const run = await ask({
             title: "Run your agents on this computer?",
             text: "Your agents answer for you using your own sign-in to Claude Code, Codex and OpenCode.",
@@ -33,7 +33,8 @@
             controls.settingUp = true;
             openSettings("This machine");
             await action({ kind: "service", enabled: true });
-            await controls.load();
+            await controls.load(false);
+            void controls.check();
           }
           if (controls.data?.me) await goto(homeOf(controls.data.me), { replaceState: true });
         } finally {

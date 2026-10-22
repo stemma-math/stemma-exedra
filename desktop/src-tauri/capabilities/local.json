@@ -5,6 +5,8 @@
   "windows": ["main"],
   "permissions": [
     "allow-snapshot",
+    "allow-diagnostics",
+    "allow-open-external",
     "allow-login",
     "allow-action",
     "allow-sign-out",

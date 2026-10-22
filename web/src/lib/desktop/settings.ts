@@ -13,6 +13,7 @@ export const RUNNERS = [
 const NAMES: Record<string, string> = {
   enabled: "Answer for me",
   priority: "Priority",
+  attachments: "Read attachments",
   concurrency: "Answers at once",
   isolation: "Isolation",
   image: "Image",
@@ -64,19 +65,27 @@ export function fileLines(value: unknown): string {
     .join("\n");
 }
 
-/** A container's files, from their lines, as a TOML array of tables. */
-export function fromFileLines(text: string): string {
-  const files = text
+/** A container's files, from their lines, as values for the panel. */
+export function filesFromLines(text: string): { from: string; to?: string }[] {
+  return text
     .split("\n")
     .map((line) => line.trim())
     .filter(Boolean)
     .map((line) => {
       const [from, to] = line.split("→").map((part) => part.trim());
-      return to
-        ? `{ from = ${JSON.stringify(from)}, to = ${JSON.stringify(to)} }`
-        : `{ from = ${JSON.stringify(from)} }`;
+      return to ? { from, to } : { from };
     });
-  return `[${files.join(", ")}]`;
+}
+
+/** A container's files, from their lines, as a TOML array of tables. */
+export function fromFileLines(text: string): string {
+  return `[${filesFromLines(text)
+    .map(({ from, to }) =>
+      to
+        ? `{ from = ${JSON.stringify(from)}, to = ${JSON.stringify(to)} }`
+        : `{ from = ${JSON.stringify(from)} }`,
+    )
+    .join(", ")}]`;
 }
 
 /** The doctor's check named `name`, if it ran. */

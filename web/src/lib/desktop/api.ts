@@ -3,12 +3,14 @@ import type { Me } from "../api.ts";
 export interface Explained {
   key: string;
   value: string | number | boolean | unknown[];
+  reset?: Explained;
   source: { kind: "default" | "file" | "group" | "environment" | "command_line"; name?: string };
 }
 export interface Check {
   name: string;
   status: "success" | "warning" | "danger";
   detail: string;
+  purpose: string | null;
   remedy: string | null;
 }
 export interface Snapshot {
@@ -29,7 +31,11 @@ export interface Snapshot {
   checks: Check[];
 }
 export const snapshot = (group: string | null = null) => invoke<Snapshot>("snapshot", { group });
-export const action = (action: object) => invoke<void>("action", { action });
+export const action = (action: object) => invoke<Explained | null>("action", { action });
 export const login = (url: string, username: string, password: string) =>
   invoke<void>("login", { url, username, password });
 export const signOut = () => invoke<string | null>("sign_out");
+
+export const diagnostics = (group: string | null = null) =>
+  invoke<Pick<Snapshot, "checks" | "service" | "secrets">>("diagnostics", { group });
+export const openExternal = (url: string) => invoke<void>("open_external", { url });

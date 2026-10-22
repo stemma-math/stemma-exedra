@@ -1,6 +1,6 @@
 <script lang="ts">
   import Glyph from "#lib/components/Glyph.svelte";
-  import { action, type Snapshot } from "../api.ts";
+  import type { Snapshot } from "../api.ts";
   import type { MachineControls } from "../machine.svelte.ts";
   import { setting } from "../settings.ts";
   import SettingField from "./SettingField.svelte";
@@ -18,24 +18,11 @@
           ? "Starting: not connected to the hub yet."
           : "Off: this computer does not answer for you.",
   );
+  const attachments = $derived(setting(data, "agents.attachments"));
   const priority = $derived(setting(data, "agents.priority"));
   const concurrency = $derived(setting(data, "agents.concurrency"));
   const workspace = $derived(setting(data, "agents.workspace"));
   const failing = $derived(data.checks.filter((c) => c.status !== "success"));
-
-  /** Turns the agents, and the service that runs them, on or off. */
-  function turn(value: boolean) {
-    return controls.run(
-      async () => {
-        if (value && enabled?.value === false && enabled.source.kind !== "environment")
-          await action({ kind: "set", key: "agents.enabled", value: "true", group: null });
-        await action({ kind: "service", enabled: value });
-      },
-      "",
-      true,
-      "service",
-    );
-  }
 </script>
 
 <ul class="card row-list">
@@ -53,7 +40,7 @@
         <span class="row-list__description">{status}</span>
       </span>
       <span class="row-list__control">
-        {#if controls.working === "service"}
+        {#if controls.saving("service")}
           <button type="button" class="button button--quiet" disabled aria-label="Changing service">
             <span class="spinner" aria-hidden="true"></span>
           </button>
@@ -64,8 +51,8 @@
           role="switch"
           aria-checked={on}
           checked={on}
-          disabled={controls.busy || data.service.signed_out}
-          onchange={(event) => turn(event.currentTarget.checked)}
+          disabled={controls.saving("service") || data.service.signed_out}
+          onchange={(event) => controls.turn(event.currentTarget.checked)}
         />
       </span>
     </li>
@@ -84,6 +71,14 @@
       description="How many answers this computer works on at once."
     />
   {/if}
+  {#if attachments}
+    <SettingField
+      {controls}
+      setting={attachments}
+      name="Read attachments"
+      description="Whose files your agents may read."
+    />
+  {/if}
   {#if workspace}
     <li>
       <details class="row-list__item">
@@ -100,9 +95,9 @@
                 event.preventDefault();
                 controls.save({ kind: "show_workspace", group: controls.scope || null }, "");
               }}
-              disabled={controls.busy}
+              disabled={controls.saving("show_workspace:")}
             >
-              {#if controls.working.includes("show_workspace")}
+              {#if controls.saving("show_workspace:")}
                 <span class="spinner" aria-hidden="true"></span>
               {/if}
               Show in Finder
@@ -121,49 +116,57 @@
   {/if}
 </ul>
 
-<section class="stack" aria-label="Checks">
-  <h2 class="label">Checks</h2>
-  <ul class="card row-list">
-    <li class="row-list__item">
-      <span class="row-list__text">
-        <span class="row-list__name">
-          <Glyph name={failing.length ? "warning" : "check"} small />
-          {failing.length === 0
-            ? "Everything works"
-            : failing.length === 1
-              ? "One thing needs attention"
-              : `${failing.length} things need attention`}
-        </span>
-      </span>
-    </li>
-    {#each failing as item (item.name)}
-      <li class="row-list__item">
-        <span class="row-list__text">
-          <span class="row-list__name">{item.name}</span>
-          <span class="row-list__description">{item.detail}</span>
-          {#if item.remedy}
-            <span class="row-list__description">{item.remedy}</span>
-          {/if}
-        </span>
-      </li>
-    {/each}
-    <li>
-      <details class="row-list__item">
-        <summary>
-          <span class="row-list__text"><span class="row-list__name">Every check</span></span>
-        </summary>
-        <div class="row-list__body">
-          {#each data.checks as item (item.name)}
-            <div class="stack stack--tight">
-              <span class="row">
-                <Glyph name={item.status === "success" ? "check" : "warning"} small />
-                <strong>{item.name}</strong>
-              </span>
-              <span class="quiet">{item.detail}</span>
-            </div>
-          {/each}
-        </div>
-      </details>
-    </li>
-  </ul>
-</section>
+<ul class="card row-list">
+  <li>
+    <details class="row-list__item">
+      <summary>
+        <span class="row-list__text"
+          ><span class="row-list__name row">
+            <span style:color={failing.length ? "var(--warning-text)" : "var(--success-text)"}
+              ><Glyph name={failing.length ? "warning" : "check"} small /></span
+            >
+            {controls.checking && !data.checks.length
+              ? "Checking this machine"
+              : !data.checks.length
+                ? "Not checked yet"
+                : failing.length === 0
+                  ? "Everything works"
+                  : failing.length === 1
+                    ? "One thing needs attention"
+                    : `${failing.length} things need attention`}
+          </span>
+          {#if controls.checking && data.checks.length}
+            <span class="row-list__description">Checking again…</span>
+          {/if}</span
+        >
+      </summary>
+      <ul class="row-list">
+        {#each [...data.checks].sort(
+          (a, b) => Number(a.status === "success") - Number(b.status === "success"),
+        ) as item (item.name)}
+          <li class="row-list__item">
+            <span class="row-list__text">
+              <span class="row-list__name row"
+                ><span
+                  style:color={item.status === "success"
+                    ? "var(--success-text)"
+                    : "var(--warning-text)"}
+                  ><Glyph name={item.status === "success" ? "check" : "warning"} small /></span
+                >{item.name}</span
+              >
+              {#if item.purpose}
+                <span class="row-list__description">{item.purpose}</span>
+              {/if}
+              <span class="row-list__description identifier quiet">{item.detail}</span>
+              {#if item.remedy}
+                <span class="row-list__description" style:color="var(--warning-text)"
+                  >{item.remedy}</span
+                >
+              {/if}
+            </span>
+          </li>
+        {/each}
+      </ul>
+    </details>
+  </li>
+</ul>

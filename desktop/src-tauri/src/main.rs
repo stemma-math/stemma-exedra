@@ -40,7 +40,7 @@ struct Snapshot {
     me: Option<Me>,
     hub_error: Option<String>,
     service: service::Status,
-    settings: Vec<Explained>,
+    settings: Vec<PanelSetting>,
     /// The names of the containers' sign-ins kept, never their values.
     secrets: Vec<String>,
     checks: Vec<doctor::Check>,
@@ -60,6 +60,10 @@ async fn snapshot(window: WebviewWindow, group: Option<String>) -> Result<Snapsh
     let loaded = Settings::load().map_err(error)?;
     let settings = loaded
         .explain(group.as_deref(), &Default::default())
+        .map_err(error)?
+        .into_iter()
+        .map(|setting| panel_setting(&loaded, setting, group.as_deref()))
+        .collect::<anyhow::Result<_>>()
         .map_err(error)?;
     let secrets = credentials.secrets.keys().cloned().collect();
     Ok(Snapshot {
@@ -70,8 +74,64 @@ async fn snapshot(window: WebviewWindow, group: Option<String>) -> Result<Snapsh
         service: service::status().await.map_err(error)?,
         settings,
         secrets,
-        checks: doctor::run(group.as_deref()).await,
+        checks: Vec::new(),
     })
+}
+
+#[derive(Serialize)]
+struct PanelSetting {
+    #[serde(flatten)]
+    setting: Explained,
+    reset: Explained,
+}
+fn panel_setting(
+    settings: &Settings,
+    setting: Explained,
+    group: Option<&str>,
+) -> anyhow::Result<PanelSetting> {
+    let reset = settings.inherited(&setting.key, group)?;
+    Ok(PanelSetting { setting, reset })
+}
+
+#[derive(Serialize)]
+struct Diagnostics {
+    checks: Vec<doctor::Check>,
+    service: service::Status,
+    secrets: Vec<String>,
+}
+#[tauri::command]
+async fn diagnostics(window: WebviewWindow, group: Option<String>) -> Result<Diagnostics> {
+    local(&window)?;
+    Ok(Diagnostics {
+        checks: doctor::run(group.as_deref()).await,
+        service: service::status().await.map_err(error)?,
+        secrets: Credentials::load()
+            .map_err(error)?
+            .secrets
+            .keys()
+            .cloned()
+            .collect(),
+    })
+}
+
+#[tauri::command]
+async fn open_external(window: WebviewWindow, url: String) -> Result<()> {
+    local(&window)?;
+    launch_browser(&url)
+}
+fn launch_browser(url: &str) -> Result<()> {
+    let parsed = tauri::Url::parse(url).map_err(error)?;
+    if !matches!(parsed.scheme(), "https" | "http" | "mailto") {
+        return Err("This address cannot be opened in the browser".into());
+    }
+    #[cfg(target_os = "macos")]
+    let mut command = std::process::Command::new("open");
+    #[cfg(target_os = "linux")]
+    let mut command = std::process::Command::new("xdg-open");
+    #[cfg(target_os = "windows")]
+    let mut command = std::process::Command::new("explorer");
+    command.arg(url).spawn().map_err(error)?;
+    Ok(())
 }
 
 #[tauri::command]
@@ -126,12 +186,25 @@ enum Action {
 }
 
 #[tauri::command]
-async fn action(window: WebviewWindow, state: Shared<'_>, action: Action) -> Result<()> {
+async fn action(
+    window: WebviewWindow,
+    state: Shared<'_>,
+    action: Action,
+) -> Result<Option<PanelSetting>> {
     local(&window)?;
-    let _guard = state.lock().await;
+    // Only file writes share the lock; a long image build or service action
+    // must not hold up an unrelated setting.
+    let _guard = if matches!(
+        action,
+        Action::Set { .. } | Action::Unset { .. } | Action::Secret { .. }
+    ) {
+        Some(state.lock().await)
+    } else {
+        None
+    };
     perform(action).await.map_err(error)
 }
-async fn perform(action: Action) -> anyhow::Result<()> {
+async fn perform(action: Action) -> anyhow::Result<Option<PanelSetting>> {
     match action {
         Action::Set { key, value, group } => {
             let settings = Settings::load()?;
@@ -143,9 +216,29 @@ async fn perform(action: Action) -> anyhow::Result<()> {
                 "This field is set by an environment variable"
             );
             settings.write(&key, Some(&value), group.as_deref())?;
+            let loaded = Settings::load()?;
+            return Ok(Some(panel_setting(
+                &loaded,
+                loaded.get(&key, group.as_deref())?,
+                group.as_deref(),
+            )?));
         }
         Action::Unset { key, group } => {
-            Settings::load()?.write(&key, None, group.as_deref())?;
+            let settings = Settings::load()?;
+            anyhow::ensure!(
+                !matches!(
+                    settings.get(&key, group.as_deref())?.source,
+                    Source::Environment(_)
+                ),
+                "This field is set by an environment variable"
+            );
+            settings.write(&key, None, group.as_deref())?;
+            let loaded = Settings::load()?;
+            return Ok(Some(panel_setting(
+                &loaded,
+                loaded.get(&key, group.as_deref())?,
+                group.as_deref(),
+            )?));
         }
         Action::Service { enabled } => {
             if enabled {
@@ -193,7 +286,7 @@ async fn perform(action: Action) -> anyhow::Result<()> {
             command.arg(folder).spawn()?;
         }
     }
-    Ok(())
+    Ok(None)
 }
 
 #[tauri::command]
@@ -249,6 +342,10 @@ fn main() {
                 }
             }
             builder
+                .on_new_window(|url, _| {
+                    let _ = launch_browser(url.as_str());
+                    tauri::webview::NewWindowResponse::Deny
+                })
                 .on_navigation(move |url| page::same_origin(url, &allowed_origin))
                 .build()?;
             let menu = Menu::default(app.handle())?;
@@ -266,6 +363,8 @@ fn main() {
         })
         .invoke_handler(tauri::generate_handler![
             snapshot,
+            diagnostics,
+            open_external,
             login,
             action,
             sign_out,

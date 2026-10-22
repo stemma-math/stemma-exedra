@@ -15,10 +15,10 @@
     type="button"
     class="button button--quiet button--icon"
     aria-label="Refresh"
-    disabled={controls.busy || controls.loading}
+    disabled={controls.loading}
     onclick={() => controls.refresh()}
   >
-    {#if controls.loading || controls.working === "refresh"}
+    {#if controls.loading || controls.saving("refresh")}
       <span class="spinner" aria-hidden="true"></span>
     {:else}
       <Glyph name="sync" />
@@ -31,11 +31,11 @@
   {#key controls.data?.me?.groups}
     <stemma-select
       ><select
-        use:scriptedSelect={[controls.scope, controls.busy || controls.loading]}
+        use:scriptedSelect={[controls.scope, controls.loading]}
         id="machine-scope"
         class="input"
         value={controls.scope}
-        disabled={controls.busy || controls.loading}
+        disabled={controls.loading}
         onchange={(event) => controls.changeScope(event.currentTarget.value)}
       >
         <option value="">Every group</option>
@@ -79,17 +79,15 @@
             {/each}
           </div>
         {:else if controls.data}
-          {#key controls.data}
-            <div class="stack">
-              {#if tab === "Overview"}
-                <Overview {controls} data={controls.data} />
-              {:else if tab === "Agents"}
-                <Agents {controls} data={controls.data} />
-              {:else}
-                <Isolation {controls} data={controls.data} />
-              {/if}
-            </div>
-          {/key}
+          <div class="stack">
+            {#if tab === "Overview"}
+              <Overview {controls} data={controls.data} />
+            {:else if tab === "Agents"}
+              <Agents {controls} data={controls.data} />
+            {:else}
+              <Isolation {controls} data={controls.data} />
+            {/if}
+          </div>
         {:else}
           <p class="quiet">Could not read this machine’s settings. Refresh to try again.</p>
         {/if}

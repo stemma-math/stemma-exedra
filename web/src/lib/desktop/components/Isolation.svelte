@@ -53,11 +53,11 @@
           <button
             type="button"
             class="button"
-            disabled={controls.busy}
+            disabled={controls.saving("image:")}
             onclick={() =>
               controls.save({ kind: "image", group: controls.scope || null }, "Image built.")}
           >
-            {#if controls.working.startsWith("image:")}
+            {#if controls.saving("image:")}
               <span class="spinner" aria-hidden="true"></span>
             {/if}
             Build image
@@ -118,10 +118,10 @@
                       <button
                         type="button"
                         class="button button--quiet button--small"
-                        disabled={controls.busy || !!controls.scope}
+                        disabled={controls.saving(`secret:${name}`) || !!controls.scope}
                         onclick={() => controls.save({ kind: "secret", name, value: null }, "")}
                       >
-                        {#if controls.working.includes(name)}
+                        {#if controls.saving(`secret:${name}`)}
                           <span class="spinner" aria-hidden="true"></span>
                         {/if}
                         Forget
@@ -137,17 +137,19 @@
                       class="input grow"
                       type="password"
                       autocomplete="off"
-                      disabled={controls.busy || !!controls.scope}
+                      disabled={controls.saving(`secret:${name}`) || !!controls.scope}
                       placeholder={kept ? "Replace its value" : "Its value"}
                       bind:value={typed[name]}
                     />
                     <button
                       type="button"
                       class="button"
-                      disabled={controls.busy || !!controls.scope || !typed[name]}
+                      disabled={controls.saving(`secret:${name}`) ||
+                        !!controls.scope ||
+                        !typed[name]}
                       onclick={() => keep(name)}
                     >
-                      {#if controls.working.includes(name)}
+                      {#if controls.saving(`secret:${name}`)}
                         <span class="spinner" aria-hidden="true"></span>
                       {/if}
                       Keep

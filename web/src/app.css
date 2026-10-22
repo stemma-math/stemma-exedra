@@ -527,10 +527,6 @@ stemma-toast-region {
   --columns: minmax(0, 1fr) auto auto;
 }
 
-.settings-table .table__row > .chip {
-  justify-self: start;
-}
-
 @media (max-width: 40rem) {
   .settings-table {
     --columns: minmax(0, 1fr);
@@ -643,6 +639,7 @@ stemma-toast-region {
 /* ── The person's settings: one dialog, in the browser and the app ───── */
 .settings-dialog {
   width: min(calc(var(--space-16) * 14), calc(100vw - var(--space-12)));
+  height: min(calc(70dvh + var(--space-16)), calc(var(--space-16) * 11));
   max-width: none;
   overflow: hidden;
   overscroll-behavior: none;
@@ -652,11 +649,11 @@ stemma-toast-region {
   display: grid;
   grid-template-columns: max-content minmax(0, 1fr);
   min-height: 0;
-  height: min(70dvh, calc(var(--space-16) * 10));
+  flex-basis: 0;
 }
 /* Keep the scrollport bounded before asynchronous content arrives. */
 .settings-dialog[open] { display: flex; flex-direction: column; max-height: calc(100dvh - var(--space-12)); }
-.settings { flex: 1; grid-template-rows: minmax(0, 1fr); }
+.settings { flex: 1 1 0; grid-template-rows: minmax(0, 1fr); }
 .loading-placeholder { display: block; min-width: var(--space-16); min-height: var(--space-16); }
 .machine-tab[hidden] { display: none; }
 .settings__nav { padding: var(--space-5) var(--space-3); overflow: auto; overscroll-behavior: none; }
@@ -681,7 +678,7 @@ stemma-toast-region {
 /* On a phone, the dialog fills the screen and its pages sit in a row on top. */
 @media (max-width: 40rem) {
   .settings-dialog { width: 100vw; height: 100dvh; max-height: none; margin: 0; border-radius: 0; }
-  .settings-dialog[open] { display: flex; flex-direction: column; }
+  .settings-dialog[open] { display: flex; flex-direction: column; max-height: none; }
   .settings { flex: 1; grid-template-columns: minmax(0, 1fr); grid-template-rows: auto minmax(0, 1fr); height: auto; }
   .settings__nav { display: flex; align-items: center; gap: var(--space-1); padding: var(--space-3); overflow-x: auto; }
   .settings__nav .nav-list { display: flex; gap: var(--space-1); }
@@ -724,14 +721,13 @@ html .app .shell.is-resizing *::after {
   max-width: 100%;
 }
 
-.setting-field__reset:empty {
-  display: none;
-}
-
-.setting-field__reset {
-  align-self: flex-start;
-}
+.setting-field__source:empty { display: none; }
 
 /* Account pages keep their own bounded scroll area outside the group shell. */
 .app > .account-frame { min-height: 0; height: 100%; }
 .account-frame__body { min-height: 0; overflow: auto; overscroll-behavior: none; }
+
+/* Group links share the catalog table's two content columns. */
+.groups-list { --columns: minmax(0, 1fr) auto; }
+
+.startup-mark { width: var(--space-12); }

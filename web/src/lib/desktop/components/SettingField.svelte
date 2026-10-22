@@ -1,8 +1,16 @@
 <script lang="ts">
+  import Glyph from "#lib/components/Glyph.svelte";
   import { scriptedSelect } from "#lib/scripted-select.ts";
   import type { Explained } from "../api.ts";
   import type { MachineControls } from "../machine.svelte.ts";
-  import { fileLines, fromFileLines, fromLines, lines, nameOf } from "../settings.ts";
+  import {
+    fileLines,
+    filesFromLines,
+    fromFileLines,
+    fromLines,
+    lines,
+    nameOf,
+  } from "../settings.ts";
 
   interface Props {
     controls: MachineControls;
@@ -31,6 +39,7 @@
 
   const key = $derived(setting.key);
   const locked = $derived(setting.source.kind === "environment");
+  const saving = $derived(controls.saving(key));
   const id = $derived(`setting-${key.replaceAll(".", "-")}`);
   const PRIORITIES = ["high", "normal", "low"];
   let custom = $state(false);
@@ -38,9 +47,9 @@
     PRIORITIES.includes(String(setting.value)) ? String(setting.value) : "custom",
   );
 
-  function save(value: string) {
+  function save(value: string, optimistic?: Explained["value"]) {
     if (value === "" && typeof setting.value === "string") return unset();
-    return controls.save({ kind: "set", key, value, group });
+    return controls.save({ kind: "set", key, value, group }, "", optimistic);
   }
 
   function unset() {
@@ -66,15 +75,18 @@
     ((group && setting.source.kind === "group") || (!group && setting.source.kind === "file"))}
     <button
       type="button"
-      class="button button--link button--small"
-      disabled={controls.busy}
+      class="button button--quiet button--icon"
+      aria-label={group ? "Use general value" : "Reset to default"}
+      disabled={saving}
       onclick={unset}
     >
-      {#if controls.busy && controls.working.includes(key)}
+      {#if saving}
         <span class="spinner" aria-hidden="true"></span>
+      {:else}
+        <Glyph name="reset" small />
       {/if}
-      {group ? "Use general value" : "Reset"}
     </button>
+    <stemma-tooltip>{group ? "Use general value" : "Reset to default"}</stemma-tooltip>
   {/if}
 {/snippet}
 
@@ -86,17 +98,32 @@
       role="switch"
       aria-checked={setting.value}
       checked={setting.value}
-      disabled={locked || controls.busy}
+      disabled={locked || saving}
       onchange={(event) => save(String(event.currentTarget.checked))}
     />
+  {:else if key === "agents.attachments"}
+    <stemma-select
+      ><select
+        use:scriptedSelect={[setting.value, saving]}
+        {id}
+        class="input"
+        value={String(setting.value)}
+        disabled={locked || saving}
+        onchange={(event) => save(event.currentTarget.value)}
+      >
+        <option value="none">No one's</option>
+        <option value="mine">Only mine</option>
+        <option value="group">Everyone's in the group</option>
+      </select></stemma-select
+    >
   {:else if key === "agents.priority"}
     <stemma-select
       ><select
-        use:scriptedSelect={[setting.value, controls.busy, custom]}
+        use:scriptedSelect={[setting.value, saving, custom]}
         {id}
         class="input"
         value={custom ? "custom" : priority}
-        disabled={locked || controls.busy}
+        disabled={locked || saving}
         onchange={(event) => {
           custom = event.currentTarget.value === "custom";
           if (!custom) save(event.currentTarget.value);
@@ -114,7 +141,7 @@
         type="number"
         aria-label="Custom priority"
         value={priority === "custom" ? String(setting.value) : "0"}
-        disabled={locked || controls.busy}
+        disabled={locked || saving}
         onchange={(event) => save(event.currentTarget.value)}
       />
     {/if}
@@ -129,7 +156,7 @@
           <button
             type="button"
             aria-pressed={setting.value === value}
-            disabled={locked || controls.busy}
+            disabled={locked || saving}
             onclick={() => save(value)}
           >
             {label}
@@ -144,7 +171,7 @@
       type="number"
       min="1"
       value={String(setting.value)}
-      disabled={locked || controls.busy}
+      disabled={locked || saving}
       onchange={(event) => save(event.currentTarget.value)}
     />
   {:else if key.endsWith(".container.files")}
@@ -154,8 +181,9 @@
       rows="3"
       placeholder="~/.codex/auth.json"
       value={fileLines(setting.value)}
-      disabled={locked || controls.busy}
-      onchange={(event) => save(fromFileLines(event.currentTarget.value))}
+      disabled={locked || saving}
+      onchange={(event) =>
+        save(fromFileLines(event.currentTarget.value), filesFromLines(event.currentTarget.value))}
     ></textarea>
   {:else if Array.isArray(setting.value)}
     <textarea
@@ -163,7 +191,7 @@
       class="input"
       rows="3"
       value={lines(setting.value)}
-      disabled={locked || controls.busy}
+      disabled={locked || saving}
       onchange={(event) => save(fromLines(event.currentTarget.value))}
     ></textarea>
   {:else}
@@ -172,7 +200,7 @@
       class="input"
       value={String(setting.value)}
       {placeholder}
-      disabled={locked || controls.busy}
+      disabled={locked || saving}
       onchange={(event) => save(event.currentTarget.value.trim())}
     />
   {/if}
@@ -185,19 +213,17 @@
       {#if description}
         <span class="row-list__description">{description}</span>
       {/if}
-      <span class="row setting-field__reset">{@render source()}{@render reset()}</span>
+      <span class="row setting-field__source">{@render source()}</span>
     </span>
-    <span class="row-list__control">{@render control()}</span>
+    <span class="row-list__control">{@render reset()}{@render control()}</span>
   </li>
 {:else}
   <div class="field">
-    <span class="row">
-      <label class="field__label grow" for={id}>{name ?? nameOf(key)}</label>
-      <span class="row setting-field__reset">{@render source()}{@render reset()}</span>
-    </span>
-    {@render control()}
+    <label class="field__label" for={id}>{name ?? nameOf(key)}</label>
     {#if description}
       <span class="field__hint">{description}</span>
     {/if}
+    <span class="row setting-field__source">{@render source()}</span>
+    <div class="row">{@render reset()}{@render control()}</div>
   </div>
 {/if}

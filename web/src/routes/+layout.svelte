@@ -47,7 +47,7 @@
 
 <div class="app">
   {#if __STEMMA_DESKTOP__}
-    {#if Desktop}<Desktop>{@render children()}</Desktop>{/if}
+    {#if Desktop}<Desktop>{@render children()}</Desktop>{:else}<main class="page page--centered" aria-busy="true"><stemma-mark class="startup-mark" role="status" aria-label="Loading Stemma"></stemma-mark></main>{/if}
   {:else if session.loaded && (session.me || isPublic)}
     {#if !session.me && isPublic}<PublicFrame>{@render children()}</PublicFrame>{:else}{@render children()}{/if}
   {:else}

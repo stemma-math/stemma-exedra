@@ -8,7 +8,7 @@
   import { toast } from "../toast.ts";
   import SettingsDialog from "../components/settings/SettingsDialog.svelte";
   import { connection } from "../transport.svelte.ts";
-  import { snapshot, signOut } from "./api.ts";
+  import { snapshot, signOut, openExternal } from "./api.ts";
   import { MachineControls } from "./machine.svelte.ts";
   import SignIn from "./components/SignIn.svelte";
   import MachinePane from "./components/MachinePane.svelte";
@@ -35,7 +35,6 @@
 
   $effect(() => {
     if (controls.data) {
-      setSession(controls.data.me);
       connection.hub = controls.data.hub ?? "";
       desktopUI.serviceConnected = controls.data.service.connected;
       desktopUI.serviceRunning = controls.data.service.running;
@@ -59,13 +58,14 @@
         const warning = await signOut();
         if (warning) toast(warning, "warning");
       }, "");
-    void controls.refresh("");
+    void controls.run(() => controls.load(false), "", false);
     const listening = listen("open-settings", () => openSettings());
     const timer = setInterval(() => {
       if (!controls.busy && !settingsUI.open)
         void snapshot()
           .then((data) => {
             controls.data = data;
+            setSession(data.me);
           })
           .catch(() => {});
     }, 15000);
@@ -77,6 +77,18 @@
 </script>
 
 <svelte:window
+  onclickcapture={(event) => {
+    const link =
+      event.target instanceof Element
+        ? event.target.closest<HTMLAnchorElement>("a[target='_blank']")
+        : null;
+    if (!link) return;
+    event.preventDefault();
+    let url = link.href;
+    if (url.startsWith("hub://localhost/") || url.startsWith("http://hub.localhost/"))
+      url = `${connection.hub}${new URL(url).pathname}${new URL(url).search}`;
+    void openExternal(url).catch((error) => toast(String(error), "warning"));
+  }}
   onpointerdown={(event) => {
     const target = event.target;
     if (
@@ -106,7 +118,7 @@
       <p class="message message--danger">{controls.error}</p>
       <button type="button" class="button" onclick={() => controls.refresh("")}>Try again</button>
     {:else}
-      <div class="skeleton loading-placeholder" role="status" aria-label="Loading"></div>
+      <stemma-mark class="startup-mark" role="status" aria-label="Loading Stemma"></stemma-mark>
     {/if}
   </main>
 {/if}
