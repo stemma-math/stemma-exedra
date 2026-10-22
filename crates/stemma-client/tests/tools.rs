@@ -467,3 +467,43 @@ async fn attachments_return_text_images_or_a_saved_file_and_explain_refusals() {
     );
     assert_eq!(std::fs::read_dir(files.path()).unwrap().count(), 2);
 }
+
+#[tokio::test]
+async fn former_group_names_render_as_current_names_in_tool_headings() {
+    let (url, token, _data) = hub_with_ada().await;
+    raw_post(
+        &url,
+        &token,
+        "/groups",
+        json!({"slug":"geometry", "name":"Geometry"}),
+    )
+    .await;
+    raw_post(
+        &url,
+        &token,
+        "/groups/geometry/threads",
+        json!({"title":"A proof", "body":"See [[geometry/t1]]."}),
+    )
+    .await;
+    let tools = Toolbox::new(
+        Hub::new(&url, Some(token.clone())).unwrap(),
+        Some("geometry".into()),
+    );
+    let renamed = reqwest::Client::new()
+        .patch(format!("{url}/api/v1/groups/geometry"))
+        .bearer_auth(&token)
+        .json(&json!({"slug":"topology"}))
+        .send()
+        .await
+        .unwrap();
+    assert!(renamed.status().is_success());
+    for args in [
+        json!({"address":"t1"}),
+        json!({"address":"t1", "group":"geometry"}),
+    ] {
+        let text = tools.call("read_thread", args, None).await.unwrap();
+        assert!(text.contains("in topology"), "{text}");
+        assert!(text.contains("[[topology/t1]]"), "{text}");
+        assert!(!text.contains("geometry"), "{text}");
+    }
+}

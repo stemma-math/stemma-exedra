@@ -1716,7 +1716,7 @@ async fn mentions_and_chats_queue_jobs() {
     hub.post(
         &ada,
         "/groups/geometry/threads",
-        json!({"title": "Gluing", "body": "@claude @codex @nobody what do you think?"}),
+        json!({"title": "Gluing", "body": "@claude @codex @nobody @claude what do you think?"}),
     )
     .await;
     let jobs = hub

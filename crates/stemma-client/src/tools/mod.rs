@@ -157,10 +157,10 @@ impl Toolbox {
     /// person's only group.
     pub async fn group(&self, named: Option<&str>) -> Result<String, ToolError> {
         if let Some(group) = named.map(str::trim).filter(|g| !g.is_empty()) {
-            return Ok(group.to_owned());
+            return Ok(self.hub.group(group).await?.slug);
         }
         if let Some(group) = &self.default_group {
-            return Ok(group.clone());
+            return Ok(self.hub.group(group).await?.slug);
         }
         let me = self.hub.me().await?;
         match me.groups.as_slice() {

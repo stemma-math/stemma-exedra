@@ -282,7 +282,8 @@ pub async fn summon(
                 .collect()
         })
         .unwrap_or_default();
-    handles.dedup();
+    let mut seen = std::collections::HashSet::new();
+    handles.retain(|handle| seen.insert(handle.clone()));
     if thread.kind == ThreadKind::Chat
         && let Some(resident) = &thread.resident_agent
         && !handles.contains(resident)
