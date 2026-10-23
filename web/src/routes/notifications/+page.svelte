@@ -12,6 +12,7 @@
   import { goneOf, linkOf, sentenceOf } from "#lib/notification-text.ts";
   import { setUnread } from "#lib/notifications.svelte.ts";
   import { session } from "#lib/session.svelte.ts";
+  import { openSettings } from "#lib/settings.svelte.ts";
   import { toastError } from "#lib/toast.ts";
 
   let items = $state<Notification[] | null>(null);
@@ -149,7 +150,12 @@
           {#if loadingMore}<span class="spinner" aria-hidden="true"></span>{/if} Show more
         </button>
       {/if}
-      <p class="quiet">Read notifications are kept for 30 days.</p>
+    {/if}
+    {#if items !== null}
+    <p class="quiet">
+        What notes you accept, and how long read notifications are kept, is yours to choose in
+        <button type="button" class="button button--link" onclick={() => openSettings("Notifications")}>Settings</button>.
+      </p>
     {/if}
   </main>
 </AccountFrame>

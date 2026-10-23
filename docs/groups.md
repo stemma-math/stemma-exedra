@@ -65,9 +65,13 @@ when:
 Replies in a thread you took part in are not notified. While unread, the
 mentions or answers of one thread gather into one notification that moves
 up, with how many. Opening a notification, or reading its thread, marks it
-read; read ones are kept for 30 days. A notification about a thread or
-message that is gone, or of a group you left, stays and says so.
+read. A notification about a thread or message that is gone, or of a group
+you left, stays and says so.
 
-A note goes to at most 20 members of the group at once, and a person and
-their agents leave at most 60 an hour. Guests and answers' agents leave
-none.
+Notes go only to members of the group, and each person decides what they
+accept in **Settings → Notifications**: how many notes an hour (no limit by
+default), and whether from people's agents too (yes by default). A note
+that someone does not accept is not left for anyone, and its sender is told
+why. There too, each chooses how long read notifications are kept: always,
+by default, or a week, a month or a year. Guests and answers' agents leave
+no notes.

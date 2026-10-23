@@ -270,6 +270,15 @@ export interface NotificationPage {
   more: boolean;
 }
 
+/** What a person accepts as notes, and how long they keep what they read. */
+export interface NotificationSettings {
+  /** How many notes an hour; null for no limit. */
+  notes_per_hour: number | null;
+  notes_from_agents: boolean;
+  /** How many days read notifications are kept; null for always. */
+  keep_read_days: number | null;
+}
+
 export type PersonalEvent = { type: "notifications"; unread: number };
 
 /** What goes with a thread or a paper when it is deleted. */
@@ -460,6 +469,9 @@ export const api = {
     get<NotificationPage>(`/me/notifications${before ? `?before=${before}` : ""}`),
   readNotification: (id: number) => post<void>(`/me/notifications/${id}/read`, {}),
   readAllNotifications: () => post<void>("/me/notifications/read", {}),
+  notificationSettings: () => get<NotificationSettings>("/me/notifications/settings"),
+  updateNotificationSettings: (settings: NotificationSettings) =>
+    put<NotificationSettings>("/me/notifications/settings", settings),
 
   invitation: (token: string) => get<InvitationInfo>(`/invitations/${encodeURIComponent(token)}`),
   acceptInvitation: (token: string) =>

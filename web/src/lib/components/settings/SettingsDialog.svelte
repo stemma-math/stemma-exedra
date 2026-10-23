@@ -2,6 +2,7 @@
   import type { Snippet } from "svelte";
   import type { StemmaDialog } from "@stemma-math/design-elements/dialog.js";
   import { MACHINE_PAGES, PAGES, type SettingsPage, settingsUI } from "#lib/settings.svelte.ts";
+  import NotificationSettings from "./NotificationSettings.svelte";
   import ProfileSettings from "./ProfileSettings.svelte";
   import TokenSettings from "./TokenSettings.svelte";
 
@@ -64,6 +65,8 @@
             <h1>{settingsUI.page}</h1>
             {#if settingsUI.page === "Profile"}
               <ProfileSettings />
+            {:else if settingsUI.page === "Notifications"}
+              <NotificationSettings />
             {:else if settingsUI.page === "Appearance"}
               <section class="setting stack stack--tight">
                 <h2 class="label">Theme</h2>
