@@ -746,6 +746,14 @@ html .app .shell.is-resizing *::after {
 
 .startup-mark { width: var(--space-12); }
 
-.notification-list { --columns: auto minmax(0, 1fr) auto; }
+.notification-list { --columns: auto auto minmax(0, 1fr) auto; }
 .notification-list .row-list__text { gap: var(--space-1); }
+/* The whole row leads where its sentence does; what else it holds is
+   above the link. */
+.notification-list .table__row { position: relative; }
+.notification-list .table__row:has(.notification__link:hover) { background: var(--surface-subtle); }
+.notification__link { color: inherit; text-decoration: none; }
+.notification__link::after { content: ""; position: absolute; inset: 0; }
+.notification__choice, .notification__control, .notification__note { position: relative; z-index: 1; }
+.notification__control { display: flex; align-items: center; gap: var(--space-2); }
 .notification__note { display: block; }

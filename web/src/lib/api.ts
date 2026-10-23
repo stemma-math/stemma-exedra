@@ -270,6 +270,9 @@ export interface NotificationPage {
   more: boolean;
 }
 
+/** What to do with some of one's notifications. */
+export type NotificationChange = "read" | "unread" | "delete";
+
 /** What a person accepts as notes, and how long they keep what they read. */
 export interface NotificationSettings {
   /** How many notes an hour; null for no limit. */
@@ -465,9 +468,15 @@ export const api = {
   tokens: () => get<ApiToken[]>("/me/tokens"),
   createToken: (name: string) => post<CreatedToken>("/me/tokens", { name }),
   revokeToken: (id: number) => del<void>(`/me/tokens/${id}`),
-  notifications: (before?: number) =>
-    get<NotificationPage>(`/me/notifications${before ? `?before=${before}` : ""}`),
-  readNotification: (id: number) => post<void>(`/me/notifications/${id}/read`, {}),
+  notifications: (before?: number, q?: string) => {
+    const query = new URLSearchParams();
+    if (before) query.set("before", String(before));
+    if (q) query.set("q", q);
+    const qs = query.toString();
+    return get<NotificationPage>(`/me/notifications${qs ? `?${qs}` : ""}`);
+  },
+  changeNotifications: (ids: number[], change: NotificationChange) =>
+    post<void>("/me/notifications/change", { ids, change }),
   readAllNotifications: () => post<void>("/me/notifications/read", {}),
   notificationSettings: () => get<NotificationSettings>("/me/notifications/settings"),
   updateNotificationSettings: (settings: NotificationSettings) =>
