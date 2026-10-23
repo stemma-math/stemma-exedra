@@ -6,9 +6,11 @@
     text: string;
     missing?: string[];
     group: string;
+    /** A short text among interface, at its size. */
+    compact?: boolean;
   }
 
-  let { text, group, missing = [] }: Props = $props();
+  let { text, group, missing = [], compact = false }: Props = $props();
 
   let element: HTMLElement | undefined = $state();
   const html = $derived(renderMarkdown(text, { group, missing }));
@@ -20,7 +22,7 @@
   });
 </script>
 
-<div class="document" bind:this={element}>
+<div class="document" class:document--compact={compact} bind:this={element}>
   <!-- Rendered from Markdown with raw HTML escaped. -->
   {@html html}
 </div>

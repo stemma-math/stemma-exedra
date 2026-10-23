@@ -214,7 +214,6 @@
             <div class="table__row">
               <input
                 type="checkbox"
-                class="notification__choice"
                 aria-label="Select: {sentence}"
                 checked={selected.has(n.id)}
                 onchange={() => toggle(n)}
@@ -222,12 +221,12 @@
               {@render face(n)}
               <span class="row-list__text">
                 {#if href}
-                  <a class="row-list__name notification__link" {href} onclick={(e) => open(e, n, href)}>{sentence}</a>
+                  <a class="row-list__name table__link" {href} onclick={(e) => open(e, n, href)}>{sentence}</a>
                 {:else}
                   <span class="row-list__name">{sentence}</span>
                 {/if}
                 {#if n.kind === "note" && n.text && n.group}
-                  <span class="notification__note"><Markdown text={n.text} group={n.group.slug} /></span>
+                  <span class="notification__note"><Markdown text={n.text} group={n.group.slug} compact /></span>
                 {:else if n.thread?.excerpt}
                   <span class="row-list__description truncate">{n.thread.excerpt}</span>
                 {/if}
