@@ -22,6 +22,8 @@ export interface Group {
 export interface Me extends User {
   hub_admin: boolean;
   groups: Group[];
+  /** How many of their notifications are unread. */
+  unread: number;
 }
 
 export interface GroupRequest {
@@ -226,6 +228,50 @@ export type GroupEvent =
   | { type: "thread_deleted"; thread: number }
   | { type: "paper_deleted"; paper: string };
 
+export type NotificationKind =
+  | "mention"
+  | "answer"
+  | "held"
+  | "failed"
+  | "note"
+  | "role"
+  | "removed"
+  | "approved"
+  | "declined"
+  | "requested";
+
+/** Something a person is told. */
+export interface Notification {
+  id: number;
+  kind: NotificationKind;
+  /** How many of the same, in the same thread, it gathers. */
+  count: number;
+  actor: User | null;
+  agent: string | null;
+  group: { slug: string; name: string } | null;
+  thread: {
+    number: number;
+    kind: ThreadKind;
+    title: string;
+    message: number | null;
+    excerpt: string | null;
+  } | null;
+  /** A note's Markdown, or what it is about: a role, a group's name. */
+  text: string | null;
+  /** Whether the thread or message it is about is gone. */
+  gone: boolean;
+  read: boolean;
+  updated_at: string;
+}
+
+export interface NotificationPage {
+  items: Notification[];
+  unread: number;
+  more: boolean;
+}
+
+export type PersonalEvent = { type: "notifications"; unread: number };
+
 /** What goes with a thread or a paper when it is deleted. */
 export interface Contents {
   messages: number;
@@ -410,6 +456,10 @@ export const api = {
   tokens: () => get<ApiToken[]>("/me/tokens"),
   createToken: (name: string) => post<CreatedToken>("/me/tokens", { name }),
   revokeToken: (id: number) => del<void>(`/me/tokens/${id}`),
+  notifications: (before?: number) =>
+    get<NotificationPage>(`/me/notifications${before ? `?before=${before}` : ""}`),
+  readNotification: (id: number) => post<void>(`/me/notifications/${id}/read`, {}),
+  readAllNotifications: () => post<void>("/me/notifications/read", {}),
 
   invitation: (token: string) => get<InvitationInfo>(`/invitations/${encodeURIComponent(token)}`),
   acceptInvitation: (token: string) =>
@@ -473,6 +523,7 @@ export const api = {
     patch<Thread>(`${g(group)}/threads/${n}`, { title }),
   threadContents: (group: string, n: number) => get<Contents>(`${g(group)}/threads/${n}/contents`),
   deleteThread: (group: string, n: number) => del<void>(`${g(group)}/threads/${n}`),
+  readThread: (group: string, n: number) => post<void>(`${g(group)}/threads/${n}/read`, {}),
   postMessage: (
     group: string,
     n: number,
@@ -543,4 +594,5 @@ export const api = {
   },
 
   eventsUrl: (group: string) => hubUrl(`${PREFIX}${g(group)}/events`),
+  personalEventsUrl: () => hubUrl(`${PREFIX}/me/events`),
 };

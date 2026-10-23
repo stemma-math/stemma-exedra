@@ -11,7 +11,7 @@
   import JobItem from "#lib/components/JobItem.svelte";
   import MessageItem from "#lib/components/MessageItem.svelte";
   import UnderConstruction from "#lib/components/UnderConstruction.svelte";
-  import { listen } from "#lib/events.ts";
+  import { listen, listenToMe } from "#lib/events.ts";
   import { exactly } from "#lib/format.ts";
   import { groupContext } from "#lib/group.svelte.ts";
   import { applyJob } from "#lib/jobs.ts";
@@ -123,7 +123,7 @@
     messages = [];
     jobs = [];
     replyTo = null;
-    load();
+    load().then(markRead);
     return listen(group.slug, (event) => {
       if ((event.type === "resync" || event.type === "names_changed")) return load();
       if ((event.type === "message_created" || event.type === "message_updated") && event.thread === number) {
@@ -138,6 +138,24 @@
       }
       if (event.type === "thread_created" || event.type === "message_created") forgetReferences(group.slug);
     });
+  });
+
+  /** What one was told of this thread is read, while one reads it. */
+  function markRead() {
+    if (document.visibilityState !== "visible" || !session.me?.unread || missing) return;
+    api.readThread(group.slug, number).catch(() => {});
+  }
+
+  $effect(() => {
+    void number;
+    const stop = listenToMe((event) => {
+      if (event.type === "notifications" && event.unread) markRead();
+    });
+    document.addEventListener("visibilitychange", markRead);
+    return () => {
+      stop();
+      document.removeEventListener("visibilitychange", markRead);
+    };
   });
 
   // Show the message the address points to, once it is there.

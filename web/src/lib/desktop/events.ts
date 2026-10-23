@@ -1,18 +1,21 @@
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
-import type { GroupEvent } from "../api.ts";
-import type { Listener } from "../events.ts";
 import { reached } from "../transport.svelte.ts";
 
-export async function subscribe(group: string, send: Listener): Promise<() => void> {
+/** Listens, through the app, to a group's events, or the person's own
+ * under `null`. */
+export async function subscribe(
+  group: string | null,
+  send: (event: { type: string }) => void,
+): Promise<() => void> {
   const subscription = crypto.randomUUID();
   const unlisten = await listen<{
     subscription: string;
-    group: string;
-    event: GroupEvent | { type: "resync" } | { type: "connection"; connected: boolean };
+    group: string | null;
+    event: { type: string; connected?: boolean };
   }>("hub-event", ({ payload }) => {
     if (payload.subscription !== subscription || payload.group !== group) return;
-    if (payload.event.type === "connection") reached(payload.event.connected);
+    if (payload.event.type === "connection") reached(payload.event.connected === true);
     else send(payload.event);
   });
   try {

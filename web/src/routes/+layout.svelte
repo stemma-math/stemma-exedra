@@ -11,6 +11,7 @@
   import PublicFrame from "#lib/components/PublicFrame.svelte";
   import { goto } from "$app/navigation";
   import { page } from "$app/state";
+  import { followNotifications } from "#lib/notifications.svelte.ts";
   import { loadSession, session } from "#lib/session.svelte.ts";
   import { onMount } from "svelte";
   import type { Component, Snippet } from "svelte";
@@ -29,6 +30,12 @@
       document.documentElement.dataset.desktop = "";
       void import("#lib/desktop/Desktop.svelte").then((module) => { Desktop = module.default; });
     } else void loadSession();
+  });
+
+  // Whoever is signed in hears of their notifications as they come.
+  const signedIn = $derived(session.me?.id);
+  $effect(() => {
+    if (signedIn !== undefined) return followNotifications();
   });
 
   $effect(() => {

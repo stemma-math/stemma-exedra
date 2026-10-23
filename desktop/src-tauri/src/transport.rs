@@ -223,16 +223,17 @@ fn canonical_name_redirect(old: &str, new: &str) -> bool {
 #[derive(Clone, Serialize)]
 struct LiveEvent {
     subscription: String,
-    group: String,
+    /// The group's short name; none for the person's own events.
+    group: Option<String>,
     event: serde_json::Value,
 }
 
-fn send(window: &WebviewWindow, subscription: &str, group: &str, event: serde_json::Value) {
+fn send(window: &WebviewWindow, subscription: &str, group: Option<&str>, event: serde_json::Value) {
     let _ = window.emit(
         "hub-event",
         LiveEvent {
             subscription: subscription.into(),
-            group: group.into(),
+            group: group.map(Into::into),
             event,
         },
     );
@@ -247,17 +248,23 @@ pub fn stop(app: &tauri::AppHandle) {
 #[tauri::command]
 pub async fn subscribe(
     window: WebviewWindow,
-    group: String,
+    group: Option<String>,
     subscription: String,
 ) -> super::Result<()> {
     super::local(&window)?;
-    if group.is_empty()
-        || !group
-            .bytes()
-            .all(|c| c.is_ascii_alphanumeric() || c == b'-' || c == b'_')
+    if let Some(group) = &group
+        && (group.is_empty()
+            || !group
+                .bytes()
+                .all(|c| c.is_ascii_alphanumeric() || c == b'-' || c == b'_'))
     {
         return Err("Invalid group".into());
     }
+    // A group's events, or the person's own.
+    let path = match &group {
+        Some(group) => format!("groups/{group}/events"),
+        None => "me/events".to_owned(),
+    };
     let (base, token) = credentials().map_err(super::error)?;
     let client = client().map_err(super::error)?;
     let app = window.app_handle().clone();
@@ -270,7 +277,7 @@ pub async fn subscribe(
         let mut connected = false;
         loop {
             let result = client
-                .get(format!("{base}/api/v1/groups/{group}/events"))
+                .get(format!("{base}/api/v1/{path}"))
                 .bearer_auth(&token)
                 .header(header::ACCEPT, "text/event-stream")
                 .send()
@@ -282,7 +289,7 @@ pub async fn subscribe(
                 send(
                     &window,
                     &subscription,
-                    &group,
+                    group.as_deref(),
                     serde_json::json!({"type":"connection", "connected":true}),
                 );
                 let mut events = reply.bytes_stream().eventsource();
@@ -293,7 +300,7 @@ pub async fn subscribe(
                                 send(
                                     &window,
                                     &subscription,
-                                    &group,
+                                    group.as_deref(),
                                     serde_json::json!({"type":"resync"}),
                                 );
                             }
@@ -302,12 +309,12 @@ pub async fn subscribe(
                         "resync" => send(
                             &window,
                             &subscription,
-                            &group,
+                            group.as_deref(),
                             serde_json::json!({"type":"resync"}),
                         ),
                         "message" => {
                             if let Ok(event) = serde_json::from_str(&event.data) {
-                                send(&window, &subscription, &group, event);
+                                send(&window, &subscription, group.as_deref(), event);
                             }
                         }
                         _ => {}
@@ -317,7 +324,7 @@ pub async fn subscribe(
             send(
                 &window,
                 &subscription,
-                &group,
+                group.as_deref(),
                 serde_json::json!({"type":"connection", "connected":false}),
             );
             tokio::time::sleep(Duration::from_secs(2)).await;

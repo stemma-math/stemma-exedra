@@ -31,8 +31,8 @@
     "vitest": "^5.0.4"
   },
   "dependencies": {
-    "@stemma-math/design": "https://github.com/stemma-math/design/releases/download/v0.14.0/stemma-math-design-0.14.0.tgz",
-    "@stemma-math/design-elements": "https://github.com/stemma-math/design/releases/download/v0.14.0/stemma-math-design-elements-0.14.0.tgz",
+    "@stemma-math/design": "https://github.com/stemma-math/design/releases/download/v0.15.0/stemma-math-design-0.15.0.tgz",
+    "@stemma-math/design-elements": "https://github.com/stemma-math/design/releases/download/v0.15.0/stemma-math-design-elements-0.15.0.tgz",
     "@tauri-apps/api": "^2.12.4",
     "katex": "^0.19.0",
     "markdown-it": "^15.0.2"

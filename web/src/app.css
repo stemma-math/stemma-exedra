@@ -745,3 +745,7 @@ html .app .shell.is-resizing *::after {
 .groups-list { --columns: minmax(0, 1fr) auto; }
 
 .startup-mark { width: var(--space-12); }
+
+.notification-list { --columns: auto minmax(0, 1fr) auto; }
+.notification-list .row-list__text { gap: var(--space-1); }
+.notification__note { display: block; }

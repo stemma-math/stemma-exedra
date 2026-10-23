@@ -1,19 +1,32 @@
-// Live updates: one event stream per group, shared by whatever listens.
+// Live updates: one event stream per group, and one of the person's own,
+// each shared by whatever listens.
 
 import { reached } from "./transport.svelte.ts";
-import { api, type GroupEvent } from "./api";
+import { api, type GroupEvent, type PersonalEvent } from "./api";
 
 export type Listener = (event: GroupEvent | { type: "resync" }) => void;
+export type PersonalListener = (event: PersonalEvent | { type: "resync" }) => void;
+type AnyListener = (event: { type: string }) => void;
 
 interface Stream {
   source: { close(): void };
-  listeners: Set<Listener>;
+  listeners: Set<AnyListener>;
 }
 
-const streams = new Map<string, Stream>();
+/** By group; the person's own under `null`. */
+const streams = new Map<string | null, Stream>();
 
 /** Listens to a group's events; returns what stops listening. */
 export function listen(group: string, listener: Listener): () => void {
+  return subscribe(group, listener as AnyListener);
+}
+
+/** Listens to the person's own events; returns what stops listening. */
+export function listenToMe(listener: PersonalListener): () => void {
+  return subscribe(null, listener as AnyListener);
+}
+
+function subscribe(group: string | null, listener: AnyListener): () => void {
   let stream = streams.get(group);
   if (!stream) {
     stream = open(group);
@@ -30,10 +43,10 @@ export function listen(group: string, listener: Listener): () => void {
   };
 }
 
-function open(group: string): Stream {
-  const listeners = new Set<Listener>();
+function open(group: string | null): Stream {
+  const listeners = new Set<AnyListener>();
 
-  const send = (event: GroupEvent | { type: "resync" }) => {
+  const send = (event: { type: string }) => {
     for (const listener of listeners) listener(event);
   };
   if (__STEMMA_DESKTOP__) {
@@ -55,7 +68,7 @@ function open(group: string): Stream {
       listeners,
     };
   }
-  const source = new EventSource(api.eventsUrl(group));
+  const source = new EventSource(group === null ? api.personalEventsUrl() : api.eventsUrl(group));
   let opened = false;
   // After the first time, being ready again means having been away: what
   // happened meanwhile was missed.
