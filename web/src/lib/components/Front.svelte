@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { page } from "$app/state";
+  import { hubHost } from "#lib/transport.svelte.ts";
   import { api } from "#lib/api.ts";
   import { session } from "#lib/session.svelte.ts";
   import { onMount } from "svelte";
@@ -35,7 +35,7 @@
         </div>
 
       {/if}
-      <footer class="front__host identifier">{page.url.host}</footer>
+      <footer class="front__host identifier">{hubHost()}</footer>
     </div>
   </main>
 {/if}

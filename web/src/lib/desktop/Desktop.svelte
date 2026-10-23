@@ -7,7 +7,7 @@
   import { openSettings, settingsUI } from "../settings.svelte.ts";
   import { toast } from "../toast.ts";
   import SettingsDialog from "../components/settings/SettingsDialog.svelte";
-  import { connection } from "../transport.svelte.ts";
+  import { connection, outwardUrl } from "../transport.svelte.ts";
   import { snapshot, signOut, openExternal } from "./api.ts";
   import { MachineControls } from "./machine.svelte.ts";
   import SignIn from "./components/SignIn.svelte";
@@ -84,10 +84,7 @@
         : null;
     if (!link) return;
     event.preventDefault();
-    let url = link.href;
-    if (url.startsWith("hub://localhost/") || url.startsWith("http://hub.localhost/"))
-      url = `${connection.hub}${new URL(url).pathname}${new URL(url).search}`;
-    void openExternal(url).catch((error) => toast(String(error), "warning"));
+    void openExternal(outwardUrl(link.href)).catch((error) => toast(String(error), "warning"));
   }}
   onpointerdown={(event) => {
     const target = event.target;

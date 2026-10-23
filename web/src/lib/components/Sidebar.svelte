@@ -8,7 +8,7 @@
   import { folded, setFolded } from "#lib/sidebar.svelte.ts";
   import { applyThreadEvent } from "#lib/threads.ts";
   import { initials } from "#lib/format.ts";
-  import { connection } from "#lib/transport.svelte.ts";
+  import { connection, hubHost } from "#lib/transport.svelte.ts";
   import { desktopUI } from "#lib/desktop-ui.svelte.ts";
   import { ROLE_NAMES } from "#lib/roles.ts";
   import AgentAvatar from "./AgentAvatar.svelte";
@@ -22,7 +22,7 @@
   let chats = $state<Thread[]>([]);
   let threads = $state<Thread[]>([]);
 
-  const host = $derived(connection.hub ? new URL(connection.hub).host : page.url.host);
+  const host = $derived(hubHost());
   const base = $derived(`/g/${group.slug}`);
   const path = $derived(page.url.pathname);
 

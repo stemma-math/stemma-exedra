@@ -3,7 +3,7 @@
   import { ask } from "#lib/ask.svelte.ts";
   import { api, type ApiToken, type CreatedToken, RUNNER_NAMES } from "#lib/api.ts";
   import { exactly, when } from "#lib/format.ts";
-  import { connection } from "#lib/transport.svelte.ts";
+  import { hubOrigin } from "#lib/transport.svelte.ts";
   import { toastError } from "#lib/toast.ts";
   import { onMount } from "svelte";
 
@@ -13,7 +13,7 @@
   let revoking = $state<number | null>(null);
   let tokenName = $state("");
   let created = $state<CreatedToken | null>(null);
-  const hub = $derived(connection.hub || location.origin);
+  const hub = $derived(hubOrigin());
 
   onMount(async () => {
     try { tokens = await api.tokens(); } catch (error) { toastError(error); } finally { loading = false; }

@@ -33,10 +33,34 @@ const base = desktop
     : "hub://localhost"
   : "";
 
-/** The hub's own address for `path`, as people open and share it: in the
- * app, the hub's, never the app's own origin. */
+/** The hub's address, as people know it: in the app, the hub's, never the
+ * app's own origin, which is only where it serves its pages. Empty in the
+ * app until the hub is known. Every address shown or shared starts here. */
+export function hubOrigin(): string {
+  return desktop ? connection.hub : location.origin;
+}
+
+/** The hub's host, as it is shown. */
+export function hubHost(): string {
+  const origin = hubOrigin();
+  return origin ? new URL(origin).host : "";
+}
+
+/** The hub's own address for `path`, as people open and share it. */
 export function publicUrl(path: string): string {
-  return `${desktop ? connection.hub : location.origin}${path}`;
+  return `${hubOrigin()}${path}`;
+}
+
+/** Where `href` leads outside the app: the hub's resources and the app's
+ * own pages at the hub's address, since the app's origins mean nothing
+ * there; anything else as it is. */
+export function outwardUrl(href: string): string {
+  const url = new URL(href);
+  const own =
+    href.startsWith("hub://localhost/") ||
+    href.startsWith("http://hub.localhost/") ||
+    url.origin === location.origin;
+  return own ? publicUrl(`${url.pathname}${url.search}${url.hash}`) : href;
 }
 
 /** API-owned resources must never resolve against the privileged app origin. */

@@ -1,15 +1,14 @@
 <script lang="ts">
   import { onMount } from "svelte";
-  import { page } from "$app/state";
   import { session } from "#lib/session.svelte.ts";
-  import { connection } from "#lib/transport.svelte.ts";
+  import { hubOrigin } from "#lib/transport.svelte.ts";
   import { clampScale, MAX_SCALE, MIN_SCALE, readScale, SCALE_STEP, widthKey, writeScale } from "#lib/sidebar-width.ts";
 
   let { scale = $bindable(MIN_SCALE), dragging = $bindable(false) }: { scale?: number; dragging?: boolean } = $props();
   let handle: HTMLDivElement;
   let minimum = $state(0);
   let start: { pointer: number; x: number; scale: number } | null = null;
-  const key = $derived(widthKey(connection.hub || page.url.origin, session.me?.id ?? 0));
+  const key = $derived(widthKey(hubOrigin(), session.me?.id ?? 0));
 
   $effect(() => { scale = readScale(key); });
 

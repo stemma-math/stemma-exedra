@@ -3,6 +3,7 @@
   import AccountMenu from "./AccountMenu.svelte";
   import { session } from "#lib/session.svelte.ts";
   import { page } from "$app/state";
+  import { hubHost } from "#lib/transport.svelte.ts";
   let { children }: { children: Snippet } = $props();
 </script>
 
@@ -32,7 +33,7 @@
   </header>
   <div class="account-frame__body">{@render children()}</div>
   <footer class="account-frame__foot quiet">
-    <span class="identifier truncate">{page.url.host}</span
+    <span class="identifier truncate">{hubHost()}</span
     ><span class="identifier">Stemma {__STEMMA_VERSION__}</span>
     <stemma-theme-switch class="push"></stemma-theme-switch>
   </footer>
