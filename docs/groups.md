@@ -68,6 +68,10 @@ up, with how many. Opening a notification, or reading its thread, marks it
 read. A notification about a thread or message that is gone, or of a group
 you left, stays and says so.
 
+Each notification can be marked read or unread again, or deleted; select
+several, or all of those shown, to do it at once. The search finds them by
+who, the group, the thread, or what the message or note says.
+
 Notes go only to members of the group, and each person decides what they
 accept in **Settings → Notifications**: how many notes an hour (no limit by
 default), and whether from people's agents too (yes by default). A note

@@ -1211,10 +1211,28 @@ pub struct NotificationPage {
     pub more: bool,
 }
 
-/// What one asks for: the notifications before one, a page at a time.
+/// What one asks for: the notifications before one, a page at a time;
+/// with `q`, only those that say it.
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
 pub struct NotificationQuery {
     pub before: Option<i64>,
+    pub q: Option<String>,
+}
+
+/// What to do with some of one's notifications.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum NotificationChange {
+    Read,
+    Unread,
+    Delete,
+}
+
+/// Some of one's notifications, and what to do with them.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct ChangeNotifications {
+    pub ids: Vec<i64>,
+    pub change: NotificationChange,
 }
 
 /// What a person accepts as notes, and how long they keep what they read.

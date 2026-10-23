@@ -9,8 +9,8 @@
 use std::collections::BTreeSet;
 
 use stemma_core::api::{
-    Notification, NotificationKind, NotificationSettings, NotifiedGroup, NotifiedThread,
-    PersonalEvent, ThreadKind, User,
+    Notification, NotificationChange, NotificationKind, NotificationSettings, NotifiedGroup,
+    NotifiedThread, PersonalEvent, ThreadKind, User,
 };
 
 use crate::db;
@@ -88,7 +88,8 @@ pub async fn notify(state: &AppState, users: &[i64], notice: &Notice<'_>) -> Api
         if gathers(notice.kind)
             && let Some(thread_id) = notice.thread_id
         {
-            let gathered: Option<i64> = sqlx::query_scalar(
+            // More than one, when one was marked unread again.
+            let gathered: Vec<i64> = sqlx::query_scalar(
                 "DELETE FROM notifications
                  WHERE user_id = ? AND kind = ? AND thread_id = ? AND read_at IS NULL
                  RETURNING count",
@@ -96,9 +97,9 @@ pub async fn notify(state: &AppState, users: &[i64], notice: &Notice<'_>) -> Api
             .bind(user)
             .bind(notice.kind.as_str())
             .bind(thread_id)
-            .fetch_optional(&mut *tx)
+            .fetch_all(&mut *tx)
             .await?;
-            count += gathered.unwrap_or(0);
+            count += gathered.iter().sum::<i64>();
         }
         let now = db::now();
         sqlx::query(
@@ -169,16 +170,10 @@ pub async fn changed(state: &AppState, user: i64) -> ApiResult<()> {
     Ok(())
 }
 
-/// Marks `user`'s notifications read: one, those of a thread, or all.
+/// Marks `user`'s notifications read: those of a thread, or all.
 pub async fn read(state: &AppState, user: i64, which: Which) -> ApiResult<()> {
     let now = db::now();
     let query = match which {
-        Which::One(id) => sqlx::query(
-            "UPDATE notifications SET read_at = ? WHERE user_id = ? AND id = ? AND read_at IS NULL",
-        )
-        .bind(now)
-        .bind(user)
-        .bind(id),
         Which::Thread(thread_id) => sqlx::query(
             "UPDATE notifications SET read_at = ?
              WHERE user_id = ? AND thread_id = ? AND read_at IS NULL",
@@ -201,9 +196,48 @@ pub async fn read(state: &AppState, user: i64, which: Which) -> ApiResult<()> {
 /// Which notifications to mark read.
 #[derive(Clone, Copy, Debug)]
 pub enum Which {
-    One(i64),
     Thread(i64),
     All,
+}
+
+/// Marks some of `user`'s notifications read or unread, or deletes them.
+/// Those that are not theirs are left alone.
+pub async fn change(
+    state: &AppState,
+    user: i64,
+    ids: &[i64],
+    change: NotificationChange,
+) -> ApiResult<()> {
+    let now = db::now();
+    let mut tx = state.db.begin().await?;
+    let mut affected = 0;
+    for &id in ids {
+        let query = match change {
+            NotificationChange::Read => sqlx::query(
+                "UPDATE notifications SET read_at = ?
+                 WHERE user_id = ? AND id = ? AND read_at IS NULL",
+            )
+            .bind(now),
+            NotificationChange::Unread => sqlx::query(
+                "UPDATE notifications SET read_at = NULL
+                 WHERE user_id = ? AND id = ? AND read_at IS NOT NULL",
+            ),
+            NotificationChange::Delete => {
+                sqlx::query("DELETE FROM notifications WHERE user_id = ? AND id = ?")
+            }
+        };
+        affected += query
+            .bind(user)
+            .bind(id)
+            .execute(&mut *tx)
+            .await?
+            .rows_affected();
+    }
+    tx.commit().await?;
+    if affected > 0 {
+        changed(state, user).await?;
+    }
+    Ok(())
 }
 
 /// Forgets what `user` read longer ago than they keep it.
@@ -261,12 +295,23 @@ struct Row {
 }
 
 /// A page of `user`'s notifications, newest first, before the one
-/// `before`; and whether there are more.
+/// `before` and saying `search` if given; and whether there are more.
+///
+/// What a notification says is who, where and what: the person or agent,
+/// the group, the thread, the note or the message, and its kind.
 pub async fn page(
     state: &AppState,
     user: i64,
     before: Option<i64>,
+    search: Option<&str>,
 ) -> ApiResult<(Vec<Notification>, bool)> {
+    let pattern = search.map(str::trim).filter(|s| !s.is_empty()).map(|s| {
+        let escaped = s
+            .replace('\\', "\\\\")
+            .replace('%', "\\%")
+            .replace('_', "\\_");
+        format!("%{escaped}%")
+    });
     let rows: Vec<Row> = sqlx::query_as(
         "SELECT n.id, n.kind, n.count, n.agent, n.text, n.read_at, n.updated_at,
                 g.slug AS group_slug, g.name AS group_name,
@@ -280,12 +325,19 @@ pub async fn page(
          LEFT JOIN messages msg ON msg.thread_id = n.thread_id AND msg.number = n.message
          LEFT JOIN users a ON a.id = n.actor_id
          WHERE n.user_id = ?1 AND (?2 IS NULL OR n.id < ?2)
+           AND (?4 IS NULL
+                OR a.display_name LIKE ?4 ESCAPE '\\' OR a.username LIKE ?4 ESCAPE '\\'
+                OR n.agent LIKE ?4 ESCAPE '\\' OR g.name LIKE ?4 ESCAPE '\\'
+                OR t.title LIKE ?4 ESCAPE '\\' OR n.text LIKE ?4 ESCAPE '\\'
+                OR (msg.deleted_at IS NULL AND msg.body LIKE ?4 ESCAPE '\\')
+                OR n.kind LIKE ?4 ESCAPE '\\')
          ORDER BY n.id DESC
          LIMIT ?3",
     )
     .bind(user)
     .bind(before)
     .bind(PAGE + 1)
+    .bind(pattern)
     .fetch_all(&state.db)
     .await?;
     let more = rows.len() > PAGE as usize;

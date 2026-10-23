@@ -9,7 +9,8 @@ use axum::http::StatusCode;
 use axum::response::sse::{Event as SseEvent, KeepAlive, Sse};
 use futures_util::{Stream, StreamExt};
 use stemma_core::api::{
-    NotificationKind, NotificationPage, NotificationQuery, NotificationSettings, SendNote,
+    ChangeNotifications, NotificationKind, NotificationPage, NotificationQuery,
+    NotificationSettings, SendNote,
 };
 use tokio_stream::wrappers::BroadcastStream;
 use tokio_stream::wrappers::errors::BroadcastStreamRecvError;
@@ -21,6 +22,9 @@ use crate::notifications::{self, Notice, Which};
 use crate::state::AppState;
 use crate::{api::forum, db};
 
+/// How many notifications one changes at once.
+const CHANGE_AT_ONCE: usize = 1_000;
+
 pub async fn list(
     State(state): State<AppState>,
     viewer: Viewer,
@@ -28,7 +32,8 @@ pub async fn list(
 ) -> ApiResult<Json<NotificationPage>> {
     viewer.require_full()?;
     notifications::prune(&state, viewer.id).await?;
-    let (items, more) = notifications::page(&state, viewer.id, query.before).await?;
+    let (items, more) =
+        notifications::page(&state, viewer.id, query.before, query.q.as_deref()).await?;
     Ok(Json(NotificationPage {
         items,
         unread: notifications::unread(&state, viewer.id).await?,
@@ -36,13 +41,20 @@ pub async fn list(
     }))
 }
 
-pub async fn read_one(
+/// Marks some of the viewer's notifications read or unread, or deletes
+/// them: one, or those they chose.
+pub async fn change(
     State(state): State<AppState>,
     viewer: Viewer,
-    Path(id): Path<i64>,
+    Json(body): Json<ChangeNotifications>,
 ) -> ApiResult<StatusCode> {
     viewer.require_full()?;
-    notifications::read(&state, viewer.id, Which::One(id)).await?;
+    if body.ids.len() > CHANGE_AT_ONCE {
+        return Err(ApiError::invalid(format!(
+            "Change at most {CHANGE_AT_ONCE} notifications at once"
+        )));
+    }
+    notifications::change(&state, viewer.id, &body.ids, body.change).await?;
     Ok(StatusCode::NO_CONTENT)
 }
 

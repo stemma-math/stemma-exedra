@@ -3813,4 +3813,56 @@ async fn people_are_told_what_concerns_them() {
     let reply = hub.post(&bob, "/me/notifications/read", json!({})).await;
     assert_eq!(reply.status, StatusCode::NO_CONTENT);
     assert_eq!(notifications(&bob).await["unread"], 0);
+
+    // Found by who, where or what they say.
+    let all = notifications(&bob).await["items"].as_array().unwrap().len();
+    let found = hub.get(&bob, "/me/notifications?q=from%20ME").await.json();
+    assert_eq!(found["items"].as_array().unwrap().len(), 1);
+    assert_eq!(found["items"][0]["text"], "From me");
+    let found = hub.get(&bob, "/me/notifications?q=ada").await.json();
+    assert_eq!(found["items"].as_array().unwrap().len(), all);
+    let none = hub.get(&bob, "/me/notifications?q=100%25").await.json();
+    assert!(none["items"].as_array().unwrap().is_empty());
+
+    // Unread again, read, and deleted, one or several; another's are left.
+    let ids: Vec<i64> = notifications(&bob).await["items"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|n| n["id"].as_i64().unwrap())
+        .collect();
+    let change = async |client: &Client, ids: &[i64], change: &str| {
+        hub.post(
+            client,
+            "/me/notifications/change",
+            json!({"ids": ids, "change": change}),
+        )
+        .await
+        .status
+    };
+    assert_eq!(
+        change(&bob, &ids[..2], "unread").await,
+        StatusCode::NO_CONTENT
+    );
+    assert_eq!(notifications(&bob).await["unread"], 2);
+    assert_eq!(
+        change(&bob, &ids[..1], "read").await,
+        StatusCode::NO_CONTENT
+    );
+    assert_eq!(notifications(&bob).await["unread"], 1);
+    assert_eq!(
+        change(&ada, &ids[..2], "delete").await,
+        StatusCode::NO_CONTENT
+    );
+    assert_eq!(
+        notifications(&bob).await["items"].as_array().unwrap().len(),
+        all
+    );
+    assert_eq!(
+        change(&bob, &ids[..2], "delete").await,
+        StatusCode::NO_CONTENT
+    );
+    let page = notifications(&bob).await;
+    assert_eq!(page["items"].as_array().unwrap().len(), all - 2);
+    assert_eq!(page["unread"], 0);
 }

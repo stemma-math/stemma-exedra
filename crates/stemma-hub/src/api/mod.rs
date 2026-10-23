@@ -53,7 +53,7 @@ pub fn router(state: AppState) -> Router {
             get(notifications::settings).put(notifications::update_settings),
         )
         .route("/me/notifications/read", post(notifications::read_all))
-        .route("/me/notifications/{id}/read", post(notifications::read_one))
+        .route("/me/notifications/change", post(notifications::change))
         .route("/me/events", get(notifications::stream))
         .route("/invitations/{token}", get(invitations::info))
         .route("/invitations/{token}/accept", post(invitations::accept))
