@@ -8,8 +8,8 @@ use serde::de::DeserializeOwned;
 use stemma_core::api::{
     ApiToken, CreateAgentToken, CreatePaper, CreateThread, CreateToken, CreatedToken,
     DeclarationPage, DeclarationSummary, ErrorBody, LibraryState, Me, Message, PREFIX, Paper,
-    PaperFileText, PaperPage, PaperSource, PostMessage, SearchHit, SignIn, Thread, ThreadKind,
-    ThreadPage,
+    PaperFileText, PaperPage, PaperSource, PostMessage, SearchHit, SendNote, SignIn, Thread,
+    ThreadKind, ThreadPage,
 };
 
 /// An error the hub answered with, or not reaching it.
@@ -346,6 +346,13 @@ impl Hub {
     ) -> Result<Message> {
         self.post(&format!("{}/threads/{thread}/messages", g(group)), message)
             .await
+    }
+
+    /// Leaves a note for some of the group's members.
+    pub async fn send_note(&self, group: &str, note: &SendNote) -> Result<()> {
+        self.post::<serde_json::Value>(&format!("{}/notes", g(group)), note)
+            .await?;
+        Ok(())
     }
 
     pub async fn search(&self, group: &str, query: &str, limit: u32) -> Result<Vec<SearchHit>> {

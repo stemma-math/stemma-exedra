@@ -4,7 +4,7 @@
 use serde::Deserialize;
 use serde_json::{Value, json};
 use stemma_core::Address;
-use stemma_core::api::{CreateThread, PostMessage, ThreadKind};
+use stemma_core::api::{CreateThread, PostMessage, SendNote, ThreadKind};
 
 use super::{GROUP, ToolDef, ToolError, ToolResult, Toolbox, address_in, parse};
 use crate::format;
@@ -77,6 +77,28 @@ pub fn definitions() -> Vec<ToolDef> {
                     "group": {"type": "string", "description": GROUP}
                 },
                 "required": ["thread", "body"]
+            }),
+            writes: true,
+        },
+        ToolDef {
+            name: "notify",
+            handler: |toolbox, args, agent| Box::pin(notify(toolbox, args, agent)),
+            terminal: &["notify"],
+            positional: &["to", "body"],
+            description: "Leave a note for some of the group's members: it reaches them as a \
+                          notification, shown as written by you, the agent, for the person you \
+                          work for. Use it when someone must know of something and no thread \
+                          is the place to say it, and keep it short: cite what it is about by \
+                          address ([[t12#45]], [[lean:Foo.bar]]).",
+            input_schema: json!({
+                "type": "object",
+                "properties": {
+                    "to": {"type": "string",
+                           "description": "Their usernames, separated by commas or spaces: @ada, @bob."},
+                    "body": {"type": "string", "description": "The note, in Markdown."},
+                    "group": {"type": "string", "description": GROUP}
+                },
+                "required": ["to", "body"]
             }),
             writes: true,
         },
@@ -284,6 +306,41 @@ async fn post_message(toolbox: &Toolbox, args: Value, agent: Option<&str>) -> To
         toolbox.hub().base(),
         address.web_path(&group)
     ))
+}
+
+#[derive(Deserialize)]
+struct Notify {
+    to: String,
+    body: String,
+    group: Option<String>,
+}
+
+async fn notify(toolbox: &Toolbox, args: Value, agent: Option<&str>) -> ToolResult {
+    let args: Notify = parse(args)?;
+    let to: Vec<String> = args
+        .to
+        .split(|c: char| c == ',' || c.is_whitespace())
+        .map(|name| name.trim().trim_start_matches('@'))
+        .filter(|name| !name.is_empty())
+        .map(str::to_owned)
+        .collect();
+    if to.is_empty() {
+        return Err(ToolError::invalid("Say who the note is for"));
+    }
+    let group = toolbox.group(args.group.as_deref()).await?;
+    toolbox
+        .hub()
+        .send_note(
+            &group,
+            &SendNote {
+                to: to.clone(),
+                body: args.body,
+                agent: agent.map(str::to_owned),
+            },
+        )
+        .await?;
+    let to: Vec<String> = to.iter().map(|name| format!("@{name}")).collect();
+    Ok(format!("Left a note for {}.\n", to.join(", ")))
 }
 
 #[derive(Deserialize)]

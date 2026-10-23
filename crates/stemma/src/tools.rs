@@ -6,7 +6,7 @@ use serde_json::{Map, Value};
 use stemma_client::config::{self, Credentials};
 use stemma_client::tools::{ToolDef, Toolbox, all_definitions};
 
-const HELP: &str = "{about}\n\nUsage: {usage}\n\nThe forum:\n  threads     List threads; new opens a thread\n  read        Read a thread, declaration or paper\n  post        Post a message\n  search      Search the forum\n\nLibrary and papers:\n  library     Browse the library; lookup and search declarations\n  papers      List papers; read a paper's source\n  paper       Create a paper with new\n\nFiles:\n  attachment  Download an attachment\n\n{options}";
+const HELP: &str = "{about}\n\nUsage: {usage}\n\nThe forum:\n  threads     List threads; new opens a thread\n  read        Read a thread, declaration or paper\n  post        Post a message\n  search      Search the forum\n  notify      Leave a note for some of the group's members\n\nLibrary and papers:\n  library     Browse the library; lookup and search declarations\n  papers      List papers; read a paper's source\n  paper       Create a paper with new\n\nFiles:\n  attachment  Download an attachment\n\n{options}";
 
 fn add(command: Command, path: &[&'static str], def: &ToolDef) -> Command {
     let Some((&name, rest)) = path.split_first() else {

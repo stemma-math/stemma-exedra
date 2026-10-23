@@ -100,6 +100,16 @@ async fn the_tools_read_post_and_search() {
     assert!(posted.starts_with("Posted t1#2: http://"), "{posted}");
     assert!(posted.trim_end().ends_with("/g/geometry/t/1#2"));
 
+    let noted = tools
+        .call(
+            "notify",
+            json!({"to": "@ada", "body": "See [[t1#2]]."}),
+            Some("Claude Code"),
+        )
+        .await
+        .unwrap();
+    assert_eq!(noted, "Left a note for @ada.\n");
+
     let read = tools
         .call("read_thread", json!({"address": "[[t1#1–2]]"}), None)
         .await
@@ -275,7 +285,7 @@ async fn mcp_serves_the_tools_and_names_the_agent() {
         let annotations = tool.annotations.as_ref().expect("tool annotations");
         let writes = matches!(
             tool.name.as_ref(),
-            "post_message" | "open_thread" | "create_paper"
+            "post_message" | "notify" | "open_thread" | "create_paper"
         );
         assert_eq!(annotations.read_only_hint, Some(!writes), "{}", tool.name);
         assert_eq!(annotations.destructive_hint, Some(false));
@@ -289,6 +299,7 @@ async fn mcp_serves_the_tools_and_names_the_agent() {
             "list_threads",
             "read_thread",
             "post_message",
+            "notify",
             "open_thread",
             "search",
             "library_state",
