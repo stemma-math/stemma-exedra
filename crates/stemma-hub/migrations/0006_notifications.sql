@@ -21,8 +21,6 @@ CREATE TABLE notifications (
     agent TEXT,
     -- A note's stored text, or what it is about: a role, a group's name.
     text TEXT,
-    -- The token that sent a note, to limit how many it sends.
-    token_id INTEGER REFERENCES api_tokens (id) ON DELETE SET NULL,
     created_at INTEGER NOT NULL,
     updated_at INTEGER NOT NULL,
     read_at INTEGER
@@ -30,4 +28,4 @@ CREATE TABLE notifications (
 
 CREATE INDEX notifications_user ON notifications (user_id, id DESC);
 CREATE INDEX notifications_unread ON notifications (user_id, thread_id, kind) WHERE read_at IS NULL;
-CREATE INDEX notifications_sender ON notifications (actor_id, created_at) WHERE kind = 'note';
+CREATE INDEX notifications_notes ON notifications (user_id, created_at) WHERE kind = 'note';

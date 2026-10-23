@@ -13,6 +13,12 @@ CREATE TABLE users (
     subject TEXT NOT NULL UNIQUE,
     -- The login of their account in the forge, once the hub has made it.
     forge_login TEXT UNIQUE,
+    -- What they accept as notes: how many an hour, none for no limit, and
+    -- whether from agents too.
+    notes_per_hour INTEGER,
+    notes_from_agents INTEGER NOT NULL DEFAULT 1,
+    -- How long they keep read notifications, in days; none for always.
+    keep_read_days INTEGER,
     created_at INTEGER NOT NULL,
     -- Set when the account is deleted. Its row stays, for what it wrote,
     -- with a username no one can have and no password.

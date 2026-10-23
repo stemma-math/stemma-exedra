@@ -8,7 +8,9 @@ use axum::extract::{Path, Query, State};
 use axum::http::StatusCode;
 use axum::response::sse::{Event as SseEvent, KeepAlive, Sse};
 use futures_util::{Stream, StreamExt};
-use stemma_core::api::{NotificationKind, NotificationPage, NotificationQuery, SendNote};
+use stemma_core::api::{
+    NotificationKind, NotificationPage, NotificationQuery, NotificationSettings, SendNote,
+};
 use tokio_stream::wrappers::BroadcastStream;
 use tokio_stream::wrappers::errors::BroadcastStreamRecvError;
 
@@ -18,11 +20,6 @@ use crate::error::{ApiError, ApiResult};
 use crate::notifications::{self, Notice, Which};
 use crate::state::AppState;
 use crate::{api::forum, db};
-
-/// The most people one note is for.
-const MAX_RECIPIENTS: usize = 20;
-/// The most notes one person, with their agents, leaves in an hour.
-const NOTES_PER_HOUR: i64 = 60;
 
 pub async fn list(
     State(state): State<AppState>,
@@ -69,7 +66,8 @@ pub async fn read_thread(
 }
 
 /// Leaves a note for some of the group's members: a person, or an agent of
-/// theirs in a session. An answer's agent answers instead.
+/// theirs in a session. An answer's agent answers instead. Each of them
+/// decides what they accept; the note goes to all of them, or to none.
 pub async fn send_note(
     State(state): State<AppState>,
     viewer: Viewer,
@@ -77,8 +75,8 @@ pub async fn send_note(
     Json(body): Json<SendNote>,
 ) -> ApiResult<StatusCode> {
     let group = Membership::of(&state, &viewer, &slug).await?;
-    let (agent, token_id) = match viewer.agent() {
-        Some(scope) if scope.session => (Some(scope.agent.clone()), Some(scope.token_id)),
+    let agent = match viewer.agent() {
+        Some(scope) if scope.session => Some(scope.agent.clone()),
         Some(_) => {
             return Err(ApiError::forbidden(
                 "An answer's agent cannot leave notes: it answers in its thread",
@@ -88,8 +86,8 @@ pub async fn send_note(
             Some(_) if !viewer.with_token => {
                 return Err(ApiError::invalid("Only an API token writes for an agent"));
             }
-            Some(agent) => (Some(required_text(agent, "The agent's name", 60)?), None),
-            None => (None, None),
+            Some(agent) => Some(required_text(agent, "The agent's name", 60)?),
+            None => None,
         },
     };
     if !group.role.can_write() {
@@ -98,25 +96,6 @@ pub async fn send_note(
     let text = required_text(&body.body, "A note", 4_000)?;
     if body.to.is_empty() {
         return Err(ApiError::invalid("Say who the note is for"));
-    }
-    if body.to.len() > MAX_RECIPIENTS {
-        return Err(ApiError::invalid(format!(
-            "A note is for at most {MAX_RECIPIENTS} people"
-        )));
-    }
-    let sent: i64 = sqlx::query_scalar(
-        "SELECT COUNT(*) FROM notifications WHERE kind = 'note' AND actor_id = ? AND created_at > ?",
-    )
-    .bind(viewer.id)
-    .bind(db::now() - 60 * 60 * 1000)
-    .fetch_one(&state.db)
-    .await?;
-    if sent + body.to.len() as i64 > NOTES_PER_HOUR {
-        return Err(ApiError::new(
-            StatusCode::TOO_MANY_REQUESTS,
-            "too_many_notes",
-            format!("At most {NOTES_PER_HOUR} notes an hour: try again later"),
-        ));
     }
     let mut users = Vec::new();
     for name in &body.to {
@@ -129,19 +108,79 @@ pub async fn send_note(
         .bind(name)
         .fetch_optional(&state.db)
         .await?;
-        users.push(user.ok_or_else(|| {
+        let user = user.ok_or_else(|| {
             ApiError::invalid(format!("@{name} is not a member of {}", group.slug))
-        })?);
+        })?;
+        let accepts = notifications::settings(&state, user).await?;
+        if agent.is_some() && !accepts.notes_from_agents {
+            return Err(ApiError::forbidden(format!(
+                "@{name} accepts notes from people only, not from their agents"
+            )));
+        }
+        if let Some(limit) = accepts.notes_per_hour {
+            let received: i64 = sqlx::query_scalar(
+                "SELECT COUNT(*) FROM notifications
+                 WHERE kind = 'note' AND user_id = ? AND created_at > ?",
+            )
+            .bind(user)
+            .bind(db::now() - 60 * 60 * 1000)
+            .fetch_one(&state.db)
+            .await?;
+            if received >= i64::from(limit) {
+                return Err(ApiError::new(
+                    StatusCode::TOO_MANY_REQUESTS,
+                    "too_many_notes",
+                    format!("@{name} accepts at most {limit} notes an hour: try again later"),
+                ));
+            }
+        }
+        users.push(user);
     }
     let stored =
         crate::text::encode(&mut *state.db.acquire().await?, group.group_id, &text).await?;
-    let mut notice = Notice::new(NotificationKind::Note)
+    let notice = Notice::new(NotificationKind::Note)
         .group(group.group_id)
         .by(viewer.id, agent.as_deref())
         .text(&stored);
-    notice.token_id = token_id;
     notifications::notify(&state, &users, &notice).await?;
     Ok(StatusCode::NO_CONTENT)
+}
+
+pub async fn settings(
+    State(state): State<AppState>,
+    viewer: Viewer,
+) -> ApiResult<Json<NotificationSettings>> {
+    viewer.require_full()?;
+    Ok(Json(notifications::settings(&state, viewer.id).await?))
+}
+
+pub async fn update_settings(
+    State(state): State<AppState>,
+    viewer: Viewer,
+    Json(body): Json<NotificationSettings>,
+) -> ApiResult<Json<NotificationSettings>> {
+    viewer.require_full()?;
+    if body.notes_per_hour == Some(0) {
+        return Err(ApiError::invalid(
+            "Accept at least one note an hour, or no limit",
+        ));
+    }
+    if body.keep_read_days == Some(0) {
+        return Err(ApiError::invalid(
+            "Keep what you read a day at least, or always",
+        ));
+    }
+    sqlx::query(
+        "UPDATE users SET notes_per_hour = ?, notes_from_agents = ?, keep_read_days = ? WHERE id = ?",
+    )
+    .bind(body.notes_per_hour)
+    .bind(body.notes_from_agents)
+    .bind(body.keep_read_days)
+    .bind(viewer.id)
+    .execute(&state.db)
+    .await?;
+    notifications::prune(&state, viewer.id).await?;
+    Ok(Json(notifications::settings(&state, viewer.id).await?))
 }
 
 /// Streams the viewer's own events, each a JSON

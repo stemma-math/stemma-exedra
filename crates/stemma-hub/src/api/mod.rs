@@ -48,6 +48,10 @@ pub fn router(state: AppState) -> Router {
         .route("/me/tokens/{id}", delete(account::revoke_token))
         .route("/me/agent-tokens", post(account::create_agent_token))
         .route("/me/notifications", get(notifications::list))
+        .route(
+            "/me/notifications/settings",
+            get(notifications::settings).put(notifications::update_settings),
+        )
         .route("/me/notifications/read", post(notifications::read_all))
         .route("/me/notifications/{id}/read", post(notifications::read_one))
         .route("/me/events", get(notifications::stream))

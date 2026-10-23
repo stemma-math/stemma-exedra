@@ -1217,6 +1217,17 @@ pub struct NotificationQuery {
     pub before: Option<i64>,
 }
 
+/// What a person accepts as notes, and how long they keep what they read.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct NotificationSettings {
+    /// How many notes they accept an hour; none for no limit.
+    pub notes_per_hour: Option<u32>,
+    /// Whether they accept notes from people's agents, not only people.
+    pub notes_from_agents: bool,
+    /// How many days they keep read notifications; none for always.
+    pub keep_read_days: Option<u32>,
+}
+
 /// A note for some of a group's members, from a person or their agent.
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
 pub struct SendNote {

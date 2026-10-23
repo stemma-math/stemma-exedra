@@ -2,21 +2,21 @@
 //! a note, or something happened to one of their groups.
 //!
 //! While unread, a mention or an answer gathers the next of its kind in the
-//! same thread, as one notification that moves up. Read ones are kept for
-//! [`KEEP_READ_DAYS`], and a person's listeners hear how many are unread.
+//! same thread, as one notification that moves up. Read ones are kept as
+//! long as their person chooses, and a person's listeners hear how many are
+//! unread.
 
 use std::collections::BTreeSet;
 
 use stemma_core::api::{
-    Notification, NotificationKind, NotifiedGroup, NotifiedThread, PersonalEvent, ThreadKind, User,
+    Notification, NotificationKind, NotificationSettings, NotifiedGroup, NotifiedThread,
+    PersonalEvent, ThreadKind, User,
 };
 
 use crate::db;
 use crate::error::ApiResult;
 use crate::state::AppState;
 
-/// How long a read notification is kept.
-pub const KEEP_READ_DAYS: i64 = 30;
 /// How many notifications a page holds.
 pub const PAGE: u32 = 30;
 /// How long an excerpt of a message is, in characters.
@@ -32,7 +32,6 @@ pub struct Notice<'a> {
     pub actor_id: Option<i64>,
     pub agent: Option<&'a str>,
     pub text: Option<&'a str>,
-    pub token_id: Option<i64>,
 }
 
 impl<'a> Notice<'a> {
@@ -45,7 +44,6 @@ impl<'a> Notice<'a> {
             actor_id: None,
             agent: None,
             text: None,
-            token_id: None,
         }
     }
 
@@ -105,8 +103,8 @@ pub async fn notify(state: &AppState, users: &[i64], notice: &Notice<'_>) -> Api
         let now = db::now();
         sqlx::query(
             "INSERT INTO notifications
-             (user_id, kind, group_id, thread_id, message, count, actor_id, agent, text, token_id, created_at, updated_at)
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+             (user_id, kind, group_id, thread_id, message, count, actor_id, agent, text, created_at, updated_at)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
         )
         .bind(user)
         .bind(notice.kind.as_str())
@@ -117,7 +115,6 @@ pub async fn notify(state: &AppState, users: &[i64], notice: &Notice<'_>) -> Api
         .bind(notice.actor_id)
         .bind(notice.agent)
         .bind(notice.text)
-        .bind(notice.token_id)
         .bind(now)
         .bind(now)
         .execute(&mut *tx)
@@ -209,15 +206,34 @@ pub enum Which {
     All,
 }
 
-/// Forgets what `user` read long ago.
+/// Forgets what `user` read longer ago than they keep it.
 pub async fn prune(state: &AppState, user: i64) -> ApiResult<()> {
-    let before = db::now() - KEEP_READ_DAYS * 24 * 60 * 60 * 1000;
+    let Some(days) = settings(state, user).await?.keep_read_days else {
+        return Ok(());
+    };
+    let before = db::now() - i64::from(days) * 24 * 60 * 60 * 1000;
     sqlx::query("DELETE FROM notifications WHERE user_id = ? AND read_at < ?")
         .bind(user)
         .bind(before)
         .execute(&state.db)
         .await?;
     Ok(())
+}
+
+/// What `user` accepts as notes, and how long they keep what they read.
+pub async fn settings(state: &AppState, user: i64) -> ApiResult<NotificationSettings> {
+    let (notes_per_hour, notes_from_agents, keep_read_days): (Option<i64>, bool, Option<i64>) =
+        sqlx::query_as(
+            "SELECT notes_per_hour, notes_from_agents, keep_read_days FROM users WHERE id = ?",
+        )
+        .bind(user)
+        .fetch_one(&state.db)
+        .await?;
+    Ok(NotificationSettings {
+        notes_per_hour: notes_per_hour.map(|n| n as u32),
+        notes_from_agents,
+        keep_read_days: keep_read_days.map(|n| n as u32),
+    })
 }
 
 #[derive(sqlx::FromRow)]

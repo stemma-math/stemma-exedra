@@ -3732,6 +3732,38 @@ async fn people_are_told_what_concerns_them() {
     assert_eq!(page["items"][0]["agent"], "Claude");
     assert_eq!(page["items"][0]["text"], "Read [[t1]], @bob");
 
+    // Each decides what notes they accept.
+    let settings = hub.get(&bob, "/me/notifications/settings").await.json();
+    assert_eq!(
+        settings,
+        json!({"notes_per_hour": null, "notes_from_agents": true, "keep_read_days": null})
+    );
+    let set = async |body: Value| {
+        hub.call(&bob, Method::PUT, "/me/notifications/settings", Some(body))
+            .await
+            .status
+    };
+    assert_eq!(
+        set(json!({"notes_per_hour": 0, "notes_from_agents": true, "keep_read_days": null})).await,
+        StatusCode::UNPROCESSABLE_ENTITY
+    );
+    assert_eq!(
+        set(json!({"notes_per_hour": 2, "notes_from_agents": false, "keep_read_days": 7})).await,
+        StatusCode::OK
+    );
+    assert_eq!(note(&token, "bob").await, StatusCode::FORBIDDEN);
+    let from_ada = async || {
+        hub.post(
+            &ada,
+            "/groups/geometry/notes",
+            json!({"to": ["bob"], "body": "From me"}),
+        )
+        .await
+        .status
+    };
+    assert_eq!(from_ada().await, StatusCode::NO_CONTENT);
+    assert_eq!(from_ada().await, StatusCode::TOO_MANY_REQUESTS);
+
     // What happens to their groups.
     let reply = hub
         .call(
