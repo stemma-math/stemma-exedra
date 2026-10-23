@@ -1072,6 +1072,48 @@ async fn events_are_live() {
 }
 
 #[tokio::test]
+async fn ones_own_events_are_live() {
+    let hub = TestHub::new().await;
+    let ada = hub.admin_with_group().await;
+    let bob = hub.member(&ada, "bob").await;
+
+    let mut request = Request::get("/api/v1/me/events")
+        .body(Body::empty())
+        .unwrap();
+    request
+        .headers_mut()
+        .insert(header::COOKIE, bob.cookie.clone().unwrap().parse().unwrap());
+    let response = hub.app.clone().oneshot(request).await.unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    let mut body = response.into_body();
+
+    // Ada's own notifications are not Bob's to hear.
+    hub.post(
+        &ada,
+        "/groups/geometry/threads",
+        json!({"title": "Live", "body": "Hello, @bob"}),
+    )
+    .await;
+
+    let mut seen = String::new();
+    while !seen.contains("notifications") {
+        let frame = tokio::time::timeout(std::time::Duration::from_secs(5), body.frame())
+            .await
+            .expect("an event in time")
+            .unwrap()
+            .unwrap();
+        if let Ok(data) = frame.into_data() {
+            seen.push_str(std::str::from_utf8(&data).unwrap());
+        }
+    }
+    assert!(seen.starts_with("event: ready\ndata: {}\n\n"), "{seen}");
+    assert!(
+        seen.contains(r#"{"type":"notifications","unread":1}"#),
+        "{seen}"
+    );
+}
+
+#[tokio::test]
 async fn the_web_app_is_served_for_any_page() {
     let hub = TestHub::new().await;
     for path in ["/", "/g/geometry/t/1", "/g/geometry/lib/Foo.bar"] {
@@ -2342,6 +2384,12 @@ async fn personal_tokens_route_by_group_priority_capacity_and_connection_time() 
     )
     .await
     .unwrap();
+    // Both answers are one notification for whoever asked.
+    let told = hub.get(&ada, "/me/notifications").await.json();
+    assert_eq!(told["items"][0]["kind"], "answer");
+    assert_eq!(told["items"][0]["count"], 2);
+    assert_eq!(told["items"][0]["agent"], "Claude");
+    assert_eq!(told["items"][0]["thread"]["excerpt"], "The answer");
     let (third, mut three) = computer(&hub, &ada, "Newest", 4, 0).await;
     hub.post(
         &ada,
@@ -3585,4 +3633,152 @@ async fn deleted_accounts_release_current_and_former_usernames() {
     assert_eq!(login, "hopper");
     let replacement = hub.member(&ada, "grace").await;
     assert_ne!(hub.get(&replacement, "/me").await.json()["id"], id);
+}
+
+// ── Notifications ─────────────────────────────────────────────────────
+
+#[tokio::test]
+async fn people_are_told_what_concerns_them() {
+    let hub = TestHub::new().await;
+    let ada = hub.admin_with_group().await;
+    let bob = hub.member(&ada, "bob").await;
+    let gus = hub.join(&ada, "gus", "guest").await;
+    let carl = hub.account(&ada, "carl").await;
+    let notifications = async |client: &Client| hub.get(client, "/me/notifications").await.json();
+    let bob_id = hub.get(&bob, "/me").await.json()["id"].as_i64().unwrap();
+
+    hub.post(&ada, "/groups/geometry/threads", json!({"title": "Gluing"}))
+        .await;
+    let reply = hub
+        .post(
+            &ada,
+            "/groups/geometry/threads/1/messages",
+            json!({"body": "Look, @bob, @carl and @ada"}),
+        )
+        .await;
+    assert_eq!(reply.status, StatusCode::CREATED);
+    hub.post(
+        &ada,
+        "/groups/geometry/threads/1/messages",
+        json!({"body": "@bob again"}),
+    )
+    .await;
+
+    // Two mentions in one thread are one notification; outsiders and the
+    // writer are told nothing.
+    let page = notifications(&bob).await;
+    assert_eq!(page["unread"], 1);
+    let first = &page["items"][0];
+    assert_eq!(first["kind"], "mention");
+    assert_eq!(first["count"], 2);
+    assert_eq!(first["actor"]["username"], "ada");
+    assert_eq!(first["thread"]["number"], 1);
+    assert_eq!(first["thread"]["message"], 2);
+    assert_eq!(first["thread"]["excerpt"], "@bob again");
+    assert_eq!(hub.get(&bob, "/me").await.json()["unread"], 1);
+    assert_eq!(notifications(&carl).await["unread"], 0);
+    assert_eq!(notifications(&ada).await["unread"], 0);
+
+    // An edit tells only those it mentions for the first time.
+    let edit = async |body: &str| {
+        hub.call(
+            &ada,
+            Method::PATCH,
+            "/groups/geometry/threads/1/messages/1",
+            Some(json!({"body": body})),
+        )
+        .await
+        .status
+    };
+    assert_eq!(edit("Look, @bob and @gus").await, StatusCode::OK);
+    assert_eq!(edit("Look, @bob and @gus!").await, StatusCode::OK);
+    assert_eq!(notifications(&gus).await["unread"], 1);
+    assert_eq!(notifications(&bob).await["items"][0]["count"], 2);
+
+    // Reading the thread reads what was told of it.
+    let reply = hub
+        .post(&bob, "/groups/geometry/threads/1/read", json!({}))
+        .await;
+    assert_eq!(reply.status, StatusCode::NO_CONTENT);
+    let page = notifications(&bob).await;
+    assert_eq!(page["unread"], 0);
+    assert_eq!(page["items"][0]["read"], true);
+
+    // Notes, from a person's agent, to members only, never from guests.
+    let token = with_token(&hub, &ada).await;
+    let note = async |client: &Client, to: &str| {
+        hub.post(
+            client,
+            "/groups/geometry/notes",
+            json!({"to": [to], "body": "Read [[t1]], @bob", "agent": "Claude"}),
+        )
+        .await
+        .status
+    };
+    assert_eq!(note(&token, "bob").await, StatusCode::NO_CONTENT);
+    assert_eq!(note(&token, "carl").await, StatusCode::UNPROCESSABLE_ENTITY);
+    assert_eq!(note(&gus, "bob").await, StatusCode::UNPROCESSABLE_ENTITY);
+    let reply = hub
+        .post(
+            &gus,
+            "/groups/geometry/notes",
+            json!({"to": ["bob"], "body": "Hi"}),
+        )
+        .await;
+    assert_eq!(reply.status, StatusCode::FORBIDDEN);
+    let page = notifications(&bob).await;
+    assert_eq!(page["unread"], 1);
+    assert_eq!(page["items"][0]["kind"], "note");
+    assert_eq!(page["items"][0]["agent"], "Claude");
+    assert_eq!(page["items"][0]["text"], "Read [[t1]], @bob");
+
+    // What happens to their groups.
+    let reply = hub
+        .call(
+            &ada,
+            Method::PATCH,
+            &format!("/groups/geometry/members/{bob_id}"),
+            Some(json!({"role": "guest"})),
+        )
+        .await;
+    assert_eq!(reply.status, StatusCode::NO_CONTENT);
+    let page = notifications(&bob).await;
+    assert_eq!(page["items"][0]["kind"], "role");
+    assert_eq!(page["items"][0]["text"], "guest");
+    assert_eq!(page["items"][0]["group"]["slug"], "geometry");
+
+    let reply = hub
+        .post(
+            &carl,
+            "/group-requests",
+            json!({"slug": "topology", "name": "Topology", "purpose": "Spaces"}),
+        )
+        .await;
+    assert_eq!(reply.status, StatusCode::CREATED);
+    let request = reply.json()["id"].as_i64().unwrap();
+    let page = notifications(&ada).await;
+    assert_eq!(page["items"][0]["kind"], "requested");
+    assert_eq!(page["items"][0]["text"], "Topology");
+    hub.post(
+        &ada,
+        &format!("/group-requests/{request}/decline"),
+        json!({}),
+    )
+    .await;
+    assert_eq!(notifications(&carl).await["items"][0]["kind"], "declined");
+
+    // A deleted thread leaves its notifications, gone.
+    let reply = hub
+        .call(&ada, Method::DELETE, "/groups/geometry/threads/1", None)
+        .await;
+    assert_eq!(reply.status, StatusCode::NO_CONTENT);
+    let page = notifications(&gus).await;
+    assert_eq!(page["items"][0]["kind"], "mention");
+    assert_eq!(page["items"][0]["gone"], true);
+    assert!(page["items"][0]["thread"].is_null());
+
+    // All read at once.
+    let reply = hub.post(&bob, "/me/notifications/read", json!({})).await;
+    assert_eq!(reply.status, StatusCode::NO_CONTENT);
+    assert_eq!(notifications(&bob).await["unread"], 0);
 }

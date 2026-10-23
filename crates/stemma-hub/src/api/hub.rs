@@ -4,13 +4,14 @@ use axum::extract::{Path, Query, State};
 use axum::http::StatusCode;
 use stemma_core::api::{
     CreateGroup, CreateGroupRequest, Group, GroupRequest, HubGroup, HubPage, HubPerson, HubSearch,
-    UpdateHubPerson,
+    NotificationKind, UpdateHubPerson,
 };
 
 use super::{Json, UserColumns, groups, required_text};
 use crate::auth::{Scope, Viewer};
 use crate::db;
 use crate::error::{ApiError, ApiResult};
+use crate::notifications::{self, Notice};
 use crate::removal;
 use crate::state::AppState;
 
@@ -104,18 +105,30 @@ pub async fn request(
     let result = sqlx::query("INSERT INTO group_requests (user_id, slug, name, purpose, purpose_ids, created_at) VALUES (?, ?, ?, ?, ?, ?)")
         .bind(viewer.id).bind(&slug).bind(&name).bind(&purpose).bind(ids).bind(created_at).execute(&state.db).await;
     match result {
-        Ok(done) => Ok((
-            StatusCode::CREATED,
-            Json(GroupRequest {
-                id: done.last_insert_rowid(),
-                slug,
-                name,
-                purpose,
-                requester: viewer.user(),
-                status: "open".into(),
-                created_at: db::from_millis(created_at),
-            }),
-        )),
+        Ok(done) => {
+            let admins: Vec<i64> = sqlx::query_scalar(
+                "SELECT id FROM users WHERE hub_admin AND deleted_at IS NULL AND id != ?",
+            )
+            .bind(viewer.id)
+            .fetch_all(&state.db)
+            .await?;
+            let notice = Notice::new(NotificationKind::Requested)
+                .by(viewer.id, None)
+                .text(&name);
+            notifications::notify(&state, &admins, &notice).await?;
+            Ok((
+                StatusCode::CREATED,
+                Json(GroupRequest {
+                    id: done.last_insert_rowid(),
+                    slug,
+                    name,
+                    purpose,
+                    requester: viewer.user(),
+                    status: "open".into(),
+                    created_at: db::from_millis(created_at),
+                }),
+            ))
+        }
         Err(e) if db::is_unique_violation(&e) => Err(ApiError::conflict(
             "You already have an open request for that short name.",
         )),
@@ -148,9 +161,14 @@ pub async fn approve(
         personal_token: false,
         scope: Scope::Full,
     };
-    Ok(Json(
-        groups::create_for(&state, &owner, CreateGroup { slug, name }, Some(id)).await?,
-    ))
+    let group = groups::create_for(&state, &owner, CreateGroup { slug, name }, Some(id)).await?;
+    if id_owner != viewer.id {
+        let notice = Notice::new(NotificationKind::Approved)
+            .group(group.id)
+            .by(viewer.id, None);
+        notifications::notify(&state, &[id_owner], &notice).await?;
+    }
+    Ok(Json(group))
 }
 
 pub async fn decline(
@@ -160,14 +178,19 @@ pub async fn decline(
 ) -> ApiResult<StatusCode> {
     viewer.require_hub_admin()?;
     let _guard = state.group_changes.lock().await;
-    let done = sqlx::query(
-        "UPDATE group_requests SET status = 'declined' WHERE id = ? AND status = 'open'",
+    let (requester, name): (i64, String) = sqlx::query_as(
+        "UPDATE group_requests SET status = 'declined' WHERE id = ? AND status = 'open'
+         RETURNING user_id, name",
     )
     .bind(id)
-    .execute(&state.db)
-    .await?;
-    if done.rows_affected() == 0 {
-        return Err(ApiError::not_found("Open request"));
+    .fetch_optional(&state.db)
+    .await?
+    .ok_or_else(|| ApiError::not_found("Open request"))?;
+    if requester != viewer.id {
+        let notice = Notice::new(NotificationKind::Declined)
+            .by(viewer.id, None)
+            .text(&name);
+        notifications::notify(&state, &[requester], &notice).await?;
     }
     Ok(StatusCode::NO_CONTENT)
 }

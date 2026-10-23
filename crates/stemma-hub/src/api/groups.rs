@@ -2,7 +2,7 @@
 
 use axum::extract::{Path, State};
 use axum::http::StatusCode;
-use stemma_core::api::{CreateGroup, Group, Member, Role, UpdateMember};
+use stemma_core::api::{CreateGroup, Group, Member, NotificationKind, Role, UpdateMember};
 
 use super::{Json, Membership, UserColumns, required_text};
 use crate::auth::Viewer;
@@ -10,6 +10,7 @@ use crate::db;
 use crate::error::{ApiError, ApiResult};
 use crate::forge;
 use crate::library;
+use crate::notifications::{self, Notice};
 use crate::state::AppState;
 
 pub async fn groups_of(state: &AppState, user_id: i64) -> ApiResult<Vec<Group>> {
@@ -222,6 +223,13 @@ pub async fn update_member(
         .execute(&state.db)
         .await?;
     forge::sync_members_or_log(&state, group.group_id).await;
+    if current != body.role && user_id != viewer.id {
+        let notice = Notice::new(NotificationKind::Role)
+            .group(group.group_id)
+            .by(viewer.id, None)
+            .text(body.role.as_str());
+        notifications::notify(&state, &[user_id], &notice).await?;
+    }
     Ok(StatusCode::NO_CONTENT)
 }
 
@@ -246,6 +254,12 @@ pub async fn remove_member(
         .execute(&state.db)
         .await?;
     forge::sync_members_or_log(&state, group.group_id).await;
+    if user_id != viewer.id {
+        let notice = Notice::new(NotificationKind::Removed)
+            .group(group.group_id)
+            .by(viewer.id, None);
+        notifications::notify(&state, &[user_id], &notice).await?;
+    }
     Ok(StatusCode::NO_CONTENT)
 }
 

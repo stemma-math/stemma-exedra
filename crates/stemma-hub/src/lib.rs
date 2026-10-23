@@ -14,6 +14,7 @@ pub mod git;
 pub mod jobs;
 pub mod library;
 pub mod names;
+pub mod notifications;
 pub mod oidc;
 pub mod papers;
 pub mod removal;

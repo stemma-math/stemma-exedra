@@ -1,7 +1,7 @@
 //! The forum: threads, numbered messages and what references resolve to.
 
-use std::collections::HashMap;
 use std::collections::hash_map::Entry;
+use std::collections::{BTreeSet, HashMap};
 
 use axum::extract::{Path, Query, State};
 use axum::http::StatusCode;
@@ -9,15 +9,17 @@ use serde::Deserialize;
 use sqlx::{AssertSqlSafe, Sqlite, Transaction};
 use stemma_core::Address;
 use stemma_core::api::{
-    CreateThread, EditMessage, Event, Message, PostMessage, Resolve, Resolved, SearchHit, Thread,
-    ThreadKind, ThreadPage, UpdateThread,
+    CreateThread, EditMessage, Event, Message, NotificationKind, PostMessage, Resolve, Resolved,
+    SearchHit, Thread, ThreadKind, ThreadPage, UpdateThread,
 };
+use stemma_core::text::{StoredText, Target};
 
 use super::attachments::{self, attachments_of};
 use super::{Json, Membership, UserColumns, required_text};
 use crate::auth::Viewer;
 use crate::db;
 use crate::error::{ApiError, ApiResult};
+use crate::notifications::{self, Notice};
 use crate::state::AppState;
 
 const MAX_BODY_CHARS: usize = 100_000;
@@ -205,19 +207,23 @@ pub async fn create_thread(
     .execute(&mut *tx)
     .await?
     .last_insert_rowid();
+    let mut stored = None;
     if let Some(text) = &first {
-        insert_message(
-            &mut tx,
-            &group,
-            thread_id,
-            viewer.id,
-            agent.as_deref(),
-            agent_runner.as_deref(),
-            text,
-            None,
-            &body.attachments,
-        )
-        .await?;
+        stored = Some(
+            insert_message(
+                &mut tx,
+                &group,
+                thread_id,
+                viewer.id,
+                agent.as_deref(),
+                agent_runner.as_deref(),
+                text,
+                None,
+                &body.attachments,
+            )
+            .await?
+            .1,
+        );
     }
     tx.commit().await?;
 
@@ -239,6 +245,9 @@ pub async fn create_thread(
                 message: message.clone(),
             },
         );
+        if let Some(stored) = &stored {
+            tell_mentioned(&state, &group, thread_id, message, stored).await?;
+        }
         crate::jobs::summon(&state, &group, thread_id, &thread, message).await?;
     }
     Ok((StatusCode::CREATED, Json(ThreadPage { thread, messages })))
@@ -424,7 +433,7 @@ pub(crate) async fn post(
     attachments: &[i64],
 ) -> ApiResult<Message> {
     let mut tx = state.db.begin().await?;
-    let number = insert_message(
+    let (number, stored) = insert_message(
         &mut tx,
         group,
         thread_id,
@@ -448,7 +457,38 @@ pub(crate) async fn post(
         },
     );
     state.publish(group.group_id, Event::ThreadUpdated { thread });
+    tell_mentioned(state, group, thread_id, &message, &stored).await?;
     Ok(message)
+}
+
+/// Tells the members a new message mentions.
+async fn tell_mentioned(
+    state: &AppState,
+    group: &Membership,
+    thread_id: i64,
+    message: &Message,
+    stored: &str,
+) -> ApiResult<()> {
+    let notice = Notice::new(NotificationKind::Mention)
+        .at(group.group_id, thread_id, Some(message.number))
+        .by(message.author.id, message.agent.as_deref());
+    let mentioned = mentioned(stored);
+    notifications::notify_members(state, group.group_id, mentioned, message.author.id, &notice)
+        .await
+}
+
+/// The people a stored text mentions.
+fn mentioned(stored: &str) -> BTreeSet<i64> {
+    serde_json::from_str::<StoredText>(stored)
+        .map(|text| {
+            text.targets()
+                .filter_map(|target| match target {
+                    Target::User(id) => Some(*id),
+                    _ => None,
+                })
+                .collect()
+        })
+        .unwrap_or_default()
 }
 
 pub(crate) fn check_body(text: &str) -> ApiResult<String> {
@@ -461,7 +501,7 @@ pub(crate) fn check_body(text: &str) -> ApiResult<String> {
 }
 
 /// Adds a message to a thread with the next number, and attaches the
-/// author's uploads to it. Returns its number.
+/// author's uploads to it. Returns its number, and its stored text.
 #[allow(clippy::too_many_arguments)]
 async fn insert_message(
     tx: &mut Transaction<'_, Sqlite>,
@@ -473,7 +513,7 @@ async fn insert_message(
     text: &str,
     reply_to: Option<u32>,
     attachment_ids: &[i64],
-) -> ApiResult<u32> {
+) -> ApiResult<(u32, String)> {
     let now = db::now();
     let number: i64 = sqlx::query_scalar(
         "UPDATE threads SET last_message = last_message + 1, last_activity_at = ?
@@ -495,7 +535,7 @@ async fn insert_message(
     .bind(agent)
     .bind(agent_runner)
     .bind(rendered)
-    .bind(stored)
+    .bind(&stored)
     .bind(reply_to)
     .bind(now)
     .execute(&mut **tx)
@@ -518,7 +558,7 @@ async fn insert_message(
             )));
         }
     }
-    Ok(number as u32)
+    Ok((number as u32, stored))
 }
 
 #[derive(sqlx::FromRow)]
@@ -628,7 +668,14 @@ pub async fn edit_message(
         return Err(ApiError::forbidden("Only its author can edit a message"));
     }
     let text = check_body(&body.body)?;
+    let before: Option<String> = sqlx::query_scalar("SELECT body_ids FROM messages WHERE id = ?")
+        .bind(id)
+        .fetch_one(&state.db)
+        .await?;
     let ids = crate::text::encode(&mut *state.db.acquire().await?, group.group_id, &text).await?;
+    // Only those it mentions for the first time are told.
+    let told = before.as_deref().map(mentioned).unwrap_or_default();
+    let new: Vec<i64> = mentioned(&ids).difference(&told).copied().collect();
     let (text, _) = crate::text::render(&state, &ids).await?;
     sqlx::query("UPDATE messages SET body = ?, body_ids = ?, edited_at = ? WHERE id = ?")
         .bind(text)
@@ -645,6 +692,10 @@ pub async fn edit_message(
             message: message.clone(),
         },
     );
+    let notice = Notice::new(NotificationKind::Mention)
+        .at(group.group_id, row.id, Some(message.number))
+        .by(viewer.id, message.agent.as_deref());
+    notifications::notify_members(&state, group.group_id, new, viewer.id, &notice).await?;
     Ok(Json(message))
 }
 

@@ -10,6 +10,7 @@ mod hub;
 mod invitations;
 mod jobs;
 mod library;
+mod notifications;
 mod papers;
 pub mod workers;
 
@@ -46,6 +47,10 @@ pub fn router(state: AppState) -> Router {
         )
         .route("/me/tokens/{id}", delete(account::revoke_token))
         .route("/me/agent-tokens", post(account::create_agent_token))
+        .route("/me/notifications", get(notifications::list))
+        .route("/me/notifications/read", post(notifications::read_all))
+        .route("/me/notifications/{id}/read", post(notifications::read_one))
+        .route("/me/events", get(notifications::stream))
         .route("/invitations/{token}", get(invitations::info))
         .route("/invitations/{token}/accept", post(invitations::accept))
         .route(
@@ -97,6 +102,11 @@ pub fn router(state: AppState) -> Router {
             "/groups/{group}/threads/{thread}/contents",
             get(forum::thread_contents),
         )
+        .route(
+            "/groups/{group}/threads/{thread}/read",
+            post(notifications::read_thread),
+        )
+        .route("/groups/{group}/notes", post(notifications::send_note))
         .route(
             "/groups/{group}/threads/{thread}/messages",
             get(forum::list_messages).post(forum::post_message),

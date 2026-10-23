@@ -303,6 +303,7 @@ pub async fn account(state: &AppState, user_id: i64) -> ApiResult<()> {
     for statement in [
         "DELETE FROM user_names WHERE user_id = ?",
         "DELETE FROM sessions WHERE user_id = ?",
+        "DELETE FROM notifications WHERE user_id = ?",
         "DELETE FROM api_tokens WHERE user_id = ?",
         "DELETE FROM memberships WHERE user_id = ?",
         "DELETE FROM paper_authors WHERE user_id = ?",

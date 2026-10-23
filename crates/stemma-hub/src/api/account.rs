@@ -170,6 +170,7 @@ pub async fn me_of(state: &AppState, user_id: i64) -> ApiResult<Me> {
         },
         hub_admin,
         groups: super::groups::groups_of(state, user_id).await?,
+        unread: crate::notifications::unread(state, user_id).await?,
     })
 }
 

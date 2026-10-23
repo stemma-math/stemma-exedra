@@ -48,6 +48,9 @@ pub struct Me {
     /// Whether they administer the hub: create groups.
     pub hub_admin: bool,
     pub groups: Vec<Group>,
+    /// How many of their notifications are unread.
+    #[serde(default)]
+    pub unread: u32,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -1095,4 +1098,141 @@ pub enum Event {
     PaperDeleted {
         paper: String,
     },
+}
+
+// ── Notifications ─────────────────────────────────────────────────────
+
+/// Why a person is told something.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum NotificationKind {
+    /// Someone mentioned them in a message.
+    Mention,
+    /// An agent answered a message of theirs.
+    Answer,
+    /// An agent's answer seems to hold a secret, and waits for them.
+    Held,
+    /// An agent could not answer them.
+    Failed,
+    /// A person or an agent left them a note.
+    Note,
+    /// Their role in a group changed.
+    Role,
+    /// They were removed from a group.
+    Removed,
+    /// Their request for a group was approved: the group is theirs.
+    Approved,
+    /// Their request for a group was declined.
+    Declined,
+    /// Someone asks for a group: to the hub's admins.
+    Requested,
+}
+
+impl NotificationKind {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            NotificationKind::Mention => "mention",
+            NotificationKind::Answer => "answer",
+            NotificationKind::Held => "held",
+            NotificationKind::Failed => "failed",
+            NotificationKind::Note => "note",
+            NotificationKind::Role => "role",
+            NotificationKind::Removed => "removed",
+            NotificationKind::Approved => "approved",
+            NotificationKind::Declined => "declined",
+            NotificationKind::Requested => "requested",
+        }
+    }
+
+    pub fn parse(s: &str) -> Option<NotificationKind> {
+        Some(match s {
+            "mention" => NotificationKind::Mention,
+            "answer" => NotificationKind::Answer,
+            "held" => NotificationKind::Held,
+            "failed" => NotificationKind::Failed,
+            "note" => NotificationKind::Note,
+            "role" => NotificationKind::Role,
+            "removed" => NotificationKind::Removed,
+            "approved" => NotificationKind::Approved,
+            "declined" => NotificationKind::Declined,
+            "requested" => NotificationKind::Requested,
+            _ => return None,
+        })
+    }
+}
+
+/// The group a notification is about.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct NotifiedGroup {
+    pub slug: String,
+    pub name: String,
+}
+
+/// The thread a notification is about, and the message in it.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct NotifiedThread {
+    pub number: u32,
+    pub kind: ThreadKind,
+    pub title: String,
+    /// The latest message it is about.
+    pub message: Option<u32>,
+    /// The start of that message, as it reads now.
+    pub excerpt: Option<String>,
+}
+
+/// Something a person is told.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct Notification {
+    pub id: i64,
+    pub kind: NotificationKind,
+    /// How many of the same, in the same thread, it gathers.
+    pub count: u32,
+    /// Who did it, if someone did.
+    pub actor: Option<User>,
+    /// The agent that did it for them, if one did.
+    pub agent: Option<String>,
+    pub group: Option<NotifiedGroup>,
+    pub thread: Option<NotifiedThread>,
+    /// A note's text, in Markdown, or what it is about: a role, a group's
+    /// name.
+    pub text: Option<String>,
+    /// Whether what it is about is gone: a deleted thread or message.
+    pub gone: bool,
+    pub read: bool,
+    #[serde(with = "time::serde::rfc3339")]
+    pub updated_at: OffsetDateTime,
+}
+
+/// A page of a person's notifications, newest first.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct NotificationPage {
+    pub items: Vec<Notification>,
+    pub unread: u32,
+    pub more: bool,
+}
+
+/// What one asks for: the notifications before one, a page at a time.
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
+pub struct NotificationQuery {
+    pub before: Option<i64>,
+}
+
+/// A note for some of a group's members, from a person or their agent.
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
+pub struct SendNote {
+    /// Their usernames.
+    pub to: Vec<String>,
+    /// Markdown, with `$…$` math and `[[…]]` references.
+    pub body: String,
+    /// The agent that writes it for the person, with a personal token.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub agent: Option<String>,
+}
+
+/// What the hub sends on a person's own event stream.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(tag = "type", rename_all = "snake_case")]
+pub enum PersonalEvent {
+    /// Their notifications changed: how many are unread now.
+    Notifications { unread: u32 },
 }

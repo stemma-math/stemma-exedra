@@ -4,7 +4,7 @@ use std::sync::atomic::AtomicU64;
 use std::sync::{Arc, Mutex};
 
 use sqlx::SqlitePool;
-use stemma_core::api::Event;
+use stemma_core::api::{Event, PersonalEvent};
 use tokio::sync::broadcast;
 
 use crate::config::Config;
@@ -24,6 +24,8 @@ pub struct Hub {
     pub config: Config,
     /// Every group's live updates; each listener keeps its group's.
     pub events: broadcast::Sender<GroupEvent>,
+    /// Every person's own live updates; each listener keeps its person's.
+    pub personal: broadcast::Sender<PersonEvent>,
     /// The secret that creates the first account, while there is none.
     pub setup_token: Mutex<Option<String>>,
     /// The workers connected now.
@@ -42,6 +44,12 @@ pub struct Hub {
 }
 
 #[derive(Clone, Debug)]
+pub struct PersonEvent {
+    pub user_id: i64,
+    pub event: Arc<PersonalEvent>,
+}
+
+#[derive(Clone, Debug)]
 pub struct GroupEvent {
     pub group_id: i64,
     pub event: Arc<Event>,
@@ -52,6 +60,7 @@ impl Hub {
     /// data directory, or made there.
     pub fn new(db: SqlitePool, config: Config) -> anyhow::Result<Hub> {
         let (events, _) = broadcast::channel(256);
+        let (personal, _) = broadcast::channel(256);
         let (forge, signing_key) = match &config.forge {
             Some(forge) => (
                 Some(Arc::new(Forge::new(forge)?)),
@@ -65,6 +74,7 @@ impl Hub {
             sockets: tokio_util::task::TaskTracker::new(),
             config,
             events,
+            personal,
             setup_token: Mutex::new(None),
             workers: tokio::sync::Mutex::new(Workers::default()),
             connections: AtomicU64::new(0),
@@ -80,6 +90,14 @@ impl Hub {
         // Nobody listening is fine.
         let _ = self.events.send(GroupEvent {
             group_id,
+            event: Arc::new(event),
+        });
+    }
+
+    /// Tells a person's own listeners what happened.
+    pub fn tell(&self, user_id: i64, event: PersonalEvent) {
+        let _ = self.personal.send(PersonEvent {
+            user_id,
             event: Arc::new(event),
         });
     }

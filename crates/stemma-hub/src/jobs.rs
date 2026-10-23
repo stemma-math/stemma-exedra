@@ -4,7 +4,8 @@ use std::collections::HashMap;
 
 use sqlx::FromRow;
 use stemma_core::api::{
-    AgentProfile, Event, Job, JobKind, JobState, Message, Thread, ThreadKind, User,
+    AgentProfile, Event, Job, JobKind, JobState, Message, NotificationKind, Thread, ThreadKind,
+    User,
 };
 use stemma_core::protocol::{
     Conversation, GroupRef, HubMessage, JobSpec, Outcome, ThreadRef, Usage, Work,
@@ -16,6 +17,7 @@ use crate::api::forum;
 use crate::auth;
 use crate::db;
 use crate::error::{ApiError, ApiResult};
+use crate::notifications::{self, Notice};
 use crate::state::AppState;
 use stemma_core::secrets;
 
@@ -465,17 +467,40 @@ async fn revoke_token(state: &AppState, token_id: Option<i64>) -> ApiResult<()> 
 
 async fn fail(state: &AppState, job_id: i64, error: &str) -> ApiResult<()> {
     // An error may end with what a runner printed: never a secret of it.
-    let token: Option<Option<i64>> = sqlx::query_scalar(
+    sqlx::query(
         "UPDATE jobs SET state = 'failed', error = ?, progress = NULL, updated_at = ?
-         WHERE id = ? RETURNING token_id",
+         WHERE id = ?",
     )
     .bind(secrets::hide(error))
     .bind(db::now())
     .bind(job_id)
-    .fetch_optional(&state.db)
+    .execute(&state.db)
     .await?;
-    revoke_token(state, token.flatten()).await?;
+    if let Some(job) = load_job(state, job_id).await? {
+        revoke_token(state, job.token_id).await?;
+        tell(state, &job, NotificationKind::Failed, None).await?;
+    }
     Ok(())
+}
+
+/// Tells a job's requester how it went, in its thread.
+async fn tell(
+    state: &AppState,
+    job: &JobRow,
+    kind: NotificationKind,
+    message: Option<u32>,
+) -> ApiResult<()> {
+    let (Some(thread_id), Ok(profile)) = (job.thread_id, job.profile()) else {
+        return Ok(());
+    };
+    let notice = Notice::new(kind)
+        .at(
+            job.group_id,
+            thread_id,
+            message.or(job.trigger_message.map(|n| n as u32)),
+        )
+        .by(job.requester_id, Some(&profile.display_name));
+    notifications::notify(state, &[job.requester_id], &notice).await
 }
 
 /// Marks a job done, with the message that tells of it, if any.
@@ -577,6 +602,7 @@ async fn answered(state: &AppState, job: &JobRow, answer: &str) -> ApiResult<Opt
     }
     let number = say(state, job, &text).await?;
     done(state, job, Some(number)).await?;
+    tell(state, job, NotificationKind::Answer, Some(number)).await?;
     Ok(None)
 }
 
@@ -593,7 +619,8 @@ async fn hold(state: &AppState, job: &JobRow, text: &str) -> ApiResult<()> {
     .bind(job.id)
     .execute(&state.db)
     .await?;
-    revoke_token(state, job.token_id).await
+    revoke_token(state, job.token_id).await?;
+    tell(state, job, NotificationKind::Held, None).await
 }
 
 /// A held job of `group`'s, which only its requester decides on.
