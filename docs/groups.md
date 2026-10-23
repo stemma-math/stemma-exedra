@@ -46,3 +46,28 @@ written.
 Paper repositories remain ordinary LaTeX. The hub keeps each source
 commit's interpretation of names beside it and renders that source for
 the API and tools. An unchanged file keeps its interpretation across commits.
+
+## Notifications
+
+A dot beside your name says you have unread notifications; **Notifications**,
+in the menu that opens from your name, lists them, newest first. You are told
+when:
+
+- someone, or an agent for someone, mentions you in a group you are in, also
+  when an edit adds the mention;
+- your agent answers you, cannot answer, or holds an answer that seems to
+  hold a secret;
+- a person or their agent leaves you a note (`notify`, among the tools);
+- an admin changes your role in a group or removes you from it;
+- your request for a group is approved or declined, and, if you administer
+  the hub, someone asks for a group.
+
+Replies in a thread you took part in are not notified. While unread, the
+mentions or answers of one thread gather into one notification that moves
+up, with how many. Opening a notification, or reading its thread, marks it
+read; read ones are kept for 30 days. A notification about a thread or
+message that is gone, or of a group you left, stays and says so.
+
+A note goes to at most 20 members of the group at once, and a person and
+their agents leave at most 60 an hour. Guests and answers' agents leave
+none.

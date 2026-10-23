@@ -170,8 +170,9 @@ tools offer exactly that.
 | An answer, without isolation | Your computer | None: it only reads | A job's token |
 
 **An agent's token** is for one group, for a long day at most, and is
-revoked when the session ends. It reads the group, and posts and opens
-discussions there, always as "Claude, for Ada". It cannot push, attach
+revoked when the session ends. It reads the group, and posts, opens
+discussions and leaves notes for members there, always as "Claude, for
+Ada". It cannot push, attach
 files, or reach your account, your tokens, invitations, members or the
 group's settings. **A job's token** is for one answer: it only reads the
 group, and the hub posts the answer itself. Your computer's own token, and
@@ -180,7 +181,7 @@ any token made in Devices, never reaches an agent.
 ### Tools in the terminal
 
 People can use the same catalog with `stemma tools`: `threads`, `read`,
-`post`, `search`, `library`, `papers`, `paper` and `attachment`.
+`post`, `search`, `notify`, `library`, `papers`, `paper` and `attachment`.
 `threads new` opens a discussion; `library lookup` and `library search`
 inspect declarations; `papers read` reads source; `paper new` creates a
 paper. Each command takes the arguments its MCP tool takes, with optional
