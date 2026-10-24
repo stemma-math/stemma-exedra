@@ -6,9 +6,10 @@ forum: that agent answers for the person who wrote the message, as “Claude,
 for Ada”. These three agents are fixed. Models, arguments and commands are
 settings on the computer, never profiles in the hub.
 
-The workshop is being redesigned. Its tasks, approvals, machine lending and
-build execution have been removed. Library and paper pages retain earlier
-build results and PDFs; pushes still reach the forge but create no builds.
+The workshop runs background work on members' machines. The hub keeps its
+queue, leases and results, and never runs a build or an agent. In this round
+it builds each new commit of the library's and papers' `main`; recipes and
+processes come next.
 
 ## Sign in and turn agents on
 
@@ -127,9 +128,58 @@ opens it in `$EDITOR`. `--json` provides structured explanations.
 In the app's This machine page, Every group edits general settings; each group
 shows its resolved values. Overrides say “Set for algebra” and can return to
 the general value. Environment-controlled fields say which variable sets
-them and are read-only. Overview, Agents and Isolation show the same controls in either scope. The general
+them and are read-only. Overview, Agents, Isolation and Workshop show the same controls in either scope. The general
 "Answer for me" switch also starts or stops the service; "Answer in this group"
 only changes that group's setting. This page never changes the command line's active group.
+
+## Workshop settings
+
+The Workshop section of This machine has the same scopes as Agents: every
+group or one group. These settings never change how answers run.
+
+```toml
+[workshop]
+enabled = false
+build = false
+build_concurrency = 1
+concurrency = 1
+image = "stemma-workshop:<version>"
+# cpus and memory follow the effective agents.cpus and agents.memory.
+
+[groups.algebra.workshop]
+enabled = true
+build = true
+```
+
+`enabled` serves as a workshop for the group; `build` accepts its library and
+paper builds. `build_concurrency` limits builds at once across groups, and
+`concurrency` reserves the independent limit for processes. CPU and memory
+limits use the same values as agents (4 CPUs and `8g` by default), unless
+overridden. All keys support the usual precedence, comment-preserving edits,
+`stemma config` and variables such as `STEMMA_WORKSHOP_BUILD=true`.
+
+The workshop requires Docker or Podman in `agents.isolation`. With `none`,
+it announces no workshop capability, and the doctor, settings command and
+app explain why it cannot be enabled. Answers may remain disabled while
+the workshop runs.
+
+`stemma machine image` builds both versioned images, agents first. The
+workshop image is `FROM stemma-agents:<version>` and adds Mathlib's sources
+and compiled cache for the library template. Versions can be overridden
+with Docker build arguments. `workshop.image` can instead name your own
+image built from it; Stemma never builds over that name. The doctor checks
+it, and the app shows its build state. One image for answers and workshop
+work is to be discussed later.
+
+A build has its own container and repository checkout under the group's
+managed workspace `builds/`, with no model credentials or agent sign-in
+mounts. The machine fetches exactly the requested commit using a short-lived
+build token that can only fetch that repository and report that build.
+Heartbeats run every 15 seconds; 60 seconds without one or a disconnected
+machine ends the lease. Work is queued again, up to three attempts. Only the
+latest main commit is active: older queued work is dropped, running work is
+cancelled, and a late result stays in history without replacing the last
+passing state. Logs have secrets hidden and keep their last 200 kB.
 
 ## Environment and active group
 
@@ -292,7 +342,7 @@ Stemma's image is `stemma-agents:<version>`, with the `stemma` of that
 release, so that updating Stemma asks for it to be built again.
 
 While developing Stemma, `stemma machine image --dev`, run in a checkout,
-builds `stemma-agents:dev` from that checkout as it is, uncommitted changes
+builds `stemma-agents:dev`, then `stemma-workshop:dev`, from that checkout as it is, uncommitted changes
 included; `stemma config set agents.image stemma-agents:dev` makes agents
 use it. `agents.image` can name an image of your own
 instead, built from Stemma's (`FROM stemma-agents:<version>`) with what you

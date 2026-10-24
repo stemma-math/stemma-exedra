@@ -22,7 +22,8 @@ STEMMA_TEST_FORGEJO=http://127.0.0.1:3000 cargo test -p stemma-hub --test forgej
 
 Answers in containers run the `stemma` of their image. With a development
 build, `stemma machine image --dev`, run in the checkout, builds
-`stemma-agents:dev` from it as it is; set `agents.image` to it.
+`stemma-agents:dev` and `stemma-workshop:dev` from it as it is; set
+`agents.image` and `workshop.image` to those names.
 
 With the CLI installed, `pnpm --dir desktop tauri dev` starts the desktop app;
 `pnpm --dir desktop tauri build` builds it on macOS (Xcode command line tools).
@@ -56,7 +57,7 @@ pnpm --dir desktop tauri build --config '{"bundle":{"active":true,"targets":["ap
   MCP tools, what they share (`stemma-core`), and the fake forge.
 - `web/`: the web app, in SvelteKit, styled with `@stemma-math/design`.
 - `desktop/`: the Tauri crate (`src-tauri/`) and its build configuration.
-- `docker/`: the hub's image and compose file, and the agents' image.
+- `docker/`: the hub's image and compose file, and the agents' and workshop's images.
 - `latex/template/`, `lean/`.
 
 ## Releases

@@ -278,6 +278,8 @@ impl Settings {
         for (key, value) in [
             ("enabled", Value::Boolean(true)),
             ("concurrency", Value::Integer(1)),
+            ("cpus", Value::Float(4.0)),
+            ("memory", Value::String("8g".into())),
             ("priority", Value::String("normal".into())),
             ("isolation", Value::String("none".into())),
             ("attachments", Value::String("mine".into())),
@@ -291,6 +293,20 @@ impl Settings {
             ),
         ] {
             defaults.insert(format!("agents.{key}"), value);
+        }
+        for (key, value) in [
+            ("enabled", Value::Boolean(false)),
+            ("build", Value::Boolean(false)),
+            ("build_concurrency", Value::Integer(1)),
+            ("concurrency", Value::Integer(1)),
+            (
+                "image",
+                Value::String(format!("stemma-workshop:{}", env!("CARGO_PKG_VERSION"))),
+            ),
+            ("cpus", Value::Float(4.0)),
+            ("memory", Value::String("8g".into())),
+        ] {
+            defaults.insert(format!("workshop.{key}"), value);
         }
         for runner in ["claude", "codex", "opencode"] {
             for (key, value) in [
@@ -376,7 +392,8 @@ impl Settings {
             anyhow::ensure!(self.defaults.contains_key(key), "unknown key {key}");
             validate(key, value)?;
         }
-        self.defaults
+        let mut explained: Vec<Explained> = self
+            .defaults
             .iter()
             .map(|(key, default)| {
                 let mut value = default.clone();
@@ -407,7 +424,34 @@ impl Settings {
                     source,
                 })
             })
-            .collect()
+            .collect::<anyhow::Result<_>>()?;
+        for limit in ["cpus", "memory"] {
+            let inherited = explained
+                .iter()
+                .find(|v| v.key == format!("agents.{limit}"))
+                .unwrap()
+                .clone();
+            let workshop = explained
+                .iter_mut()
+                .find(|v| v.key == format!("workshop.{limit}"))
+                .unwrap();
+            if workshop.source == Source::Default {
+                workshop.value = inherited.value;
+            }
+        }
+        Ok(explained)
+    }
+
+    /// The workshop always runs in containers, independently of answers being enabled.
+    pub fn workshop_problem(&self, group: Option<&str>) -> anyhow::Result<Option<String>> {
+        let on = self
+            .get("workshop.enabled", group)?
+            .value
+            .as_bool()
+            .unwrap()
+            || self.get("workshop.build", group)?.value.as_bool().unwrap();
+        Ok((on && self.get("agents.isolation", group)?.value.as_str() == Some("none"))
+            .then(|| "The workshop requires isolation: set agents.isolation to docker or podman before enabling workshop.enabled or workshop.build".into()))
     }
 
     pub fn get(&self, key: &str, group: Option<&str>) -> anyhow::Result<Explained> {
@@ -496,6 +540,18 @@ impl Settings {
         } else {
             table.remove(last);
         }
+        let updated = Self::parse(
+            self.path.clone(),
+            &doc.to_string(),
+            &Paths::discover()?,
+            self.env.clone(),
+        )?;
+        if key.starts_with("workshop.")
+            && matches!(key, "workshop.enabled" | "workshop.build")
+            && let Some(why) = updated.workshop_problem(group)?
+        {
+            anyhow::bail!(why);
+        }
         private_write(&self.path, doc.to_string().as_bytes())
     }
 }
@@ -511,14 +567,15 @@ fn flatten(prefix: &str, value: &Value, out: &mut BTreeMap<String, Value>) {
             // Empty tables still need validation.
             if value.as_table().is_some_and(|t| t.is_empty()) {
                 if key == "agents"
+                    || key == "workshop"
                     || key == "groups"
                     || ["claude", "codex", "opencode"].iter().any(|r| {
                         key.ends_with(&format!("agents.{r}"))
                             || key.ends_with(&format!("agents.{r}.container"))
                     })
-                    || key
-                        .strip_prefix("groups.")
-                        .is_some_and(|s| !s.contains('.') || s.ends_with(".agents"))
+                    || key.strip_prefix("groups.").is_some_and(|s| {
+                        !s.contains('.') || s.ends_with(".agents") || s.ends_with(".workshop")
+                    })
                 {
                     continue;
                 }
@@ -558,6 +615,9 @@ fn parse_value(key: &str, text: &str) -> anyhow::Result<Value> {
         }
     } else if key.ends_with(".files")
         || key.ends_with(".enabled")
+        || key == "workshop.build"
+        || key.ends_with("build_concurrency")
+        || key.ends_with(".cpus")
         || key.ends_with(".concurrency")
         || key.ends_with(".timeout_minutes")
     {
@@ -576,9 +636,17 @@ fn parse_value(key: &str, text: &str) -> anyhow::Result<Value> {
 fn validate(key: &str, value: &Value) -> anyhow::Result<()> {
     if key == "agents.priority" {
         priority(value)?;
-    } else if key == "agents.enabled" {
+    } else if key.ends_with(".enabled") || key == "workshop.build" {
         anyhow::ensure!(value.is_bool(), "{key} must be a boolean");
-    } else if key.ends_with(".concurrency") || key.ends_with(".timeout_minutes") {
+    } else if key.ends_with(".cpus") {
+        anyhow::ensure!(
+            value
+                .as_float()
+                .or_else(|| value.as_integer().map(|n| n as f64))
+                .is_some_and(|n| n.is_finite() && n > 0.0),
+            "{key} must be a positive number"
+        );
+    } else if key.ends_with("concurrency") || key.ends_with(".timeout_minutes") {
         anyhow::ensure!(
             value
                 .as_integer()
@@ -661,6 +729,72 @@ mod tests {
             data: temp.path().join("data"),
         };
         (temp, paths)
+    }
+    #[test]
+    fn workshop_settings_have_independent_layers_limits_and_isolation() {
+        let (_temp, paths) = fixture();
+        let text = "# Workshop settings\n[agents]\ncpus = 2\nisolation = 'docker'\n[workshop]\nenabled = true # General\nbuild = true\n[groups.algebra.workshop]\nbuild = false\n";
+        let settings = Settings::parse(
+            paths.config.join("config.toml"),
+            text,
+            &paths,
+            BTreeMap::from([("STEMMA_WORKSHOP_BUILD_CONCURRENCY".into(), "3".into())]),
+        )
+        .unwrap();
+        assert_eq!(
+            settings.get("agents.enabled", None).unwrap().value,
+            Value::Boolean(true)
+        );
+        assert_eq!(
+            settings
+                .get("workshop.build", Some("algebra"))
+                .unwrap()
+                .value,
+            Value::Boolean(false)
+        );
+        assert_eq!(
+            settings
+                .get("workshop.cpus", Some("algebra"))
+                .unwrap()
+                .value,
+            Value::Integer(2)
+        );
+        assert_eq!(
+            settings
+                .get("workshop.build_concurrency", None)
+                .unwrap()
+                .value,
+            Value::Integer(3)
+        );
+        assert!(settings.workshop_problem(None).unwrap().is_none());
+        std::fs::create_dir_all(&paths.config).unwrap();
+        std::fs::write(&settings.path, text).unwrap();
+        settings
+            .write("workshop.enabled", Some("false"), None)
+            .unwrap();
+        let saved = std::fs::read_to_string(&settings.path).unwrap();
+        assert!(saved.contains("# General") && saved.contains("# Workshop settings"));
+        for bad in [
+            "[workshop]\nunknown = true",
+            "[groups.algebra.workshop]\nbuild_concurrency = 0",
+            "[workshop]\ncpus = -1",
+        ] {
+            assert!(Settings::parse(settings.path.clone(), bad, &paths, BTreeMap::new()).is_err());
+        }
+        let settings = Settings::parse(
+            settings.path.clone(),
+            "[workshop]\nenabled = true",
+            &paths,
+            BTreeMap::new(),
+        )
+        .unwrap();
+        assert!(
+            settings
+                .workshop_problem(None)
+                .unwrap()
+                .unwrap()
+                .contains("requires isolation")
+        );
     }
     #[test]
     fn folders_use_xdg_on_macos_too_and_explicit_folders_win() {

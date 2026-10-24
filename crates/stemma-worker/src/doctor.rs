@@ -300,6 +300,51 @@ pub async fn run(group: Option<&str>) -> Vec<Check> {
                 checks.push(container_sign_in(settings, group, handle));
             }
         }
+        if let Ok(Some(why)) = settings.workshop_problem(group) {
+            checks.push(check("Workshop", false, &why, &why));
+        }
+        if let Ok(value) = settings.get("agents.isolation", group)
+            && let Some(runtime @ ("docker" | "podman")) = value.value.as_str()
+        {
+            let image = settings
+                .get("workshop.image", group)
+                .unwrap()
+                .value
+                .as_str()
+                .unwrap()
+                .to_owned();
+            let out = tokio::process::Command::new(runtime)
+                .args(["image", "inspect", &image])
+                .output()
+                .await;
+            let present = out.as_ref().is_ok_and(|out| out.status.success());
+            let mut result = if present && image != crate::image::workshop_image() {
+                let mut result = own_image(
+                    runtime,
+                    &image,
+                    &["git".into(), "lake".into(), "latexmk".into()],
+                )
+                .await;
+                result.name = "Workshop image".into();
+                result.remedy = result
+                    .remedy
+                    .map(|s| s.replace("agents.image", "workshop.image"));
+                result
+            } else {
+                check(
+                    "Workshop image",
+                    present,
+                    &image,
+                    "Build both images with stemma machine image.",
+                )
+            };
+            if let Ok(out) = out
+                && !out.status.success()
+            {
+                result.detail = String::from_utf8_lossy(&out.stderr).into_owned();
+            }
+            checks.push(result);
+        }
         let folder = group.map(|g| settings.workspace(g)).unwrap_or_else(|| {
             settings
                 .get("agents.workspace", None)

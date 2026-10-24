@@ -15,7 +15,7 @@ enum MachineCommand {
     Stop,
     /// Run the service in this terminal.
     Run,
-    /// Build the agents' image for Docker or Podman.
+    /// Build the agents' and workshop's images for Docker or Podman.
     Image {
         /// Build the development image, stemma-agents:dev, from the checkout
         /// of Stemma in this folder, as it is.
@@ -67,7 +67,7 @@ pub async fn machine(args: MachineArgs) -> anyhow::Result<()> {
         Some(MachineCommand::Image { dev: true }) => {
             image::build_dev(&std::env::current_dir()?, None).await?;
             println!(
-                "Built {}. Agents use it with: stemma config set agents.image {}",
+                "Built {} and stemma-workshop:dev. Select them with agents.image and workshop.image. Agents image: {}",
                 image::DEV_IMAGE,
                 image::DEV_IMAGE
             );

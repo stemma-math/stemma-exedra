@@ -29,6 +29,20 @@ const NAMES: Record<string, string> = {
 
 /** What a setting is called. */
 export function nameOf(key: string): string {
+  if (key.startsWith("workshop."))
+    return (
+      (
+        {
+          enabled: "Serve as a workshop",
+          build: "Build the library and papers",
+          concurrency: "Processes at once",
+          build_concurrency: "Builds at once",
+          image: "Image",
+          cpus: "CPUs",
+          memory: "Memory",
+        } as Record<string, string>
+      )[key.slice("workshop.".length)] ?? key
+    );
   const runner = RUNNERS.find((r) => key.startsWith(`agents.${r.key}.`));
   const rest = runner ? key.slice(`agents.${runner.key}.`.length) : key.slice("agents.".length);
   return NAMES[rest] ?? rest;
