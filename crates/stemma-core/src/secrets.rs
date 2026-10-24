@@ -42,6 +42,12 @@ fn alphanumeric(c: u8) -> bool {
 /// Longer prefixes first, so that `sk-ant-` is not taken for `sk-`.
 const PREFIXED: &[Prefixed] = &[
     Prefixed {
+        prefix: "stb_",
+        kind: "a Stemma build token",
+        min: 20,
+        allowed: url_safe,
+    },
+    Prefixed {
         prefix: "github_pat_",
         kind: "a GitHub token",
         min: 22,

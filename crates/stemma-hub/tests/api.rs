@@ -2204,7 +2204,7 @@ async fn names_the_forge_keeps_are_not_usernames() {
     let ada = hub.admin_with_group().await;
     let reply = hub.post(&ada, "/hub/invitations", json!({})).await;
     let token = reply.json()["token"].as_str().unwrap().to_owned();
-    for username in ["admin", "explore", "ada.", "a--b"] {
+    for username in ["admin", "explore", "worker", "workshop", "ada.", "a--b"] {
         let reply = hub
             .post(
                 &Client::default(),
@@ -2403,6 +2403,8 @@ async fn personal_tokens_route_by_group_priority_capacity_and_connection_time() 
     );
     assert!(dispatched(&mut two).is_none());
     let hello = stemma_core::protocol::Hello {
+        workshop: Default::default(),
+        workshop_groups: Default::default(),
         protocol: stemma_core::protocol::PROTOCOL_VERSION,
         version: "test".into(),
         runners: vec!["claude-code".into()],
@@ -2826,6 +2828,8 @@ async fn session_and_dispatched_job_tokens_enforce_attachment_rules() {
             computer,
             1,
             Hello {
+                workshop: Default::default(),
+                workshop_groups: Default::default(),
                 protocol: PROTOCOL_VERSION,
                 version: "test".into(),
                 runners: vec!["claude-code".into()],

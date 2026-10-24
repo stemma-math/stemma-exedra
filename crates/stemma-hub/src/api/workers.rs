@@ -117,6 +117,21 @@ async fn serve(state: AppState, machine: MachineRow, mut socket: WebSocket) -> a
 
     let connection = state.connections.fetch_add(1, Ordering::Relaxed) + 1;
     let (sender, mut outbox) = mpsc::unbounded_channel();
+    crate::builds::connected(
+        &state,
+        machine.id,
+        crate::builds::Machine {
+            connection,
+            owner: machine.owner_id,
+            name: format!("{}, {}", machine.owner().display_name, machine.name),
+            version: hello.version.clone(),
+            general: hello.workshop.clone(),
+            groups: hello.workshop_groups.clone(),
+            sender: sender.clone(),
+        },
+    )
+    .await
+    .map_err(|e| anyhow::anyhow!(e.message))?;
     jobs::connected(
         &state,
         machine.id,
@@ -136,6 +151,9 @@ async fn serve(state: AppState, machine: MachineRow, mut socket: WebSocket) -> a
 
     let ended = talk(&state, machine.id, connection, &mut socket, &mut outbox).await;
     close(&mut socket).await;
+    crate::builds::disconnected(&state, machine.id, connection)
+        .await
+        .map_err(|e| anyhow::anyhow!(e.message))?;
     jobs::disconnected(&state, machine.id, connection)
         .await
         .map_err(|e| anyhow::anyhow!(e.message))?;
@@ -193,8 +211,11 @@ async fn talk(
                 let handled = match message {
                     WorkerMessage::Hello(hello) => {
                         anyhow::ensure!(hello.protocol == PROTOCOL_VERSION, "worker protocol changed");
+                        crate::builds::hello(state, worker_id, connection, &hello).await.map_err(|e| anyhow::anyhow!(e.message))?;
                         jobs::hello(state, worker_id, connection, hello).await
                     },
+                    WorkerMessage::BuildHeartbeat { lease } => crate::builds::heartbeat(state, worker_id, connection, lease).await,
+                    WorkerMessage::BuildFinished { lease, result } => crate::builds::finished(state, worker_id, connection, lease, *result).await,
                     WorkerMessage::Progress { job, text } => {
                         jobs::progress(state, worker_id, connection, job, &text).await
                     }
@@ -207,6 +228,7 @@ async fn talk(
                 }
             }
             _ = ping.tick() => {
+                crate::builds::dispatch(state).await.map_err(|e| anyhow::anyhow!(e.message))?;
                 let valid: bool = sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM api_tokens WHERE id = ? AND revoked_at IS NULL AND (expires_at IS NULL OR expires_at > ?))").bind(worker_id).bind(db::now()).fetch_one(&state.db).await?;
                 if !valid { return Ok(()); }
 

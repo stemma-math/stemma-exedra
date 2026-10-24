@@ -98,6 +98,18 @@ async fn own_image(runtime: &str, image: &str, commands: &[String]) -> Check {
                 lacking
             }
         }
+        Ok(Ok(out)) => check(
+            "Agents' image",
+            false,
+            String::from_utf8_lossy(&out.stderr),
+            "Check the runtime's error above.",
+        ),
+        Ok(Err(error)) => check(
+            "Agents' image",
+            false,
+            error.to_string(),
+            "Check the runtime's error above.",
+        ),
         _ => check(
             "Agents' image",
             false,
@@ -319,12 +331,14 @@ pub async fn run(group: Option<&str>) -> Vec<Check> {
                 .await;
             let present = out.as_ref().is_ok_and(|out| out.status.success());
             let mut result = if present && image != crate::image::workshop_image() {
-                let mut result = own_image(
-                    runtime,
-                    &image,
-                    &["git".into(), "lake".into(), "latexmk".into()],
-                )
-                .await;
+                let mut commands: Vec<String> = vec!["git".into(), "lake".into(), "latexmk".into()];
+                commands.extend(found.iter().filter_map(|handle| {
+                    settings
+                        .get(&format!("agents.{handle}.container.command"), group)
+                        .ok()
+                        .and_then(|v| v.value.as_str().map(str::to_owned))
+                }));
+                let mut result = own_image(runtime, &image, &commands).await;
                 result.name = "Workshop image".into();
                 result.remedy = result
                     .remedy
@@ -335,7 +349,11 @@ pub async fn run(group: Option<&str>) -> Vec<Check> {
                     "Workshop image",
                     present,
                     &image,
-                    "Build both images with stemma machine image.",
+                    if image == crate::image::workshop_image() {
+                        "Build both images with stemma machine image."
+                    } else {
+                        "Build your image, or unset workshop.image to use Stemma's image."
+                    },
                 )
             };
             if let Ok(out) = out

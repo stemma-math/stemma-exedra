@@ -743,6 +743,7 @@ pub async fn disconnected(state: &AppState, worker_id: i64, connection: u64) -> 
 
 /// Disconnects a machine, as when its token is revoked.
 pub async fn disconnect(state: &AppState, worker_id: i64) -> ApiResult<()> {
+    crate::builds::disconnect_token(state, worker_id).await?;
     let gone = state.workers.lock().await.connected.remove(&worker_id);
     if let Some(gone) = gone {
         requeue(state, worker_id, gone.running).await?;

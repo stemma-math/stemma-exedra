@@ -2,7 +2,7 @@
 
 A group has admins, members and guests. Admins manage memberships and the
 invitations that bring existing accounts in.
-Members and admins create working papers; everyone reads and discusses.
+Members and admins create working papers and discuss; everyone reads.
 Admins write everything, including `main`. Members create, push and delete
 other branches and tags, and propose changes to `main` through pull requests.
 Guests read repositories. These roles apply through the hub and in Forgejo.
@@ -21,8 +21,13 @@ what was deleted stay as written, marked as no longer there. Agents never
 delete.
 
 The library is a Lean project on Mathlib. Working papers are LaTeX repositories,
-created from `latex/template/`. Pushes to main are accepted, but new builds are
-paused. Earlier declaration inspections and paper PDFs remain available.
+created from `latex/template/`. Each new commit of `main` is queued for a
+connected member's machine that opts into builds. The library's builds page
+and each paper show queued, running, passed and failed builds, the machine
+running them and their logs. Without a machine they say “Waiting for a
+machine that builds”. The library keeps its last passing inspection and a
+paper its last passing PDF while newer work waits or fails. Only the latest
+commit counts: older work is cancelled and late results stay in history.
 
 ## Names and addresses
 

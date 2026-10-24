@@ -59,7 +59,7 @@ pub fn allowed(scope: &Scope, role: Role, service: Service) -> Result<(), &'stat
     if service == Service::Fetch {
         return Ok(());
     }
-    if matches!(scope, Scope::Agent(_)) {
+    if matches!(scope, Scope::Agent(_) | Scope::Build { .. }) {
         return Err("An agent's token cannot push");
     }
     if !role.can_write() {
@@ -124,14 +124,34 @@ async fn serve(
     if let Err(why) = allowed(&viewer.scope, membership.role, service) {
         return refused(StatusCode::FORBIDDEN, why);
     }
+    if let Scope::Build {
+        work,
+        group_id,
+        attempt,
+    } = viewer.scope
+    {
+        let valid: bool = sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM work_leases WHERE id = ? AND group_id = ? AND repository = ? AND attempts = ? AND state = 'running')")
+            .bind(work).bind(group_id).bind(name).bind(attempt).fetch_one(&state.db).await.unwrap_or(false);
+        if group_id != membership.group_id || !valid {
+            return refused(
+                StatusCode::FORBIDDEN,
+                "This build token fetches only its repository",
+            );
+        }
+    }
     let request = if service == Service::Push && request.method() == Method::POST {
         if request.headers().contains_key(header::CONTENT_ENCODING) {
             return refused(StatusCode::BAD_REQUEST, "Encoded pushes are not supported");
         }
         match check_push(request, membership.role).await {
             Ok(request) => request,
-            Err(why) => {
-                let fatal = format!("\x03{why}\n");
+            Err(error) => {
+                let why = error.message;
+                let fatal = if error.sideband {
+                    format!("\x03{why}\n")
+                } else {
+                    format!("ERR {why}\n")
+                };
                 return (
                     [(
                         header::CONTENT_TYPE,
@@ -245,14 +265,37 @@ pub fn ref_updates(bytes: &[u8]) -> Result<Option<(Vec<String>, usize)>, &'stati
     }
 }
 
-async fn check_push(request: Request, role: Role) -> Result<Request, &'static str> {
+#[derive(Debug)]
+struct PushError {
+    message: &'static str,
+    sideband: bool,
+}
+impl From<&'static str> for PushError {
+    fn from(message: &'static str) -> Self {
+        Self {
+            message,
+            sideband: false,
+        }
+    }
+}
+fn push_error(message: &'static str, commands: &[u8]) -> PushError {
+    PushError {
+        message,
+        sideband: commands
+            .split(|b| *b == 0)
+            .nth(1)
+            .is_some_and(|caps| caps.windows(b"side-band".len()).any(|w| w == b"side-band")),
+    }
+}
+
+async fn check_push(request: Request, role: Role) -> Result<Request, PushError> {
     let (parts, body) = request.into_parts();
     let mut stream = body.into_data_stream();
     let mut commands = Vec::new();
     let mut offset = 0;
     loop {
         let Some(chunk) = stream.next().await else {
-            return Err("Incomplete git command list");
+            return Err(push_error("Incomplete git command list", &commands));
         };
         let chunk = chunk.map_err(|_| "Could not read git commands")?;
         let mut consumed = 0;
@@ -267,12 +310,16 @@ async fn check_push(request: Request, role: Role) -> Result<Request, &'static st
                     let (refs, _) = ref_updates(&commands)?.unwrap();
                     for name in refs {
                         if !name.starts_with("refs/heads/") && !name.starts_with("refs/tags/") {
-                            return Err("Pushes may update only branches and tags");
+                            return Err(push_error(
+                                "Pushes may update only branches and tags",
+                                &commands,
+                            ));
                         }
                         if name == "refs/heads/main" && role != Role::Admin {
-                            return Err(
+                            return Err(push_error(
                                 "Only the group's admins may push to main; push a branch and open a pull request",
-                            );
+                                &commands,
+                            ));
                         }
                     }
                     let first = futures_util::stream::iter([
@@ -285,7 +332,7 @@ async fn check_push(request: Request, role: Role) -> Result<Request, &'static st
                     ));
                 }
                 if !(5..=65520).contains(&n) {
-                    return Err("Invalid git packet length");
+                    return Err(push_error("Invalid git packet length", &commands));
                 }
                 if commands.len() == offset + n {
                     offset += n;
@@ -297,7 +344,7 @@ async fn check_push(request: Request, role: Role) -> Result<Request, &'static st
             commands.extend_from_slice(&chunk[consumed..consumed + count]);
             consumed += count;
             if commands.len() > 1024 * 1024 {
-                return Err("Git's command list is too large");
+                return Err(push_error("Git's command list is too large", &commands));
             }
         }
         // A flush at the end of this frame must not wait for a pack frame.
@@ -305,12 +352,16 @@ async fn check_push(request: Request, role: Role) -> Result<Request, &'static st
             let (refs, _) = ref_updates(&commands)?.unwrap();
             for name in refs {
                 if !name.starts_with("refs/heads/") && !name.starts_with("refs/tags/") {
-                    return Err("Pushes may update only branches and tags");
+                    return Err(push_error(
+                        "Pushes may update only branches and tags",
+                        &commands,
+                    ));
                 }
                 if name == "refs/heads/main" && role != Role::Admin {
-                    return Err(
+                    return Err(push_error(
                         "Only the group's admins may push to main; push a branch and open a pull request",
-                    );
+                        &commands,
+                    ));
                 }
             }
             let first = futures_util::stream::once(async move {
@@ -327,6 +378,34 @@ async fn check_push(request: Request, role: Role) -> Result<Request, &'static st
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[tokio::test]
+    async fn forwards_commands_without_waiting_for_the_pack() {
+        let line = format!(
+            "{} {} refs/heads/main\0report-status side-band-64k\n",
+            "a".repeat(40),
+            "b".repeat(40)
+        );
+        let bytes = axum::body::Bytes::from(format!("{:04x}{line}0000", line.len() + 4));
+        let stream = futures_util::stream::iter([Ok::<_, std::io::Error>(bytes)])
+            .chain(futures_util::stream::pending());
+        let request = Request::new(Body::from_stream(stream));
+        let forwarded = tokio::time::timeout(
+            std::time::Duration::from_secs(1),
+            check_push(request, Role::Admin),
+        )
+        .await
+        .unwrap()
+        .unwrap();
+        let first = forwarded
+            .into_body()
+            .into_data_stream()
+            .next()
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(first.ends_with(b"0000"));
+    }
+
     #[test]
     fn parses_updates_and_stops_before_pack() {
         let mut bytes = Vec::new();

@@ -324,6 +324,11 @@ pub async fn update(
     tx.commit().await?;
     workers.rename_group(&group.slug, &next);
     drop(workers);
+    state
+        .build_machines
+        .lock()
+        .await
+        .rename_group(&group.slug, &next);
     if next != group.slug {
         crate::text::names_changed(&state, crate::text::Changed::Group(group.group_id)).await?;
     }

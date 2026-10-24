@@ -6,7 +6,7 @@ pub use crate::api::JobKind;
 use crate::api::{AgentProfile, Message, ThreadKind, User};
 
 /// The version of this protocol. A hub refuses workers that speak another.
-pub const PROTOCOL_VERSION: u32 = 12;
+pub const PROTOCOL_VERSION: u32 = 13;
 
 /// The path of the workers' WebSocket, under the API's prefix.
 pub const WORKER_PATH: &str = "/worker";
@@ -17,8 +17,18 @@ pub const WORKER_PATH: &str = "/worker";
 pub enum WorkerMessage {
     /// The first message: what the worker can do.
     Hello(Hello),
+    BuildHeartbeat {
+        lease: LeaseRef,
+    },
+    BuildFinished {
+        lease: LeaseRef,
+        result: Box<BuildResult>,
+    },
     /// What a job is doing now, for people watching: "Reading t12#3-5".
-    Progress { job: i64, text: String },
+    Progress {
+        job: i64,
+        text: String,
+    },
     /// How a job ended, and what its runner said it consumed.
     Finished {
         job: i64,
@@ -35,6 +45,8 @@ pub struct Hello {
     pub runners: Vec<String>,
     pub concurrency: u32,
     pub agents: GroupAgents,
+    pub workshop: GroupWorkshop,
+    pub workshop_groups: std::collections::BTreeMap<String, GroupWorkshop>,
     /// Only groups whose effective capabilities differ from general settings.
     pub groups: std::collections::BTreeMap<String, GroupAgents>,
 }
@@ -98,6 +110,10 @@ pub enum HubMessage {
         reason: String,
     },
     Job(Box<JobSpec>),
+    Build(Box<BuildSpec>),
+    CancelBuild {
+        lease: LeaseRef,
+    },
     /// Stop a job: nobody wants its outcome any more.
     Cancel {
         job: i64,
@@ -199,4 +215,49 @@ pub struct GroupAgents {
     pub concurrency: Option<u32>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub runners: Option<Vec<String>>,
+}
+
+/// Effective workshop capabilities; live only while this connection lasts.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct GroupWorkshop {
+    pub enabled: bool,
+    pub build: bool,
+    pub build_concurrency: u32,
+    pub concurrency: u32,
+}
+
+/// A lease generation. A retry can never report for a previous holder.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct LeaseRef {
+    pub id: i64,
+    pub attempt: u32,
+}
+
+/// One immutable repository commit to build, in an isolated workshop container.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct BuildSpec {
+    pub lease: LeaseRef,
+    pub group: GroupRef,
+    /// A hub-relative git path. The build token fetches only this repository.
+    pub repository: String,
+    pub commit: String,
+    pub kind: BuildKind,
+    /// Fetches and reports this build only, until its lease ends.
+    pub token: String,
+}
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum BuildKind {
+    Library,
+    Paper,
+}
+
+/// The log is trimmed and secrets hidden by the hub before storage.
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
+pub struct BuildResult {
+    pub succeeded: bool,
+    pub error: Option<String>,
+    pub log: String,
+    /// Required on a passing library build; papers upload a PDF first.
+    pub report: Option<crate::api::LibraryReport>,
 }

@@ -546,8 +546,8 @@ impl Settings {
             &Paths::discover()?,
             self.env.clone(),
         )?;
-        if key.starts_with("workshop.")
-            && matches!(key, "workshop.enabled" | "workshop.build")
+        if matches!(key, "workshop.enabled" | "workshop.build")
+            && updated.get(key, group)?.value.as_bool() == Some(true)
             && let Some(why) = updated.workshop_problem(group)?
         {
             anyhow::bail!(why);
@@ -774,6 +774,22 @@ mod tests {
             .unwrap();
         let saved = std::fs::read_to_string(&settings.path).unwrap();
         assert!(saved.contains("# General") && saved.contains("# Workshop settings"));
+        std::fs::write(&settings.path, "[workshop]\nenabled = true\nbuild = true\n").unwrap();
+        let invalid = Settings::load_from(&paths, BTreeMap::new()).unwrap();
+        invalid
+            .write("workshop.enabled", Some("false"), None)
+            .unwrap();
+        let invalid = Settings::load_from(&paths, BTreeMap::new()).unwrap();
+        invalid
+            .write("workshop.build", Some("false"), None)
+            .unwrap();
+        assert!(
+            Settings::load_from(&paths, BTreeMap::new())
+                .unwrap()
+                .workshop_problem(None)
+                .unwrap()
+                .is_none()
+        );
         for bad in [
             "[workshop]\nunknown = true",
             "[groups.algebra.workshop]\nbuild_concurrency = 0",

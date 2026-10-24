@@ -6,12 +6,14 @@
 
 pub mod api;
 pub mod auth;
+pub mod builds;
 pub mod config;
 pub mod db;
 pub mod error;
 pub mod forge;
 pub mod git;
 pub mod jobs;
+pub mod lease;
 pub mod library;
 pub mod names;
 pub mod notifications;
@@ -43,6 +45,7 @@ pub fn app(state: AppState) -> Router {
         .with_state(state.clone());
     api::router(state.clone())
         .merge(git::router(state.clone()))
+        .merge(builds::router(state.clone()))
         .merge(oidc::router(state.clone()))
         .merge(hook)
         .fallback(web::serve)
@@ -68,6 +71,21 @@ pub async fn run(config: Config) -> anyhow::Result<()> {
     remove_unclaimed_uploads(&state).await?;
     oidc::forget_expired(&state.db).await?;
     jobs::recover(&state).await?;
+    builds::recover(&state)
+        .await
+        .map_err(|e| anyhow::anyhow!(e.message))?;
+    {
+        let state = state.clone();
+        tokio::spawn(async move {
+            let mut tick = tokio::time::interval(std::time::Duration::from_secs(5));
+            loop {
+                tokio::select! {
+                    _ = state.shutdown.cancelled() => break,
+                    _ = tick.tick() => if let Err(error) = builds::dispatch(&state).await { tracing::error!(error = error.message, "dispatching builds"); }
+                }
+            }
+        });
+    }
     {
         let state = state.clone();
         tokio::spawn(async move { forge::reconcile(&state).await });

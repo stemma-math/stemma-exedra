@@ -1,4 +1,4 @@
-//! Working papers, their source and archived PDFs. New builds are paused.
+//! Working papers, their source, builds and retained PDFs.
 
 use std::path::PathBuf;
 
@@ -88,7 +88,6 @@ pub struct PaperRow {
     pub created_by: i64,
     creator_username: String,
     creator_display_name: String,
-    head: Option<String>,
     created_at: i64,
     group_slug: String,
 }
@@ -97,7 +96,7 @@ macro_rules! paper_query {
     () => {
         "SELECT p.id, p.group_id, p.slug, p.title, p.repository, p.created_by,
                 u.username AS creator_username, u.display_name AS creator_display_name,
-                p.head, p.created_at, g.slug AS group_slug
+                p.created_at, g.slug AS group_slug
          FROM papers p JOIN users u ON u.id = p.created_by JOIN groups g ON g.id = p.group_id"
     };
 }
@@ -449,23 +448,12 @@ pub async fn main_commit(state: &AppState, paper: &PaperRow) -> ApiResult<Option
         .map_err(forge::api_error)
 }
 
-/// Update the recorded main commit without scheduling a build.
+/// Reconcile main with Forgejo and queue its latest commit for a workshop.
 pub async fn refresh(state: &AppState, paper_id: i64, _requester_id: i64) -> ApiResult<()> {
     let Some(paper) = by_id(state, paper_id).await? else {
         return Ok(());
     };
-    let Some(head) = main_commit(state, &paper).await? else {
-        return Ok(());
-    };
-    if paper.head.as_deref() == Some(head.as_str()) {
-        return Ok(());
-    }
-    sqlx::query("UPDATE papers SET head = ? WHERE id = ?")
-        .bind(&head)
-        .bind(paper_id)
-        .execute(&state.db)
-        .await?;
-    Ok(())
+    crate::builds::refresh(state, paper.group_id, &paper.repository, Some(paper.id)).await
 }
 
 #[derive(sqlx::FromRow)]
@@ -473,6 +461,8 @@ struct BuildRow {
     id: i64,
     commit_sha: String,
     succeeded: Option<bool>,
+    work_state: Option<String>,
+    machine: Option<String>,
     error: Option<String>,
     created_at: i64,
     finished_at: Option<i64>,
@@ -481,8 +471,8 @@ struct BuildRow {
 macro_rules! build_query {
     () => {
         "SELECT b.id, b.commit_sha, b.succeeded, b.error, b.created_at,
-                b.finished_at
-         FROM paper_builds b"
+                b.finished_at, w.state AS work_state, w.machine
+         FROM paper_builds b LEFT JOIN work_leases w ON w.id = b.work_id"
     };
 }
 
@@ -494,9 +484,21 @@ impl BuildRow {
             state: match self.succeeded {
                 Some(true) => BuildState::Succeeded,
                 Some(false) => BuildState::Failed,
-                None => BuildState::Cancelled,
+                None => match self.work_state.as_deref() {
+                    Some("queued") => BuildState::Queued,
+                    Some("running") => BuildState::Running,
+                    Some("failed") => BuildState::Failed,
+                    _ => BuildState::Cancelled,
+                },
             },
-            progress: None,
+            progress: match self.work_state.as_deref() {
+                Some("queued") => Some("Waiting for a machine that builds".into()),
+                Some("running") => self
+                    .machine
+                    .as_ref()
+                    .map(|name| format!("Building on {name}")),
+                _ => None,
+            },
             error: self.error.clone(),
             created_at: db::from_millis(self.created_at),
             finished_at: self.finished_at.map(db::from_millis),

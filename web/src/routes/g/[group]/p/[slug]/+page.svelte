@@ -204,7 +204,7 @@
       </p>
     {:else}
       <div class="card card--empty card__body">
-        <p class="empty">No PDF is available. New builds are paused.</p>
+        <p class="empty">No PDF is available yet. A workshop machine builds each new commit of main.</p>
       </div>
     {/if}
 
@@ -233,7 +233,7 @@
             <p class="dialog__text">The paper has not been compiled yet.</p>
           {/if}
           <p class="dialog__text">
-            It compiles from <code>main.tex</code> with <code>latexmk -pdf</code>: pdfLaTeX and BibTeX. Builds are currently paused.
+            It compiles from <code>main.tex</code> with <code>latexmk -pdf</code>: pdfLaTeX and BibTeX. A workshop machine builds each new commit of main.
           </p>
           <div class="dialog__actions">
         

@@ -1,4 +1,5 @@
 //! Running personal replies and interactive sessions on a computer.
+pub mod builds;
 pub mod config;
 pub mod connection;
 pub mod detect;
@@ -7,7 +8,9 @@ pub mod image;
 pub mod isolation;
 pub mod job;
 pub mod launch;
+pub mod library;
 pub mod machine;
+pub mod papers;
 pub mod runners;
 pub mod service;
 pub mod session;

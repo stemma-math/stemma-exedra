@@ -193,11 +193,24 @@ impl Drop for RunningJobs {
     }
 }
 
+#[derive(Default)]
+struct RunningBuilds(HashMap<i64, (stemma_core::protocol::LeaseRef, JoinHandle<()>)>);
+impl Drop for RunningBuilds {
+    fn drop(&mut self) {
+        for (_, task) in self.0.values() {
+            task.abort();
+        }
+    }
+}
+
 /// Runs the hub's jobs until the connection ends; then stops them, for the
 /// hub queues them again.
 async fn work(context: &Arc<Context>, socket: &mut Socket, mut jobs: RunningJobs) -> anyhow::Error {
     let (progress, mut progress_out) = mpsc::unbounded_channel::<(i64, String)>();
     let (finished, mut finished_out) = mpsc::unbounded_channel::<(i64, Outcome, Usage)>();
+    let mut builds = RunningBuilds::default();
+    let (build_results, mut build_results_out) = mpsc::unbounded_channel();
+    let mut heartbeat = tokio::time::interval(Duration::from_secs(15));
     let mut heard = Instant::now();
     let mut check = tokio::time::interval(Duration::from_secs(2));
     let mut last_hello = String::new();
@@ -251,6 +264,30 @@ async fn work(context: &Arc<Context>, socket: &mut Socket, mut jobs: RunningJobs
                         });
                         jobs.0.insert(id, (kind, task));
                     }
+                    Ok(HubMessage::Build(spec)) => {
+                        let lease = spec.lease;
+                        if builds.0.contains_key(&lease.id) { continue; }
+                        let accepting = stemma_client::config::Settings::load()
+                            .and_then(|settings| crate::builds::capabilities(&settings, Some(&spec.group.slug)))
+                            .is_ok_and(|scope| scope.enabled && scope.build && builds.0.len() < scope.build_concurrency as usize);
+                        if !accepting {
+                            let result = crate::library::failed("This machine is not accepting another build for this group");
+                            if let Err(error) = send(socket, &WorkerMessage::BuildFinished { lease, result: Box::new(result) }).await { break error; }
+                            continue;
+                        }
+                        let context = context.clone();
+                        let result = build_results.clone();
+                        let spec = *spec;
+                        let task = tokio::spawn(async move {
+                            let built = crate::builds::run(&context, &spec).await;
+                            let _ = result.send((lease, built));
+                        });
+                        builds.0.insert(lease.id, (lease, task));
+                    }
+                    Ok(HubMessage::CancelBuild { lease }) => {
+                        if builds.0.get(&lease.id).is_some_and(|(held, _)| *held == lease)
+                            && let Some((_, task)) = builds.0.remove(&lease.id) { task.abort(); }
+                    }
                     Ok(HubMessage::Cancel { job }) => {
                         if let Some((_, task)) = jobs.0.remove(&job) {
                             tracing::info!(job, "job cancelled");
@@ -269,6 +306,15 @@ async fn work(context: &Arc<Context>, socket: &mut Socket, mut jobs: RunningJobs
                     Ok(HubMessage::Welcome(_)) => {}
                     Err(error) => tracing::warn!(%error, "unreadable message from the hub"),
                 }
+            }
+            _ = heartbeat.tick() => {
+                for (lease, _) in builds.0.values() {
+                    if let Err(error) = send(socket, &WorkerMessage::BuildHeartbeat { lease: *lease }).await { return error; }
+                }
+            }
+            Some((lease, result)) = build_results_out.recv() => {
+                if builds.0.remove(&lease.id).is_some()
+                    && let Err(error) = send(socket, &WorkerMessage::BuildFinished { lease, result: Box::new(result) }).await { break error; }
             }
             Some((job, text)) = progress_out.recv() => {
                 if jobs.0.contains_key(&job)
@@ -370,6 +416,16 @@ async fn hello_from(settings: &stemma_client::config::Settings) -> anyhow::Resul
         concurrency: config.concurrency,
         agents,
         groups,
+        workshop: crate::builds::capabilities(settings, None)?,
+        workshop_groups: settings
+            .groups()
+            .map(|slug| {
+                Ok((
+                    slug.clone(),
+                    crate::builds::capabilities(settings, Some(slug))?,
+                ))
+            })
+            .collect::<anyhow::Result<_>>()?,
     })
 }
 

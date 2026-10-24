@@ -103,6 +103,8 @@ async fn signals_drain_streams_and_machines_and_exit_successfully() {
         socket
             .send(Message::Text(
                 serde_json::to_string(&WorkerMessage::Hello(Hello {
+                    workshop: Default::default(),
+                    workshop_groups: Default::default(),
                     protocol: PROTOCOL_VERSION,
                     version: env!("CARGO_PKG_VERSION").into(),
                     runners: vec![],

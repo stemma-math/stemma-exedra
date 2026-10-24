@@ -7,6 +7,8 @@ CREATE TABLE libraries (
 );
 
 CREATE TABLE library_builds (
+    work_id INTEGER UNIQUE REFERENCES work_leases (id) ON DELETE CASCADE,
+    accepted INTEGER NOT NULL DEFAULT 1,
     id INTEGER PRIMARY KEY,
     group_id INTEGER NOT NULL REFERENCES groups (id) ON DELETE CASCADE,
     commit_sha TEXT NOT NULL,

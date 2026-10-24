@@ -3046,6 +3046,7 @@ dependencies = [
  "time",
  "tokio",
  "tokio-stream",
+ "tokio-tungstenite 0.30.0",
  "tokio-util",
  "toml",
  "tower",
