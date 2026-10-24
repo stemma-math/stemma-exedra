@@ -472,22 +472,74 @@ impl Forge {
         Ok(())
     }
 
-    /// Protects `branch`: whoever may write pushes to it, but nobody
-    /// rewrites its history or deletes it.
+    /// Protects main with the admins' team and workshop as its push allow-list.
+    /// PATCH makes reconciliation update an existing rule too.
     pub async fn protect_branch(&self, owner: &str, name: &str, branch: &str) -> ForgeResult<()> {
-        self.send(
-            &format!("protect {branch} of {owner}/{name}"),
-            self.api(
-                Method::POST,
-                &format!("/repos/{owner}/{name}/branch_protections"),
+        let path = format!("/repos/{owner}/{name}/branch_protections");
+        let rule = json!({
+            "rule_name": branch, "enable_push": true,
+            "enable_push_whitelist": true,
+            "push_whitelist_teams": ["Owners"],
+            "push_whitelist_usernames": ["workshop"],
+            "enable_force_push": false,
+        });
+        let existing: Option<Value> = self
+            .optional(
+                "find branch protection",
+                self.api(Method::GET, &format!("{path}/{branch}")),
             )
-            .json(&json!({
-                "rule_name": branch,
-                "enable_push": true,
-                "enable_push_whitelist": false,
-            })),
-        )
-        .await?;
+            .await?;
+        let request = if existing.is_some() {
+            self.api(Method::PATCH, &format!("{path}/{branch}"))
+        } else {
+            self.api(Method::POST, &path)
+        };
+        self.send("protect main", request.json(&rule)).await?;
+        Ok(())
+    }
+
+    /// An HTTP API request as a workshop identity. Its admin token stays on the hub.
+    pub fn as_workshop(
+        &self,
+        identity: WorkshopUser,
+        method: Method,
+        path: &str,
+    ) -> RequestBuilder {
+        self.api(method, path).header("Sudo", identity.login())
+    }
+
+    /// Internal identities have no password and cannot sign in.
+    pub async fn ensure_workshop_users(&self) -> ForgeResult<()> {
+        for identity in [WorkshopUser::Worker, WorkshopUser::Workshop] {
+            let login = identity.login();
+            let user: Option<User> = self
+                .optional(
+                    "find workshop account",
+                    self.api(Method::GET, &format!("/users/{login}")),
+                )
+                .await?;
+            if user.is_none() {
+                self.send(
+                    "create workshop account",
+                    self.api(Method::POST, "/admin/users").json(&json!({
+                        "username": login, "email": format!("{login}@stemma.invalid"),
+                        "full_name": login, "password": "", "must_change_password": false,
+                        "send_notify": false, "visibility": "private", "login_name": login,
+                        "source_id": self.source_id,
+                    })),
+                )
+                .await?;
+            }
+            self.send(
+                "disable workshop sign-in",
+                self.api(Method::PATCH, &format!("/admin/users/{login}"))
+                    .json(&json!({
+                        "login_name": login, "source_id": self.source_id,
+                        "prohibit_login": true, "allow_create_organization": false,
+                    })),
+            )
+            .await?;
+        }
         Ok(())
     }
 
@@ -632,4 +684,19 @@ fn encode_segment(segment: &str) -> String {
             _ => format!("%{b:02X}"),
         })
         .collect()
+}
+
+/// The two reserved Forgejo identities of the workshop.
+#[derive(Clone, Copy, Debug)]
+pub enum WorkshopUser {
+    Worker,
+    Workshop,
+}
+impl WorkshopUser {
+    pub fn login(self) -> &'static str {
+        match self {
+            Self::Worker => "worker",
+            Self::Workshop => "workshop",
+        }
+    }
 }

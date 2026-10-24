@@ -1,4 +1,4 @@
-//! Library creation and git authorization, without scheduling builds.
+//! Library creation and git authorization, and build scheduling.
 
 use std::path::Path;
 use std::sync::Arc;
@@ -112,7 +112,7 @@ fn git(dir: &Path, args: &[&str]) -> std::process::Output {
 }
 
 #[tokio::test(flavor = "multi_thread")]
-async fn libraries_are_made_cloned_and_pushed_without_building() {
+async fn libraries_are_made_cloned_and_pushed_with_roles() {
     let hub = hub().await;
     let ada = person(&hub, "ada", true).await;
     call(
@@ -175,6 +175,42 @@ async fn libraries_are_made_cloned_and_pushed_without_building() {
     git(&dir, &["reset", "-q", "--hard", "HEAD~1"]);
     let forced = git(&dir, &["push", "-q", "--force", "origin", "main"]);
     assert!(!forced.status.success());
+
+    // Members can create and delete branches, but cannot update main or other refs.
+    let bob = person(&hub, "bob", false).await;
+    sqlx::query("INSERT INTO memberships (group_id, user_id, role, joined_at) SELECT g.id, u.id, 'member', 0 FROM groups g, users u WHERE u.username = 'bob'")
+        .execute(&hub.state.db).await.unwrap();
+    let url = format!("http://bob:{bob}@{host}/git/geometry/library.git");
+    assert!(
+        git(work.path(), &["clone", "-q", &url, "member"])
+            .status
+            .success()
+    );
+    let member = work.path().join("member");
+    std::fs::write(member.join("NOTES.md"), "Notes.\n").unwrap();
+    git(&member, &["add", "NOTES.md"]);
+    git(&member, &["commit", "-qm", "Notes"]);
+    let denied = git(&member, &["push", "origin", "HEAD:main"]);
+    assert!(!denied.status.success());
+    assert!(
+        String::from_utf8_lossy(&denied.stderr).contains("Only the group's admins"),
+        "{denied:?}"
+    );
+    assert!(
+        git(&member, &["push", "origin", "HEAD:refs/heads/topic"])
+            .status
+            .success()
+    );
+    assert!(
+        git(&member, &["push", "origin", ":refs/heads/topic"])
+            .status
+            .success()
+    );
+    assert!(
+        !git(&member, &["push", "origin", "HEAD:refs/notes/test"])
+            .status
+            .success()
+    );
 
     // Guests clone the library, but do not push to it.
     let gus = person(&hub, "gus", false).await;
@@ -274,3 +310,4 @@ async fn libraries_are_made_cloned_and_pushed_without_building() {
     let pushed = git(&checkout, &["push", "-q", "origin", "main"]);
     assert!(!pushed.status.success());
 }
+

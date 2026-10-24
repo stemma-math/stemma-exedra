@@ -2083,7 +2083,7 @@ async fn a_group_is_an_organization_with_a_team_per_role() {
     // The hub's own account stays an owner.
     assert_eq!(
         forge.team_members("geometry", "Owners"),
-        ["ada", stemma_fake_forge::ADMIN]
+        ["ada", stemma_fake_forge::ADMIN, "workshop"]
     );
     let subject: String = sqlx::query_scalar("SELECT subject FROM users WHERE username = 'ada'")
         .fetch_one(&hub.state.db)
@@ -2094,7 +2094,7 @@ async fn a_group_is_an_organization_with_a_team_per_role() {
     // The teams follow the roles.
     let bob = hub.member(&ada, "bob").await;
     hub.join(&ada, "gus", "guest").await;
-    assert_eq!(forge.team_members("geometry", "Members"), ["bob"]);
+    assert_eq!(forge.team_members("geometry", "Members"), ["bob", "worker"]);
     assert_eq!(forge.team_members("geometry", "Guests"), ["gus"]);
     let bob_id = hub.get(&bob, "/me").await.json()["id"].as_i64().unwrap();
     let reply = hub
@@ -2106,10 +2106,10 @@ async fn a_group_is_an_organization_with_a_team_per_role() {
         )
         .await;
     assert_eq!(reply.status, StatusCode::NO_CONTENT);
-    assert!(forge.team_members("geometry", "Members").is_empty());
+    assert_eq!(forge.team_members("geometry", "Members"), ["worker"]);
     assert_eq!(
         forge.team_members("geometry", "Owners"),
-        ["ada", "bob", stemma_fake_forge::ADMIN]
+        ["ada", "bob", stemma_fake_forge::ADMIN, "workshop"]
     );
     let reply = hub
         .call(
@@ -2122,7 +2122,7 @@ async fn a_group_is_an_organization_with_a_team_per_role() {
     assert_eq!(reply.status, StatusCode::NO_CONTENT);
     assert_eq!(
         forge.team_members("geometry", "Owners"),
-        ["ada", stemma_fake_forge::ADMIN]
+        ["ada", stemma_fake_forge::ADMIN, "workshop"]
     );
 
     // The library is shown where it is in the forge.
@@ -2228,7 +2228,7 @@ async fn someone_whose_name_the_forge_has_still_joins() {
         "member"
     );
     // That account is not given the group.
-    assert!(hub.forge.team_members("geometry", "Members").is_empty());
+    assert_eq!(hub.forge.team_members("geometry", "Members"), ["worker"]);
 }
 
 #[tokio::test]

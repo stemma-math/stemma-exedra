@@ -6,6 +6,7 @@ use axum::extract::{Path, Request, State};
 use axum::http::{HeaderValue, Method, StatusCode, header};
 use axum::response::{IntoResponse, Response};
 use axum::routing::any;
+use futures_util::StreamExt;
 use stemma_core::api::Role;
 
 use crate::api::Membership;
@@ -123,7 +124,27 @@ async fn serve(
     if let Err(why) = allowed(&viewer.scope, membership.role, service) {
         return refused(StatusCode::FORBIDDEN, why);
     }
-    // A task's token pushes only to its task's repository.
+    let request = if service == Service::Push && request.method() == Method::POST {
+        if request.headers().contains_key(header::CONTENT_ENCODING) {
+            return refused(StatusCode::BAD_REQUEST, "Encoded pushes are not supported");
+        }
+        match check_push(request, membership.role).await {
+            Ok(request) => request,
+            Err(why) => {
+                let fatal = format!("\x03{why}\n");
+                return (
+                    [(
+                        header::CONTENT_TYPE,
+                        "application/x-git-receive-pack-result",
+                    )],
+                    format!("{:04x}{fatal}0000", fatal.len() + 4),
+                )
+                    .into_response();
+            }
+        }
+    } else {
+        request
+    };
     let upstream = format!("{}/{name}.git/{path}", membership.slug);
     match pass_on(forge, &upstream, request).await {
         Ok(response) => response,
@@ -182,4 +203,162 @@ async fn pass_on(forge: &Forge, path: &str, request: Request) -> anyhow::Result<
         }
     }
     Ok(response.body(Body::from_stream(answer.bytes_stream()))?)
+}
+
+/// Parse the receive-pack command list, stopping at its flush before the pack.
+/// `None` means more bytes are needed. The returned offset starts the pack.
+pub fn ref_updates(bytes: &[u8]) -> Result<Option<(Vec<String>, usize)>, &'static str> {
+    let mut offset = 0;
+    let mut refs = Vec::new();
+    loop {
+        if offset > 1024 * 1024 {
+            return Err("Git's command list is too large");
+        }
+        let Some(header) = bytes.get(offset..offset + 4) else {
+            return Ok(None);
+        };
+        let length = std::str::from_utf8(header)
+            .ok()
+            .and_then(|h| usize::from_str_radix(h, 16).ok())
+            .ok_or("Invalid git packet length")?;
+        if length == 0 {
+            return Ok(Some((refs, offset + 4)));
+        }
+        if !(5..=65520).contains(&length) {
+            return Err("Invalid git packet length");
+        }
+        let Some(line) = bytes.get(offset + 4..offset + length) else {
+            return Ok(None);
+        };
+        let line = std::str::from_utf8(line).map_err(|_| "Invalid git command")?;
+        let command = line.split('\0').next().unwrap().trim_end_matches('\n');
+        let fields: Vec<_> = command.split(' ').collect();
+        if fields.len() != 3
+            || !fields[..2]
+                .iter()
+                .all(|s| s.len() == 40 && s.bytes().all(|c| c.is_ascii_hexdigit()))
+        {
+            return Err("Invalid git ref update");
+        }
+        refs.push(fields[2].to_owned());
+        offset += length;
+    }
+}
+
+async fn check_push(request: Request, role: Role) -> Result<Request, &'static str> {
+    let (parts, body) = request.into_parts();
+    let mut stream = body.into_data_stream();
+    let mut commands = Vec::new();
+    let mut offset = 0;
+    loop {
+        let Some(chunk) = stream.next().await else {
+            return Err("Incomplete git command list");
+        };
+        let chunk = chunk.map_err(|_| "Could not read git commands")?;
+        let mut consumed = 0;
+        while consumed < chunk.len() {
+            let needed = if commands.len() < offset + 4 {
+                offset + 4
+            } else {
+                let h = std::str::from_utf8(&commands[offset..offset + 4])
+                    .map_err(|_| "Invalid git packet length")?;
+                let n = usize::from_str_radix(h, 16).map_err(|_| "Invalid git packet length")?;
+                if n == 0 {
+                    let (refs, _) = ref_updates(&commands)?.unwrap();
+                    for name in refs {
+                        if !name.starts_with("refs/heads/") && !name.starts_with("refs/tags/") {
+                            return Err("Pushes may update only branches and tags");
+                        }
+                        if name == "refs/heads/main" && role != Role::Admin {
+                            return Err(
+                                "Only the group's admins may push to main; push a branch and open a pull request",
+                            );
+                        }
+                    }
+                    let first = futures_util::stream::iter([
+                        Ok::<_, axum::Error>(axum::body::Bytes::from(commands)),
+                        Ok(chunk.slice(consumed..)),
+                    ]);
+                    return Ok(Request::from_parts(
+                        parts,
+                        Body::from_stream(first.chain(stream)),
+                    ));
+                }
+                if !(5..=65520).contains(&n) {
+                    return Err("Invalid git packet length");
+                }
+                if commands.len() == offset + n {
+                    offset += n;
+                    continue;
+                }
+                offset + n
+            };
+            let count = (needed - commands.len()).min(chunk.len() - consumed);
+            commands.extend_from_slice(&chunk[consumed..consumed + count]);
+            consumed += count;
+            if commands.len() > 1024 * 1024 {
+                return Err("Git's command list is too large");
+            }
+        }
+        // A flush at the end of this frame must not wait for a pack frame.
+        if commands.get(offset..offset + 4) == Some(b"0000") {
+            let (refs, _) = ref_updates(&commands)?.unwrap();
+            for name in refs {
+                if !name.starts_with("refs/heads/") && !name.starts_with("refs/tags/") {
+                    return Err("Pushes may update only branches and tags");
+                }
+                if name == "refs/heads/main" && role != Role::Admin {
+                    return Err(
+                        "Only the group's admins may push to main; push a branch and open a pull request",
+                    );
+                }
+            }
+            let first = futures_util::stream::once(async move {
+                Ok::<_, axum::Error>(axum::body::Bytes::from(commands))
+            });
+            return Ok(Request::from_parts(
+                parts,
+                Body::from_stream(first.chain(stream)),
+            ));
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[test]
+    fn parses_updates_and_stops_before_pack() {
+        let mut bytes = Vec::new();
+        for (i, name) in ["refs/heads/main", "refs/heads/topic", "refs/tags/v1"]
+            .iter()
+            .enumerate()
+        {
+            let line = format!(
+                "{} {} {name}{}\n",
+                "a".repeat(40),
+                "0".repeat(40),
+                if i == 0 {
+                    "\0report-status side-band-64k"
+                } else {
+                    ""
+                }
+            );
+            bytes.extend(format!("{:04x}{line}", line.len() + 4).bytes());
+        }
+        let end = bytes.len() + 4;
+        bytes.extend(b"0000PACKanything");
+        let (refs, offset) = ref_updates(&bytes).unwrap().unwrap();
+        assert_eq!(
+            refs,
+            ["refs/heads/main", "refs/heads/topic", "refs/tags/v1"]
+        );
+        assert_eq!(offset, end);
+        for cut in 0..end {
+            assert_eq!(ref_updates(&bytes[..cut]).unwrap(), None);
+        }
+        assert_eq!(ref_updates(b"0000").unwrap(), Some((vec![], 4)));
+        assert!(ref_updates(b"nope").is_err());
+        assert!(ref_updates(b"0001").is_err());
+    }
 }

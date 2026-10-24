@@ -3,6 +3,9 @@
 A group has admins, members and guests. Admins manage memberships and the
 invitations that bring existing accounts in.
 Members and admins create working papers; everyone reads and discusses.
+Admins write everything, including `main`. Members create, push and delete
+other branches and tags, and propose changes to `main` through pull requests.
+Guests read repositories. These roles apply through the hub and in Forgejo.
 
 The forum has numbered threads and messages, in Markdown with mathematics.
 References are `[[t12]]`, `[[t12#4]]`, `[[p/notes]]` and `[[lean:Foo.bar]]`.

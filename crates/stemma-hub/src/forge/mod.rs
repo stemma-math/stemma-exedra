@@ -59,6 +59,8 @@ pub fn email_of(username: &str) -> String {
 pub fn is_reserved(name: &str) -> bool {
     const RESERVED: &[&str] = &[
         "admin",
+        "worker",
+        "workshop",
         "g",
         "git",
         "groups",
@@ -192,6 +194,7 @@ pub async fn create_group(
             "Forgejo already has an account or organization called {slug}"
         )));
     }
+    forge.ensure_workshop_users().await.map_err(api_error)?;
     forge
         .create_organization(slug, name)
         .await
@@ -287,6 +290,8 @@ async fn ensure_teams(forge: &Forge, org: &str) -> ForgeResult<HashMap<Role, i64
         };
         ids.insert(role, id);
     }
+    forge.add_team_member(ids[&Role::Admin], "workshop").await?;
+    forge.add_team_member(ids[&Role::Member], "worker").await?;
     Ok(ids)
 }
 
@@ -310,6 +315,14 @@ pub async fn sync_members(state: &AppState, group_id: i64) -> anyhow::Result<()>
             .await?;
     let hub = forge.admin_login().await?;
     let mut wanted: HashMap<Role, HashSet<String>> = HashMap::new();
+    wanted
+        .entry(Role::Admin)
+        .or_default()
+        .insert("workshop".into());
+    wanted
+        .entry(Role::Member)
+        .or_default()
+        .insert("worker".into());
     let mut failures = Vec::new();
     for (user_id, role) in members {
         let role = Role::parse(&role).unwrap_or(Role::Guest);
@@ -362,6 +375,10 @@ pub async fn reconcile(state: &AppState) {
             return;
         }
     }
+    if let Err(error) = forge.ensure_workshop_users().await {
+        tracing::error!(%error, "could not prepare workshop accounts");
+        return;
+    }
     let groups: Vec<i64> = match sqlx::query_scalar("SELECT id FROM groups")
         .fetch_all(&state.db)
         .await
@@ -374,6 +391,16 @@ pub async fn reconcile(state: &AppState) {
     };
     for group_id in groups {
         sync_members_or_log(state, group_id).await;
+        let repos: Result<Vec<(String, String)>, _> = sqlx::query_as(
+            "SELECT g.slug, 'library' FROM groups g WHERE g.id = ?1 UNION ALL SELECT g.slug, p.repository FROM papers p JOIN groups g ON g.id = p.group_id WHERE g.id = ?1")
+            .bind(group_id).fetch_all(&state.db).await;
+        if let Ok(repos) = repos {
+            for (org, repo) in repos {
+                if let Err(error) = forge.protect_branch(&org, &repo, MAIN).await {
+                    tracing::error!(%error, org, repo, "could not reconcile main protection");
+                }
+            }
+        }
     }
 }
 

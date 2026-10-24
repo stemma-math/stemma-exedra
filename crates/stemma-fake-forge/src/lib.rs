@@ -333,6 +333,15 @@ fn router(inner: Arc<Inner>) -> Router {
         .route("/api/v1/user", get(me))
         .route("/api/v1/admin/users", get(search_users).post(create_user))
         .route("/api/v1/admin/users/{login}/rename", post(rename_user))
+        .route("/api/v1/users/{login}", get(workshop_user))
+        .route(
+            "/api/v1/admin/users/{login}",
+            axum::routing::patch(workshop_user),
+        )
+        .route(
+            "/api/v1/repos/{owner}/{name}/branch_protections/{branch}",
+            get(|| async { StatusCode::NOT_FOUND }).patch(|| async { axum::Json(json!({})) }),
+        )
         .route("/api/v1/orgs/{org}/rename", post(rename_org))
         .route("/api/v1/orgs", post(create_org))
         .route(
@@ -710,7 +719,8 @@ async fn commit_files(
         return message(StatusCode::INTERNAL_SERVER_ERROR, "no folder");
     };
     let made = async {
-        run_git(work.path(), &["init", "-q", "-b", "main"]).await?;
+        let source = bare.to_string_lossy().into_owned();
+        run_git(work.path(), &["clone", "-q", &source, "."]).await?;
         for file in body["files"].as_array().into_iter().flatten() {
             let path = work.path().join(file["path"].as_str().unwrap_or_default());
             let text = base64::engine::general_purpose::STANDARD
@@ -1295,4 +1305,21 @@ async fn rename_org(
         data.repos.insert((new.into(), key.1), repo);
     }
     StatusCode::NO_CONTENT.into_response()
+}
+
+async fn workshop_user(
+    State(inner): State<Arc<Inner>>,
+    UrlPath(login): UrlPath<String>,
+) -> Response {
+    match inner
+        .data
+        .lock()
+        .unwrap()
+        .users
+        .iter()
+        .find(|u| u.login == login)
+    {
+        Some(user) => axum::Json(user.json()).into_response(),
+        None => StatusCode::NOT_FOUND.into_response(),
+    }
 }
