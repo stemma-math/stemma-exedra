@@ -245,6 +245,26 @@ async fn advance(state: &AppState, r: &mut Review, thread: i64) -> ApiResult<()>
         r.head = head;
         r.build_work = None;
     }
+    // A head behind main needs a rebase before any build of it.
+    let main = forge
+        .branch_commit(&slug, &r.repository, "main")
+        .await
+        .map_err(forge::api_error)?
+        .ok_or_else(|| ApiError::not_found("Repository main"))?;
+    if !forge
+        .contains(&slug, &r.repository, &r.head, &main)
+        .await
+        .map_err(forge::api_error)?
+    {
+        return rebase(
+            state,
+            r,
+            thread,
+            &slug,
+            "The pull request's head does not contain current main",
+        )
+        .await;
+    }
     if r.build_work.is_none() {
         let work = crate::builds::review_head(state, r.group_id, &r.repository, &r.head).await?;
         sqlx::query(
@@ -283,25 +303,6 @@ async fn advance(state: &AppState, r: &mut Review, thread: i64) -> ApiResult<()>
                 error.as_deref().unwrap_or(&status)
             ),
             None,
-        )
-        .await;
-    }
-    let main = forge
-        .branch_commit(&slug, &r.repository, "main")
-        .await
-        .map_err(forge::api_error)?
-        .ok_or_else(|| ApiError::not_found("Repository main"))?;
-    if !forge
-        .contains(&slug, &r.repository, &r.head, &main)
-        .await
-        .map_err(forge::api_error)?
-    {
-        return rebase(
-            state,
-            r,
-            thread,
-            &slug,
-            "The pull request's head does not contain current main",
         )
         .await;
     }
