@@ -833,3 +833,101 @@ async fn retries_use_another_machine_once_and_a_possible_push_fences_them() {
         .unwrap();
     assert_eq!(status, "failed");
 }
+
+#[tokio::test(flavor = "multi_thread")]
+async fn an_approved_offer_waits_when_capacity_fills_before_acceptance() {
+    let hub = hub().await;
+    let ada = person(&hub, "ada", true).await;
+    call(
+        &hub,
+        &ada,
+        "POST",
+        "/groups",
+        Some(json!({"slug":"geometry","name":"Geometry"})),
+    )
+    .await;
+    let mut socket = machine(&hub, &ada).await;
+    for _ in 0..3 {
+        call(
+            &hub,
+            &ada,
+            "POST",
+            "/groups/geometry/workshop/requests",
+            Some(ask_body("review-paper", json!({"kind":"mine"}))),
+        )
+        .await;
+    }
+    let mut offers = Vec::new();
+    for _ in 0..3 {
+        let HubMessage::ProcessOffer(offer) = next(&mut socket).await else {
+            panic!("offer")
+        };
+        offers.push(offer);
+    }
+    for offer in &offers[..2] {
+        send(
+            &mut socket,
+            WorkerMessage::ProcessDecision {
+                process: offer.process,
+                accept: true,
+                pending: false,
+            },
+        )
+        .await;
+    }
+    let HubMessage::Process(first) = next(&mut socket).await else {
+        panic!("first lease")
+    };
+    assert!(matches!(next(&mut socket).await, HubMessage::Process(_)));
+    send(
+        &mut socket,
+        WorkerMessage::ProcessDecision {
+            process: offers[2].process,
+            accept: true,
+            pending: false,
+        },
+    )
+    .await;
+    assert!(
+        tokio::time::timeout(std::time::Duration::from_millis(80), next(&mut socket))
+            .await
+            .is_err(),
+        "A full machine must keep its approval rather than being told the process is taken"
+    );
+    send(
+        &mut socket,
+        WorkerMessage::ProcessFinished {
+            lease: first.lease,
+            result: Box::new(ProcessResult {
+                summary: "Finished the first review.".into(),
+                ..Default::default()
+            }),
+        },
+    )
+    .await;
+    for _ in 0..50 {
+        let state: String = sqlx::query_scalar("SELECT state FROM work_leases WHERE id=?")
+            .bind(first.lease.id)
+            .fetch_one(&hub.state.db)
+            .await
+            .unwrap();
+        if state == "passed" {
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+    }
+    // The machine retries its already approved offer as room becomes available.
+    send(
+        &mut socket,
+        WorkerMessage::ProcessDecision {
+            process: offers[2].process,
+            accept: true,
+            pending: false,
+        },
+    )
+    .await;
+    let HubMessage::Process(third) = next(&mut socket).await else {
+        panic!("held approval should now get a lease")
+    };
+    assert_eq!(third.offer.process, offers[2].process);
+}

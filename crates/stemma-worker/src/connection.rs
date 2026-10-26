@@ -393,7 +393,7 @@ async fn work(
                     for pending in store.pending.iter().filter(|p| p.hub == context.hub && p.owner == owner.id) {
                         let id=pending.offer.process;
                         let decision=pending.decision.as_str();
-                        if decisions.get(&id).is_some_and(|s| s == decision) {continue;}
+                        if decision != "approved" && decisions.get(&id).is_some_and(|s| s == decision) {continue;}
                         if decision == "approved" {
                             let scope=crate::builds::capabilities(&settings,Some(&pending.offer.group.slug));
                             if !scope.is_ok_and(|s| processes.0.len() < s.concurrency as usize) {continue;}

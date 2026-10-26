@@ -609,9 +609,16 @@ pub async fn decision(
         || !valid
         || !eligible(&machine, &offer, &ask)
         || offer.expires_at <= db::now()
-        || running >= machine.scope(&offer.group.slug).concurrency as i64
     {
+        if state_name == "queued" {
+            sqlx::query("DELETE FROM workshop_offers WHERE process_id=? AND machine_id=? AND decision!='ran'").bind(process).bind(holder).execute(&state.db).await?;
+        }
         let _ = machine.sender.send(HubMessage::ProcessTaken { process });
+        return Ok(());
+    }
+    // Capacity can fill between offering and accepting. Keep this machine's
+    // approved offer: it retries acceptance when it has room again.
+    if running >= machine.scope(&offer.group.slug).concurrency as i64 {
         return Ok(());
     }
     let recipe = offer.recipe.recipe.as_ref().unwrap();
