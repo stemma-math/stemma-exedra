@@ -24,8 +24,6 @@ pub struct Hub {
     pub config: Config,
     pub model_key: crate::model::Key,
     pub model_client: crate::model::Client,
-    pub model_locks:
-        tokio::sync::Mutex<std::collections::HashMap<i64, Arc<tokio::sync::Mutex<()>>>>,
     pub review_changes: tokio::sync::Mutex<()>,
     /// Every group's live updates; each listener keeps its group's.
     pub events: broadcast::Sender<GroupEvent>,
@@ -82,7 +80,6 @@ impl Hub {
             sockets: tokio_util::task::TaskTracker::new(),
             model_key: crate::model::Key::load_or_create(&config.data_dir.join("workshop.key"))?,
             model_client: crate::model::Client::new()?,
-            model_locks: Default::default(),
             review_changes: Default::default(),
             config,
             events,

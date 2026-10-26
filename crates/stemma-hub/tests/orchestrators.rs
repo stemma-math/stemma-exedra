@@ -148,6 +148,21 @@ async fn free_requests_launch_and_only_requester_or_admin_messages_wake_them() {
     .execute(&hub.state.db)
     .await
     .unwrap();
+    let board = call(&hub, &bob, "GET", "/groups/geometry/workshop/status", None).await;
+    assert_eq!(board["model"]["has_key"], true);
+    assert_eq!(board["model"]["last_four"], Value::Null);
+    assert_eq!(board["model"]["set_by"], Value::Null);
+    let mut ask = ask_body("", json!({"kind":"mine"}));
+    ask["inputs"] = json!({"statement": "True"});
+    let refused = status(
+        &hub,
+        &bob,
+        "POST",
+        "/api/v1/groups/geometry/workshop/requests",
+        ask,
+    )
+    .await;
+    assert_eq!(refused, 422);
     let mut socket = machine(&hub, &ada).await;
     model.tool("launch", launch());
     free(&hub, &ada).await;

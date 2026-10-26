@@ -77,6 +77,7 @@ impl Key {
 pub struct Settings {
     provider: String,
     model: String,
+    has_key: bool,
     last_four: Option<String>,
     set_by: Option<stemma_core::api::User>,
     set_at: Option<i64>,
@@ -151,6 +152,7 @@ pub async fn settings(state: &AppState, group: i64) -> ApiResult<Settings> {
     Ok(Settings {
         provider: row.provider,
         model: row.model,
+        has_key: row.encrypted_key.is_some(),
         last_four: row.last_four,
         set_by,
         set_at: row.set_at,
@@ -162,6 +164,17 @@ pub async fn settings(state: &AppState, group: i64) -> ApiResult<Settings> {
         cost_usd,
         stopped: input_tokens.saturating_add(output_tokens) >= row.monthly_cap,
     })
+}
+impl Settings {
+    /// What the board shows every member: the model and the month's use.
+    pub fn public(self) -> Self {
+        Self {
+            last_four: None,
+            set_by: None,
+            set_at: None,
+            ..self
+        }
+    }
 }
 pub async fn get(
     State(state): State<AppState>,
@@ -447,15 +460,6 @@ pub async fn call(
     messages: &[Message],
     tools: &[Tool],
 ) -> ApiResult<Reply> {
-    // Serialize only the provider call and its accounting, not whole turns.
-    let lock = state
-        .model_locks
-        .lock()
-        .await
-        .entry(group)
-        .or_default()
-        .clone();
-    let _call = lock.lock().await;
     let config = stored(state, group).await?;
     let key = config.encrypted_key.as_ref().ok_or_else(|| {
         ApiError::new(

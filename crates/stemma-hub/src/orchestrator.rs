@@ -300,6 +300,7 @@ pub(crate) async fn post(
     forum::publish_post(state, &group, thread, number, &stored).await?;
     Ok(number)
 }
+/// Says in the thread what the request waits for, once, and keeps it.
 pub(crate) async fn wait(
     state: &AppState,
     thread: i64,
@@ -317,6 +318,10 @@ pub(crate) async fn wait(
     if old.as_deref() != Some(text) {
         post(state, thread, model, text).await?;
     }
+    waits_for(state, thread, text).await
+}
+/// Keeps what the request waits for, for its header and the board only.
+async fn waits_for(state: &AppState, thread: i64, text: &str) -> ApiResult<()> {
     sqlx::query(
         "UPDATE workshop_requests
          SET waiting = ?
@@ -475,7 +480,7 @@ async fn turn(state: &AppState, thread: i64, group: i64) -> ApiResult<()> {
         history.push(reply.message);
         if calls.is_empty() {
             if !text.trim().is_empty() {
-                wait(state, thread, Some(&reply.model), &text).await?;
+                post(state, thread, Some(&reply.model), &text).await?;
             }
             exhausted = false;
             break;
@@ -507,7 +512,7 @@ async fn turn(state: &AppState, thread: i64, group: i64) -> ApiResult<()> {
                     }
                     result.map(|id| json!({"process":id,"state":"offered"}))
                 }
-                "post" => wait(
+                "post" => post(
                     state,
                     thread,
                     Some(&reply.model),
@@ -553,10 +558,9 @@ async fn turn(state: &AppState, thread: i64, group: i64) -> ApiResult<()> {
         }
     }
     if launched {
-        wait(
+        waits_for(
             state,
             thread,
-            None,
             "Waiting for the launched process and its machine's approval",
         )
         .await?;
@@ -583,7 +587,7 @@ async fn turn(state: &AppState, thread: i64, group: i64) -> ApiResult<()> {
         } else {
             "Waiting for guidance from the requester or an admin before launching more work"
         };
-        wait(state, thread, None, waiting).await?;
+        waits_for(state, thread, waiting).await?;
     }
     Ok(())
 }
@@ -896,12 +900,18 @@ pub(crate) async fn status(state: &AppState, group: i64) -> ApiResult<Value> {
         state: String,
         message: Option<String>,
         rebases: i64,
+        thread: i64,
     }
+    // Every open review, and the latest finished ones.
     let reviews: Vec<BoardReview> = sqlx::query_as(
-        "SELECT id, repository, pull_number AS number, url, state, message, rebases
-         FROM workshop_reviews
-         WHERE group_id = ?
-         ORDER BY id",
+        "SELECT v.id, v.repository, v.pull_number AS number, v.url, v.state, v.message,
+         v.rebases, t.number AS thread
+         FROM workshop_reviews v
+         JOIN workshop_processes p ON p.id = v.process_id
+         JOIN threads t ON t.id = p.thread_id
+         WHERE v.group_id = ?
+         ORDER BY v.state IN ('merged', 'refused'), v.id DESC
+         LIMIT 20",
     )
     .bind(group)
     .fetch_all(&state.db)
@@ -917,10 +927,14 @@ pub(crate) async fn status(state: &AppState, group: i64) -> ApiResult<Value> {
     .bind(group)
     .fetch_all(&state.db)
     .await?;
-    let turns: Vec<Value> = turns.into_iter().map(|(number, thinking, waiting)| {
-        json!({"number": number, "thinking": thinking, "waiting": waiting})
-    }).collect();
-    Ok(json!({"model": model::settings(state, group).await?, "reviews": reviews, "turns": turns}))
+    let turns: Vec<Value> = turns
+        .into_iter()
+        .map(|(number, thinking, waiting)| {
+            json!({"number": number, "thinking": thinking, "waiting": waiting})
+        })
+        .collect();
+    let model = model::settings(state, group).await?.public();
+    Ok(json!({"model": model, "reviews": reviews, "turns": turns}))
 }
 pub async fn board(
     State(state): State<AppState>,

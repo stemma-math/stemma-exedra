@@ -6,12 +6,13 @@ requests, processes, schedules and leases. People's machines do the work.
 Two orchestrators on the hub make HTTP calls to the model provider and Forgejo.
 The hub runs no shell commands, agents, checkouts or builds.
 
-A **recipe** is what the workshop knows how to do, written by the group.
-A **request** asks for work in plain words, or for a recipe now, later or every so often. Each request
-is a numbered thread, with the group's other threads: `[[t42]]` works in
-references, mentions and notifications. A **process** is one run of that
-recipe for that request on one machine. A retry is a new process on another
-eligible machine; a recurring request has a separate process for each slot.
+A **recipe** is what the workshop knows how to do, written by the group. A
+**request** asks for work in plain words, or for a recipe now, later or every
+so often. Each request is a numbered thread, with the group's other threads:
+`[[t42]]` works in references, mentions and notifications. A **process** is
+one run of that recipe for that request on one machine. A retry is a new
+process on another eligible machine; a recurring request has a separate
+process for each slot.
 
 ## Recipes
 
@@ -31,7 +32,7 @@ summary = "Proves a statement in the library, on a branch, and opens a pull requ
 runners = ["claude", "codex"]
 writes = ["library"]
 timeout_minutes = 60
-merge = "none"
+merge = "review"
 accept_sorry = false
 
 [inputs.statement]
@@ -70,16 +71,17 @@ inputs, invalid paper targets and missing required values are errors. The
 board reports the file and line, with a link to the source. Files are UTF-8
 and at most 128 KiB. Input names use letters, digits and underscores.
 
-The template includes `prove.md`, which writes a proof on a library branch and asks for review,
-and `review-paper.md`, which reads a paper and posts a review in the request's
-thread. A request retains the committed recipe and its inputs: editing
-`main` does not silently change an existing request or recurring series.
+The template includes `prove.md`, which writes a proof on a library branch for
+the git orchestrator to review, and `review-paper.md`, which reads a paper and
+posts a review in the request's thread. A request retains the committed recipe
+and its inputs: editing `main` does not silently change an existing request or
+recurring series.
 
 ## Asking
 
 Members and admins choose **Ask the workshop** and either describe the work in
-plain words or choose a recipe and its inputs. Free requests run now; Workshop
-chooses their processes.
+plain words, with a title and optional details, or choose a recipe and its
+inputs. Requests in plain words run now, and Workshop chooses their processes.
 Text inputs have a text area, paper inputs a picker, declarations the
 library's lookup, and threads a picker. Guests can read the board and its
 requests.
@@ -190,20 +192,23 @@ Its owner's personal token never enters the container.
 
 Builds and processes share `work_leases`: a single holder, fenced attempts,
 15-second heartbeats and expiry after 60 seconds without one or on
-disconnection. A failed or lost process can create one retry process on a different
-eligible machine, with the same approval rules, only if it has not attempted
-a push. Both runs keep their own machine, usage, summary and branch; the
-retry cannot itself be retried. A streamed push is conservatively recorded before forwarding: if
-its outcome is uncertain, it fails instead of risking duplicate work.
+disconnection. A failed or lost process can create one retry process on a
+different eligible machine, with the same approval rules, only if it has not
+attempted a push. Both runs keep their own machine, usage, summary and branch;
+the retry cannot itself be retried. A streamed push is conservatively recorded
+before forwarding: if its outcome is uncertain, it fails instead of risking
+duplicate work.
 
 The hub hides secrets in process progress and summaries. When a process
 ends, the hub posts its summary. It checks
 Forgejo for its assigned branches and opens a pull request into `main` for
 each branch actually pushed, as the reserved **worker** account using
 Forgejo's `Sudo` header. The title is the request's title and the description
-links its thread. A process that pushes nothing opens nothing. With `merge = "none"`, pull requests stay for the group's admins. With
-`merge = "review"`, they enter the git orchestrator's queue. The hub records the runner's tokens, cached tokens and
-cost when reported, and shows them per process.
+links its thread. A process that pushes nothing opens nothing. With
+`merge = "none"`, pull requests stay for the group's admins; with
+`merge = "review"`, they enter the git orchestrator's queue. The hub records
+the runner's tokens, cached tokens and cost when reported, and shows them per
+process.
 
 Request completion, failure and expiration notify the requester; a pending
 offer notifies the machine's owner; an opened pull request notifies the
@@ -232,8 +237,8 @@ reported cache tokens) and a step cap per orchestrator turn, 20 by default.
 The monthly cap defaults to 1,000,000 tokens; zero stops thinking. Months use
 UTC. Each provider call checks the cap before starting and records the
 provider's reported usage, and cost when supplied (for example by OpenRouter).
-Concurrent turns share accounting, so one call can exceed the remaining cap,
-but another cannot start once it is reached. The board and waiting threads say
+Calls already under way when the cap is reached may exceed it, but no new
+call starts. The board and waiting threads say
 when thinking has stopped. A higher cap or the next month resumes it.
 The cap concerns the hub's two orchestrators; processes use their machine
 owners' models and report usage separately.
@@ -262,7 +267,8 @@ Each process retains its recipe and inputs, so a later step cannot change what
 a machine approved. The hub's short instructions are in
 `crates/stemma-hub/prompts/workshop.md`. Workshop posts progress and closes a
 request as done or failed with a message. A turn that does not launch or close
-always explains what it waits for; reaching its step limit waits for guidance.
+always leaves what the request waits for in its header and on the board;
+reaching its step limit waits for guidance.
 
 ## Reviews, rebases and merges
 
@@ -297,7 +303,8 @@ a reason. Groups receive `recipes/template/rebase.md`; a group without it
 uses the hub's built-in copy, whose content hash identifies its version.
 
 The request thread reports building, review decisions, rebases and merging.
-The board shows active turns, reviews, the repository queues and monthly use.
+The board shows the group's model and the month's use against the cap, the
+requests Workshop is thinking about, and each repository's merge queue.
 
 ## Later
 

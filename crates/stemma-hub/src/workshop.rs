@@ -307,6 +307,16 @@ pub async fn ask(
     if free && (ask.schedule.at.is_some() || ask.schedule.every.is_some()) {
         return Err(ApiError::invalid("Free requests run now"));
     }
+    if free
+        && ask
+            .inputs
+            .iter()
+            .any(|(name, value)| name != "details" || value.len() > 100_000)
+    {
+        return Err(ApiError::invalid(
+            "A request in plain words takes only its details, up to 100,000 characters",
+        ));
+    }
     let file = if free {
         RecipeFile {
             name: "Free request".into(),
