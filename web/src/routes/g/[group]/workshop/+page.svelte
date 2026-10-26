@@ -153,7 +153,7 @@
               <dl class="request-facts">
                 {#each Object.entries(file.recipe.front.inputs) as [name, input] (name)}
                   <dt><code>{name}</code></dt>
-                  <dd>{input.description}{input.required || input.kind === "paper" ? "" : " (optional)"}</dd>
+                  <dd>{input.description}{input.required ? "" : " (optional)"}</dd>
                 {/each}
               </dl>
             </div>

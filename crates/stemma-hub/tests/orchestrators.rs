@@ -3,14 +3,7 @@ include!("support/workshop.rs");
 async fn setup(model: &stemma_fake_model::FakeModel) -> (Hub, String) {
     let hub = hub(Some(model)).await;
     let ada = person(&hub, "ada", true).await;
-    call(
-        &hub,
-        &ada,
-        "POST",
-        "/groups",
-        Some(json!({"slug":"geometry","name":"Geometry"})),
-    )
-    .await;
+    group(&hub, &ada).await;
     (hub, ada)
 }
 async fn key(hub: &Hub, ada: &str, provider: &str, cap: i64) -> Value {

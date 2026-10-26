@@ -212,9 +212,7 @@ impl Recipe {
             }
         }
         for (name, input) in &self.front.inputs {
-            if (input.required || input.kind == InputKind::Paper)
-                && inputs.get(name).is_none_or(|v| v.trim().is_empty())
-            {
+            if input.required && inputs.get(name).is_none_or(|v| v.trim().is_empty()) {
                 return Err(bad(format!("Missing required input {name}")));
             }
         }
@@ -239,18 +237,28 @@ impl Recipe {
 #[cfg(test)]
 mod tests {
     use super::*;
-    const PROVE: &str = include_str!("../../../recipes/template/prove.md");
+    const PROVE: &str = r#"+++
+title = "Prove a statement"
+summary = "Proves a statement in the library."
+runners = ["claude", "codex"]
+writes = ["library"]
+timeout_minutes = 60
+
+[inputs.statement]
+description = "What to prove"
+kind = "text"
+required = true
++++
+
+Prove {{statement}} in the group's library.
+"#;
     #[test]
-    fn templates_are_valid() {
-        for (name, text) in [
-            ("prove.md", PROVE),
-            (
-                "review-paper.md",
-                include_str!("../../../recipes/template/review-paper.md"),
-            ),
-        ] {
-            Recipe::parse(name, text).unwrap();
-        }
+    fn the_template_is_valid() {
+        Recipe::parse(
+            "general.md",
+            include_str!("../../../recipes/template/general.md"),
+        )
+        .unwrap();
     }
     #[test]
     fn validation_names_file_and_line() {
@@ -289,13 +297,15 @@ mod tests {
         );
     }
     #[test]
-    fn a_paper_target_is_always_needed_to_write_a_paper() {
+    fn a_paper_target_is_required_only_when_the_recipe_says_so() {
         let text = PROVE
             .replace("writes = [\"library\"]", "writes = [\"paper\"]")
             .replace("kind = \"text\"", "kind = \"paper\"");
-        let text = text.replace("required = true", "required = false");
         let recipe = Recipe::parse("paper.md", &text).unwrap();
         assert!(recipe.render("paper.md", &BTreeMap::new()).is_err());
+        let text = text.replace("required = true", "required = false");
+        let recipe = Recipe::parse("paper.md", &text).unwrap();
+        recipe.render("paper.md", &BTreeMap::new()).unwrap();
         recipe
             .render(
                 "paper.md",

@@ -37,7 +37,7 @@
 </script>
 
 {#each Object.entries(recipe.front.inputs) as [name, input] (name)}
-  {@const required = input.required || input.kind === "paper"}
+  {@const required = input.required}
   <div class="field">
     <label class="field__label" for="recipe-input-{name}">{input.description}{required ? "" : " (optional)"}</label>
     {#if input.kind === "text"}
@@ -45,14 +45,14 @@
     {:else if input.kind === "paper"}
       <stemma-select
         ><select use:scriptedSelect={[inputs[name], papers]} id="recipe-input-{name}" class="input" bind:value={inputs[name]} {required}>
-          <option value="">Choose a paper</option>
+          <option value="">{required ? "Choose a paper" : "None"}</option>
           {#each papers as paper (paper.slug)}<option value={paper.slug}>{paper.title}</option>{/each}
         </select></stemma-select
       >
     {:else if input.kind === "thread"}
       <stemma-select
         ><select use:scriptedSelect={[inputs[name], threads]} id="recipe-input-{name}" class="input" bind:value={inputs[name]} {required}>
-          <option value="">Choose a thread</option>
+          <option value="">{required ? "Choose a thread" : "None"}</option>
           {#each threads as thread (thread.number)}
             <option value="t{thread.number}">t{thread.number}, {thread.title}</option>
           {/each}

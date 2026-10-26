@@ -1019,10 +1019,10 @@ pub async fn decision(
                     .find(|(_, i)| i.kind == InputKind::Paper)
                     .unwrap()
                     .0;
-                let slug = offer
-                    .inputs
-                    .get(input)
-                    .ok_or_else(|| ApiError::invalid("Missing paper"))?;
+                // An optional paper left empty: the process writes no paper.
+                let Some(slug) = offer.inputs.get(input).filter(|s| !s.trim().is_empty()) else {
+                    continue;
+                };
                 format!("paper-{slug}")
             }
         };

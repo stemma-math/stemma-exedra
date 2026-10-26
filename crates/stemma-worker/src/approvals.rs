@@ -362,7 +362,7 @@ mod tests {
                 recipe: Some(
                     Recipe::parse(
                         "prove.md",
-                        include_str!("../../../recipes/template/prove.md"),
+                        include_str!("../../stemma-hub/tests/support/recipes/prove.md"),
                     )
                     .unwrap(),
                 ),

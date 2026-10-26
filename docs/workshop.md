@@ -59,10 +59,10 @@ The TOML front matter accepts:
 
 Inputs have kind `text`, `paper`, `declaration` or `thread`. A `paper` input
 selects the paper the process writes: it is allowed only when `writes`
-includes `paper`, which needs exactly one such input. Its value is always
-required, even when the input's `required` flag is omitted. To **read** a paper
-without changing it, use a text input for its short name or `[[p/name]]`
-reference, as `review-paper.md` does. Declaration and thread inputs select
+includes `paper`, which needs exactly one such input. Like any input, it is
+required only with `required = true`; left empty, the process writes no
+paper. To **read** a paper without changing it, use a text input for its
+short name or `[[p/name]]` reference. Declaration and thread inputs select
 existing objects of this group.
 
 `{{name}}` substitutes the input's value once, without interpreting any
@@ -71,11 +71,17 @@ inputs, invalid paper targets and missing required values are errors. The
 board reports the file and line, with a link to the source. Files are UTF-8
 and at most 128 KiB. Input names use letters, digits and underscores.
 
-The template includes `prove.md`, which writes a proof on a library branch for
-the git orchestrator to review, and `review-paper.md`, which reads a paper and
-posts a review in the request's thread. A request retains the committed recipe
-and its inputs: editing `main` does not silently change an existing request or
-recurring series.
+The template has one recipe, `general.md`, for whatever no other recipe
+covers: a task in words, an optional paper to write in and an optional
+thread with the discussion. Any runner may run it, for up to a day; it may
+change the library and that paper, and its pull requests go to the git
+orchestrator, which may accept `sorry`. Groups add their own recipes beside
+it. A request retains the committed recipe and its inputs: editing `main`
+does not silently change an existing request or recurring series.
+
+Agents launched by Stemma know how to write recipes: Claude Code and
+OpenCode load Stemma's `workshop-recipes` skill, and Codex is told where to
+read it.
 
 ## Asking
 
@@ -299,8 +305,8 @@ implicit only when its owner is the requester, otherwise local approval or a
 standing approval. Its checkout begins at the PR head, and its token may
 force-push only that branch. It opens no second PR. The hub then builds the
 new head and reviews again. After three unsuccessful rebases it refuses with
-a reason. Groups receive `recipes/template/rebase.md`; a group without it
-uses the hub's built-in copy, whose content hash identifies its version.
+a reason. The hub has its own `rebase` recipe, whose content hash
+identifies its version; a group's own `rebase.md` replaces it.
 
 The request thread reports building, review decisions, rebases and merging.
 The board shows the group's model and the month's use against the cap, the
@@ -309,8 +315,6 @@ requests Workshop is thinking about, and each repository's merge queue.
 ## Later
 
 One image for answers and the workshop.
-
-A skill that helps agents write recipes.
 
 Approvals from the web or a phone, with device signatures.
 

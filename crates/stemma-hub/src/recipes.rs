@@ -9,24 +9,12 @@ use stemma_core::{
     workshop::RecipeFile,
 };
 pub const REPOSITORY: &str = "recipes";
+/// What a group's `recipes` repository starts with.
 pub fn template() -> Vec<(String, String)> {
-    [
-        (
-            "rebase.md",
-            include_str!("../../../recipes/template/rebase.md"),
-        ),
-        (
-            "prove.md",
-            include_str!("../../../recipes/template/prove.md"),
-        ),
-        (
-            "review-paper.md",
-            include_str!("../../../recipes/template/review-paper.md"),
-        ),
-    ]
-    .into_iter()
-    .map(|(n, t)| (n.into(), t.into()))
-    .collect()
+    vec![(
+        "general.md".into(),
+        include_str!("../../../recipes/template/general.md").into(),
+    )]
 }
 pub async fn list(state: &AppState, slug: &str) -> ApiResult<Vec<RecipeFile>> {
     let forge = state
@@ -100,7 +88,7 @@ pub async fn read(state: &AppState, slug: &str, name: &str) -> ApiResult<RecipeF
         .ok_or_else(|| ApiError::not_found("Recipe"))
 }
 
-/// Old groups may not yet have adopted the shipped rebase recipe.
+/// The group's own `rebase` recipe, or else the hub's.
 pub async fn rebase(state: &AppState, slug: &str) -> ApiResult<RecipeFile> {
     if let Some(file) = list(state, slug)
         .await?
@@ -110,7 +98,7 @@ pub async fn rebase(state: &AppState, slug: &str) -> ApiResult<RecipeFile> {
         return Ok(file);
     }
     use sha2::{Digest, Sha256};
-    let source = include_str!("../../../recipes/template/rebase.md");
+    let source = include_str!("../recipes/rebase.md");
     Ok(RecipeFile {
         name: "rebase".into(),
         version: format!(

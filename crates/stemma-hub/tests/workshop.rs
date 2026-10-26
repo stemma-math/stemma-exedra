@@ -4,14 +4,7 @@ include!("support/workshop.rs");
 async fn processes_push_only_their_branch_post_only_in_their_request_and_open_as_worker() {
     let hub = hub(None).await;
     let ada = person(&hub, "ada", true).await;
-    call(
-        &hub,
-        &ada,
-        "POST",
-        "/groups",
-        Some(json!({"slug":"geometry","name":"Geometry"})),
-    )
-    .await;
+    group(&hub, &ada).await;
     let recipes = call(&hub, &ada, "GET", "/groups/geometry/workshop/recipes", None).await;
     assert_eq!(recipes.as_array().unwrap().len(), 3);
     assert_eq!(recipes[0]["version"].as_str().unwrap().len(), 40);
@@ -298,14 +291,7 @@ async fn processes_push_only_their_branch_post_only_in_their_request_and_open_as
 async fn pending_offers_first_acceptance_recurring_slots_and_expiry_are_durable() {
     let hub = hub(None).await;
     let ada = person(&hub, "ada", true).await;
-    call(
-        &hub,
-        &ada,
-        "POST",
-        "/groups",
-        Some(json!({"slug":"geometry","name":"Geometry"})),
-    )
-    .await;
+    group(&hub, &ada).await;
     let bob = person(&hub, "bob", false).await;
     sqlx::query(
         "INSERT INTO memberships(group_id, user_id, role, joined_at)
@@ -530,14 +516,7 @@ async fn pending_offers_first_acceptance_recurring_slots_and_expiry_are_durable(
 async fn retries_use_another_machine_once_and_a_possible_push_fences_them() {
     let hub = hub(None).await;
     let ada = person(&hub, "ada", true).await;
-    call(
-        &hub,
-        &ada,
-        "POST",
-        "/groups",
-        Some(json!({"slug":"geometry","name":"Geometry"})),
-    )
-    .await;
+    group(&hub, &ada).await;
     let other = call(
         &hub,
         &ada,
@@ -680,14 +659,7 @@ async fn retries_use_another_machine_once_and_a_possible_push_fences_them() {
 async fn an_approved_offer_waits_when_capacity_fills_before_acceptance() {
     let hub = hub(None).await;
     let ada = person(&hub, "ada", true).await;
-    call(
-        &hub,
-        &ada,
-        "POST",
-        "/groups",
-        Some(json!({"slug":"geometry","name":"Geometry"})),
-    )
-    .await;
+    group(&hub, &ada).await;
     let mut socket = machine(&hub, &ada).await;
     for _ in 0..3 {
         call(
@@ -772,4 +744,39 @@ async fn an_approved_offer_waits_when_capacity_fills_before_acceptance() {
         panic!("held approval should now get a lease")
     };
     assert_eq!(third.offer.process, offers[2].process);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn the_general_recipe_writes_a_paper_only_when_given_one() {
+    let hub = hub(None).await;
+    let ada = person(&hub, "ada", true).await;
+    group(&hub, &ada).await;
+    let mut socket = machine(&hub, &ada).await;
+    let mut ask = ask_body("general", json!({"kind":"mine"}));
+    ask["inputs"] = json!({"task": "Tidy the library's imports."});
+    call(
+        &hub,
+        &ada,
+        "POST",
+        "/groups/geometry/workshop/requests",
+        Some(ask),
+    )
+    .await;
+    let HubMessage::ProcessOffer(offer) = next(&mut socket).await else {
+        panic!("offer")
+    };
+    send(
+        &mut socket,
+        WorkerMessage::ProcessDecision {
+            process: offer.process,
+            accept: true,
+            pending: false,
+        },
+    )
+    .await;
+    let HubMessage::Process(spec) = next(&mut socket).await else {
+        panic!("lease")
+    };
+    let repositories: Vec<&str> = spec.repositories.iter().map(|r| r.path.as_str()).collect();
+    assert_eq!(repositories, ["/git/geometry/library.git"]);
 }

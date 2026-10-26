@@ -166,6 +166,35 @@ async fn machine(hub: &Hub, token: &str) -> Socket {
     assert!(matches!(next(&mut socket).await, HubMessage::Welcome(_)));
     socket
 }
+/// The group `geometry`, by `token`'s person, with the tests' own recipes
+/// beside the template's.
+async fn group(hub: &Hub, token: &str) {
+    call(
+        hub,
+        token,
+        "POST",
+        "/groups",
+        Some(json!({"slug":"geometry","name":"Geometry"})),
+    )
+    .await;
+    let recipes = [
+        ("prove.md", include_str!("recipes/prove.md")),
+        ("review-paper.md", include_str!("recipes/review-paper.md")),
+    ];
+    hub.state
+        .forge
+        .as_ref()
+        .unwrap()
+        .commit_files(
+            "geometry",
+            "recipes",
+            "main",
+            "Add the tests' recipes",
+            &recipes.map(|(name, text)| (name.to_owned(), text.to_owned())),
+        )
+        .await
+        .unwrap();
+}
 fn ask_body(recipe: &str, assignment: Value) -> Value {
     let inputs = if recipe == "prove" {
         json!({ "statement": "True" })
