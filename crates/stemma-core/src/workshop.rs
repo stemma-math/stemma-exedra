@@ -126,6 +126,8 @@ pub struct Request {
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Process {
     pub number: i64,
+    /// A retry is a separate run on another machine.
+    pub retry_of: Option<i64>,
     pub slot: i64,
     pub state: String,
     pub machine: Option<String>,

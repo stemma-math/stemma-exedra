@@ -119,6 +119,7 @@ async fn to_api(state: &AppState, mut row: Row) -> ApiResult<Request> {
     #[derive(sqlx::FromRow)]
     struct P {
         id: i64,
+        retry_of: Option<i64>,
         slot: i64,
         state: String,
         machine: Option<String>,
@@ -129,12 +130,19 @@ async fn to_api(state: &AppState, mut row: Row) -> ApiResult<Request> {
         usage: String,
         error: Option<String>,
     }
-    let rows: Vec<P> = sqlx::query_as("SELECT p.id, p.slot, w.state, w.machine, p.owner_id, p.started_at, p.finished_at, p.branches, p.usage, w.error FROM workshop_processes p JOIN work_leases w ON w.id = p.work_id WHERE p.thread_id = ? ORDER BY p.id DESC").bind(row.thread_id).fetch_all(&state.db).await?;
+    let rows: Vec<P> = sqlx::query_as("SELECT p.id, p.retry_of, p.slot, w.state, w.machine, p.owner_id, p.started_at, p.finished_at, p.branches, p.usage, w.error FROM workshop_processes p JOIN work_leases w ON w.id = p.work_id WHERE p.thread_id = ? ORDER BY p.id DESC").bind(row.thread_id).fetch_all(&state.db).await?;
     for p in rows {
         processes.push(Process {
             number: p.id,
+            retry_of: p.retry_of,
             slot: p.slot,
-            state: if p.state == "passed" {
+            state: if p.state == "failed"
+                && p.error
+                    .as_ref()
+                    .is_some_and(|e| e.contains("expired while waiting"))
+            {
+                "expired".into()
+            } else if p.state == "passed" {
                 "done".into()
             } else if p.state == "queued" {
                 "waiting".into()
@@ -740,44 +748,34 @@ pub async fn finished(
     let Some(id) = id else {
         return Ok(());
     };
-    let (pushed, old_usage): (bool, String) =
-        sqlx::query_as("SELECT pushed, usage FROM workshop_processes WHERE id=?")
-            .bind(id)
-            .fetch_one(&state.db)
-            .await?;
-    let retry = result.error.is_some() && !pushed && lease.attempt < 2;
-    let mut usage: Usage = decode(&old_usage)?;
-    usage.add(&result.usage);
     let mut tx = state.db.begin().await?;
-    sqlx::query("UPDATE work_leases SET state=?,error=? WHERE id=?")
-        .bind(if retry {
-            "queued"
-        } else if result.error.is_none() {
-            "passed"
-        } else {
-            "failed"
-        })
-        .bind(if retry {
-            None
-        } else {
-            result.error.as_deref().map(stemma_core::secrets::hide)
-        })
-        .bind(lease.id)
-        .execute(&mut *tx)
-        .await?;
-    if retry {
-        sqlx::query("DELETE FROM workshop_offers WHERE process_id=? AND decision!='ran'")
-            .bind(id)
-            .execute(&mut *tx)
-            .await?;
-        sqlx::query("UPDATE workshop_requests SET state='waiting' WHERE thread_id=(SELECT thread_id FROM workshop_processes WHERE id=?) AND state='running'").bind(id).execute(&mut *tx).await?;
+    let changed = sqlx::query(
+        "UPDATE work_leases SET state=?,error=? WHERE id=? AND state='running' AND attempts=?",
+    )
+    .bind(if result.error.is_none() {
+        "passed"
+    } else {
+        "failed"
+    })
+    .bind(result.error.as_deref().map(stemma_core::secrets::hide))
+    .bind(lease.id)
+    .bind(lease.attempt)
+    .execute(&mut *tx)
+    .await?
+    .rows_affected();
+    if changed == 0 {
+        tx.rollback().await?;
+        return Ok(());
     }
     sqlx::query("UPDATE workshop_processes SET summary=?,usage=? WHERE id=?")
         .bind(stemma_core::secrets::hide(&result.summary))
-        .bind(encode(&usage)?)
+        .bind(encode(&result.usage)?)
         .bind(id)
         .execute(&mut *tx)
         .await?;
+    if result.error.is_some() {
+        retry(&mut tx, lease.id).await?;
+    }
     sqlx::query(
         "UPDATE api_tokens SET revoked_at=? WHERE id=(SELECT token_id FROM work_leases WHERE id=?)",
     )
@@ -867,6 +865,16 @@ pub async fn finish_pending(state: &AppState) -> ApiResult<()> {
                 b.pull_request.as_ref().unwrap()
             ));
         }
+        let successor: Option<i64> =
+            sqlx::query_scalar("SELECT id FROM workshop_processes WHERE retry_of=?")
+                .bind(id)
+                .fetch_optional(&state.db)
+                .await?;
+        if let Some(next) = successor {
+            text.push_str(&format!(
+                "\n\nRetrying as process {next}, waiting for another eligible machine."
+            ));
+        }
         let group = Membership::of_group(state, offer.group.id).await?;
         let owner: Option<i64> =
             sqlx::query_scalar("SELECT owner_id FROM workshop_processes WHERE id=?")
@@ -898,6 +906,7 @@ pub async fn finish_pending(state: &AppState) -> ApiResult<()> {
             &stemma_core::secrets::hide(&text),
             None,
             &[],
+            true,
         )
         .await?;
         tx.commit().await?;
@@ -919,14 +928,16 @@ pub async fn finish_pending(state: &AppState) -> ApiResult<()> {
         } else {
             NotificationKind::RequestFailed
         };
-        notifications::notify(
-            state,
-            &[offer.requester.id],
-            &Notice::new(kind)
-                .at(offer.group.id, thread, Some(m.number))
-                .text(&text),
-        )
-        .await?;
+        if successor.is_none() && status != "cancelled" {
+            notifications::notify(
+                state,
+                &[offer.requester.id],
+                &Notice::new(kind)
+                    .at(offer.group.id, thread, Some(m.number))
+                    .text(&text),
+            )
+            .await?;
+        }
         if pushed {
             notifications::notify(
                 state,
@@ -947,4 +958,51 @@ pub async fn forget_thread(state: &AppState, thread: i64) -> ApiResult<()> {
     sqlx::query("UPDATE api_tokens SET revoked_at=? WHERE id IN (SELECT token_id FROM work_leases WHERE id IN (SELECT work_id FROM workshop_processes WHERE thread_id=?))").bind(db::now()).bind(thread).execute(&state.db).await?;
     sqlx::query("UPDATE work_leases SET state='cancelled' WHERE kind='process' AND id IN (SELECT work_id FROM workshop_processes WHERE thread_id=?) AND state IN ('queued','running')").bind(thread).execute(&state.db).await?;
     cancel_machines(state, thread).await
+}
+
+/// A retry is another process, rather than another machine overwriting a run's
+/// history. The unique parent allows one successor, in this same transaction.
+pub(crate) async fn retry(
+    tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>,
+    work: i64,
+) -> ApiResult<Option<i64>> {
+    #[derive(sqlx::FromRow)]
+    struct Previous {
+        id: i64,
+        thread_id: i64,
+        group_id: i64,
+        slot: i64,
+        expires_at: i64,
+        retry_of: Option<i64>,
+        pushed: bool,
+        state: String,
+    }
+    let p:Previous=sqlx::query_as("SELECT p.id,p.thread_id,w.group_id,p.slot,p.expires_at,p.retry_of,p.pushed,r.state FROM workshop_processes p JOIN work_leases w ON w.id=p.work_id JOIN workshop_requests r ON r.thread_id=p.thread_id WHERE w.id=?").bind(work).fetch_one(&mut **tx).await?;
+    if p.retry_of.is_some()
+        || p.pushed
+        || !["waiting", "running"].contains(&p.state.as_str())
+        || p.expires_at <= db::now()
+    {
+        return Ok(None);
+    }
+    let exists: bool =
+        sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM workshop_processes WHERE retry_of=?)")
+            .bind(p.id)
+            .fetch_one(&mut **tx)
+            .await?;
+    if exists {
+        return Ok(None);
+    }
+    let new_work =
+        sqlx::query("INSERT INTO work_leases(group_id,kind,created_at) VALUES (?,'process',?)")
+            .bind(p.group_id)
+            .bind(db::now())
+            .execute(&mut **tx)
+            .await?
+            .last_insert_rowid();
+    let next=sqlx::query("INSERT INTO workshop_processes(thread_id,work_id,slot,expires_at,retry_of) VALUES (?,?,?,?,?)").bind(p.thread_id).bind(new_work).bind(p.slot).bind(p.expires_at).bind(p.id).execute(&mut **tx).await?.last_insert_rowid();
+    // A different connection on the same personal token is still the same machine.
+    sqlx::query("INSERT INTO workshop_offers(process_id,machine_id,connection,decision) SELECT ?,machine_id,connection,'ran' FROM workshop_offers WHERE process_id=? AND decision='ran'").bind(next).bind(p.id).execute(&mut **tx).await?;
+    sqlx::query("UPDATE workshop_requests SET state=CASE WHEN EXISTS(SELECT 1 FROM workshop_processes p JOIN work_leases w ON w.id=p.work_id WHERE p.thread_id=?1 AND w.state='running') THEN 'running' ELSE 'waiting' END WHERE thread_id=?1").bind(p.thread_id).execute(&mut **tx).await?;
+    Ok(Some(next))
 }

@@ -98,8 +98,10 @@ CREATE TABLE workshop_processes (
     pushed INTEGER NOT NULL DEFAULT 0,
     usage TEXT NOT NULL DEFAULT '{}',
     summary TEXT,
-    UNIQUE (thread_id, slot)
+    -- A retry is a new run, with its own branch, owner, token and lease.
+    retry_of INTEGER UNIQUE REFERENCES workshop_processes (id) ON DELETE SET NULL
 );
+CREATE UNIQUE INDEX workshop_slots ON workshop_processes (thread_id, slot) WHERE retry_of IS NULL;
 -- A decision records only delivery/lease state. Authority remains on the machine.
 CREATE TABLE workshop_offers (
     process_id INTEGER NOT NULL REFERENCES workshop_processes (id) ON DELETE CASCADE,

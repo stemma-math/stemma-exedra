@@ -245,6 +245,84 @@ async fn processes_push_only_their_branch_post_only_in_their_request_and_open_as
         panic!("lease")
     };
     let token = &spec.token;
+    let (_, answer_token) = stemma_hub::auth::create_job_token(
+        &hub.state.db,
+        spec.owner.id,
+        spec.offer.group.id,
+        "Codex",
+        stemma_hub::db::now() + 60_000,
+        Default::default(),
+    )
+    .await
+    .unwrap();
+    assert!(
+        status(
+            &hub,
+            &answer_token,
+            "GET",
+            "/api/v1/groups/geometry/workshop/recipes",
+            Value::Null
+        )
+        .await
+        .is_success()
+    );
+    assert_eq!(
+        status(
+            &hub,
+            &answer_token,
+            "POST",
+            "/api/v1/groups/geometry/workshop/requests",
+            ask_body("prove", json!({"kind":"mine"}))
+        )
+        .await,
+        403
+    );
+    assert_eq!(
+        status(
+            &hub,
+            &answer_token,
+            "POST",
+            "/api/v1/groups/geometry/workshop/requests/1",
+            json!({"action":"cancel"})
+        )
+        .await,
+        403
+    );
+    let guest = person(&hub, "guest", false).await;
+    sqlx::query("INSERT INTO memberships(group_id,user_id,role,joined_at) SELECT g.id,u.id,'guest',0 FROM groups g,users u WHERE u.username='guest'").execute(&hub.state.db).await.unwrap();
+    assert!(
+        status(
+            &hub,
+            &guest,
+            "GET",
+            "/api/v1/groups/geometry/workshop/requests/1",
+            Value::Null
+        )
+        .await
+        .is_success()
+    );
+    assert_eq!(
+        status(
+            &hub,
+            &guest,
+            "POST",
+            "/api/v1/groups/geometry/workshop/requests",
+            ask_body("prove", json!({"kind":"mine"}))
+        )
+        .await,
+        403
+    );
+    assert_eq!(
+        status(
+            &hub,
+            &guest,
+            "POST",
+            "/api/v1/groups/geometry/threads/1/messages",
+            json!({"body":"No"})
+        )
+        .await,
+        403
+    );
     assert_eq!(
         spec.repositories[0].branch,
         format!("workshop/1-{}", offer.process)
@@ -285,6 +363,15 @@ async fn processes_push_only_their_branch_post_only_in_their_request_and_open_as
         .await,
         403
     );
+    let session_post = call(
+        &hub,
+        &ada,
+        "POST",
+        "/groups/geometry/threads/1/messages",
+        Some(json!({"body":"A session's answer","agent":"Codex"})),
+    )
+    .await;
+    assert_eq!(session_post["workshop"], false);
     let posted = call(
         &hub,
         token,
@@ -659,7 +746,7 @@ async fn retries_use_another_machine_once_and_a_possible_push_fences_them() {
     let HubMessage::ProcessOffer(retry) = next(&mut b).await else {
         panic!("offer on another machine")
     };
-    assert_eq!(retry.process, first.process);
+    assert_ne!(retry.process, first.process);
     send(
         &mut b,
         WorkerMessage::ProcessDecision {
@@ -672,7 +759,8 @@ async fn retries_use_another_machine_once_and_a_possible_push_fences_them() {
     let HubMessage::Process(spec2) = next(&mut b).await else {
         panic!("second lease")
     };
-    assert_eq!(spec2.lease.attempt, 2);
+    assert_eq!(spec2.lease.attempt, 1);
+    assert_ne!(spec2.lease.id, spec1.lease.id);
     // The old generation cannot finish or heartbeat the new run.
     send(
         &mut a,
@@ -715,7 +803,12 @@ async fn retries_use_another_machine_once_and_a_possible_push_fences_them() {
         .fetch_one(&hub.state.db)
         .await
         .unwrap();
-    assert_eq!(attempts, 2);
+    assert_eq!(attempts, 1);
+    let count: i64 = sqlx::query_scalar("SELECT count(*) FROM workshop_processes")
+        .fetch_one(&hub.state.db)
+        .await
+        .unwrap();
+    assert_eq!(count, 2);
     // Lost leases use the same limit, and a streamed push prevents even the first retry.
     sqlx::query("UPDATE work_leases SET state='running',attempts=1,heartbeat=? WHERE id=?")
         .bind(stemma_hub::db::now() - 61_000)

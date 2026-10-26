@@ -32,7 +32,8 @@ pub async fn heartbeat(
 }
 
 /// Ends leases on loss of their holder, or after a missed heartbeat. The third
-/// lost lease fails permanently. Tokens die in the same transaction.
+/// lost build lease fails permanently. A lost process ends that run and may
+/// create one retry process. Tokens die in the same transaction.
 pub async fn release(
     state: &AppState,
     holder: Option<(i64, u64)>,
@@ -44,21 +45,17 @@ pub async fn release(
         .bind(holder.map(|h| h.0)).bind(now - EXPIRY_MILLIS).bind(holder.map(|h| h.1 as i64)).fetch_all(&mut *tx).await?;
     let mut ended = Vec::new();
     for (id, attempt, machine, token) in rows {
-        let (kind, pushed): (String, bool) = sqlx::query_as("SELECT w.kind, COALESCE(p.pushed,0) FROM work_leases w LEFT JOIN workshop_processes p ON p.work_id=w.id WHERE w.id=?").bind(id).fetch_one(&mut *tx).await?;
+        let kind: String = sqlx::query_scalar("SELECT kind FROM work_leases WHERE id=?")
+            .bind(id)
+            .fetch_one(&mut *tx)
+            .await?;
         let process = kind == "process";
-        let failed = if process {
-            attempt >= 2 || pushed
-        } else {
-            attempt >= MAX_ATTEMPTS
-        };
+        let failed = process || attempt >= MAX_ATTEMPTS;
         let error = if process {
-            "The machine lost its process lease; retry is exhausted or it may have pushed"
+            "The machine lost its process lease"
         } else {
             "The machine lost its build lease three times"
         };
-        if process && !failed {
-            sqlx::query("DELETE FROM workshop_offers WHERE process_id=(SELECT id FROM workshop_processes WHERE work_id=?) AND decision!='ran'").bind(id).execute(&mut *tx).await?;
-        }
         sqlx::query("UPDATE work_leases SET state = ?, error = ?, holder = NULL, connection = NULL WHERE id = ?")
             .bind(if failed { "failed" } else { "queued" })
             .bind(if failed { Some(error) } else { None })
@@ -73,6 +70,9 @@ pub async fn release(
                 sqlx::query(sqlx::AssertSqlSafe(format!("UPDATE {table} SET succeeded = 0, error = 'The machine lost its build lease three times', finished_at = ? WHERE work_id = ?")))
                     .bind(now).bind(id).execute(&mut *tx).await?;
             }
+        }
+        if process {
+            crate::workshop::retry(&mut tx, id).await?;
         }
         ended.push((
             machine,

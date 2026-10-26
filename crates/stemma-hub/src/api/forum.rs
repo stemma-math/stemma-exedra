@@ -228,6 +228,7 @@ pub async fn create_thread(
                 text,
                 None,
                 &body.attachments,
+                false,
             )
             .await?
             .1,
@@ -404,7 +405,7 @@ pub async fn post_message(
             }
         }
     }
-    let message = post(
+    let message = post_marked(
         &state,
         &group,
         row.id,
@@ -414,6 +415,7 @@ pub async fn post_message(
         &text,
         body.reply_to,
         &body.attachments,
+        matches!(viewer.scope, crate::auth::Scope::Process { .. }),
     )
     .await?;
     if agent.is_none() {
@@ -472,6 +474,33 @@ pub(crate) async fn post(
     reply_to: Option<u32>,
     attachments: &[i64],
 ) -> ApiResult<Message> {
+    post_marked(
+        state,
+        group,
+        thread_id,
+        author_id,
+        agent,
+        agent_runner,
+        text,
+        reply_to,
+        attachments,
+        false,
+    )
+    .await
+}
+#[allow(clippy::too_many_arguments)]
+async fn post_marked(
+    state: &AppState,
+    group: &Membership,
+    thread_id: i64,
+    author_id: i64,
+    agent: Option<&str>,
+    agent_runner: Option<&str>,
+    text: &str,
+    reply_to: Option<u32>,
+    attachments: &[i64],
+    workshop: bool,
+) -> ApiResult<Message> {
     let mut tx = state.db.begin().await?;
     let (number, stored) = insert_message(
         &mut tx,
@@ -483,6 +512,7 @@ pub(crate) async fn post(
         text,
         reply_to,
         attachments,
+        workshop,
     )
     .await?;
     tx.commit().await?;
@@ -562,6 +592,7 @@ pub(crate) async fn insert_message(
     text: &str,
     reply_to: Option<u32>,
     attachment_ids: &[i64],
+    workshop: bool,
 ) -> ApiResult<(u32, String)> {
     let now = db::now();
     let number: i64 = sqlx::query_scalar(
@@ -575,8 +606,8 @@ pub(crate) async fn insert_message(
     let stored = crate::text::encode(&mut *tx, group.group_id, text).await?;
     let (rendered, _) = crate::text::render_with(&mut *tx, &stored).await?;
     let message_id = sqlx::query(
-        "INSERT INTO messages (thread_id, number, author_id, agent, agent_runner, body, body_ids, reply_to, created_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        "INSERT INTO messages (thread_id, number, author_id, agent, agent_runner, body, body_ids, reply_to, created_at, workshop)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
     )
     .bind(thread_id)
     .bind(number)
@@ -587,6 +618,7 @@ pub(crate) async fn insert_message(
     .bind(&stored)
     .bind(reply_to)
     .bind(now)
+    .bind(workshop)
     .execute(&mut **tx)
     .await?
     .last_insert_rowid();
@@ -606,9 +638,6 @@ pub(crate) async fn insert_message(
                 "File {id} is not one of your uploads waiting for a message"
             )));
         }
-    }
-    if agent.is_some() {
-        sqlx::query("UPDATE messages SET workshop=1 WHERE id=? AND EXISTS(SELECT 1 FROM workshop_requests WHERE thread_id=?)").bind(message_id).bind(thread_id).execute(&mut **tx).await?;
     }
     Ok((number as u32, stored))
 }
