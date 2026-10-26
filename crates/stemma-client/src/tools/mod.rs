@@ -63,6 +63,24 @@ pub struct ToolDef {
     pub handler: ToolHandler,
 }
 
+impl ToolDef {
+    fn read(name: &'static str, handler: ToolHandler) -> Self {
+        let tool = stemma_core::catalog::read_tools()
+            .into_iter()
+            .find(|tool| tool.name == name)
+            .expect("a catalog read tool");
+        Self {
+            name,
+            handler,
+            terminal: tool.terminal,
+            positional: tool.positional,
+            description: tool.description,
+            input_schema: tool.input_schema,
+            writes: false,
+        }
+    }
+}
+
 /// Why a tool could not do what it was asked, in words for the agent.
 #[derive(Debug, thiserror::Error)]
 pub enum ToolError {

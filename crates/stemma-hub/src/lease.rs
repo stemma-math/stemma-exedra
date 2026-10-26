@@ -144,8 +144,13 @@ mod tests {
     use super::*;
     #[tokio::test]
     async fn heartbeats_expiry_reconnection_and_attempts_are_fenced() {
+        let data = tempfile::tempdir().unwrap();
+        let config = crate::Config {
+            data_dir: data.path().to_owned(),
+            ..Default::default()
+        };
         let state = std::sync::Arc::new(
-            crate::Hub::new(crate::db::in_memory().await.unwrap(), Default::default()).unwrap(),
+            crate::Hub::new(crate::db::in_memory().await.unwrap(), config).unwrap(),
         );
         sqlx::query(
             "INSERT INTO users (id, username, display_name, password_hash, subject,

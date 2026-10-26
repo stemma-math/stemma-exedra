@@ -125,6 +125,10 @@ pub struct Request {
 }
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Process {
+    pub recipe: RecipeFile,
+    pub inputs: BTreeMap<String, String>,
+    pub runner: String,
+    pub model: Option<String>,
     pub number: i64,
     /// A retry is a separate run on another machine.
     pub retry_of: Option<i64>,

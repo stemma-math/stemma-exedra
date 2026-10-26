@@ -135,10 +135,14 @@ async fn refresh_main(
     let Some(forge) = state.forge.as_deref() else {
         return Ok(());
     };
-    let slug: String = sqlx::query_scalar("SELECT slug FROM groups WHERE id = ?")
-        .bind(group)
-        .fetch_one(&state.db)
-        .await?;
+    let slug: String = sqlx::query_scalar(
+        "SELECT slug
+         FROM groups
+         WHERE id = ?",
+    )
+    .bind(group)
+    .fetch_one(&state.db)
+    .await?;
     let Some(head) = forge
         .branch_commit(&slug, repository, forge::MAIN)
         .await
@@ -160,32 +164,48 @@ async fn refresh_main(
     .fetch_one(&state.db)
     .await?;
     let recorded: Option<String> = if let Some(paper) = paper {
-        sqlx::query_scalar("SELECT head FROM papers WHERE id = ?")
-            .bind(paper)
-            .fetch_one(&state.db)
-            .await?
+        sqlx::query_scalar(
+            "SELECT head
+             FROM papers
+             WHERE id = ?",
+        )
+        .bind(paper)
+        .fetch_one(&state.db)
+        .await?
     } else {
-        sqlx::query_scalar("SELECT head FROM libraries WHERE group_id = ?")
-            .bind(group)
-            .fetch_one(&state.db)
-            .await?
+        sqlx::query_scalar(
+            "SELECT head
+             FROM libraries
+             WHERE group_id = ?",
+        )
+        .bind(group)
+        .fetch_one(&state.db)
+        .await?
     };
     if known && recorded.as_deref() == Some(&head) {
         return Ok(());
     }
     let mut tx = state.db.begin().await?;
     if let Some(paper) = paper {
-        sqlx::query("UPDATE papers SET head = ? WHERE id = ?")
-            .bind(&head)
-            .bind(paper)
-            .execute(&mut *tx)
-            .await?;
+        sqlx::query(
+            "UPDATE papers
+             SET head = ?
+             WHERE id = ?",
+        )
+        .bind(&head)
+        .bind(paper)
+        .execute(&mut *tx)
+        .await?;
     } else {
-        sqlx::query("UPDATE libraries SET head = ? WHERE group_id = ?")
-            .bind(&head)
-            .bind(group)
-            .execute(&mut *tx)
-            .await?;
+        sqlx::query(
+            "UPDATE libraries
+             SET head = ?
+             WHERE group_id = ?",
+        )
+        .bind(&head)
+        .bind(group)
+        .execute(&mut *tx)
+        .await?;
     }
     let old: Vec<(i64, i64, Option<i64>, Option<i64>)> = sqlx::query_as(
         "SELECT id, attempts, holder, token_id
@@ -193,6 +213,7 @@ async fn refresh_main(
          WHERE group_id = ?
          AND repository = ?
          AND commit_sha != ?
+         AND review_build = 0
          AND state IN ('queued', 'running')",
     )
     .bind(group)
@@ -201,18 +222,28 @@ async fn refresh_main(
     .fetch_all(&mut *tx)
     .await?;
     for (id, _, _, token) in &old {
-        sqlx::query("UPDATE work_leases SET state = 'cancelled' WHERE id = ?")
-            .bind(id)
-            .execute(&mut *tx)
-            .await?;
-        sqlx::query("UPDATE api_tokens SET revoked_at = ? WHERE id = ?")
-            .bind(db::now())
-            .bind(token)
-            .execute(&mut *tx)
-            .await?;
+        sqlx::query(
+            "UPDATE work_leases
+             SET state = 'cancelled'
+             WHERE id = ?",
+        )
+        .bind(id)
+        .execute(&mut *tx)
+        .await?;
+        sqlx::query(
+            "UPDATE api_tokens
+             SET revoked_at = ?
+             WHERE id = ?",
+        )
+        .bind(db::now())
+        .bind(token)
+        .execute(&mut *tx)
+        .await?;
         for table in ["library_builds", "paper_builds"] {
             sqlx::query(sqlx::AssertSqlSafe(format!(
-                "UPDATE {table} SET accepted = 0, finished_at = ? WHERE work_id = ?"
+                "UPDATE {table}
+                 SET accepted = 0, finished_at = ?
+                 WHERE work_id = ?"
             )))
             .bind(db::now())
             .bind(id)
@@ -258,9 +289,33 @@ async fn refresh_main(
             .await?;
         }
     }
+    sqlx::query(
+        "UPDATE work_leases
+         SET review_build = 0
+         WHERE group_id = ? AND repository = ? AND commit_sha = ?",
+    )
+    .bind(group)
+    .bind(repository)
+    .bind(&head)
+    .execute(&mut *tx)
+    .await?;
+    for table in ["library_builds", "paper_builds"] {
+        sqlx::query(sqlx::AssertSqlSafe(format!(
+            "UPDATE {table}
+             SET accepted = 1
+             WHERE work_id IN (SELECT id
+             FROM work_leases
+             WHERE group_id = ? AND repository = ? AND commit_sha = ?)"
+        )))
+        .bind(group)
+        .bind(repository)
+        .bind(&head)
+        .execute(&mut *tx)
+        .await?;
+    }
     let resumed = sqlx::query(
         "UPDATE work_leases
-         SET state = 'queued', holder = NULL, connection = NULL, attempts = 0,
+         SET state = 'queued', holder = NULL, connection = NULL,
          heartbeat = NULL
          WHERE group_id = ? AND repository = ? AND commit_sha = ? AND state = 'cancelled'",
     )
@@ -304,7 +359,9 @@ async fn refresh_main(
     }
     drop(machines);
     if let Some(work) = sqlx::query_scalar::<_, i64>(
-        "SELECT id FROM work_leases WHERE group_id = ? AND repository = ? AND commit_sha = ?",
+        "SELECT id
+         FROM work_leases
+         WHERE group_id = ? AND repository = ? AND commit_sha = ?",
     )
     .bind(group)
     .bind(repository)
@@ -338,11 +395,14 @@ pub async fn dispatch(state: &AppState) -> ApiResult<()> {
     for (holder, lease) in expired {
         publish(state, lease.id).await?;
         if let Some(machine) = machines.0.get(&holder) {
-            let process: bool =
-                sqlx::query_scalar("SELECT kind='process' FROM work_leases WHERE id=?")
-                    .bind(lease.id)
-                    .fetch_one(&state.db)
-                    .await?;
+            let process: bool = sqlx::query_scalar(
+                "SELECT kind='process'
+                 FROM work_leases
+                 WHERE id=?",
+            )
+            .bind(lease.id)
+            .fetch_one(&state.db)
+            .await?;
             let _ = machine.sender.send(if process {
                 HubMessage::CancelProcess { lease }
             } else {
@@ -509,18 +569,23 @@ pub async fn finished(
 ) -> ApiResult<()> {
     // Check the forge again before publication, even if its webhook is delayed.
     if let Some((group, repository)) = sqlx::query_as::<_, (i64, String)>(
-        "SELECT group_id, repository FROM work_leases WHERE id = ?",
+        "SELECT group_id, repository
+         FROM work_leases
+         WHERE id = ?",
     )
     .bind(lease.id)
     .fetch_optional(&state.db)
     .await?
     {
-        let paper: Option<i64> =
-            sqlx::query_scalar("SELECT id FROM papers WHERE group_id = ? AND repository = ?")
-                .bind(group)
-                .bind(&repository)
-                .fetch_optional(&state.db)
-                .await?;
+        let paper: Option<i64> = sqlx::query_scalar(
+            "SELECT id
+             FROM papers
+             WHERE group_id = ? AND repository = ?",
+        )
+        .bind(group)
+        .bind(&repository)
+        .fetch_optional(&state.db)
+        .await?;
         refresh(state, group, &repository, paper).await?;
     }
     let _turn = state.build_changes.lock().await;
@@ -548,7 +613,9 @@ pub async fn finished(
             result.report.is_some()
         } else {
             sqlx::query_scalar::<_, Option<i64>>(
-                "SELECT pdf_size FROM paper_builds WHERE work_id = ?",
+                "SELECT pdf_size
+                 FROM paper_builds
+                 WHERE work_id = ?",
             )
             .bind(lease.id)
             .fetch_one(&mut *tx)
@@ -566,7 +633,9 @@ pub async fn finished(
         "paper_builds"
     };
     sqlx::query(sqlx::AssertSqlSafe(format!(
-        "UPDATE {table} SET succeeded = ?, error = ?, log = ?, finished_at = ? WHERE work_id = ?"
+        "UPDATE {table}
+         SET succeeded = ?, error = ?, log = ?, finished_at = ?
+         WHERE work_id = ?"
     )))
     .bind(succeeded)
     .bind(&error)
@@ -577,21 +646,31 @@ pub async fn finished(
     .await?;
     if kind == "library" {
         if succeeded && let Some(report) = &result.report {
-            let id: i64 = sqlx::query_scalar("SELECT id FROM library_builds WHERE work_id = ?")
-                .bind(lease.id)
-                .fetch_one(&mut *tx)
-                .await?;
+            let id: i64 = sqlx::query_scalar(
+                "SELECT id
+                 FROM library_builds
+                 WHERE work_id = ?",
+            )
+            .bind(lease.id)
+            .fetch_one(&mut *tx)
+            .await?;
             crate::library::store_report(&mut tx, id, report).await?;
-            sqlx::query("UPDATE library_builds SET lean = ? WHERE id = ?")
-                .bind(&report.lean)
-                .bind(id)
-                .execute(&mut *tx)
-                .await?;
+            sqlx::query(
+                "UPDATE library_builds
+                 SET lean = ?
+                 WHERE id = ?",
+            )
+            .bind(&report.lean)
+            .bind(id)
+            .execute(&mut *tx)
+            .await?;
         }
     } else if succeeded {
         sqlx::query(
             "UPDATE papers
-             SET pdf_build = (SELECT id FROM paper_builds WHERE work_id = ?1)
+             SET pdf_build = (SELECT id
+             FROM paper_builds
+             WHERE work_id = ?1)
              WHERE id = (SELECT paper_id
              FROM paper_builds
              WHERE work_id = ?1
@@ -614,11 +693,15 @@ pub async fn finished(
     .bind(lease.id)
     .execute(&mut *tx)
     .await?;
-    sqlx::query("UPDATE api_tokens SET revoked_at = ? WHERE id = ?")
-        .bind(db::now())
-        .bind(token)
-        .execute(&mut *tx)
-        .await?;
+    sqlx::query(
+        "UPDATE api_tokens
+         SET revoked_at = ?
+         WHERE id = ?",
+    )
+    .bind(db::now())
+    .bind(token)
+    .execute(&mut *tx)
+    .await?;
     tx.commit().await?;
     publish(state, lease.id).await?;
     drop(_turn);
@@ -674,11 +757,15 @@ async fn pdf(
     if !bytes.starts_with(b"%PDF-") {
         return Err(ApiError::invalid("The build did not upload a PDF"));
     }
-    let id: i64 = sqlx::query_scalar("SELECT id FROM paper_builds WHERE work_id = ?")
-        .bind(work)
-        .fetch_optional(&state.db)
-        .await?
-        .ok_or_else(|| ApiError::forbidden("Only a paper build uploads a PDF"))?;
+    let id: i64 = sqlx::query_scalar(
+        "SELECT id
+         FROM paper_builds
+         WHERE work_id = ?",
+    )
+    .bind(work)
+    .fetch_optional(&state.db)
+    .await?
+    .ok_or_else(|| ApiError::forbidden("Only a paper build uploads a PDF"))?;
     let path = crate::papers::pdf_path(&state, id);
     tokio::fs::create_dir_all(path.parent().unwrap())
         .await
@@ -686,18 +773,24 @@ async fn pdf(
     tokio::fs::write(path, &bytes)
         .await
         .map_err(ApiError::internal)?;
-    sqlx::query("UPDATE paper_builds SET pdf_size = ? WHERE id = ?")
-        .bind(bytes.len() as i64)
-        .bind(id)
-        .execute(&state.db)
-        .await?;
+    sqlx::query(
+        "UPDATE paper_builds
+         SET pdf_size = ?
+         WHERE id = ?",
+    )
+    .bind(bytes.len() as i64)
+    .bind(id)
+    .execute(&state.db)
+    .await?;
     Ok(axum::http::StatusCode::NO_CONTENT)
 }
 
 /// Called while deleting a repository, with build_changes held by the caller.
 pub async fn forget_repository(state: &AppState, group: i64, repository: &str) -> ApiResult<()> {
     let work: Vec<(i64, i64, Option<i64>)> = sqlx::query_as(
-        "SELECT id, attempts, holder FROM work_leases WHERE group_id = ? AND repository = ?",
+        "SELECT id, attempts, holder
+         FROM work_leases
+         WHERE group_id = ? AND repository = ?",
     )
     .bind(group)
     .bind(repository)
@@ -728,17 +821,23 @@ pub async fn forget_repository(state: &AppState, group: i64, repository: &str) -
     .bind(repository)
     .execute(&state.db)
     .await?;
-    sqlx::query("DELETE FROM work_leases WHERE group_id = ? AND repository = ?")
-        .bind(group)
-        .bind(repository)
-        .execute(&state.db)
-        .await?;
+    sqlx::query(
+        "DELETE
+     FROM work_leases
+     WHERE group_id = ? AND repository = ?",
+    )
+    .bind(group)
+    .bind(repository)
+    .execute(&state.db)
+    .await?;
     Ok(())
 }
 
 async fn publish(state: &AppState, work: i64) -> ApiResult<()> {
     let row: Option<(i64, String, String)> = sqlx::query_as(
-        "SELECT group_id, COALESCE(repository,''), kind FROM work_leases WHERE id = ?",
+        "SELECT group_id, COALESCE(repository,''), kind
+         FROM work_leases
+         WHERE id = ?",
     )
     .bind(work)
     .fetch_optional(&state.db)
@@ -750,10 +849,14 @@ async fn publish(state: &AppState, work: i64) -> ApiResult<()> {
         return Ok(());
     }
     if kind == "library" {
-        let id: i64 = sqlx::query_scalar("SELECT id FROM library_builds WHERE work_id = ?")
-            .bind(work)
-            .fetch_one(&state.db)
-            .await?;
+        let id: i64 = sqlx::query_scalar(
+            "SELECT id
+             FROM library_builds
+             WHERE work_id = ?",
+        )
+        .bind(work)
+        .fetch_one(&state.db)
+        .await?;
         let (build, _) = crate::library::build(state, group, id).await?;
         state.publish(group, Event::BuildUpdated { build });
     } else if let Some(row) = crate::papers::by_repository(state, group, &repository).await? {
@@ -771,4 +874,92 @@ async fn publish(state: &AppState, work: i64) -> ApiResult<()> {
 pub async fn recover(state: &AppState) -> ApiResult<()> {
     lease::release(state, None, db::now() + lease::EXPIRY_MILLIS).await?;
     Ok(())
+}
+
+/// A PR head is built by the same workers, without changing main's current state.
+pub async fn review_head(
+    state: &AppState,
+    group: i64,
+    repository: &str,
+    head: &str,
+) -> ApiResult<i64> {
+    let _guard = state.build_changes.lock().await;
+    let paper: Option<i64> = sqlx::query_scalar(
+        "SELECT id
+         FROM papers
+         WHERE group_id = ? AND repository = ?",
+    )
+    .bind(group)
+    .bind(repository)
+    .fetch_optional(&state.db)
+    .await?;
+    let mut tx = state.db.begin().await?;
+    sqlx::query(
+        "INSERT INTO work_leases
+         (group_id, repository, commit_sha, kind, review_build, created_at)
+         VALUES (?, ?, ?, ?, 1, ?)
+         ON CONFLICT DO NOTHING",
+    )
+    .bind(group)
+    .bind(repository)
+    .bind(head)
+    .bind(if paper.is_some() { "paper" } else { "library" })
+    .bind(db::now())
+    .execute(&mut *tx)
+    .await?;
+    let (work, status): (i64, String) = sqlx::query_as(
+        "SELECT id, state
+         FROM work_leases
+         WHERE group_id = ? AND repository = ? AND commit_sha = ?",
+    )
+    .bind(group)
+    .bind(repository)
+    .bind(head)
+    .fetch_one(&mut *tx)
+    .await?;
+    if status == "cancelled" {
+        sqlx::query(
+            "UPDATE work_leases
+             SET state = 'queued', review_build = 1
+             WHERE id = ?",
+        )
+        .bind(work)
+        .execute(&mut *tx)
+        .await?;
+    }
+    if let Some(paper) = paper {
+        sqlx::query(
+            "INSERT INTO paper_builds (paper_id, commit_sha, work_id, accepted, created_at)
+             SELECT ?, ?, ?, 0, ?
+             WHERE NOT EXISTS(SELECT 1
+             FROM paper_builds
+             WHERE work_id = ?)",
+        )
+        .bind(paper)
+        .bind(head)
+        .bind(work)
+        .bind(db::now())
+        .bind(work)
+        .execute(&mut *tx)
+        .await?;
+    } else {
+        sqlx::query(
+            "INSERT INTO library_builds (group_id, commit_sha, work_id, accepted, created_at)
+             SELECT ?, ?, ?, 0, ?
+             WHERE NOT EXISTS(SELECT 1
+             FROM library_builds
+             WHERE work_id = ?)",
+        )
+        .bind(group)
+        .bind(head)
+        .bind(work)
+        .bind(db::now())
+        .bind(work)
+        .execute(&mut *tx)
+        .await?;
+    }
+    tx.commit().await?;
+    drop(_guard);
+    dispatch(state).await?;
+    Ok(work)
 }

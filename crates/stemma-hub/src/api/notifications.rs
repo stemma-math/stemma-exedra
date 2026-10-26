@@ -98,7 +98,14 @@ pub async fn send_note(
             Some(_) if !viewer.with_token => {
                 return Err(ApiError::invalid("Only an API token writes for an agent"));
             }
-            Some(agent) => Some(required_text(agent, "The agent's name", 60)?),
+            Some(agent) => {
+                if agent.eq_ignore_ascii_case("workshop") {
+                    return Err(ApiError::invalid(
+                        "Workshop is reserved for the orchestrators",
+                    ));
+                }
+                Some(required_text(agent, "The agent's name", 60)?)
+            }
             None => None,
         },
     };

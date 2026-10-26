@@ -4,6 +4,7 @@
 
 pub mod address;
 pub mod api;
+pub mod catalog;
 pub mod context;
 pub mod locator;
 pub mod mention;

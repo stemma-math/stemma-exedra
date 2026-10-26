@@ -15,18 +15,22 @@ pub mod git;
 pub mod jobs;
 pub mod lease;
 pub mod library;
+pub mod model;
 pub mod names;
 pub mod notifications;
 pub mod oidc;
+pub mod orchestrator;
 pub mod papers;
 pub mod recipes;
 pub mod removal;
+pub mod review;
 pub mod search;
 pub mod secret;
 pub mod state;
 pub mod text;
 pub mod web;
 pub mod workshop;
+mod workshop_read;
 
 use std::sync::Arc;
 
@@ -73,6 +77,9 @@ pub async fn run(config: Config) -> anyhow::Result<()> {
     remove_unclaimed_uploads(&state).await?;
     oidc::forget_expired(&state.db).await?;
     jobs::recover(&state).await?;
+    orchestrator::recover(&state)
+        .await
+        .map_err(|e| anyhow::anyhow!(e.message))?;
     builds::recover(&state)
         .await
         .map_err(|e| anyhow::anyhow!(e.message))?;
@@ -83,7 +90,7 @@ pub async fn run(config: Config) -> anyhow::Result<()> {
             loop {
                 tokio::select! {
                     _ = state.shutdown.cancelled() => break,
-                    _ = tick.tick() => if let Err(error) = builds::dispatch(&state).await { tracing::error!(error = error.message, "dispatching builds"); }
+                    _ = tick.tick() => background(&state).await,
                 }
             }
         });
@@ -95,7 +102,7 @@ pub async fn run(config: Config) -> anyhow::Result<()> {
             loop {
                 tokio::select! {
                     _ = state.shutdown.cancelled() => break,
-                    _ = tick.tick() => if let Err(error) = workshop::tick(&state).await { tracing::error!(error = error.message, "scheduling workshop requests"); }
+                    _ = tick.tick() => schedule(&state).await,
                 }
             }
         });
@@ -186,4 +193,21 @@ async fn remove_unclaimed_uploads(state: &AppState) -> anyhow::Result<()> {
         let _ = tokio::fs::remove_file(state.config.attachments_dir().join(key)).await;
     }
     Ok(())
+}
+
+async fn background(state: &AppState) {
+    if let Err(error) = builds::dispatch(state).await {
+        tracing::error!(error = error.message, "dispatching builds");
+    }
+    if let Err(error) = review::tick(state).await {
+        tracing::error!(error = error.message, "reviewing workshop pull requests");
+    }
+    if let Err(error) = orchestrator::dispatch(state).await {
+        tracing::error!(error = error.message, "dispatching workshop turns");
+    }
+}
+async fn schedule(state: &AppState) {
+    if let Err(error) = workshop::tick(state).await {
+        tracing::error!(error = error.message, "scheduling workshop requests");
+    }
 }

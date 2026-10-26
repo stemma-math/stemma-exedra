@@ -462,6 +462,8 @@ pub struct UpdateThread {
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Message {
     #[serde(default)]
+    pub orchestrator_model: Option<String>,
+    #[serde(default)]
     pub workshop: bool,
     #[serde(default)]
     pub missing_references: Vec<String>,

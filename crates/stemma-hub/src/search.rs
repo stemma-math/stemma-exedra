@@ -394,15 +394,15 @@ async fn messages(
     let mut sql = String::from(if fts.is_some() {
         "SELECT t.number, t.title, t.kind, m.number,
                 snippet(messages_fts, 0, '', '', '…', 24), m.agent, m.created_at,
-                u.id, u.username, u.display_name
+                coalesce(u.id, 0), coalesce(u.username, 'workshop'), coalesce(u.display_name, 'Workshop')
          FROM messages m JOIN threads t ON t.id = m.thread_id
-         JOIN users u ON u.id = m.author_id
+         LEFT JOIN users u ON u.id = m.author_id
          JOIN messages_fts ON messages_fts.rowid = m.id"
     } else {
         "SELECT t.number, t.title, t.kind, m.number, substr(m.body, 1, 400), m.agent,
-                m.created_at, u.id, u.username, u.display_name
+                m.created_at, coalesce(u.id, 0), coalesce(u.username, 'workshop'), coalesce(u.display_name, 'Workshop')
          FROM messages m JOIN threads t ON t.id = m.thread_id
-         JOIN users u ON u.id = m.author_id"
+         LEFT JOIN users u ON u.id = m.author_id"
     });
     sql.push_str(" WHERE t.group_id = ? AND m.deleted_at IS NULL");
     if let Some(fts) = fts {
@@ -411,12 +411,16 @@ async fn messages(
     }
     sql.push_str(scope_sql(&query.scope, &mut binds));
     match kind {
-        Some(HitKind::Agent) => sql.push_str(" AND m.agent IS NOT NULL"),
-        Some(HitKind::Person) => sql.push_str(" AND m.agent IS NULL"),
+        Some(HitKind::Agent) => {
+            sql.push_str(" AND (m.agent IS NOT NULL OR m.orchestrator_model IS NOT NULL)")
+        }
+        Some(HitKind::Person) => {
+            sql.push_str(" AND m.agent IS NULL AND m.orchestrator_model IS NULL")
+        }
         _ => {}
     }
     if let Some(author) = &query.author {
-        sql.push_str(" AND u.username = ?");
+        sql.push_str(" AND coalesce(u.username, 'workshop') = ?");
         binds.push(Bind::Text(author.clone()));
     }
     if let Some(since) = query.since {

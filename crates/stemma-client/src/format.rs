@@ -409,6 +409,7 @@ mod tests {
     #[test]
     fn messages_are_headed_by_their_address() {
         let message = Message {
+            orchestrator_model: None,
             workshop: false,
             missing_references: Vec::new(),
             number: 45,

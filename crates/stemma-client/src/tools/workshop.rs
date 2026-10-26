@@ -44,7 +44,7 @@ pub fn definitions() -> Vec<ToolDef> {
             name: "ask_workshop",
             terminal: &["workshop", "ask"],
             positional: &["recipe", "title"],
-            description: "Ask for a recipe. Inputs are a JSON object. Assignment is mine by default, member with a numeric user, or anyone. Schedule uses at/until Unix milliseconds, an IANA timezone, and optional every: {kind:day}, {kind:week}, or {kind:hours,hours:N}. Approvals remain on the machine.",
+            description: "Ask for a recipe, or use an empty recipe name to ask in plain words. Inputs are a JSON object. Assignment is mine by default, member with a numeric user, or anyone. Schedule uses at/until Unix milliseconds, an IANA timezone, and optional every: {kind:day}, {kind:week}, or {kind:hours,hours:N}. Approvals remain on the machine.",
             writes: true,
             input_schema: json!({"type":"object","properties":{"group":{"type":"string","description":GROUP},"recipe":{"type":"string"},"title":{"type":"string"},"inputs":{"type":"object","additionalProperties":{"type":"string"}},"assignment":{"type":"object","properties":{"kind":{"type":"string","enum":["mine","member","anyone"]},"user":{"type":"integer"}},"required":["kind"]},"runner":{"type":"string","enum":["claude","codex","opencode"]},"model":{"type":"string"},"schedule":{"type":"object","properties":{"at":{"type":"integer"},"timezone":{"type":"string"},"every":{"type":"object"},"until":{"type":"integer"}},"required":["timezone"]},"wait_hours":{"type":"integer","minimum":1,"maximum":168}},"required":["recipe","title","runner"]}),
             handler: |t, a, _| Box::pin(ask(t, a)),

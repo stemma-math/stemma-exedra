@@ -4,7 +4,7 @@ summary = "Proves a statement in the library, on a branch, and opens a pull requ
 runners = ["claude", "codex"]
 writes = ["library"]
 timeout_minutes = 60
-merge = "none"
+merge = "review"
 accept_sorry = false
 
 [inputs.statement]

@@ -19,7 +19,7 @@ use stemma_core::{
 };
 
 #[derive(sqlx::FromRow)]
-struct Row {
+pub(crate) struct Row {
     thread_id: i64,
     recipe: String,
     ask: String,
@@ -36,12 +36,15 @@ fn decode<T: serde::de::DeserializeOwned>(s: &str) -> ApiResult<T> {
 fn encode<T: serde::Serialize>(v: &T) -> ApiResult<String> {
     serde_json::to_string(v).map_err(ApiError::internal)
 }
-async fn user(state: &AppState, id: i64) -> ApiResult<User> {
-    let (username, display_name): (String, String) =
-        sqlx::query_as("SELECT username, display_name FROM users WHERE id = ?")
-            .bind(id)
-            .fetch_one(&state.db)
-            .await?;
+pub(crate) async fn user(state: &AppState, id: i64) -> ApiResult<User> {
+    let (username, display_name): (String, String) = sqlx::query_as(
+        "SELECT username, display_name
+         FROM users
+         WHERE id = ?",
+    )
+    .bind(id)
+    .fetch_one(&state.db)
+    .await?;
     Ok(User {
         id,
         username,
@@ -50,7 +53,9 @@ async fn user(state: &AppState, id: i64) -> ApiResult<User> {
 }
 async fn find(state: &AppState, group: i64, number: u32) -> ApiResult<Row> {
     sqlx::query_as(sqlx::AssertSqlSafe(format!(
-        "{ROW} JOIN threads t ON t.id = r.thread_id WHERE t.group_id = ? AND t.number = ?"
+        "{ROW}
+         JOIN threads t ON t.id = r.thread_id
+         WHERE t.group_id = ? AND t.number = ?"
     )))
     .bind(group)
     .bind(number)
@@ -121,12 +126,14 @@ pub async fn read(
         to_api(&state, find(&state, group.group_id, number).await?).await?,
     ))
 }
-async fn to_api(state: &AppState, mut row: Row) -> ApiResult<Request> {
+pub(crate) async fn to_api(state: &AppState, mut row: Row) -> ApiResult<Request> {
     let thread: Thread = forum::find_thread_by_id(state, row.thread_id).await?.into();
     let ask: Ask = decode(&row.ask)?;
     let mut processes = Vec::new();
     #[derive(sqlx::FromRow)]
     struct P {
+        recipe: Option<String>,
+        ask: Option<String>,
         id: i64,
         retry_of: Option<i64>,
         slot: i64,
@@ -140,7 +147,7 @@ async fn to_api(state: &AppState, mut row: Row) -> ApiResult<Request> {
         error: Option<String>,
     }
     let rows: Vec<P> = sqlx::query_as(
-        "SELECT p.id, p.retry_of, p.slot, w.state, w.machine, p.owner_id, p.started_at,
+        "SELECT p.recipe, p.ask, p.id, p.retry_of, p.slot, w.state, w.machine, p.owner_id, p.started_at,
          p.finished_at, p.branches, p.usage, w.error
          FROM workshop_processes p
          JOIN work_leases w ON w.id = p.work_id
@@ -151,7 +158,12 @@ async fn to_api(state: &AppState, mut row: Row) -> ApiResult<Request> {
     .fetch_all(&state.db)
     .await?;
     for p in rows {
+        let process_ask: Ask = decode(p.ask.as_deref().unwrap_or(&row.ask))?;
         processes.push(Process {
+            recipe: decode(p.recipe.as_deref().unwrap_or(&row.recipe))?,
+            inputs: process_ask.inputs,
+            runner: process_ask.runner,
+            model: process_ask.model,
             number: p.id,
             retry_of: p.retry_of,
             slot: p.slot,
@@ -223,6 +235,14 @@ async fn to_api(state: &AppState, mut row: Row) -> ApiResult<Request> {
     } else {
         None
     };
+    let orchestrator_waiting: Option<String> = sqlx::query_scalar(
+        "SELECT waiting
+         FROM workshop_requests
+         WHERE thread_id = ?",
+    )
+    .bind(row.thread_id)
+    .fetch_one(&state.db)
+    .await?;
     Ok(Request {
         requester: thread.created_by.clone(),
         thread,
@@ -231,7 +251,7 @@ async fn to_api(state: &AppState, mut row: Row) -> ApiResult<Request> {
         state: row.state,
         paused: row.paused,
         next_at: row.next_at,
-        waiting,
+        waiting: orchestrator_waiting.or(waiting),
         processes,
     })
 }
@@ -283,58 +303,79 @@ pub async fn ask(
             return Err(ApiError::invalid("Choose a group member"));
         }
     }
-    let file = recipes::read(&state, &group.slug, &ask.recipe).await?;
-    let recipe = file.recipe.as_ref().ok_or_else(|| {
-        ApiError::invalid(
-            file.error
-                .as_ref()
-                .map(ToString::to_string)
-                .unwrap_or_default(),
-        )
-    })?;
-    recipe
-        .render(&format!("{}.md", file.name), &ask.inputs)
-        .map_err(|e| ApiError::invalid(e.to_string()))?;
-    if !recipe.front.runners.is_empty() && !recipe.front.runners.contains(&ask.runner) {
-        return Err(ApiError::invalid("The recipe does not accept this runner"));
+    let free = ask.recipe.is_empty();
+    if free && (ask.schedule.at.is_some() || ask.schedule.every.is_some()) {
+        return Err(ApiError::invalid("Free requests run now"));
     }
-    for (name, input) in &recipe.front.inputs {
-        let Some(value) = ask.inputs.get(name).filter(|v| !v.trim().is_empty()) else {
-            continue;
-        };
-        if value.len() > 100_000 {
-            return Err(ApiError::invalid("An input is too long"));
+    let file = if free {
+        RecipeFile {
+            name: "Free request".into(),
+            version: String::new(),
+            commit: String::new(),
+            url: String::new(),
+            recipe: None,
+            error: None,
         }
-        match input.kind {
-            InputKind::Paper => {
-                crate::papers::find(&state, group.group_id, value).await?;
+    } else {
+        let file = recipes::read(&state, &group.slug, &ask.recipe).await?;
+
+        let recipe = file.recipe.as_ref().ok_or_else(|| {
+            ApiError::invalid(
+                file.error
+                    .as_ref()
+                    .map(ToString::to_string)
+                    .unwrap_or_default(),
+            )
+        })?;
+        recipe
+            .render(&format!("{}.md", file.name), &ask.inputs)
+            .map_err(|e| ApiError::invalid(e.to_string()))?;
+        if !recipe.front.runners.is_empty() && !recipe.front.runners.contains(&ask.runner) {
+            return Err(ApiError::invalid("The recipe does not accept this runner"));
+        }
+        for (name, input) in &recipe.front.inputs {
+            let Some(value) = ask.inputs.get(name).filter(|v| !v.trim().is_empty()) else {
+                continue;
+            };
+            if value.len() > 100_000 {
+                return Err(ApiError::invalid("An input is too long"));
             }
-            InputKind::Thread => {
-                let number = value
-                    .trim_start_matches('t')
-                    .parse()
-                    .map_err(|_| ApiError::invalid("Expected a thread number"))?;
-                forum::find_thread(&state, group.group_id, number).await?;
-            }
-            InputKind::Declaration => {
-                if !crate::library::resolve(&state, group.group_id, value)
-                    .await?
-                    .exists
-                {
-                    return Err(ApiError::not_found("Declaration"));
+            match input.kind {
+                InputKind::Paper => {
+                    crate::papers::find(&state, group.group_id, value).await?;
                 }
+                InputKind::Thread => {
+                    let number = value
+                        .trim_start_matches('t')
+                        .parse()
+                        .map_err(|_| ApiError::invalid("Expected a thread number"))?;
+                    forum::find_thread(&state, group.group_id, number).await?;
+                }
+                InputKind::Declaration => {
+                    if !crate::library::resolve(&state, group.group_id, value)
+                        .await?
+                        .exists
+                    {
+                        return Err(ApiError::not_found("Declaration"));
+                    }
+                }
+                InputKind::Text => {}
             }
-            InputKind::Text => {}
         }
-    }
+        file
+    };
     let now = db::now();
     let at = ask.schedule.at.unwrap_or(now);
     if ask.schedule.until.is_some_and(|u| u < at) {
         return Err(ApiError::invalid("The series ends before its first slot"));
     }
+    let has_key = crate::model::has_key(&state, group.group_id).await?;
     let mut tx = state.db.begin().await?;
     let number: i64 = sqlx::query_scalar(
-        "UPDATE groups SET last_thread = last_thread+1 WHERE id = ? RETURNING last_thread",
+        "UPDATE groups
+         SET last_thread = last_thread+1
+         WHERE id = ?
+         RETURNING last_thread",
     )
     .bind(group.group_id)
     .fetch_one(&mut *tx)
@@ -364,8 +405,19 @@ pub async fn ask(
     .bind(encode(&file)?)
     .bind(encode(&ask)?)
     .bind(ask.schedule.every.is_some())
-    .bind(at)
+    .bind(if free { None } else { Some(at) })
     .bind(now)
+    .execute(&mut *tx)
+    .await?;
+    sqlx::query(
+        "UPDATE workshop_requests
+         SET orchestrated = ?, wake = ?, expires_at = ?
+         WHERE thread_id = ?",
+    )
+    .bind(free || has_key)
+    .bind(free || has_key)
+    .bind(free.then_some(now + i64::from(ask.wait_hours) * 3_600_000))
+    .bind(thread)
     .execute(&mut *tx)
     .await?;
     tx.commit().await?;
@@ -375,6 +427,7 @@ pub async fn ask(
         stemma_core::api::Event::ThreadCreated { thread: thread_api },
     );
     tick(&state).await?;
+    crate::orchestrator::dispatch(&state).await?;
     Ok(Json(
         to_api(&state, find(&state, group.group_id, number as u32).await?).await?,
     ))
@@ -409,16 +462,33 @@ pub async fn action(
         "pause" | "resume"
             if row.recurring && ["waiting", "running"].contains(&row.state.as_str()) =>
         {
-            sqlx::query("UPDATE workshop_requests SET paused = ? WHERE thread_id = ?")
-                .bind(action.action == "pause")
-                .bind(row.thread_id)
-                .execute(&state.db)
-                .await?;
+            sqlx::query(
+                "UPDATE workshop_requests
+                 SET paused = ?
+                 WHERE thread_id = ?",
+            )
+            .bind(action.action == "pause")
+            .bind(row.thread_id)
+            .execute(&state.db)
+            .await?;
         }
         "cancel" | "stop" => {
             let mut tx = state.db.begin().await?;
             sqlx::query(
-                "UPDATE workshop_requests SET state='cancelled', next_at=NULL WHERE thread_id=?",
+                "UPDATE workshop_requests
+                 SET state='cancelled', next_at=NULL
+                 WHERE thread_id=?",
+            )
+            .bind(row.thread_id)
+            .execute(&mut *tx)
+            .await?;
+            sqlx::query(
+                "UPDATE workshop_reviews
+                 SET state = 'refused', message = 'Request cancelled'
+                 WHERE process_id IN (SELECT id
+                 FROM workshop_processes
+                 WHERE thread_id = ?)
+                 AND state NOT IN ('merged', 'refused')",
             )
             .bind(row.thread_id)
             .execute(&mut *tx)
@@ -440,7 +510,9 @@ pub async fn action(
             sqlx::query(
                 "UPDATE work_leases
                  SET state = 'cancelled'
-                 WHERE id IN (SELECT work_id FROM workshop_processes WHERE thread_id = ?)
+                 WHERE id IN (SELECT work_id
+                 FROM workshop_processes
+                 WHERE thread_id = ?)
                  AND state IN ('queued', 'running')",
             )
             .bind(row.thread_id)
@@ -501,7 +573,8 @@ async fn cancel_machines(state: &AppState, thread: i64) -> ApiResult<()> {
 pub async fn tick(state: &AppState) -> ApiResult<()> {
     let now = db::now();
     let rows: Vec<Row> = sqlx::query_as(sqlx::AssertSqlSafe(format!(
-        "{ROW} WHERE paused=0 AND next_at<=? AND state IN ('waiting','running')"
+        "{ROW}
+         WHERE paused=0 AND next_at<=? AND state IN ('waiting','running')"
     )))
     .bind(now)
     .fetch_all(&state.db)
@@ -529,10 +602,14 @@ pub async fn tick(state: &AppState) -> ApiResult<()> {
             tx.rollback().await?;
             continue;
         }
-        let group: i64 = sqlx::query_scalar("SELECT group_id FROM threads WHERE id=?")
-            .bind(row.thread_id)
-            .fetch_one(&mut *tx)
-            .await?;
+        let group: i64 = sqlx::query_scalar(
+            "SELECT group_id
+             FROM threads
+             WHERE id=?",
+        )
+        .bind(row.thread_id)
+        .fetch_one(&mut *tx)
+        .await?;
         let work =
             sqlx::query("INSERT INTO work_leases(group_id,kind,created_at) VALUES (?,'process',?)")
                 .bind(group)
@@ -557,7 +634,9 @@ pub async fn tick(state: &AppState) -> ApiResult<()> {
          SET state = 'failed', error = 'The process exceeded its deadline'
          WHERE kind = 'process'
          AND state = 'running'
-         AND id IN (SELECT work_id FROM workshop_processes WHERE deadline <= ?)",
+         AND id IN (SELECT work_id
+         FROM workshop_processes
+         WHERE deadline <= ?)",
     )
     .bind(now)
     .execute(&state.db)
@@ -567,7 +646,9 @@ pub async fn tick(state: &AppState) -> ApiResult<()> {
          SET state = 'failed', error = 'The request expired while waiting for a machine'
          WHERE kind = 'process'
          AND state = 'queued'
-         AND id IN (SELECT work_id FROM workshop_processes WHERE expires_at <= ?)",
+         AND id IN (SELECT work_id
+         FROM workshop_processes
+         WHERE expires_at <= ?)",
     )
     .bind(now)
     .execute(&state.db)
@@ -578,22 +659,33 @@ pub async fn tick(state: &AppState) -> ApiResult<()> {
     dispatch(state).await
 }
 async fn offer(state: &AppState, process: i64) -> ApiResult<ProcessOffer> {
-    let (thread, expires): (i64, i64) =
-        sqlx::query_as("SELECT thread_id,expires_at FROM workshop_processes WHERE id=?")
-            .bind(process)
-            .fetch_one(&state.db)
-            .await?;
-    let row: Row = sqlx::query_as(sqlx::AssertSqlSafe(format!("{ROW} WHERE thread_id=?")))
-        .bind(thread)
+    let (thread, expires, process_recipe, process_ask): (i64, i64, Option<String>, Option<String>) =
+        sqlx::query_as(
+            "SELECT thread_id, expires_at, recipe, ask
+             FROM workshop_processes
+             WHERE id = ?",
+        )
+        .bind(process)
         .fetch_one(&state.db)
         .await?;
-    let ask: Ask = decode(&row.ask)?;
-    let recipe: RecipeFile = decode(&row.recipe)?;
+    let row: Row = sqlx::query_as(sqlx::AssertSqlSafe(format!(
+        "{ROW}
+         WHERE thread_id=?"
+    )))
+    .bind(thread)
+    .fetch_one(&state.db)
+    .await?;
+    let ask: Ask = decode(process_ask.as_deref().unwrap_or(&row.ask))?;
+    let recipe: RecipeFile = decode(process_recipe.as_deref().unwrap_or(&row.recipe))?;
     let t: Thread = forum::find_thread_by_id(state, thread).await?.into();
-    let group_id: i64 = sqlx::query_scalar("SELECT group_id FROM threads WHERE id=?")
-        .bind(thread)
-        .fetch_one(&state.db)
-        .await?;
+    let group_id: i64 = sqlx::query_scalar(
+        "SELECT group_id
+         FROM threads
+         WHERE id=?",
+    )
+    .bind(thread)
+    .fetch_one(&state.db)
+    .await?;
     let g = Membership::of_group(state, group_id).await?;
     let prompt = recipe
         .recipe
@@ -601,7 +693,20 @@ async fn offer(state: &AppState, process: i64) -> ApiResult<ProcessOffer> {
         .ok_or_else(|| ApiError::internal("invalid stored recipe"))?
         .render(&format!("{}.md", recipe.name), &ask.inputs)
         .map_err(ApiError::internal)?;
+    let raw: Option<String> = sqlx::query_scalar(
+        "SELECT repositories
+         FROM workshop_processes
+         WHERE id = ?",
+    )
+    .bind(process)
+    .fetch_one(&state.db)
+    .await?;
+    let rebase = raw
+        .map(|r| decode::<Vec<ProcessRepository>>(&r))
+        .transpose()?
+        .and_then(|mut r| r.pop());
     Ok(ProcessOffer {
+        rebase,
         process,
         group: GroupRef {
             id: group_id,
@@ -614,7 +719,15 @@ async fn offer(state: &AppState, process: i64) -> ApiResult<ProcessOffer> {
             kind: ThreadKind::Request,
         },
         requester: t.created_by.clone(),
-        assigned_by: t.created_by,
+        assigned_by: if process_recipe.is_some() {
+            User {
+                id: 0,
+                username: "workshop".into(),
+                display_name: "Workshop".into(),
+            }
+        } else {
+            t.created_by
+        },
         recipe,
         inputs: ask.inputs,
         prompt,
@@ -624,7 +737,7 @@ async fn offer(state: &AppState, process: i64) -> ApiResult<ProcessOffer> {
         expires_at: expires,
     })
 }
-fn eligible(machine: &crate::builds::Machine, offer: &ProcessOffer, ask: &Ask) -> bool {
+pub(crate) fn eligible(machine: &crate::builds::Machine, offer: &ProcessOffer, ask: &Ask) -> bool {
     let scope = machine.scope(&offer.group.slug);
     scope.enabled
         && scope.concurrency > 0
@@ -648,7 +761,7 @@ fn eligible(machine: &crate::builds::Machine, offer: &ProcessOffer, ask: &Ask) -
 pub async fn dispatch(state: &AppState) -> ApiResult<()> {
     let _turn = state.process_changes.lock().await;
     let waiting: Vec<(i64, String)> = sqlx::query_as(
-        "SELECT p.id, r.ask
+        "SELECT p.id, coalesce(p.ask, r.ask)
          FROM workshop_processes p
          JOIN work_leases w ON w.id = p.work_id
          JOIN workshop_requests r ON r.thread_id = p.thread_id
@@ -665,7 +778,18 @@ pub async fn dispatch(state: &AppState) -> ApiResult<()> {
         let ask: Ask = decode(&raw)?;
         let offer = offer(state, id).await?;
         for (holder, machine) in &machines.0 {
-            if !eligible(machine, &offer, &ask) || machine.sender.is_closed() {
+            let pinned: Option<i64> = sqlx::query_scalar(
+                "SELECT machine_id
+                 FROM workshop_processes
+                 WHERE id = ?",
+            )
+            .bind(id)
+            .fetch_one(&state.db)
+            .await?;
+            if pinned.is_some_and(|id| id != *holder)
+                || !eligible(machine, &offer, &ask)
+                || machine.sender.is_closed()
+            {
                 continue;
             }
             let member: bool = sqlx::query_scalar(
@@ -701,7 +825,8 @@ pub async fn dispatch(state: &AppState) -> ApiResult<()> {
             }
             let sent = sqlx::query(
                 "INSERT INTO workshop_offers(process_id, machine_id, connection)
-                 VALUES (?, ?, ?) ON CONFLICT(process_id, machine_id) DO UPDATE
+                 VALUES (?, ?, ?)
+                 ON CONFLICT(process_id, machine_id) DO UPDATE
                  SET connection = excluded.connection, decision = 'offered'
                  WHERE workshop_offers.connection != excluded.connection
                  AND workshop_offers.decision NOT IN ('declined', 'ran')",
@@ -799,7 +924,7 @@ pub async fn decision(
         return Ok(());
     }
     let (work, attempts, state_name, raw): (i64, i64, String, String) = sqlx::query_as(
-        "SELECT w.id, w.attempts, w.state, r.ask
+        "SELECT w.id, w.attempts, w.state, coalesce(p.ask, r.ask)
          FROM workshop_processes p
          JOIN work_leases w ON w.id = p.work_id
          JOIN workshop_requests r ON r.thread_id = p.thread_id
@@ -827,12 +952,23 @@ pub async fn decision(
     .fetch_one(&state.db)
     .await?;
     let running: i64 = sqlx::query_scalar(
-        "SELECT count(*) FROM work_leases WHERE holder=? AND kind='process' AND state='running'",
+        "SELECT count(*)
+         FROM work_leases
+         WHERE holder=? AND kind='process' AND state='running'",
     )
     .bind(holder)
     .fetch_one(&state.db)
     .await?;
+    let pinned: Option<i64> = sqlx::query_scalar(
+        "SELECT machine_id
+         FROM workshop_processes
+         WHERE id = ?",
+    )
+    .bind(process)
+    .fetch_one(&state.db)
+    .await?;
     if state_name != "queued"
+        || pinned.is_some_and(|id| id != holder)
         || !valid
         || !eligible(&machine, &offer, &ask)
         || offer.expires_at <= db::now()
@@ -889,7 +1025,19 @@ pub async fn decision(
             path: format!("/git/{}/{}.git", offer.group.slug, name),
             base,
             branch: format!("workshop/{}-{process}", offer.request.number),
+            force_push: false,
         });
+    }
+    let overrides: Option<String> = sqlx::query_scalar(
+        "SELECT repositories
+         FROM workshop_processes
+         WHERE id = ?",
+    )
+    .bind(process)
+    .fetch_one(&state.db)
+    .await?;
+    if let Some(raw) = overrides {
+        repositories = decode(&raw)?;
     }
     let deadline = db::now() + i64::from(recipe.front.timeout_minutes) * 60_000;
     let token = crate::secret::token("stp_");
@@ -940,24 +1088,35 @@ pub async fn decision(
         })
         .collect();
     sqlx::query(
-        "UPDATE workshop_processes SET owner_id=?,started_at=?,deadline=?,branches=? WHERE id=?",
+        "UPDATE workshop_processes
+         SET owner_id=?,machine_id=?,started_at=?,deadline=?,branches=?
+         WHERE id=?",
     )
     .bind(machine.owner)
+    .bind(holder)
     .bind(db::now())
     .bind(deadline)
     .bind(encode(&branches)?)
     .bind(process)
     .execute(&mut *tx)
     .await?;
-    sqlx::query("UPDATE workshop_requests SET state='running' WHERE thread_id=?")
-        .bind(thread)
-        .execute(&mut *tx)
-        .await?;
-    sqlx::query("UPDATE workshop_offers SET decision='ran' WHERE process_id=? AND machine_id=?")
-        .bind(process)
-        .bind(holder)
-        .execute(&mut *tx)
-        .await?;
+    sqlx::query(
+        "UPDATE workshop_requests
+         SET state='running', waiting = NULL
+         WHERE thread_id=?",
+    )
+    .bind(thread)
+    .execute(&mut *tx)
+    .await?;
+    sqlx::query(
+        "UPDATE workshop_offers
+         SET decision='ran'
+         WHERE process_id=? AND machine_id=?",
+    )
+    .bind(process)
+    .bind(holder)
+    .execute(&mut *tx)
+    .await?;
     let others: Vec<i64> = sqlx::query_scalar(
         "UPDATE workshop_offers
          SET decision = 'taken'
@@ -997,12 +1156,14 @@ pub fn runner_name(handle: &str) -> &str {
     }
 }
 async fn thread_id(state: &AppState, process: i64) -> ApiResult<i64> {
-    Ok(
-        sqlx::query_scalar("SELECT thread_id FROM workshop_processes WHERE id=?")
-            .bind(process)
-            .fetch_one(&state.db)
-            .await?,
+    Ok(sqlx::query_scalar(
+        "SELECT thread_id
+         FROM workshop_processes
+         WHERE id=?",
     )
+    .bind(process)
+    .fetch_one(&state.db)
+    .await?)
 }
 pub async fn finished(
     state: &AppState,
@@ -1037,7 +1198,9 @@ pub async fn finished(
     };
     let mut tx = state.db.begin().await?;
     let changed = sqlx::query(
-        "UPDATE work_leases SET state=?,error=? WHERE id=? AND state='running' AND attempts=?",
+        "UPDATE work_leases
+         SET state=?,error=?
+         WHERE id=? AND state='running' AND attempts=?",
     )
     .bind(if result.error.is_none() {
         "passed"
@@ -1054,17 +1217,25 @@ pub async fn finished(
         tx.rollback().await?;
         return Ok(());
     }
-    sqlx::query("UPDATE workshop_processes SET summary=?,usage=? WHERE id=?")
-        .bind(stemma_core::secrets::hide(&result.summary))
-        .bind(encode(&result.usage)?)
-        .bind(id)
-        .execute(&mut *tx)
-        .await?;
+    sqlx::query(
+        "UPDATE workshop_processes
+         SET summary=?,usage=?
+         WHERE id=?",
+    )
+    .bind(stemma_core::secrets::hide(&result.summary))
+    .bind(encode(&result.usage)?)
+    .bind(id)
+    .execute(&mut *tx)
+    .await?;
     if result.error.is_some() {
         retry(&mut tx, lease.id).await?;
     }
     sqlx::query(
-        "UPDATE api_tokens SET revoked_at=? WHERE id=(SELECT token_id FROM work_leases WHERE id=?)",
+        "UPDATE api_tokens
+         SET revoked_at=?
+         WHERE id=(SELECT token_id
+         FROM work_leases
+         WHERE id=?)",
     )
     .bind(db::now())
     .bind(lease.id)
@@ -1108,6 +1279,14 @@ pub async fn finish_pending(state: &AppState) -> ApiResult<()> {
     {
         let offer = offer(state, id).await?;
         let thread = thread_id(state, id).await?;
+        let rebase: Option<i64> = sqlx::query_scalar(
+            "SELECT rebase_review
+             FROM workshop_processes
+             WHERE id = ?",
+        )
+        .bind(id)
+        .fetch_one(&state.db)
+        .await?;
         let mut branches: Vec<ProcessBranch> = decode(&raw)?;
         if let Some(forge) = &state.forge {
             for branch in &mut branches {
@@ -1117,7 +1296,7 @@ pub async fn finish_pending(state: &AppState) -> ApiResult<()> {
                     .map_err(forge::api_error)?
                 {
                     branch.commit = Some(head);
-                    if branch.pull_request.is_none() {
+                    if rebase.is_none() && branch.pull_request.is_none() {
                         branch.pull_request = Some(
                             forge
                                 .open_process_pull_request(
@@ -1140,6 +1319,29 @@ pub async fn finish_pending(state: &AppState) -> ApiResult<()> {
                 }
             }
         }
+        let reviewed = if rebase.is_none() {
+            crate::review::enqueue(state, id, &branches, &offer.recipe).await?
+        } else {
+            false
+        };
+        if reviewed {
+            sqlx::query(
+                "UPDATE workshop_requests
+                 SET orchestrated = 1
+                 WHERE thread_id = ?",
+            )
+            .bind(thread)
+            .execute(&state.db)
+            .await?;
+        }
+        let orchestrated: bool = sqlx::query_scalar(
+            "SELECT orchestrated
+             FROM workshop_requests
+             WHERE thread_id = ?",
+        )
+        .bind(thread)
+        .fetch_one(&state.db)
+        .await?;
         let pushed = branches.iter().any(|b| b.commit.is_some());
         let expired = error
             .as_ref()
@@ -1160,34 +1362,46 @@ pub async fn finish_pending(state: &AppState) -> ApiResult<()> {
                 b.pull_request.as_ref().unwrap()
             ));
         }
-        let successor: Option<i64> =
-            sqlx::query_scalar("SELECT id FROM workshop_processes WHERE retry_of=?")
-                .bind(id)
-                .fetch_optional(&state.db)
-                .await?;
+        let successor: Option<i64> = sqlx::query_scalar(
+            "SELECT id
+             FROM workshop_processes
+             WHERE retry_of=?",
+        )
+        .bind(id)
+        .fetch_optional(&state.db)
+        .await?;
         if let Some(next) = successor {
             text.push_str(&format!(
                 "\n\nRetrying as process {next}, waiting for another eligible machine."
             ));
         }
         let group = Membership::of_group(state, offer.group.id).await?;
-        let owner: Option<i64> =
-            sqlx::query_scalar("SELECT owner_id FROM workshop_processes WHERE id=?")
-                .bind(id)
-                .fetch_one(&state.db)
-                .await?;
+        let owner: Option<i64> = sqlx::query_scalar(
+            "SELECT owner_id
+             FROM workshop_processes
+             WHERE id=?",
+        )
+        .bind(id)
+        .fetch_one(&state.db)
+        .await?;
         let mut tx = state.db.begin().await?;
-        sqlx::query("UPDATE workshop_processes SET finished_at=?,branches=?,pushed=? WHERE id=?")
-            .bind(db::now())
-            .bind(encode(&branches)?)
-            .bind(pushed)
-            .bind(id)
-            .execute(&mut *tx)
-            .await?;
+        sqlx::query(
+            "UPDATE workshop_processes
+             SET finished_at=?,branches=?,pushed=?
+             WHERE id=?",
+        )
+        .bind(db::now())
+        .bind(encode(&branches)?)
+        .bind(pushed)
+        .bind(id)
+        .execute(&mut *tx)
+        .await?;
         sqlx::query(
             "UPDATE api_tokens
              SET revoked_at = ?
-             WHERE id = (SELECT token_id FROM work_leases WHERE id = ?)",
+             WHERE id = (SELECT token_id
+             FROM work_leases
+             WHERE id = ?)",
         )
         .bind(db::now())
         .bind(work)
@@ -1204,7 +1418,7 @@ pub async fn finish_pending(state: &AppState) -> ApiResult<()> {
         .await?;
         sqlx::query(
             "UPDATE workshop_requests
-             SET state = CASE WHEN ? > 0 THEN 'running' WHEN recurring = 1
+             SET state = CASE WHEN ? > 0 THEN 'running' WHEN orchestrated = 1 THEN 'waiting' WHEN recurring = 1
              AND next_at IS NOT NULL THEN 'waiting' ELSE ? END
              WHERE thread_id = ? AND state IN ('waiting', 'running')",
         )
@@ -1265,7 +1479,7 @@ pub async fn finish_pending(state: &AppState) -> ApiResult<()> {
         } else {
             NotificationKind::RequestFailed
         };
-        if successor.is_none() && status != "cancelled" {
+        if !orchestrated && successor.is_none() && status != "cancelled" {
             notifications::notify(
                 state,
                 &[offer.requester.id],
@@ -1275,7 +1489,10 @@ pub async fn finish_pending(state: &AppState) -> ApiResult<()> {
             )
             .await?;
         }
-        if pushed {
+        if orchestrated {
+            crate::orchestrator::wake(state, thread).await?;
+        }
+        if pushed && rebase.is_none() {
             notifications::notify(
                 state,
                 &[offer.requester.id],
@@ -1309,7 +1526,9 @@ pub async fn forget_thread(state: &AppState, thread: i64) -> ApiResult<()> {
         "UPDATE work_leases
          SET state = 'cancelled'
          WHERE kind = 'process'
-         AND id IN (SELECT work_id FROM workshop_processes WHERE thread_id = ?)
+         AND id IN (SELECT work_id
+         FROM workshop_processes
+         WHERE thread_id = ?)
          AND state IN ('queued', 'running')",
     )
     .bind(thread)
@@ -1346,18 +1565,31 @@ pub(crate) async fn retry(
     .bind(work)
     .fetch_one(&mut **tx)
     .await?;
-    if p.retry_of.is_some()
+    let controlled: bool = sqlx::query_scalar(
+        "SELECT r.orchestrated OR p.rebase_review IS NOT NULL
+         FROM workshop_processes p
+         JOIN workshop_requests r ON r.thread_id = p.thread_id
+         WHERE p.id = ?",
+    )
+    .bind(p.id)
+    .fetch_one(&mut **tx)
+    .await?;
+    if controlled
+        || p.retry_of.is_some()
         || p.pushed
         || !["waiting", "running"].contains(&p.state.as_str())
         || p.expires_at <= db::now()
     {
         return Ok(None);
     }
-    let exists: bool =
-        sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM workshop_processes WHERE retry_of=?)")
-            .bind(p.id)
-            .fetch_one(&mut **tx)
-            .await?;
+    let exists: bool = sqlx::query_scalar(
+        "SELECT EXISTS(SELECT 1
+         FROM workshop_processes
+         WHERE retry_of=?)",
+    )
+    .bind(p.id)
+    .fetch_one(&mut **tx)
+    .await?;
     if exists {
         return Ok(None);
     }
@@ -1380,6 +1612,20 @@ pub(crate) async fn retry(
     .execute(&mut **tx)
     .await?
     .last_insert_rowid();
+    sqlx::query(
+        "UPDATE workshop_processes
+         SET recipe = (SELECT recipe
+         FROM workshop_processes
+         WHERE id = ?1),
+         ask = (SELECT ask
+         FROM workshop_processes
+         WHERE id = ?1)
+         WHERE id = ?2",
+    )
+    .bind(p.id)
+    .bind(next)
+    .execute(&mut **tx)
+    .await?;
     // A different connection on the same personal token is still the same machine.
     sqlx::query(
         "INSERT INTO workshop_offers(process_id, machine_id, connection, decision)

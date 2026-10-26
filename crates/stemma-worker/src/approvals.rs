@@ -340,6 +340,7 @@ mod tests {
     }
     fn offer(process: i64, requester: i64, version: &str) -> ProcessOffer {
         ProcessOffer {
+            rebase: None,
             process,
             group: GroupRef {
                 id: 1,

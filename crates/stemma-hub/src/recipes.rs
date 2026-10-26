@@ -12,6 +12,10 @@ pub const REPOSITORY: &str = "recipes";
 pub fn template() -> Vec<(String, String)> {
     [
         (
+            "rebase.md",
+            include_str!("../../../recipes/template/rebase.md"),
+        ),
+        (
             "prove.md",
             include_str!("../../../recipes/template/prove.md"),
         ),
@@ -94,4 +98,31 @@ pub async fn read(state: &AppState, slug: &str, name: &str) -> ApiResult<RecipeF
         .into_iter()
         .find(|r| r.name == name)
         .ok_or_else(|| ApiError::not_found("Recipe"))
+}
+
+/// Old groups may not yet have adopted the shipped rebase recipe.
+pub async fn rebase(state: &AppState, slug: &str) -> ApiResult<RecipeFile> {
+    if let Some(file) = list(state, slug)
+        .await?
+        .into_iter()
+        .find(|r| r.name == "rebase")
+    {
+        return Ok(file);
+    }
+    use sha2::{Digest, Sha256};
+    let source = include_str!("../../../recipes/template/rebase.md");
+    Ok(RecipeFile {
+        name: "rebase".into(),
+        version: format!(
+            "builtin-{}",
+            Sha256::digest(source)
+                .iter()
+                .map(|b| format!("{b:02x}"))
+                .collect::<String>()
+        ),
+        commit: "builtin".into(),
+        url: String::new(),
+        recipe: Some(Recipe::parse("rebase.md", source).map_err(ApiError::internal)?),
+        error: None,
+    })
 }

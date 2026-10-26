@@ -6,7 +6,7 @@ pub use crate::api::JobKind;
 use crate::api::{AgentProfile, Message, ThreadKind, User};
 
 /// The version of this protocol. A hub refuses workers that speak another.
-pub const PROTOCOL_VERSION: u32 = 14;
+pub const PROTOCOL_VERSION: u32 = 15;
 
 /// The path of the workers' WebSocket, under the API's prefix.
 pub const WORKER_PATH: &str = "/worker";
@@ -301,6 +301,9 @@ pub struct BuildResult {
 /// accepting; accepting this offer does not promise that it won the lease.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct ProcessOffer {
+    /// Internal rebase grant, visible before approval. Only this existing branch
+    /// may be rewritten; absent for ordinary recipe work.
+    pub rebase: Option<ProcessRepository>,
     /// Durable process number, unique on this hub.
     pub process: i64,
     /// Stable group identity and its current name.
@@ -341,14 +344,17 @@ pub struct ProcessSpec {
     /// Hard end of this run, in Unix milliseconds; heartbeat never extends it.
     pub deadline: i64,
 }
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ProcessRepository {
     /// Hub-relative git path, never an upstream credential.
     pub path: String,
     /// Immutable commit of main at launch.
     pub base: String,
-    /// Exactly workshop/<request number>-<process number>.
+    /// The assigned branch; a rebase may force-push only this branch.
     pub branch: String,
+    /// A rebase starts at the PR head and may force-push its assigned branch.
+    #[serde(default)]
+    pub force_push: bool,
 }
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
 pub struct ProcessResult {

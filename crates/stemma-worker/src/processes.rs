@@ -180,11 +180,19 @@ async fn execute(context: &Context, spec: &ProcessSpec) -> anyhow::Result<crate:
             "Invalid process repository"
         );
         anyhow::ensure!(
-            repo.branch
-                == format!(
-                    "workshop/{}-{}",
-                    spec.offer.request.number, spec.offer.process
-                ),
+            (repo.force_push
+                && spec.offer.rebase.as_ref() == Some(repo)
+                && spec.offer.recipe.name == "rebase"
+                && spec.offer.inputs.get("branch") == Some(&repo.branch)
+                && spec.offer.inputs.get("repository").map(String::as_str) == Some(name)
+                && repo.branch.starts_with("workshop/")
+                && !repo.branch.contains(".."))
+                || (!repo.force_push
+                    && repo.branch
+                        == format!(
+                            "workshop/{}-{}",
+                            spec.offer.request.number, spec.offer.process
+                        )),
             "Invalid process branch"
         );
         let path = if name == "library" {
@@ -207,6 +215,18 @@ async fn execute(context: &Context, spec: &ProcessSpec) -> anyhow::Result<crate:
             &["fetch", "--no-tags", "origin", &repo.base],
         )
         .await?;
+        if repo.force_push {
+            // Seed the expected remote ref for --force-with-lease, and refuse a
+            // branch that moved since the hub made this immutable offer.
+            let reference = format!("refs/remotes/origin/{}", repo.branch);
+            let fetch = format!("+refs/heads/{}:{reference}", repo.branch);
+            library::git_output(&path, &spec.token, &["fetch", "origin", &fetch]).await?;
+            let head = library::git_output(&path, &spec.token, &["rev-parse", &reference]).await?;
+            anyhow::ensure!(
+                head == repo.base,
+                "The rebase branch changed after the offer"
+            );
+        }
         library::git_output(
             &path,
             &spec.token,
@@ -273,6 +293,12 @@ async fn execute(context: &Context, spec: &ProcessSpec) -> anyhow::Result<crate:
     for (path, library, repo) in &repositories {
         if *library {
             crate::builds::seed_mathlib(&sandbox, path, &log).await?;
+        }
+        if repo.force_push {
+            contract.push_str(
+                "\nThis is a rebase: fetch origin/main, rebase, and force-push with \
+                 --force-with-lease only the assigned branch. The checkout starts at the PR head.",
+            );
         }
         contract.push_str(&format!(
             "\n- {} at {}, branch {}, base {}",

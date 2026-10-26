@@ -376,6 +376,11 @@ fn router(inner: Arc<Inner>) -> Router {
             "/api/v1/repos/{owner}/{name}/pulls/{number}",
             get(get_pull).patch(update_pull),
         )
+        .route("/api/v1/repos/{owner}/{name}/compare/{range}", get(compare))
+        .route(
+            "/api/v1/repos/{owner}/{name}/pulls/{number}/reviews",
+            post(review_pull),
+        )
         .route(
             "/api/v1/repos/{owner}/{name}/pulls/{number}/files",
             get(pull_files),
@@ -991,12 +996,56 @@ async fn create_pull(
 
 async fn get_pull(
     State(inner): State<Arc<Inner>>,
-    UrlPath((owner, name, number)): UrlPath<(String, String, u32)>,
+    UrlPath((owner, name, written)): UrlPath<(String, String, String)>,
 ) -> Response {
-    match find_pull(&inner, &owner, &name, number, |p| p.clone()) {
-        Some(pull) => axum::Json(pull.json(&owner, &name)).into_response(),
-        None => message(StatusCode::NOT_FOUND, "not found"),
+    let is_diff = written.ends_with(".diff");
+    let Ok(number) = written.trim_end_matches(".diff").parse::<u32>() else {
+        return message(StatusCode::NOT_FOUND, "not found");
+    };
+    let Some(pull) = find_pull(&inner, &owner, &name, number, |p| p.clone()) else {
+        return message(StatusCode::NOT_FOUND, "not found");
+    };
+    let bare = inner.root.join(&owner).join(format!("{name}.git"));
+    if is_diff {
+        let range = format!("{}...{}", pull.base, pull.head);
+        return match run_git(&bare, &["diff", &range]).await {
+            Ok(diff) => diff.into_response(),
+            Err(e) => message(StatusCode::INTERNAL_SERVER_ERROR, &e),
+        };
     }
+    let mut value = pull.json(&owner, &name);
+    value["head"]["sha"] = json!(main_of(&bare, &pull.head).await);
+    value["base"]["sha"] = json!(main_of(&bare, &pull.base).await);
+    value["mergeable"] = json!(true);
+    axum::Json(value).into_response()
+}
+async fn compare(
+    State(inner): State<Arc<Inner>>,
+    UrlPath((owner, name, range)): UrlPath<(String, String, String)>,
+) -> Response {
+    let Some((head, main)) = range.split_once("...") else {
+        return message(StatusCode::BAD_REQUEST, "invalid range");
+    };
+    let bare = inner.root.join(&owner).join(format!("{name}.git"));
+    match run_git(&bare, &["rev-list", "--count", &format!("{head}..{main}")]).await {
+        Ok(count) => axum::Json(json!({"total_commits":count.trim().parse::<u64>().unwrap()}))
+            .into_response(),
+        Err(e) => message(StatusCode::NOT_FOUND, &e),
+    }
+}
+async fn review_pull(
+    headers: HeaderMap,
+    State(inner): State<Arc<Inner>>,
+    UrlPath((owner, name, number)): UrlPath<(String, String, u32)>,
+    axum::Json(body): axum::Json<Value>,
+) -> Response {
+    if headers.get("sudo").and_then(|v| v.to_str().ok()) != Some("workshop") {
+        return message(StatusCode::FORBIDDEN, "review as workshop");
+    }
+    if find_pull(&inner, &owner, &name, number, |_| ()).is_none() {
+        return message(StatusCode::NOT_FOUND, "not found");
+    }
+    (StatusCode::OK, axum::Json(body)).into_response()
 }
 
 async fn update_pull(
@@ -1050,6 +1099,7 @@ async fn pull_files(
 }
 
 async fn merge_pull(
+    headers: HeaderMap,
     State(inner): State<Arc<Inner>>,
     UrlPath((owner, name, number)): UrlPath<(String, String, u32)>,
     axum::Json(body): axum::Json<Value>,
@@ -1061,12 +1111,24 @@ async fn merge_pull(
         return message(StatusCode::METHOD_NOT_ALLOWED, "the pull request is closed");
     }
     let bare = inner.root.join(&owner).join(format!("{name}.git"));
+    if body.get("head_commit_id").is_some() {
+        if headers.get("sudo").and_then(|v| v.to_str().ok()) != Some("workshop") {
+            return message(StatusCode::FORBIDDEN, "merge as workshop");
+        }
+        if body["Do"] != "merge"
+            || main_of(&bare, &pull.head).await.as_deref() != body["head_commit_id"].as_str()
+        {
+            return message(StatusCode::CONFLICT, "head changed");
+        }
+    }
     let before = main_of(&bare, &pull.base).await;
     let Ok(work) = tempfile::tempdir() else {
         return message(StatusCode::INTERNAL_SERVER_ERROR, "no folder");
     };
-    let text = body["merge_message_field"]
-        .as_str()
+    let text = body
+        .get("MergeMessageField")
+        .or_else(|| body.get("merge_message_field"))
+        .and_then(Value::as_str)
         .filter(|m| !m.is_empty())
         .map(str::to_owned)
         .unwrap_or_else(|| format!("Merge pull request #{number}"));

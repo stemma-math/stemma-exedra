@@ -27,10 +27,12 @@ CREATE TABLE messages (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     thread_id INTEGER NOT NULL REFERENCES threads (id) ON DELETE CASCADE,
     number INTEGER NOT NULL,
-    author_id INTEGER NOT NULL REFERENCES users (id),
+    -- Workshop messages have their own author, represented by orchestrator_model.
+    author_id INTEGER REFERENCES users (id),
     -- The agent that wrote it for its author, if one did.
     agent TEXT,
     workshop INTEGER NOT NULL DEFAULT 0,
+    orchestrator_model TEXT,
     agent_runner TEXT,
     body TEXT NOT NULL,
     body_ids TEXT,

@@ -104,6 +104,7 @@ mod tests {
 
     fn message(number: u32, body: &str, reply_to: Option<u32>) -> Message {
         Message {
+            orchestrator_model: None,
             workshop: false,
             missing_references: Vec::new(),
             number,

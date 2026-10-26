@@ -9,9 +9,9 @@ mod groups;
 mod hub;
 mod invitations;
 mod jobs;
-mod library;
+pub(crate) mod library;
 mod notifications;
-mod papers;
+pub(crate) mod papers;
 pub mod workers;
 
 use axum::Router;
@@ -120,6 +120,14 @@ pub fn router(state: AppState) -> Router {
             get(forum::get_message)
                 .patch(forum::edit_message)
                 .delete(forum::delete_message),
+        )
+        .route(
+            "/groups/{group}/workshop/model",
+            get(crate::model::get).put(crate::model::update),
+        )
+        .route(
+            "/groups/{group}/workshop/status",
+            get(crate::orchestrator::board),
         )
         .route(
             "/groups/{group}/workshop/recipes",
