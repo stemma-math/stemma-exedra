@@ -212,7 +212,9 @@ impl Recipe {
             }
         }
         for (name, input) in &self.front.inputs {
-            if input.required && inputs.get(name).is_none_or(|v| v.trim().is_empty()) {
+            if (input.required || input.kind == InputKind::Paper)
+                && inputs.get(name).is_none_or(|v| v.trim().is_empty())
+            {
                 return Err(bad(format!("Missing required input {name}")));
             }
         }
@@ -285,6 +287,21 @@ mod tests {
             )
             .is_err()
         );
+    }
+    #[test]
+    fn a_paper_target_is_always_needed_to_write_a_paper() {
+        let text = PROVE
+            .replace("writes = [\"library\"]", "writes = [\"paper\"]")
+            .replace("kind = \"text\"", "kind = \"paper\"");
+        let text = text.replace("required = true", "required = false");
+        let recipe = Recipe::parse("paper.md", &text).unwrap();
+        assert!(recipe.render("paper.md", &BTreeMap::new()).is_err());
+        recipe
+            .render(
+                "paper.md",
+                &BTreeMap::from([("statement".into(), "notes".into())]),
+            )
+            .unwrap();
     }
     #[test]
     fn rendering_checks_inputs_and_does_not_interpret_values() {
