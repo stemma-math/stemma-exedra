@@ -87,7 +87,7 @@
     {/if}
     {#if message.orchestrator_model}
       <span class="post__attribution" title="The group's model">with {message.orchestrator_model}</span>
-    {:else if message.workshop}
+    {:else if message.workshop && message.orchestrator_model == null}
       <span class="chip chip--small chip--info">Workshop</span>
     {/if}
     <a class="post__number" href="#{message.number}" title={address}>#{message.number}</a>
