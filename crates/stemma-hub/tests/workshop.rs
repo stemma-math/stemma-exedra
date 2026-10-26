@@ -377,10 +377,12 @@ async fn processes_push_only_their_branch_post_only_in_their_request_and_open_as
         token,
         "POST",
         "/groups/geometry/threads/1/messages",
-        Some(json!({"body":"Working on the proof"})),
+        Some(json!({"body":format!("Working on the proof; token {token}")})),
     )
     .await;
     assert_eq!(posted["workshop"], true);
+    assert!(!posted["body"].as_str().unwrap().contains(token));
+    assert!(posted["body"].as_str().unwrap().contains("[hidden]"));
     assert_eq!(posted["author"]["username"], "ada");
     let temp = tempfile::tempdir().unwrap();
     let repo = &spec.repositories[0];

@@ -193,7 +193,8 @@ a push. Both runs keep their own machine, usage, summary and branch; the
 retry cannot itself be retried. A streamed push is conservatively recorded before forwarding: if
 its outcome is uncertain, it fails instead of risking duplicate work.
 
-When a process ends, the hub posts its summary with secrets hidden. It checks
+The hub hides secrets in process progress and summaries. When a process
+ends, the hub posts its summary. It checks
 Forgejo for its assigned branches and opens a pull request into `main` for
 each branch actually pushed, as the reserved **worker** account using
 Forgejo's `Sudo` header. The title is the request's title and the description

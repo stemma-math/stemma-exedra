@@ -42,6 +42,12 @@ fn alphanumeric(c: u8) -> bool {
 /// Longer prefixes first, so that `sk-ant-` is not taken for `sk-`.
 const PREFIXED: &[Prefixed] = &[
     Prefixed {
+        prefix: "stp_",
+        kind: "a Stemma process token",
+        min: 20,
+        allowed: url_safe,
+    },
+    Prefixed {
         prefix: "stb_",
         kind: "a Stemma build token",
         min: 20,
@@ -279,6 +285,11 @@ mod tests {
     fn finds_stemmas_tokens() {
         assert_eq!(kinds(&format!("token stm_{B64} here")), ["a Stemma token"]);
         assert_eq!(kinds(&format!("stj_{B64}")), ["a Stemma job's token"]);
+        assert_eq!(kinds(&format!("stp_{B64}")), ["a Stemma process token"]);
+        assert_eq!(
+            hide(&format!("Process token: stp_{B64}")),
+            "Process token: [hidden]"
+        );
         // Near misses: the prefix alone, a short tail, inside a word.
         assert!(kinds("stm_ and stm_short").is_empty());
         assert!(kinds(&format!("xstm_{B64}")).is_empty());

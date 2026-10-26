@@ -100,6 +100,7 @@ pub fn log(state: &Path, event: &str, details: impl Serialize) -> anyhow::Result
         .create(true)
         .append(true)
         .open(state.join("logs/workshop.jsonl"))?;
+    file.lock()?;
     writeln!(
         file,
         "{}",
@@ -372,6 +373,33 @@ mod tests {
             model: None,
             recurring: true,
             expires_at: now() + 3_600_000,
+        }
+    }
+    #[test]
+    fn simultaneous_runs_keep_each_log_record_intact() {
+        let dir = tempfile::tempdir().unwrap();
+        let tasks: Vec<_> = (0..4)
+            .map(|writer| {
+                let path = dir.path().to_owned();
+                std::thread::spawn(move || {
+                    for record in 0..25 {
+                        log(
+                            &path,
+                            "test",
+                            serde_json::json!({"writer":writer,"record":record}),
+                        )
+                        .unwrap();
+                    }
+                })
+            })
+            .collect();
+        for task in tasks {
+            task.join().unwrap();
+        }
+        let text = std::fs::read_to_string(dir.path().join("logs/workshop.jsonl")).unwrap();
+        assert_eq!(text.lines().count(), 100);
+        for line in text.lines() {
+            serde_json::from_str::<serde_json::Value>(line).unwrap();
         }
     }
     #[test]

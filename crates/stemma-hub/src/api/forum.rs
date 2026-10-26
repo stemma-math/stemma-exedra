@@ -501,6 +501,13 @@ async fn post_marked(
     attachments: &[i64],
     workshop: bool,
 ) -> ApiResult<Message> {
+    let hidden;
+    let text = if workshop {
+        hidden = stemma_core::secrets::hide(text);
+        &hidden
+    } else {
+        text
+    };
     let mut tx = state.db.begin().await?;
     let (number, stored) = insert_message(
         &mut tx,
