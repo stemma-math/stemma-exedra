@@ -78,7 +78,7 @@
                 {#if review.message || review.rebases}
                   <span class="quiet">
                     {review.message ?? ""}{#if review.rebases}
-                      {review.message ? " – " : ""}{review.rebases === 1 ? "1 rebase" : `${review.rebases} rebases`} of 3{/if}
+                      {review.message ? " – " : ""}{review.rebases} of 3 rebases{/if}
                   </span>
                 {/if}
               </span>

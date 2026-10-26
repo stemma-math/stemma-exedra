@@ -78,7 +78,7 @@
   <section class="stack" aria-label="Workshop request">
     <div class="card card__body stack">
       <div class="row">
-        <h2 class="grow">{recipe?.front.title ?? request.recipe.name}</h2>
+        <h2 class="grow">{request.ask.recipe ? (recipe?.front.title ?? request.recipe.name) : "Asked in plain words"}</h2>
         <WorkshopState state={request.state} paused={request.paused} />
       </div>
       {#if request.waiting && !request.paused}<p class="quiet" role="status">{request.waiting}.</p>{/if}

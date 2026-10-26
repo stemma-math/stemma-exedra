@@ -319,7 +319,7 @@ pub async fn ask(
     }
     let file = if free {
         RecipeFile {
-            name: "Free request".into(),
+            name: "In plain words".into(),
             version: String::new(),
             commit: String::new(),
             url: String::new(),

@@ -261,6 +261,7 @@ pub(crate) async fn request(
     .await?
     .0)
 }
+/// Posts in a request's thread as Workshop, with the model that wrote it.
 pub(crate) async fn post(
     state: &AppState,
     thread: i64,
@@ -277,21 +278,8 @@ pub(crate) async fn post(
     .await?;
     let group = Membership::of_group(state, group).await?;
     let who = viewer(state, thread).await?;
-    let configured: Option<String> = if model.is_none() {
-        sqlx::query_scalar(
-            "SELECT model
-             FROM workshop_models
-             WHERE group_id = ?",
-        )
-        .bind(group.group_id)
-        .fetch_optional(&state.db)
-        .await?
-    } else {
-        None
-    };
-    let model = model
-        .or(configured.as_deref().filter(|name| !name.is_empty()))
-        .unwrap_or("Workshop");
+    // The hub's own steps name no model; an empty one still marks Workshop.
+    let model = model.unwrap_or("");
     let text = crate::api::required_text(text, "The workshop's message", 100_000)?;
     let mut tx = state.db.begin().await?;
     let (number, stored) = forum::insert_message(

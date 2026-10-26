@@ -73,7 +73,7 @@
 <li class="post" id={String(message.number)} aria-label="Message {message.number}">
   {#if message.agent}
     <AgentAvatar name={message.agent} runner={message.agent_runner} />
-  {:else if message.orchestrator_model}
+  {:else if message.orchestrator_model != null}
     <AgentAvatar name="Workshop" />
   {:else}
     <Avatar user={message.author} />
