@@ -33,6 +33,11 @@
 //!   which it merges with the person's: Stemma's tools, and its
 //!   instructions in a file. A job runs `opencode run`: contained, allowed
 //!   everything; otherwise, only reading.
+//!
+//! Stemma's skills go in the launch's folder too, as a Claude Code plugin
+//! (`--plugin-dir`) whose `skills` folder OpenCode also reads (`skills` in
+//! its configuration). Codex reads skills only from its working folders
+//! and the person's own: its instructions say where Stemma's are.
 
 use std::path::{Path, PathBuf};
 
@@ -120,6 +125,35 @@ impl Prepared {
     }
 }
 
+/// Stemma's skills, by name: what each agent may load when a task calls for it.
+const SKILLS: &[(&str, &str)] = &[(
+    "workshop-recipes",
+    include_str!("../skills/workshop-recipes/SKILL.md"),
+)];
+
+/// Writes Stemma's skills in the launch's folder, as a Claude Code plugin,
+/// and gives that plugin's folder as the agent sees it.
+fn skills(launch: &Launch, prepared: &mut Prepared) -> anyhow::Result<PathBuf> {
+    let plugin = launch.files.join("plugin");
+    std::fs::create_dir_all(plugin.join(".claude-plugin"))?;
+    let manifest = json!({
+        "name": "stemma",
+        "version": env!("CARGO_PKG_VERSION"),
+        "description": "Stemma's skills for the agents it launches",
+    });
+    write(
+        prepared,
+        plugin.join(".claude-plugin").join("plugin.json"),
+        &serde_json::to_vec_pretty(&manifest)?,
+    )?;
+    for (name, text) in SKILLS {
+        let dir = plugin.join("skills").join(name);
+        std::fs::create_dir_all(&dir)?;
+        write(prepared, dir.join("SKILL.md"), text.as_bytes())?;
+    }
+    Ok(launch.files_seen.join("plugin"))
+}
+
 /// Writes what an agent needs and says how to run it.
 pub fn prepare(launch: &Launch) -> anyhow::Result<Prepared> {
     let program = match launch.program {
@@ -135,10 +169,11 @@ pub fn prepare(launch: &Launch) -> anyhow::Result<Prepared> {
         files: Vec::new(),
         answer: None,
     };
+    let plugin = skills(launch, &mut prepared)?;
     match launch.runner {
-        runners::CLAUDE_CODE => claude_code(launch, &mut prepared)?,
-        runners::CODEX => codex(launch, &mut prepared),
-        runners::OPENCODE => opencode(launch, &mut prepared)?,
+        runners::CLAUDE_CODE => claude_code(launch, &plugin, &mut prepared)?,
+        runners::CODEX => codex(launch, &plugin, &mut prepared),
+        runners::OPENCODE => opencode(launch, &plugin, &mut prepared)?,
         other => anyhow::bail!("there is no runner {other}"),
     }
     Ok(prepared)
@@ -161,7 +196,7 @@ fn write(prepared: &mut Prepared, path: PathBuf, contents: &[u8]) -> anyhow::Res
 fn push(args: &mut Vec<String>, items: &[&str]) {
     args.extend(items.iter().map(|item| (*item).to_owned()));
 }
-fn claude_code(launch: &Launch, prepared: &mut Prepared) -> anyhow::Result<()> {
+fn claude_code(launch: &Launch, plugin: &Path, prepared: &mut Prepared) -> anyhow::Result<()> {
     let mcp = json!({
         "mcpServers": {
             "stemma": {
@@ -212,6 +247,7 @@ fn claude_code(launch: &Launch, prepared: &mut Prepared) -> anyhow::Result<()> {
             push(args, &["--append-system-prompt", launch.instructions]);
         }
     }
+    push(args, &["--plugin-dir", &plugin.display().to_string()]);
     if let Some(model) = launch.model {
         push(args, &["--model", model]);
     }
@@ -224,7 +260,7 @@ fn toml_value(value: toml::Value) -> String {
     value.to_string()
 }
 
-fn codex(launch: &Launch, prepared: &mut Prepared) {
+fn codex(launch: &Launch, plugin: &Path, prepared: &mut Prepared) {
     let command = toml_value(toml::Value::String(
         launch.mcp.command.display().to_string(),
     ));
@@ -237,7 +273,17 @@ fn codex(launch: &Launch, prepared: &mut Prepared) {
             .map(toml::Value::String)
             .collect(),
     ));
-    let instructions = toml_value(toml::Value::String(launch.instructions.to_owned()));
+    let mut instructions = launch.instructions.to_owned();
+    instructions.push_str("\n\nStemma's skills: read one when a task calls for it.");
+    for (name, text) in SKILLS {
+        let description = text
+            .lines()
+            .find_map(|line| line.strip_prefix("description: "))
+            .unwrap_or_default();
+        let path = plugin.join("skills").join(name).join("SKILL.md");
+        instructions.push_str(&format!("\n- {name}, in {}: {description}", path.display()));
+    }
+    let instructions = toml_value(toml::Value::String(instructions));
     let allowed = match &launch.mode {
         Mode::Session { allowed } | Mode::Job { allowed, .. } => allowed,
     };
@@ -291,7 +337,7 @@ fn codex(launch: &Launch, prepared: &mut Prepared) {
     prepared.answer = answer;
 }
 
-fn opencode(launch: &Launch, prepared: &mut Prepared) -> anyhow::Result<()> {
+fn opencode(launch: &Launch, plugin: &Path, prepared: &mut Prepared) -> anyhow::Result<()> {
     write(
         prepared,
         launch.files.join("instructions.md"),
@@ -306,6 +352,7 @@ fn opencode(launch: &Launch, prepared: &mut Prepared) -> anyhow::Result<()> {
             "stemma": {"type": "local", "command": command, "enabled": true}
         },
         "instructions": [instructions.display().to_string()],
+        "skills": [plugin.join("skills").display().to_string()],
     });
     let allowed = match &launch.mode {
         Mode::Session { allowed } | Mode::Job { allowed, .. } => allowed,
@@ -432,6 +479,7 @@ mod tests {
         .unwrap();
         assert_eq!(prepared.program, "claude");
         let mcp_file = files.path().join("mcp.json").display().to_string();
+        let plugin = files.path().join("plugin");
         assert_eq!(
             prepared.args,
             [
@@ -443,6 +491,8 @@ mod tests {
                 "Bash(stemma:*)",
                 "--append-system-prompt",
                 "Be precise.",
+                "--plugin-dir",
+                &plugin.display().to_string(),
                 "--model",
                 "sonnet",
                 "--effort",
@@ -453,6 +503,10 @@ mod tests {
         let config = read_json(&files.path().join("mcp.json")).unwrap();
         assert_eq!(config["mcpServers"]["stemma"]["command"], "/bin/stemma");
         assert_eq!(config["mcpServers"]["stemma"]["args"][2], "/t/token");
+        // Stemma's skills, as a plugin of this session only.
+        let manifest = read_json(&plugin.join(".claude-plugin/plugin.json")).unwrap();
+        assert_eq!(manifest["name"], "stemma");
+        assert!(plugin.join("skills/workshop-recipes/SKILL.md").is_file());
     }
 
     #[test]
@@ -501,6 +555,15 @@ mod tests {
         ))
         .unwrap();
         assert_eq!(prepared.program, "codex");
+        // Codex reads Stemma's skills where its instructions say.
+        let skill = files.path().join("plugin/skills/workshop-recipes/SKILL.md");
+        let instructions = prepared
+            .args
+            .iter()
+            .find(|a| a.starts_with("developer_instructions="))
+            .unwrap()
+            .clone();
+        assert!(instructions.contains(&format!("- workshop-recipes, in {}: ", skill.display())));
         assert_eq!(
             prepared.args,
             [
@@ -513,12 +576,18 @@ mod tests {
                 "-c",
                 "mcp_servers.stemma.enabled_tools=[]",
                 "-c",
-                "developer_instructions=\"Be precise.\"",
+                &instructions,
                 "--model",
                 "sonnet"
             ]
         );
-        assert!(prepared.files.is_empty());
+        assert!(instructions.starts_with("developer_instructions=\"\"\"\nBe precise."));
+        assert!(
+            files
+                .path()
+                .join("plugin/skills/workshop-recipes/SKILL.md")
+                .is_file()
+        );
 
         let mode = Mode::Job {
             root: Path::new("/workspace"),
@@ -547,6 +616,12 @@ mod tests {
         })
         .unwrap();
         assert!(prepared.args.contains(&"danger-full-access".to_owned()));
+        assert!(
+            prepared
+                .args
+                .iter()
+                .any(|a| a.contains("/stemma/jobs/7/plugin/skills/workshop-recipes/SKILL.md"))
+        );
         assert!(
             prepared
                 .args
@@ -584,6 +659,7 @@ mod tests {
         let config = read_json(&files.path().join("opencode.json")).unwrap();
         assert_eq!(config["instructions"][0], "/stemma/jobs/7/instructions.md");
         assert!(files.path().join("instructions.md").is_file());
+        assert_eq!(config["skills"][0], "/stemma/jobs/7/plugin/skills");
         // Contained, it is allowed everything.
         assert_eq!(config["permission"], json!({"*": "allow"}));
     }

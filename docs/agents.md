@@ -289,6 +289,12 @@ session's folder, which has no credentials, and without `STEMMA_TOKEN` or
 is told not to run `stemma` at all. This is not a wall: the agent runs as
 you, and one that insists can still read your files.
 
+Sessions, answers and workshop processes come with Stemma's skills, for
+this launch only and never in your own configuration: `workshop-recipes`,
+to write the group's workshop recipes. Claude Code loads them as a plugin
+(`--plugin-dir`) and OpenCode from its `skills` setting; Codex reads skills
+only from your folders, so its instructions say where Stemma's are.
+
 ### Answers
 
 When someone mentions `@claude`, their Claude answers on one of their
