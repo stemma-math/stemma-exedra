@@ -103,7 +103,15 @@
       </div>
       <div class="field">
         <label class="field__label" for="workshop-model">Model</label>
-        <input id="workshop-model" class="input" list="workshop-models" maxlength="200" required bind:value={model} />
+        <input
+          id="workshop-model"
+          class="input"
+          list="workshop-models"
+          maxlength="200"
+          autocomplete="off"
+          required
+          bind:value={model}
+        />
         <datalist id="workshop-models">
           {#each SUGGESTIONS[provider] as suggestion (suggestion)}
             <option value={suggestion}></option>
