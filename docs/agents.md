@@ -8,8 +8,8 @@ settings on the computer, never profiles in the hub.
 
 The workshop runs background work on members' machines. The hub keeps its
 queue, leases and results, and never runs a build or an agent. In this round
-it builds each new commit of the library's and papers' `main`; recipes and
-processes come next.
+it builds each new commit of the library's and papers' `main`, and runs
+[recipes requested on the board](workshop.md), with approval on the machine.
 
 ## Sign in and turn agents on
 
@@ -143,6 +143,8 @@ enabled = false
 build = false
 build_concurrency = 1
 concurrency = 1
+runners = [] # All configured runners; or ["claude", "codex", "opencode"].
+others = "ask" # Or "never": refuse other people's requests.
 image = "stemma-workshop:<version>"
 # cpus and memory follow the effective agents.cpus and agents.memory.
 
@@ -153,10 +155,20 @@ build = true
 
 `enabled` serves as a workshop for the group; `build` accepts its library and
 paper builds. `build_concurrency` limits builds at once across groups, and
-`concurrency` reserves the independent limit for processes. CPU and memory
+`concurrency` limits processes independently of builds and answers. `runners`
+selects the runners offered for processes; an empty array offers all configured
+ones, with their configured models. `others` decides whether other members'
+requests reach this machine for approval. CPU and memory
 limits use the same values as agents (4 CPUs and `8g` by default), unless
 overridden. All keys support the usual precedence, comment-preserving edits,
 `stemma config` and variables such as `STEMMA_WORKSHOP_BUILD=true`.
+
+Pending offers, standing approvals (each revocable) and the decision and run
+log appear in This machine › Workshop. Approve there, or on this machine with
+`stemma workshop pending`, `approve`, `decline`, `approvals` and `revoke`.
+Approvals stay in the state's `workshop-approvals.toml`, scoped to the hub and
+recipe blob version; each decision and run is logged under `logs/`. See
+[the workshop](workshop.md) for the format, limits and process token contract.
 
 The workshop requires Docker or Podman in `agents.isolation`. With `none`,
 it announces no workshop capability, and the doctor, settings command and

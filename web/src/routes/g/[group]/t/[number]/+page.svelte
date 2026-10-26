@@ -1,4 +1,5 @@
 <script lang="ts">
+  import RequestHeader from "#lib/components/RequestHeader.svelte";
   import Loading from "#lib/components/Loading.svelte";
   import { goto } from "$app/navigation";
   import { page } from "$app/state";
@@ -232,7 +233,7 @@
   {:else if thread}
     <nav class="breadcrumbs" aria-label="Where">
       <ol>
-        <li><a href="/g/{group.slug}/forum">Forum</a></li>
+        <li><a href="/g/{group.slug}/{thread.kind === "request" ? "workshop" : "forum"}">{thread.kind === "request" ? "Workshop" : "Forum"}</a></li>
         <li><span aria-current="page" class="identifier">t{thread.number}</span></li>
       </ol>
     </nav>
@@ -281,6 +282,7 @@
       </p>
     </header>
 
+    {#if thread.kind === "request"}<RequestHeader group={group.slug} {number} {canManage} />{/if}
     {#if !messages.length}
       <p class="empty">No messages yet. Say the first thing.</p>
     {/if}

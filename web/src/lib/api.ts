@@ -104,7 +104,7 @@ export interface CreatedToken extends ApiToken {
   secret: string;
 }
 
-export type ThreadKind = "discussion" | "chat";
+export type ThreadKind = "discussion" | "chat" | "request";
 
 /** How hard a chat's resident agent thinks before it answers. */
 
@@ -132,6 +132,7 @@ export interface Attachment {
 }
 
 export interface Message {
+  workshop?: boolean;
   missing_references: string[];
   number: number;
   author: User;
@@ -229,6 +230,11 @@ export type GroupEvent =
   | { type: "paper_deleted"; paper: string };
 
 export type NotificationKind =
+  | "request_done"
+  | "request_failed"
+  | "request_expired"
+  | "process_approval"
+  | "process_pull_request"
   | "mention"
   | "answer"
   | "held"
@@ -448,6 +454,20 @@ const del = <T>(path: string) => request<T>("DELETE", path);
 const g = (group: string) => `/groups/${encodeURIComponent(group)}`;
 
 export const api = {
+  recipes: (group: string) =>
+    get<import("./workshop.ts").RecipeFile[]>(`${g(group)}/workshop/recipes`),
+  requests: (group: string, state = "open") =>
+    get<import("./workshop.ts").WorkshopRequest[]>(
+      `${g(group)}/workshop/requests?state=${encodeURIComponent(state)}`,
+    ),
+  workshopRequest: (group: string, number: number) =>
+    get<import("./workshop.ts").WorkshopRequest>(`${g(group)}/workshop/requests/${number}`),
+  askWorkshop: (group: string, ask: import("./workshop.ts").Ask) =>
+    post<import("./workshop.ts").WorkshopRequest>(`${g(group)}/workshop/requests`, ask),
+  requestAction: (group: string, number: number, action: string) =>
+    post<import("./workshop.ts").WorkshopRequest>(`${g(group)}/workshop/requests/${number}`, {
+      action,
+    }),
   user: (username: string) => get<User>(`/users/${encodeURIComponent(username)}`),
   setupState: () => get<{ needed: boolean }>("/setup"),
   setup: (body: { token: string; username: string; display_name: string; password: string }) =>

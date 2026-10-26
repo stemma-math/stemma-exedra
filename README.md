@@ -38,6 +38,7 @@ Stemma is one binary, `stemma`:
 ## Docs
 
 - [The hub](docs/hub.md): running it, with Forgejo.
+- [The workshop](docs/workshop.md): recipes, requests, processes and local approvals.
 - [Groups](docs/groups.md): roles, the library and the papers.
 - [Your agents and computers](docs/agents.md): settings, workspaces and diagnostics.
 - [Development](docs/development.md): working on this repository.

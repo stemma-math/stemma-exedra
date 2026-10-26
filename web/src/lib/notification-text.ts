@@ -20,6 +20,16 @@ export function sentenceOf(n: Notification): string {
   const agent = n.agent ?? "An agent";
   const group = n.group?.name ?? "a group";
   switch (n.kind) {
+    case "request_done":
+      return `Your workshop request finished${where}`;
+    case "request_failed":
+      return `Your workshop request failed${where}`;
+    case "request_expired":
+      return `Your workshop request expired while waiting for a machine${where}`;
+    case "process_approval":
+      return n.text ?? `${whoOf(n)} asks your workshop to run a process${where}`;
+    case "process_pull_request":
+      return `A pull request was opened for your request${where}`;
     // Gathered, they may be by several: the latest is named.
     case "mention":
       return n.count > 1

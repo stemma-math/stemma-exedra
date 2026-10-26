@@ -109,6 +109,19 @@
       disabled={locked || saving}
       onchange={(event) => save(String(event.currentTarget.checked))}
     />
+  {:else if key === "workshop.others"}
+    <stemma-select
+      ><select
+        {id}
+        class="input"
+        value={String(setting.value)}
+        disabled={locked || saving}
+        onchange={(event) => save(event.currentTarget.value)}
+      >
+        <option value="ask">Ask me</option>
+        <option value="never">Never</option>
+      </select></stemma-select
+    >
   {:else if key === "agents.attachments"}
     <stemma-select
       ><select

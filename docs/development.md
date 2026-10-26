@@ -58,7 +58,7 @@ pnpm --dir desktop tauri build --config '{"bundle":{"active":true,"targets":["ap
 - `web/`: the web app, in SvelteKit, styled with `@stemma-math/design`.
 - `desktop/`: the Tauri crate (`src-tauri/`) and its build configuration.
 - `docker/`: the hub's image and compose file, and the agents' and workshop's images.
-- `latex/template/`, `lean/`.
+- `latex/template/`, `lean/`, `recipes/template/`.
 
 ## Releases
 

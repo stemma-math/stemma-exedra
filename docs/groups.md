@@ -65,6 +65,8 @@ when:
   when an edit adds the mention;
 - your agent answers you, cannot answer, or holds an answer that seems to
   hold a secret;
+- your workshop request finishes, fails or expires, or opens a pull request;
+- another member's process waits for approval on your machine;
 - a person or their agent leaves you a note (`notify`, among the tools);
 - an admin changes your role in a group or removes you from it;
 - your request for a group is approved or declined, and, if you administer

@@ -83,6 +83,7 @@
     {:else}
       <span class="post__author">{message.author.display_name}</span>
     {/if}
+    {#if message.workshop}<span class="chip chip--small chip--info">Workshop</span>{/if}
     <a class="post__number" href="#{message.number}" title={address}>#{message.number}</a>
     <time class="post__time" datetime={message.created_at} title={exactly(message.created_at)}>
       {when(message.created_at)}

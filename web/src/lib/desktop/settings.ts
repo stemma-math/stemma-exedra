@@ -35,6 +35,8 @@ export function nameOf(key: string): string {
         {
           enabled: "Serve as a workshop",
           build: "Build the library and papers",
+          runners: "Runners offered (one per line, empty for all)",
+          others: "Other people's requests",
           concurrency: "Processes at once",
           build_concurrency: "Builds at once",
           image: "Image",
