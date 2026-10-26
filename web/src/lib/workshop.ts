@@ -1,5 +1,7 @@
 // The workshop's wire types mirror stemma-core's recipe, protocol and workshop modules.
-import type { Thread, User } from "./api.ts";
+import { AGENTS, type Thread, type User } from "./api.ts";
+import { exactly } from "./format.ts";
+
 export interface Usage {
   input_tokens?: number;
   output_tokens?: number;
@@ -90,17 +92,53 @@ export interface ProcessOffer {
   recurring: boolean;
   expires_at: number;
 }
-export const dateTime = (ms: number | null, timezone?: string) =>
-  ms === null
-    ? ""
-    : new Date(ms).toLocaleString(undefined, timezone ? { timeZone: timezone } : undefined);
+
+/** How a request or a process is, as its chip says it. */
+const STATES: Record<string, { tone: string; text: string }> = {
+  waiting: { tone: "neutral", text: "Waiting" },
+  running: { tone: "info", text: "Running" },
+  done: { tone: "success", text: "Done" },
+  failed: { tone: "danger", text: "Failed" },
+  cancelled: { tone: "neutral", text: "Cancelled" },
+  expired: { tone: "warning", text: "Expired" },
+};
+
+export function stateOf(state: string, paused = false): { tone: string; text: string } {
+  if (paused) return { tone: "warning", text: "Paused" };
+  return STATES[state] ?? { tone: "neutral", text: state };
+}
+
+export function runnerName(runner: string): string {
+  return AGENTS.find((agent) => agent.handle === runner)?.display_name ?? runner;
+}
+
+/** Who runs a request, and with what. */
 export function assignmentText(
   request: WorkshopRequest,
   names: Record<number, string> = {},
 ): string {
-  return request.ask.assignment.kind === "mine"
-    ? `${request.requester.display_name}'s machines`
-    : request.ask.assignment.kind === "member"
-      ? `${names[request.ask.assignment.user] ?? `Member ${request.ask.assignment.user}`}'s machines`
-      : `Anyone's machine with ${request.ask.runner}${request.ask.model ? `, ${request.ask.model}` : ""}`;
+  const { assignment, runner, model } = request.ask;
+  const machines =
+    assignment.kind === "mine"
+      ? `${request.requester.display_name}'s machines`
+      : assignment.kind === "member"
+        ? `${names[assignment.user] ?? "A member"}'s machines`
+        : "Anyone's machine";
+  return `${machines}, with ${runnerName(runner)}${model ? ` (${model})` : ""}`;
+}
+
+/** When a request runs, in its own time zone. */
+export function scheduleText(ask: Ask): string {
+  const { at, every, until, timezone } = ask.schedule;
+  const first = at === null ? null : exactly(at, timezone);
+  let text: string;
+  if (every) {
+    const period =
+      every.kind !== "hours" ? every.kind : every.hours === 1 ? "hour" : `${every.hours} hours`;
+    text = `Every ${period}${first ? `, from ${first}` : ""}`;
+    if (until !== null) text += `, until ${exactly(until, timezone)}`;
+  } else {
+    text = first ? `Once, at ${first}` : "Now";
+  }
+  return first ? `${text} (${timezone})` : text;
 }

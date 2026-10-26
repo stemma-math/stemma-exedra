@@ -1,6 +1,13 @@
 <script lang="ts">
+  import { exactly } from "#lib/format.ts";
+  import { runnerName } from "#lib/workshop.ts";
   import { action, workshopState, workshopDecision, type WorkshopState } from "../api.ts";
-  import { dateTime } from "#lib/workshop.ts";
+  import type { Snapshot } from "../api.ts";
+  import type { MachineControls } from "../machine.svelte.ts";
+  import { check, setting } from "../settings.ts";
+  import SettingField from "./SettingField.svelte";
+
+  let { controls, data }: { controls: MachineControls; data: Snapshot } = $props();
   let local = $state<WorkshopState | null>(null);
   let mode = $state("once");
   let until = $state("");
@@ -38,11 +45,7 @@
     );
     local = await workshopState();
   }
-  import type { Snapshot } from "../api.ts";
-  import type { MachineControls } from "../machine.svelte.ts";
-  import { check, setting } from "../settings.ts";
-  import SettingField from "./SettingField.svelte";
-  let { controls, data }: { controls: MachineControls; data: Snapshot } = $props();
+
   const imageSetting = $derived(setting(data, "workshop.image"));
   const image = $derived(check(data, "Workshop image"));
   const isolated = $derived(setting(data, "agents.isolation")?.value !== "none");
@@ -169,13 +172,14 @@
         <summary>{p.offer.requester.display_name} asks: {p.offer.request.title}</summary>
         <p>
           {p.offer.group.name}, t{p.offer.request.number}, process {p.offer.process}.
-          {p.offer.runner}{p.offer.model ? `, ${p.offer.model}` : ""}, up to
+          {runnerName(p.offer.runner)}{p.offer.model ? ` (${p.offer.model})` : ""}, for at most
           {p.offer.recipe.recipe?.front.timeout_minutes}
           minutes.
         </p>
         <p class="quiet">
-          Recipe {p.offer.recipe.name}, version <code>{p.offer.recipe.version}</code>. Expires
-          {dateTime(p.offer.expires_at)}.
+          Recipe {p.offer.recipe.name}, version
+          <code title={p.offer.recipe.version}>{p.offer.recipe.version.slice(0, 12)}</code>. Expires
+          {exactly(p.offer.expires_at)}.
         </p>
         <pre>{p.offer.prompt}</pre>
         <div class="field">
@@ -253,7 +257,7 @@
         <p class="quiet">
           {a.runs}
           runs used{a.max_runs !== null ? ` of ${a.max_runs}` : ""}{a.until
-            ? `, until ${dateTime(a.until)}`
+            ? `, until ${exactly(a.until)}`
             : ""}{a.minutes_per_run ? `, up to ${a.minutes_per_run} minutes per run` : ""}.
         </p>
         <button

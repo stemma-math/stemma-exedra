@@ -1,46 +1,155 @@
 <script lang="ts">
   import { api } from "#lib/api.ts";
-  import { dateTime, assignmentText, type WorkshopRequest } from "#lib/workshop.ts";
+  import { exactly } from "#lib/format.ts";
   import { toastError } from "#lib/toast.ts";
+  import { assignmentText, scheduleText, type Process, type WorkshopRequest } from "#lib/workshop.ts";
+  import Markdown from "./Markdown.svelte";
+  import WorkshopState from "./WorkshopState.svelte";
+
   let { group, number, canManage }: { group: string; number: number; canManage: boolean } = $props();
   let request = $state<WorkshopRequest | null>(null);
   let saving = $state(false);
-  let memberNames = $state<Record<number,string>>({});
-  $effect(() => {api.members(group).then(members => memberNames = Object.fromEntries(members.map(m => [m.id,m.display_name]))).catch(toastError);});
+  let memberNames = $state<Record<number, string>>({});
+
+  const recipe = $derived(request?.recipe.recipe ?? null);
+  const open = $derived(request !== null && ["waiting", "running"].includes(request.state));
+
+  $effect(() => {
+    api
+      .members(group)
+      .then((members) => {
+        memberNames = Object.fromEntries(members.map((m) => [m.id, m.display_name]));
+      })
+      .catch(toastError);
+  });
+
   $effect(() => {
     let active = true;
-    const load = () => api.workshopRequest(group,number).then(r => {if (active) request = r;}).catch(toastError);
-    void load(); const timer = setInterval(load,5000); return () => {active = false; clearInterval(timer);};
+    const load = () =>
+      api
+        .workshopRequest(group, number)
+        .then((found) => {
+          if (active) request = found;
+        })
+        .catch(toastError);
+    void load();
+    const timer = setInterval(load, 5000);
+    return () => {
+      active = false;
+      clearInterval(timer);
+    };
   });
-  async function act(action: string) {saving = true; try {request = await api.requestAction(group,number,action);} catch(e) {toastError(e);} finally {saving = false;}}
+
+  async function act(action: string) {
+    saving = true;
+    try {
+      request = await api.requestAction(group, number, action);
+    } catch (error) {
+      toastError(error);
+    } finally {
+      saving = false;
+    }
+  }
+
+  /** When a process ran, in its request's time zone. */
+  function times(process: Process, ask: WorkshopRequest["ask"]): string {
+    const at = (ms: number) => exactly(ms, ask.schedule.timezone);
+    const parts = [];
+    if (ask.schedule.every) parts.push(`The run of ${at(process.slot)}`);
+    if (process.started_at !== null) parts.push(`started ${at(process.started_at)}`);
+    if (process.finished_at !== null) parts.push(`finished ${at(process.finished_at)}`);
+    if (!parts.length) return "Not started yet";
+    const text = parts.join(", ");
+    return text[0].toUpperCase() + text.slice(1);
+  }
+
+  function usageText(process: Process): string | null {
+    const { input_tokens, output_tokens, cache_read_tokens, cost_usd } = process.usage;
+    if (input_tokens === undefined && output_tokens === undefined) return null;
+    const count = (n: number | undefined) => (n === undefined ? "unknown" : n.toLocaleString("en"));
+    let text = `${count(input_tokens)} input and ${count(output_tokens)} output tokens`;
+    if (cache_read_tokens) text += `, ${count(cache_read_tokens)} of them cached`;
+    if (cost_usd !== undefined) text += `, $${cost_usd.toFixed(2)}`;
+    return `${text}.`;
+  }
 </script>
+
 {#if request}
-  <section class="card card__body stack" aria-label="Workshop request">
-    <div class="row"><h2 class="grow">{request.recipe.recipe?.front.title ?? request.recipe.name}</h2><span class="chip chip--info">{request.paused ? "Paused" : request.state}</span></div>
-    <p><a class="link" href={request.recipe.url}>Recipe {request.recipe.name}</a>, version <code title={request.recipe.version}>{request.recipe.version.slice(0,12)}</code></p>
-    <dl class="stack stack--tight">
-      {#each Object.entries(request.ask.inputs) as [name,value] (name)}<div><dt class="label">{name}</dt><dd>{value}</dd></div>{/each}
-      <div><dt class="label">Who runs it</dt><dd>{assignmentText(request,memberNames)}, {request.ask.runner}{request.ask.model ? `, ${request.ask.model}` : ""}</dd></div>
-      <div><dt class="label">When</dt><dd>{request.ask.schedule.every ? `Every ${request.ask.schedule.every.kind === "hours" ? `${request.ask.schedule.every.hours} hours` : request.ask.schedule.every.kind}` : request.ask.schedule.at ? "Scheduled" : "Now"}, {request.ask.schedule.timezone}{#if request.next_at}, next {dateTime(request.next_at, request.ask.schedule.timezone)}{/if}{#if request.ask.schedule.until}, until {dateTime(request.ask.schedule.until, request.ask.schedule.timezone)}{/if}</dd></div>
-      <div><dt class="label">Wait for a machine</dt><dd>At most {request.ask.wait_hours} hours per run</dd></div>
-    </dl>
-    {#if request.waiting}<p class="quiet" role="status">{request.waiting}</p>{/if}
-    {#if canManage && ["waiting","running"].includes(request.state)}
+  <section class="stack" aria-label="Workshop request">
+    <div class="card card__body stack">
       <div class="row">
-        {#if request.ask.schedule.every}<button type="button" class="button button--quiet" disabled={saving} onclick={() => act(request?.paused ? "resume" : "pause")}>{request.paused ? "Resume" : "Pause"}</button><button type="button" class="button button--danger" disabled={saving} onclick={() => act("stop")}>Stop</button>
-        {:else}<button type="button" class="button button--quiet" disabled={saving} onclick={() => act("cancel")}>Cancel request</button>{/if}
+        <h2 class="grow">{recipe?.front.title ?? request.recipe.name}</h2>
+        <WorkshopState state={request.state} paused={request.paused} />
       </div>
-    {/if}
+      {#if request.waiting && !request.paused}<p class="quiet" role="status">{request.waiting}.</p>{/if}
+
+      <dl class="request-facts">
+        {#each Object.entries(request.ask.inputs) as [name, value] (name)}
+          {@const input = recipe?.front.inputs[name]}
+          <dt class="label">{input?.description ?? name}</dt>
+          <dd>
+            {#if input?.kind === "paper"}
+              <a class="link" href="/g/{group}/p/{value}"><span class="identifier">p/{value}</span></a>
+            {:else if input?.kind === "thread"}
+              <a class="link" href="/g/{group}/t/{value.replace(/^t/, "")}"><span class="identifier">{value}</span></a>
+            {:else if input?.kind === "declaration"}
+              <code>{value}</code>
+            {:else}
+              <Markdown text={value} {group} compact />
+            {/if}
+          </dd>
+        {/each}
+        <dt class="label">Who runs it</dt>
+        <dd>{assignmentText(request, memberNames)}</dd>
+        <dt class="label">When</dt>
+        <dd>
+          {scheduleText(request.ask)}{#if request.next_at !== null && request.ask.schedule.every && !request.paused}.
+            Next at {exactly(request.next_at, request.ask.schedule.timezone)}{/if}
+        </dd>
+        <dt class="label">Waits for a machine</dt>
+        <dd>At most {request.ask.wait_hours === 1 ? "an hour" : `${request.ask.wait_hours} hours`} per run</dd>
+        <dt class="label">Recipe</dt>
+        <dd>
+          <a class="link" href={request.recipe.url}>{request.recipe.name}</a>, version
+          <code title={request.recipe.version}>{request.recipe.version.slice(0, 12)}</code>
+        </dd>
+      </dl>
+
+      {#if canManage && open}
+        <div class="row">
+          {#if request.ask.schedule.every}
+            <button type="button" class="button button--quiet" disabled={saving} onclick={() => act(request?.paused ? "resume" : "pause")}>
+              {request.paused ? "Resume" : "Pause"}
+            </button>
+            <button type="button" class="button button--danger" disabled={saving} onclick={() => act("stop")}>Stop</button>
+          {:else}
+            <button type="button" class="button button--quiet" disabled={saving} onclick={() => act("cancel")}>Cancel request</button>
+          {/if}
+        </div>
+      {/if}
+    </div>
+
     <h3>Processes</h3>
-    {#if !request.processes.length}<p class="quiet">No runs yet.</p>{/if}
+    {#if !request.processes.length}
+      <p class="empty">No runs yet.</p>
+    {/if}
     {#each request.processes as process (process.number)}
-      <details class="stack stack--tight">
-        <summary>Process {process.number}: {process.state}{process.machine ? `, on ${process.machine}` : ""}</summary>
-        {#if process.retry_of}<p class="quiet">Retry of process {process.retry_of}, on another machine.</p>{/if}
-        <p class="quiet">Slot {dateTime(process.slot, request.ask.schedule.timezone)}{#if process.started_at}, started {dateTime(process.started_at, request.ask.schedule.timezone)}{/if}{#if process.finished_at}, finished {dateTime(process.finished_at, request.ask.schedule.timezone)}{/if}</p>
+      {@const usage = usageText(process)}
+      <details class="card disclosure">
+        <summary>
+          <span class="grow">Process {process.number}{process.machine ? `, on ${process.machine}` : ""}</span>
+          <WorkshopState state={process.state} />
+        </summary>
+        <p class="quiet">{times(process, request.ask)}.</p>
+        {#if process.retry_of}<p class="quiet">A retry of process {process.retry_of}, on another machine.</p>{/if}
         {#if process.error}<p class="message message--danger">{process.error}</p>{/if}
-        {#each process.branches as branch (branch.repository)}<p><span class="label">{branch.repository}</span>: <code>{branch.branch}</code>{#if branch.pull_request}, <a class="link" href={branch.pull_request}>Pull request</a>{/if}</p>{/each}
-        <p class="quiet">{process.usage.input_tokens ?? "Unknown"} input tokens, {process.usage.output_tokens ?? "unknown"} output tokens{#if process.usage.cache_read_tokens !== undefined}, {process.usage.cache_read_tokens} cached input tokens{/if}{#if process.usage.cost_usd !== undefined}, ${process.usage.cost_usd.toFixed(4)}{/if}.</p>
+        {#each process.branches as branch (branch.repository)}
+          <p>
+            <span class="label">{branch.repository}</span>: <code>{branch.branch}</code>{#if branch.pull_request},
+              <a class="link" href={branch.pull_request}>pull request</a>{/if}
+          </p>
+        {/each}
+        {#if usage}<p class="quiet">{usage}</p>{/if}
       </details>
     {/each}
   </section>
