@@ -282,6 +282,41 @@ async fn no_key_and_provider_errors_are_explicit_and_never_echo_keys() {
             .contains("openrouter refused")
     );
     assert!(!req.to_string().contains("fake-dedicated"));
+    let retry = || {
+        sqlx::query_scalar::<_, Option<i64>>(
+            "SELECT retry_at
+             FROM workshop_requests",
+        )
+        .fetch_one(&hub.state.db)
+    };
+    // A refused key waits for an admin; a provider that keeps failing passes.
+    assert_eq!(retry().await.unwrap(), None);
+    for _ in 0..4 {
+        model.reply(
+            axum::http::StatusCode::BAD_GATEWAY,
+            json!({"error":{"message":"Upstream unavailable"}}),
+        );
+    }
+    key(&hub, &ada, "openrouter", 1000).await;
+    stemma_hub::orchestrator::dispatch(&hub.state)
+        .await
+        .unwrap();
+    idle(&hub).await;
+    assert!(retry().await.unwrap().is_some());
+    let req = call(
+        &hub,
+        &ada,
+        "GET",
+        "/groups/geometry/workshop/requests/1",
+        None,
+    )
+    .await;
+    assert!(
+        req["waiting"]
+            .as_str()
+            .unwrap()
+            .ends_with("Trying again in a minute")
+    );
 }
 async fn opened(
     hub: &Hub,

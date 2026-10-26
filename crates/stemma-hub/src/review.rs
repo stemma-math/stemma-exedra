@@ -1,5 +1,6 @@
 //! Recipe-only reviews and a durable, per-repository merge queue.
 use crate::{
+    db,
     error::{ApiError, ApiResult},
     forge,
     model::{self, Message, Tool},
@@ -98,12 +99,14 @@ pub async fn tick(state: &AppState) -> ApiResult<()> {
          JOIN workshop_processes p ON p.id = v.process_id
          JOIN workshop_requests r ON r.thread_id = p.thread_id
          WHERE v.state NOT IN ('merged', 'refused', 'waiting') AND r.state IN ('waiting', 'running')
+         AND (v.retry_at IS NULL OR v.retry_at <= ?)
          AND NOT EXISTS(SELECT 1
          FROM workshop_reviews earlier
          WHERE earlier.group_id = v.group_id AND earlier.repository = v.repository
          AND earlier.id < v.id AND earlier.state NOT IN ('merged', 'refused'))
          ORDER BY v.id",
     )
+    .bind(db::now())
     .fetch_all(&state.db)
     .await?;
     for mut review in rows {
@@ -115,26 +118,51 @@ pub async fn tick(state: &AppState) -> ApiResult<()> {
         .bind(review.process_id)
         .fetch_one(&state.db)
         .await?;
-        let result = advance(state, &mut review, thread).await;
-        if let Err(e) = result {
-            sqlx::query(
-                "UPDATE workshop_reviews
-                 SET state = 'waiting', message = ?, resume_month = ?
-                 WHERE id = ?",
-            )
-            .bind(&e.message)
-            .bind((e.code == "workshop_cap").then(model::month))
-            .bind(review.id)
-            .execute(&state.db)
-            .await?;
-            orchestrator::wait(state, thread, None, &e.message).await?;
+        if let Err(error) = advance(state, &mut review, thread).await {
+            failed(state, &review, thread, &error).await?;
         }
     }
     Ok(())
 }
+/// A review waits for an admin on a missing key or the cap, and otherwise
+/// keeps its place in the queue and tries again in a minute.
+async fn failed(state: &AppState, r: &Review, thread: i64, error: &ApiError) -> ApiResult<()> {
+    let text = if model::waits_for_admins(error) {
+        sqlx::query(
+            "UPDATE workshop_reviews
+             SET state = 'waiting', message = ?, resume_month = ?
+             WHERE id = ?",
+        )
+        .bind(&error.message)
+        .bind((error.code == "workshop_cap").then(model::month))
+        .bind(r.id)
+        .execute(&state.db)
+        .await?;
+        error.message.clone()
+    } else {
+        let text = format!(
+            "{}. Trying again in a minute",
+            error.message.trim_end_matches('.')
+        );
+        sqlx::query(
+            "UPDATE workshop_reviews
+             SET message = ?, retry_at = ?
+             WHERE id = ?",
+        )
+        .bind(&text)
+        .bind(db::now() + model::RETRY_MS)
+        .bind(r.id)
+        .execute(&state.db)
+        .await?;
+        text
+    };
+    orchestrator::wait(state, thread, None, &text).await
+}
 async fn advance(state: &AppState, r: &mut Review, thread: i64) -> ApiResult<()> {
     if !model::has_key(state, r.group_id).await? {
-        return Err(ApiError::invalid(
+        return Err(ApiError::new(
+            axum::http::StatusCode::CONFLICT,
+            "workshop_key",
             "A group model API key is needed for this review",
         ));
     }
@@ -221,7 +249,7 @@ async fn advance(state: &AppState, r: &mut Review, thread: i64) -> ApiResult<()>
         let work = crate::builds::review_head(state, r.group_id, &r.repository, &r.head).await?;
         sqlx::query(
             "UPDATE workshop_reviews
-             SET head = ?, build_work = ?, state = 'building'
+             SET head = ?, build_work = ?, state = 'building', message = NULL
              WHERE id = ?",
         )
         .bind(&r.head)

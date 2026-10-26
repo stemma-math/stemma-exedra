@@ -102,6 +102,14 @@ pub async fn dispatch(state: &AppState) -> ApiResult<()> {
     .bind(model::month())
     .execute(&state.db)
     .await?;
+    sqlx::query(
+        "UPDATE workshop_requests
+         SET wake = 1, retry_at = NULL
+         WHERE retry_at <= ?",
+    )
+    .bind(db::now())
+    .execute(&state.db)
+    .await?;
     // Each scheduled slot has its own wait deadline. Marking and waking are
     // one transaction, so competing dispatch tasks cannot replay the event.
     let mut tx = state.db.begin().await?;
@@ -174,18 +182,7 @@ pub async fn dispatch(state: &AppState) -> ApiResult<()> {
                 result = turn(&state, thread, group) => result,
             };
             if let Err(error) = result {
-                let _ = wait(&state, thread, None, &error.message).await;
-                if error.code == "workshop_cap" {
-                    let _ = sqlx::query(
-                        "UPDATE workshop_requests
-                         SET resume_month = ?
-                         WHERE thread_id = ?",
-                    )
-                    .bind(model::month())
-                    .bind(thread)
-                    .execute(&state.db)
-                    .await;
-                }
+                let _ = failed(&state, thread, &error).await;
             }
             let _ = sqlx::query(
                 "UPDATE workshop_requests
@@ -197,6 +194,30 @@ pub async fn dispatch(state: &AppState) -> ApiResult<()> {
             .await;
         });
     }
+    Ok(())
+}
+/// Says why a turn stopped, and when the next one comes: next month for the
+/// cap, a new key for a missing one, a minute later for anything else.
+async fn failed(state: &AppState, thread: i64, error: &ApiError) -> ApiResult<()> {
+    if model::waits_for_admins(error) {
+        wait(state, thread, None, &error.message).await?;
+    } else {
+        let text = format!(
+            "{}. Trying again in a minute",
+            error.message.trim_end_matches('.')
+        );
+        wait(state, thread, None, &text).await?;
+    }
+    sqlx::query(
+        "UPDATE workshop_requests
+         SET resume_month = ?, retry_at = ?
+         WHERE thread_id = ?",
+    )
+    .bind((error.code == "workshop_cap").then(model::month))
+    .bind((!model::waits_for_admins(error)).then(|| db::now() + model::RETRY_MS))
+    .bind(thread)
+    .execute(&state.db)
+    .await?;
     Ok(())
 }
 pub(crate) async fn viewer(state: &AppState, thread: i64) -> ApiResult<Viewer> {

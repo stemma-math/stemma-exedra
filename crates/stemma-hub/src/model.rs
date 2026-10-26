@@ -373,10 +373,17 @@ impl Client {
                     .and_then(|v| v["error"]["message"].as_str())
                     .unwrap_or_else(|| body.trim());
                 let safe = stemma_core::secrets::hide(&reason.replace(key, "[hidden]"));
-                return Err(ApiError::invalid(format!(
+                let text = format!(
                     "{provider} refused ({status}): {}",
                     safe.chars().take(500).collect::<String>()
-                )));
+                );
+                // A refused key or model waits for an admin; a busy provider passes.
+                let busy = status.as_u16() == 429 || status.is_server_error();
+                return Err(if busy {
+                    ApiError::invalid(text)
+                } else {
+                    ApiError::new(axum::http::StatusCode::CONFLICT, "workshop_provider", text)
+                });
             }
             let value = value.map_err(|_| {
                 ApiError::invalid(format!(
@@ -554,6 +561,16 @@ pub async fn call(
         model: config.model,
     })
 }
+
+/// Whether an error waits for an admin (a key, a higher cap) or may pass.
+pub fn waits_for_admins(error: &ApiError) -> bool {
+    matches!(
+        error.code,
+        "workshop_key" | "workshop_cap" | "workshop_provider"
+    )
+}
+/// How long an error that may pass waits before the next attempt.
+pub const RETRY_MS: i64 = 60_000;
 
 pub async fn has_key(state: &AppState, group: i64) -> ApiResult<bool> {
     Ok(stored(state, group).await?.encrypted_key.is_some())

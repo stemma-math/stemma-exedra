@@ -85,6 +85,8 @@ CREATE TABLE workshop_requests (
     resume_month TEXT,
     waiting TEXT,
     expires_at INTEGER,
+    -- After an error that may pass, such as an unreachable forge.
+    retry_at INTEGER,
     state TEXT NOT NULL DEFAULT 'waiting' CHECK (state IN ('waiting','running','done','failed','cancelled','expired')),
     recurring INTEGER NOT NULL,
     paused INTEGER NOT NULL DEFAULT 0,
@@ -164,5 +166,6 @@ CREATE TABLE workshop_reviews (
     rebases INTEGER NOT NULL DEFAULT 0,
     rebase_process INTEGER REFERENCES workshop_processes (id) ON DELETE SET NULL,
     resume_month TEXT,
+    retry_at INTEGER,
     UNIQUE (group_id, repository, pull_number)
 );
