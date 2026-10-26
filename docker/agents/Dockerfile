@@ -57,7 +57,7 @@ COPY docker/workshop/ docker/workshop/
 RUN --mount=type=cache,target=/usr/local/cargo/registry \
     --mount=type=cache,target=/usr/local/cargo/git \
     --mount=type=cache,target=/src/target \
-    CARGO_BUILD_JOBS=1 cargo build --release --locked --bin stemma \
+    cargo build --release --locked --bin stemma \
     && install -m 755 target/release/stemma /usr/local/bin/stemma
 
 FROM stemma-${STEMMA_SOURCE} AS stemma
