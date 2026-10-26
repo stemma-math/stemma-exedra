@@ -228,7 +228,6 @@ async fn talk(
                 }
             }
             _ = ping.tick() => {
-                crate::builds::dispatch(state).await.map_err(|e| anyhow::anyhow!(e.message))?;
                 let valid: bool = sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM api_tokens WHERE id = ? AND revoked_at IS NULL AND (expires_at IS NULL OR expires_at > ?))").bind(worker_id).bind(db::now()).fetch_one(&state.db).await?;
                 if !valid { return Ok(()); }
 

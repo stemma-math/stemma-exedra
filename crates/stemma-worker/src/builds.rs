@@ -196,6 +196,15 @@ fn settings_group(context: &Context, spec: &BuildSpec) -> anyhow::Result<String>
 
 /// Seed the template's pinned Mathlib and its dependencies from the image.
 async fn seed_mathlib(sandbox: &dyn Sandbox, dir: &Path, log: &Log) -> anyhow::Result<bool> {
+    // The build folder outlives the image: links an earlier build made to
+    // its Mathlib go first, so that another Mathlib is never built on it.
+    let unlink = "for p in .lake/packages/*; do if [ -L \"$p\" ]; then case \"$(readlink \"$p\")\" in /opt/stemma/mathlib*) rm \"$p\" ;; esac; fi; done; true";
+    anyhow::ensure!(
+        library::run_in(sandbox, "sh", &["-c", unlink], dir, log, |_| {})
+            .await?
+            .success(),
+        "Removing an earlier Mathlib's links failed"
+    );
     let manifest = std::fs::read(dir.join("lake-manifest.json")).unwrap_or_default();
     let requested: serde_json::Value = serde_json::from_slice(&manifest).unwrap_or_default();
     let Some(rev) = requested["packages"]

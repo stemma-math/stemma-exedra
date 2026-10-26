@@ -259,17 +259,9 @@ struct Waiting {
 }
 
 pub async fn dispatch(state: &AppState) -> ApiResult<()> {
+    // Where main is comes from the forge's push hook, and is asked again
+    // when a build finishes: dispatching never asks the forge.
     let _turn = state.build_changes.lock().await;
-    let active: Vec<(i64, String)> = sqlx::query_as("SELECT DISTINCT group_id, repository FROM work_leases WHERE state IN ('queued', 'running')").fetch_all(&state.db).await?;
-    for (group, repository) in active {
-        let paper: Option<i64> =
-            sqlx::query_scalar("SELECT id FROM papers WHERE group_id = ? AND repository = ?")
-                .bind(group)
-                .bind(&repository)
-                .fetch_optional(&state.db)
-                .await?;
-        refresh_main(state, group, &repository, paper).await?;
-    }
     let expired = lease::release(state, None, db::now()).await?;
     let machines = state.build_machines.lock().await;
     for (holder, lease) in expired {
@@ -449,7 +441,9 @@ pub async fn finished(
         sqlx::query("UPDATE papers SET pdf_build = (SELECT id FROM paper_builds WHERE work_id = ?1) WHERE id = (SELECT paper_id FROM paper_builds WHERE work_id = ?1 AND accepted = 1 AND commit_sha = papers.head)")
             .bind(lease.id).execute(&mut *tx).await?;
     }
-    sqlx::query("UPDATE work_leases SET state = ?, error = ? WHERE id = ?")
+    // A cancelled build's result is history only: its lease stays
+    // cancelled, so that main coming back to its commit builds it again.
+    sqlx::query("UPDATE work_leases SET state = CASE state WHEN 'cancelled' THEN state ELSE ? END, error = ? WHERE id = ?")
         .bind(if succeeded { "passed" } else { "failed" })
         .bind(error)
         .bind(lease.id)
