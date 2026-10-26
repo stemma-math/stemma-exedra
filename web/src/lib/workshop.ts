@@ -90,7 +90,10 @@ export interface ProcessOffer {
   recurring: boolean;
   expires_at: number;
 }
-export const dateTime = (ms: number | null) => (ms === null ? "" : new Date(ms).toLocaleString());
+export const dateTime = (ms: number | null, timezone?: string) =>
+  ms === null
+    ? ""
+    : new Date(ms).toLocaleString(undefined, timezone ? { timeZone: timezone } : undefined);
 export function assignmentText(
   request: WorkshopRequest,
   names: Record<number, string> = {},

@@ -34,7 +34,7 @@
     {#if !requests.length}<p class="empty">No {filter} requests.</p>{/if}
     <ul class="card row-list">
       {#each requests as request (request.thread.number)}
-        <li class="row-list__item"><div class="row-list__text stack stack--tight"><a class="link" href="/g/{group.slug}/t/{request.thread.number}"><span class="identifier">t{request.thread.number}</span> {request.thread.title}</a><p class="quiet">{request.requester.display_name}, {request.recipe.recipe?.front.title ?? request.recipe.name}{#if request.waiting}: {request.waiting}{/if}{#if request.next_at}, {dateTime(request.next_at)}{/if}</p></div><span class="chip chip--info">{request.paused ? "Paused" : request.state}</span></li>
+        <li class="row-list__item"><div class="row-list__text stack stack--tight"><a class="link" href="/g/{group.slug}/t/{request.thread.number}"><span class="identifier">t{request.thread.number}</span> {request.thread.title}</a><p class="quiet">{request.requester.display_name}, {request.recipe.recipe?.front.title ?? request.recipe.name}{#if request.waiting}: {request.waiting}{/if}{#if request.next_at}, {dateTime(request.next_at, request.ask.schedule.timezone)} ({request.ask.schedule.timezone}){/if}</p></div><span class="chip chip--info">{request.paused ? "Paused" : request.state}</span></li>
       {/each}
     </ul>
   </section>

@@ -21,7 +21,7 @@
     <dl class="stack stack--tight">
       {#each Object.entries(request.ask.inputs) as [name,value] (name)}<div><dt class="label">{name}</dt><dd>{value}</dd></div>{/each}
       <div><dt class="label">Who runs it</dt><dd>{assignmentText(request,memberNames)}, {request.ask.runner}{request.ask.model ? `, ${request.ask.model}` : ""}</dd></div>
-      <div><dt class="label">When</dt><dd>{request.ask.schedule.every ? `Every ${request.ask.schedule.every.kind === "hours" ? `${request.ask.schedule.every.hours} hours` : request.ask.schedule.every.kind}` : request.ask.schedule.at ? "Scheduled" : "Now"}, {request.ask.schedule.timezone}{#if request.next_at}, next {dateTime(request.next_at)}{/if}{#if request.ask.schedule.until}, until {dateTime(request.ask.schedule.until)}{/if}</dd></div>
+      <div><dt class="label">When</dt><dd>{request.ask.schedule.every ? `Every ${request.ask.schedule.every.kind === "hours" ? `${request.ask.schedule.every.hours} hours` : request.ask.schedule.every.kind}` : request.ask.schedule.at ? "Scheduled" : "Now"}, {request.ask.schedule.timezone}{#if request.next_at}, next {dateTime(request.next_at, request.ask.schedule.timezone)}{/if}{#if request.ask.schedule.until}, until {dateTime(request.ask.schedule.until, request.ask.schedule.timezone)}{/if}</dd></div>
       <div><dt class="label">Wait for a machine</dt><dd>At most {request.ask.wait_hours} hours per run</dd></div>
     </dl>
     {#if request.waiting}<p class="quiet" role="status">{request.waiting}</p>{/if}
@@ -37,7 +37,7 @@
       <details class="stack stack--tight">
         <summary>Process {process.number}: {process.state}{process.machine ? `, on ${process.machine}` : ""}</summary>
         {#if process.retry_of}<p class="quiet">Retry of process {process.retry_of}, on another machine.</p>{/if}
-        <p class="quiet">Slot {dateTime(process.slot)}{#if process.started_at}, started {dateTime(process.started_at)}{/if}{#if process.finished_at}, finished {dateTime(process.finished_at)}{/if}</p>
+        <p class="quiet">Slot {dateTime(process.slot, request.ask.schedule.timezone)}{#if process.started_at}, started {dateTime(process.started_at, request.ask.schedule.timezone)}{/if}{#if process.finished_at}, finished {dateTime(process.finished_at, request.ask.schedule.timezone)}{/if}</p>
         {#if process.error}<p class="message message--danger">{process.error}</p>{/if}
         {#each process.branches as branch (branch.repository)}<p><span class="label">{branch.repository}</span>: <code>{branch.branch}</code>{#if branch.pull_request}, <a class="link" href={branch.pull_request}>Pull request</a>{/if}</p>{/each}
         <p class="quiet">{process.usage.input_tokens ?? "Unknown"} input tokens, {process.usage.output_tokens ?? "unknown"} output tokens{#if process.usage.cache_read_tokens !== undefined}, {process.usage.cache_read_tokens} cached input tokens{/if}{#if process.usage.cost_usd !== undefined}, ${process.usage.cost_usd.toFixed(4)}{/if}.</p>
