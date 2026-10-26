@@ -214,6 +214,15 @@ pub async fn create_group(
             &format!("The Lean library of {name}"),
             files,
         )
+        .await?;
+        create_repository(
+            forge,
+            state,
+            slug,
+            crate::recipes::REPOSITORY,
+            "The group's workshop recipes",
+            &crate::recipes::template(),
+        )
         .await
     }
     .await;
@@ -391,6 +400,40 @@ pub async fn reconcile(state: &AppState) {
     };
     for group_id in groups {
         sync_members_or_log(state, group_id).await;
+        if let Ok(org) = sqlx::query_scalar::<_, String>("SELECT slug FROM groups WHERE id = ?")
+            .bind(group_id)
+            .fetch_one(&state.db)
+            .await
+        {
+            match forge
+                .branch_commit(&org, crate::recipes::REPOSITORY, MAIN)
+                .await
+            {
+                Ok(None) => {
+                    if let Err(error) = create_repository(
+                        forge,
+                        state,
+                        &org,
+                        crate::recipes::REPOSITORY,
+                        "The group's workshop recipes",
+                        &crate::recipes::template(),
+                    )
+                    .await
+                    {
+                        tracing::error!(%error, org, "could not create recipes repository");
+                    }
+                }
+                Ok(Some(_)) => {
+                    if let Err(error) = forge
+                        .protect_branch(&org, crate::recipes::REPOSITORY, MAIN)
+                        .await
+                    {
+                        tracing::error!(%error, org, "could not protect recipes");
+                    }
+                }
+                Err(error) => tracing::error!(%error, org, "could not inspect recipes repository"),
+            }
+        }
         let repos: Result<Vec<(String, String)>, _> = sqlx::query_as(
             "SELECT g.slug, 'library' FROM groups g WHERE g.id = ?1 UNION ALL SELECT g.slug, p.repository FROM papers p JOIN groups g ON g.id = p.group_id WHERE g.id = ?1")
             .bind(group_id).fetch_all(&state.db).await;

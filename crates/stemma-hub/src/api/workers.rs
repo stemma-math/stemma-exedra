@@ -149,6 +149,9 @@ async fn serve(state: AppState, machine: MachineRow, mut socket: WebSocket) -> a
     .await
     .map_err(|e| anyhow::anyhow!(e.message))?;
 
+    crate::workshop::dispatch(&state)
+        .await
+        .map_err(|e| anyhow::anyhow!(e.message))?;
     let ended = talk(&state, machine.id, connection, &mut socket, &mut outbox).await;
     close(&mut socket).await;
     crate::builds::disconnected(&state, machine.id, connection)
@@ -212,8 +215,12 @@ async fn talk(
                     WorkerMessage::Hello(hello) => {
                         anyhow::ensure!(hello.protocol == PROTOCOL_VERSION, "worker protocol changed");
                         crate::builds::hello(state, worker_id, connection, &hello).await.map_err(|e| anyhow::anyhow!(e.message))?;
+                        crate::workshop::dispatch(state).await.map_err(|e| anyhow::anyhow!(e.message))?;
                         jobs::hello(state, worker_id, connection, hello).await
                     },
+                    WorkerMessage::ProcessDecision { process, accept, pending } => crate::workshop::decision(state, worker_id, connection, process, accept, pending).await,
+                    WorkerMessage::ProcessHeartbeat { lease } => crate::builds::heartbeat(state, worker_id, connection, lease).await,
+                    WorkerMessage::ProcessFinished { lease, result } => crate::workshop::finished(state, worker_id, connection, lease, *result).await,
                     WorkerMessage::BuildHeartbeat { lease } => crate::builds::heartbeat(state, worker_id, connection, lease).await,
                     WorkerMessage::BuildFinished { lease, result } => crate::builds::finished(state, worker_id, connection, lease, *result).await,
                     WorkerMessage::Progress { job, text } => {

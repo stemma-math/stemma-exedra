@@ -75,7 +75,16 @@ impl<'a> Notice<'a> {
 
 /// Whether unread notifications of `kind` in one thread become one.
 fn gathers(kind: NotificationKind) -> bool {
-    matches!(kind, NotificationKind::Mention | NotificationKind::Answer)
+    matches!(
+        kind,
+        NotificationKind::Mention
+            | NotificationKind::Answer
+            | NotificationKind::RequestDone
+            | NotificationKind::RequestFailed
+            | NotificationKind::RequestExpired
+            | NotificationKind::ProcessApproval
+            | NotificationKind::ProcessPullRequest
+    )
 }
 
 /// Tells each of `users` of `notice`, once.
@@ -363,6 +372,7 @@ async fn notification(state: &AppState, row: Row) -> ApiResult<Notification> {
             number: number as u32,
             kind: match row.thread_kind.as_deref() {
                 Some("chat") => ThreadKind::Chat,
+                Some("request") => ThreadKind::Request,
                 _ => ThreadKind::Discussion,
             },
             title: row.thread_title.unwrap_or_default(),

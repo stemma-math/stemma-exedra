@@ -44,10 +44,24 @@ pub async fn release(
         .bind(holder.map(|h| h.0)).bind(now - EXPIRY_MILLIS).bind(holder.map(|h| h.1 as i64)).fetch_all(&mut *tx).await?;
     let mut ended = Vec::new();
     for (id, attempt, machine, token) in rows {
-        let failed = attempt >= MAX_ATTEMPTS;
+        let (kind, pushed): (String, bool) = sqlx::query_as("SELECT w.kind, COALESCE(p.pushed,0) FROM work_leases w LEFT JOIN workshop_processes p ON p.work_id=w.id WHERE w.id=?").bind(id).fetch_one(&mut *tx).await?;
+        let process = kind == "process";
+        let failed = if process {
+            attempt >= 2 || pushed
+        } else {
+            attempt >= MAX_ATTEMPTS
+        };
+        let error = if process {
+            "The machine lost its process lease; retry is exhausted or it may have pushed"
+        } else {
+            "The machine lost its build lease three times"
+        };
+        if process && !failed {
+            sqlx::query("DELETE FROM workshop_offers WHERE process_id=(SELECT id FROM workshop_processes WHERE work_id=?) AND decision!='ran'").bind(id).execute(&mut *tx).await?;
+        }
         sqlx::query("UPDATE work_leases SET state = ?, error = ?, holder = NULL, connection = NULL WHERE id = ?")
             .bind(if failed { "failed" } else { "queued" })
-            .bind(if failed { Some("The machine lost its build lease three times") } else { None })
+            .bind(if failed { Some(error) } else { None })
             .bind(id).execute(&mut *tx).await?;
         sqlx::query("UPDATE api_tokens SET revoked_at = ? WHERE id = ?")
             .bind(now)

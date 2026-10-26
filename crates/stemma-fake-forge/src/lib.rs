@@ -98,6 +98,7 @@ struct Repo {
 /// A pull request.
 #[derive(Clone)]
 struct Pull {
+    author: String,
     number: u32,
     head: String,
     base: String,
@@ -110,6 +111,7 @@ impl Pull {
     fn json(&self, owner: &str, name: &str) -> Value {
         json!({
             "number": self.number,
+            "user": {"login": self.author},
             "title": self.title,
             "state": if self.open { "open" } else { "closed" },
             "html_url": format!("/{owner}/{name}/pulls/{}", self.number),
@@ -366,7 +368,10 @@ fn router(inner: Arc<Inner>) -> Router {
             "/api/v1/repos/{owner}/{name}/branches/{*branch}",
             get(branch).delete(delete_branch),
         )
-        .route("/api/v1/repos/{owner}/{name}/pulls", post(create_pull))
+        .route(
+            "/api/v1/repos/{owner}/{name}/pulls",
+            get(list_pulls).post(create_pull),
+        )
         .route(
             "/api/v1/repos/{owner}/{name}/pulls/{number}",
             get(get_pull).patch(update_pull),
@@ -806,8 +811,8 @@ async fn tree(
         .filter_map(|line| {
             let (meta, path) = line.split_once('\t')?;
             let mut meta = meta.split_whitespace();
-            let (_, kind, _, size) = (meta.next()?, meta.next()?, meta.next()?, meta.next()?);
-            Some(json!({"path": path, "type": kind, "size": size.parse::<u64>().unwrap_or(0)}))
+            let (_, kind, sha, size) = (meta.next()?, meta.next()?, meta.next()?, meta.next()?);
+            Some(json!({"path": path, "type": kind, "sha":sha, "size": size.parse::<u64>().unwrap_or(0)}))
         })
         .collect();
     axum::Json(json!({"sha": commit, "tree": entries, "truncated": false})).into_response()
@@ -923,9 +928,28 @@ fn find_pull<T>(
     repo.pulls.iter_mut().find(|p| p.number == number).map(then)
 }
 
+async fn list_pulls(
+    State(inner): State<Arc<Inner>>,
+    UrlPath((owner, name)): UrlPath<(String, String)>,
+) -> Response {
+    let data = inner.data.lock().unwrap();
+    let Some(repo) = data.repos.get(&(owner.clone(), name.clone())) else {
+        return message(StatusCode::NOT_FOUND, "not found");
+    };
+    axum::Json(
+        repo.pulls
+            .iter()
+            .filter(|p| p.open)
+            .map(|p| p.json(&owner, &name))
+            .collect::<Vec<_>>(),
+    )
+    .into_response()
+}
+
 async fn create_pull(
     State(inner): State<Arc<Inner>>,
     UrlPath((owner, name)): UrlPath<(String, String)>,
+    headers: HeaderMap,
     axum::Json(body): axum::Json<Value>,
 ) -> Response {
     if !repo_exists(&inner, &owner, &name) {
@@ -949,6 +973,11 @@ async fn create_pull(
         );
     }
     let pull = Pull {
+        author: headers
+            .get("sudo")
+            .and_then(|v| v.to_str().ok())
+            .unwrap_or(ADMIN)
+            .into(),
         number: repo.pulls.len() as u32 + 1,
         head,
         base,

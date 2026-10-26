@@ -25,7 +25,9 @@ pub async fn upload(
     Path(slug): Path<String>,
     mut multipart: Multipart,
 ) -> ApiResult<(StatusCode, Json<Attachment>)> {
-    viewer.require_full()?;
+    if !matches!(viewer.scope, crate::auth::Scope::Process { .. }) {
+        viewer.require_full()?;
+    }
     let group = Membership::of(&state, &viewer, &slug).await?;
     let limit = state.config.max_upload_mb * 1024 * 1024;
     let bad = |e: axum::extract::multipart::MultipartError| {
@@ -88,6 +90,13 @@ pub async fn upload(
         .execute(&state.db)
         .await?
         .last_insert_rowid();
+        if let crate::auth::Scope::Process { work, .. } = viewer.scope {
+            sqlx::query("UPDATE attachments SET process_work=? WHERE id=?")
+                .bind(work)
+                .bind(id)
+                .execute(&state.db)
+                .await?;
+        }
         let attachment = Attachment {
             author: viewer.user(),
             id,

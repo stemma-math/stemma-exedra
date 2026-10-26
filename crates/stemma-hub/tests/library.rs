@@ -373,6 +373,7 @@ async fn workshop_builds_latest_commits_with_fenced_leases_and_scoped_tokens() {
             build: true,
             build_concurrency: 1,
             concurrency: 1,
+            ..Default::default()
         },
         workshop_groups: Default::default(),
     };

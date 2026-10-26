@@ -31,6 +31,7 @@ pub struct Hub {
     /// The workers connected now.
     pub workers: tokio::sync::Mutex<Workers>,
     pub build_machines: tokio::sync::Mutex<crate::builds::Machines>,
+    pub process_changes: tokio::sync::Mutex<()>,
     pub build_changes: tokio::sync::Mutex<()>,
     /// The number of the last worker connection.
     pub connections: AtomicU64,
@@ -80,6 +81,7 @@ impl Hub {
             setup_token: Mutex::new(None),
             workers: tokio::sync::Mutex::new(Workers::default()),
             build_machines: Default::default(),
+            process_changes: Default::default(),
             build_changes: Default::default(),
             connections: AtomicU64::new(0),
             forge,

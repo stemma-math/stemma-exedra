@@ -121,6 +121,22 @@ pub fn router(state: AppState) -> Router {
                 .patch(forum::edit_message)
                 .delete(forum::delete_message),
         )
+        .route(
+            "/groups/{group}/workshop/recipes",
+            get(crate::workshop::list_recipes),
+        )
+        .route(
+            "/groups/{group}/workshop/recipes/{name}",
+            get(crate::workshop::read_recipe),
+        )
+        .route(
+            "/groups/{group}/workshop/requests",
+            get(crate::workshop::list).post(crate::workshop::ask),
+        )
+        .route(
+            "/groups/{group}/workshop/requests/{number}",
+            get(crate::workshop::read).post(crate::workshop::action),
+        )
         .route("/groups/{group}/library", get(library::state))
         .route("/groups/{group}/library/builds", get(library::builds))
         .route("/groups/{group}/library/builds/{id}", get(library::build))

@@ -46,6 +46,11 @@ pub enum Scope {
     Full,
     /// An agent's token: a job's or a session's.
     Agent(AgentScope),
+    Process {
+        agent: AgentScope,
+        work: i64,
+        attempt: u32,
+    },
     Build {
         work: i64,
         attempt: u32,
@@ -89,7 +94,7 @@ impl Viewer {
     pub fn agent(&self) -> Option<&AgentScope> {
         match &self.scope {
             Scope::Full | Scope::Build { .. } => None,
-            Scope::Agent(agent) => Some(agent),
+            Scope::Agent(agent) | Scope::Process { agent, .. } => Some(agent),
         }
     }
 
@@ -97,7 +102,7 @@ impl Viewer {
     pub fn require_full(&self) -> Result<(), ApiError> {
         match self.scope {
             Scope::Full => Ok(()),
-            Scope::Agent(_) | Scope::Build { .. } => {
+            Scope::Agent(_) | Scope::Build { .. } | Scope::Process { .. } => {
                 Err(ApiError::forbidden("An agent's token cannot do this"))
             }
         }
@@ -209,6 +214,21 @@ async fn authenticate(headers: &HeaderMap, state: &AppState) -> Result<Option<Vi
                 attempt: row.lease_attempt.unwrap_or_default() as u32,
                 group_id,
             },
+            ("process", Some(group_id)) => Scope::Process {
+                work: row
+                    .build_work
+                    .ok_or_else(|| ApiError::internal("process token without work"))?,
+                attempt: row.lease_attempt.unwrap_or_default() as u32,
+                agent: AgentScope {
+                    token_id: row.token_id,
+                    attachments: row.attachments.parse().map_err(ApiError::internal)?,
+                    group_id,
+                    thread_id: row.thread_id,
+                    agent: row.agent.clone().unwrap_or_else(|| "Agent".into()),
+                    can_post: true,
+                    session: false,
+                },
+            },
             (kind @ ("job" | "agent"), Some(group_id)) => Scope::Agent(AgentScope {
                 token_id: row.token_id,
                 attachments: row.attachments.parse().map_err(ApiError::internal)?,
@@ -218,11 +238,17 @@ async fn authenticate(headers: &HeaderMap, state: &AppState) -> Result<Option<Vi
                 can_post: row.can_post,
                 session: kind == "agent",
             }),
-            ("job" | "agent" | "build", None) => {
+            ("job" | "agent" | "build" | "process", None) => {
                 return Err(ApiError::internal("a scoped token without a group"));
             }
             _ => Scope::Full,
         };
+        if let Scope::Process { work, attempt, .. } = &scope {
+            let alive: bool = sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM work_leases w JOIN workshop_processes p ON p.work_id=w.id WHERE w.id=? AND w.attempts=? AND w.state='running' AND w.heartbeat>? AND p.deadline>?)").bind(work).bind(*attempt).bind(now-crate::lease::EXPIRY_MILLIS).bind(now).fetch_one(&state.db).await?;
+            if !alive {
+                return Err(ApiError::forbidden("This process lease ended"));
+            }
+        }
         let mut viewer = row.user.viewer(true, scope);
         viewer.personal_token = row.kind == "personal";
         return Ok(Some(viewer));
@@ -415,8 +441,32 @@ pub async fn hash_password(password: String) -> Result<String, ApiError> {
 }
 
 fn build_path(viewer: &Viewer, parts: &Parts) -> Result<(), ApiError> {
+    if let Scope::Process { .. } = &viewer.scope {
+        let path = parts
+            .extensions
+            .get::<axum::extract::OriginalUri>()
+            .map(|uri| uri.0.path())
+            .unwrap_or_else(|| parts.uri.path());
+        if path.starts_with("/git/")
+            || (parts.method == axum::http::Method::GET && path.starts_with("/api/v1/groups/"))
+            || (parts.method == axum::http::Method::POST
+                && path.starts_with("/api/v1/groups/")
+                && (path.ends_with("/messages")
+                    || path.ends_with("/attachments")
+                    || path.ends_with("/resolve")))
+        {
+            return Ok(());
+        }
+        return Err(ApiError::forbidden(
+            "A process token only reads its group and posts in its request",
+        ));
+    }
     if let Scope::Build { work, .. } = viewer.scope {
-        let path = parts.uri.path();
+        let path = parts
+            .extensions
+            .get::<axum::extract::OriginalUri>()
+            .map(|uri| uri.0.path())
+            .unwrap_or_else(|| parts.uri.path());
         if path.starts_with("/git/")
             || (parts.method == axum::http::Method::POST
                 && [

@@ -139,11 +139,37 @@ async fn serve(
             );
         }
     }
+    let process_branch = if let Scope::Process { work, .. } = viewer.scope {
+        if service == Service::Push {
+            let raw: Option<String> =
+                sqlx::query_scalar("SELECT branches FROM workshop_processes WHERE work_id=?")
+                    .bind(work)
+                    .fetch_optional(&state.db)
+                    .await
+                    .unwrap_or(None);
+            let branches: Vec<stemma_core::workshop::ProcessBranch> = raw
+                .and_then(|s| serde_json::from_str(&s).ok())
+                .unwrap_or_default();
+            match branches.into_iter().find(|b| b.repository == name) {
+                Some(branch) => Some(format!("refs/heads/{}", branch.branch)),
+                None => {
+                    return refused(
+                        StatusCode::FORBIDDEN,
+                        "This process cannot push to this repository",
+                    );
+                }
+            }
+        } else {
+            None
+        }
+    } else {
+        None
+    };
     let request = if service == Service::Push && request.method() == Method::POST {
         if request.headers().contains_key(header::CONTENT_ENCODING) {
             return refused(StatusCode::BAD_REQUEST, "Encoded pushes are not supported");
         }
-        match check_push(request, membership.role).await {
+        match check_scoped_push(request, membership.role, process_branch.as_deref()).await {
             Ok(request) => request,
             Err(error) => {
                 let why = error.message;
@@ -165,6 +191,24 @@ async fn serve(
     } else {
         request
     };
+    if service == Service::Push
+        && request.method() == Method::POST
+        && let Scope::Process { work, .. } = viewer.scope
+    {
+        // Conservatively fence retries before streaming a possible push. A lost
+        // response can mean the forge accepted it, even if the machine never heard.
+        if sqlx::query("UPDATE workshop_processes SET pushed=1 WHERE work_id=?")
+            .bind(work)
+            .execute(&state.db)
+            .await
+            .is_err()
+        {
+            return refused(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "Could not record the process push",
+            );
+        }
+    }
     let upstream = format!("{}/{name}.git/{path}", membership.slug);
     match pass_on(forge, &upstream, request).await {
         Ok(response) => response,
@@ -299,7 +343,15 @@ fn push_error(message: &'static str, commands: &[u8]) -> PushError {
 /// Reads a push's command list, refuses it if `role` may not make its
 /// updates, and otherwise gives back the request as it came, streaming the
 /// pack after what was read.
+#[cfg(test)]
 async fn check_push(request: Request, role: Role) -> Result<Request, PushError> {
+    check_scoped_push(request, role, None).await
+}
+async fn check_scoped_push(
+    request: Request,
+    role: Role,
+    branch: Option<&str>,
+) -> Result<Request, PushError> {
     let (parts, body) = request.into_parts();
     let mut stream = body.into_data_stream();
     let mut read = Vec::new();
@@ -309,6 +361,12 @@ async fn check_push(request: Request, role: Role) -> Result<Request, PushError> 
         match ref_updates(&read) {
             Err(why) => return Err(push_error(why, &read)),
             Ok(Some((refs, _))) => {
+                if branch.is_some_and(|branch| refs.iter().any(|name| name != branch)) {
+                    return Err(push_error(
+                        "A process may push only its assigned branch",
+                        &read,
+                    ));
+                }
                 if let Some(why) = refused_ref(&refs, role) {
                     return Err(push_error(why, &read));
                 }

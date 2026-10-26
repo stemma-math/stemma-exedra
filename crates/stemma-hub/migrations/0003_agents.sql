@@ -8,7 +8,7 @@ CREATE TABLE api_tokens (
     created_at INTEGER NOT NULL,
     last_used_at INTEGER,
     revoked_at INTEGER,
-    kind TEXT NOT NULL DEFAULT 'personal' CHECK (kind IN ('personal', 'agent', 'job', 'build')),
+    kind TEXT NOT NULL DEFAULT 'personal' CHECK (kind IN ('personal', 'agent', 'job', 'build', 'process')),
     group_id INTEGER REFERENCES groups (id) ON DELETE CASCADE,
     build_work INTEGER,
     lease_attempt INTEGER,
@@ -57,9 +57,9 @@ CREATE INDEX jobs_thread ON jobs (thread_id, id);
 CREATE TABLE work_leases (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     group_id INTEGER NOT NULL REFERENCES groups (id) ON DELETE CASCADE,
-    repository TEXT NOT NULL,
-    commit_sha TEXT NOT NULL,
-    kind TEXT NOT NULL CHECK (kind IN ('library', 'paper')),
+    repository TEXT,
+    commit_sha TEXT,
+    kind TEXT NOT NULL CHECK (kind IN ('library', 'paper', 'process')),
     state TEXT NOT NULL DEFAULT 'queued' CHECK (state IN ('queued', 'running', 'passed', 'failed', 'cancelled')),
     holder INTEGER REFERENCES api_tokens (id) ON DELETE SET NULL,
     connection INTEGER,
@@ -71,3 +71,45 @@ CREATE TABLE work_leases (
     created_at INTEGER NOT NULL,
     UNIQUE (group_id, repository, commit_sha)
 );
+
+
+-- A request is a normal numbered thread. Its committed recipe is immutable.
+CREATE TABLE workshop_requests (
+    thread_id INTEGER PRIMARY KEY REFERENCES threads (id) ON DELETE CASCADE,
+    recipe TEXT NOT NULL,
+    ask TEXT NOT NULL,
+    state TEXT NOT NULL DEFAULT 'waiting' CHECK (state IN ('waiting','running','done','failed','cancelled','expired')),
+    recurring INTEGER NOT NULL,
+    paused INTEGER NOT NULL DEFAULT 0,
+    next_at INTEGER,
+    created_at INTEGER NOT NULL
+);
+CREATE TABLE workshop_processes (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    thread_id INTEGER NOT NULL REFERENCES workshop_requests (thread_id) ON DELETE CASCADE,
+    work_id INTEGER NOT NULL UNIQUE REFERENCES work_leases (id) ON DELETE CASCADE,
+    slot INTEGER NOT NULL,
+    expires_at INTEGER NOT NULL,
+    deadline INTEGER,
+    owner_id INTEGER REFERENCES users (id),
+    started_at INTEGER,
+    finished_at INTEGER,
+    branches TEXT NOT NULL DEFAULT '[]',
+    pushed INTEGER NOT NULL DEFAULT 0,
+    usage TEXT NOT NULL DEFAULT '{}',
+    summary TEXT,
+    UNIQUE (thread_id, slot)
+);
+-- A decision records only delivery/lease state. Authority remains on the machine.
+CREATE TABLE workshop_offers (
+    process_id INTEGER NOT NULL REFERENCES workshop_processes (id) ON DELETE CASCADE,
+    machine_id INTEGER NOT NULL REFERENCES api_tokens (id) ON DELETE CASCADE,
+    connection INTEGER NOT NULL,
+    decision TEXT NOT NULL DEFAULT 'offered',
+    PRIMARY KEY (process_id, machine_id)
+);
+CREATE INDEX workshop_due ON workshop_requests (next_at) WHERE state IN ('waiting','running');
+
+CREATE TRIGGER workshop_process_deleted AFTER DELETE ON workshop_processes BEGIN
+    DELETE FROM work_leases WHERE id=old.work_id;
+END;

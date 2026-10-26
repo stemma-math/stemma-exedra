@@ -41,7 +41,7 @@ impl Machines {
     }
 }
 impl Machine {
-    fn scope(&self, slug: &str) -> &GroupWorkshop {
+    pub(crate) fn scope(&self, slug: &str) -> &GroupWorkshop {
         self.groups.get(slug).unwrap_or(&self.general)
     }
 }
@@ -267,10 +267,19 @@ pub async fn dispatch(state: &AppState) -> ApiResult<()> {
     for (holder, lease) in expired {
         publish(state, lease.id).await?;
         if let Some(machine) = machines.0.get(&holder) {
-            let _ = machine.sender.send(HubMessage::CancelBuild { lease });
+            let process: bool =
+                sqlx::query_scalar("SELECT kind='process' FROM work_leases WHERE id=?")
+                    .bind(lease.id)
+                    .fetch_one(&state.db)
+                    .await?;
+            let _ = machine.sender.send(if process {
+                HubMessage::CancelProcess { lease }
+            } else {
+                HubMessage::CancelBuild { lease }
+            });
         }
     }
-    let waiting: Vec<Waiting> = sqlx::query_as("SELECT w.id, w.group_id, g.slug, g.name, w.repository, w.commit_sha, w.kind, w.attempts FROM work_leases w JOIN groups g ON g.id = w.group_id WHERE w.state = 'queued' ORDER BY w.id")
+    let waiting: Vec<Waiting> = sqlx::query_as("SELECT w.id, w.group_id, g.slug, g.name, w.repository, w.commit_sha, w.kind, w.attempts FROM work_leases w JOIN groups g ON g.id = w.group_id WHERE w.state = 'queued' AND w.kind != 'process' ORDER BY w.id")
         .fetch_all(&state.db).await?;
     for work in waiting {
         for (holder, machine) in &machines.0 {
@@ -288,7 +297,7 @@ pub async fn dispatch(state: &AppState) -> ApiResult<()> {
                 continue;
             }
             let running: i64 = sqlx::query_scalar(
-                "SELECT count(*) FROM work_leases WHERE holder = ? AND state = 'running'",
+                "SELECT count(*) FROM work_leases WHERE holder = ? AND state = 'running' AND kind != 'process'",
             )
             .bind(holder)
             .fetch_one(&state.db)
@@ -551,14 +560,18 @@ pub async fn forget_repository(state: &AppState, group: i64, repository: &str) -
 }
 
 async fn publish(state: &AppState, work: i64) -> ApiResult<()> {
-    let row: Option<(i64, String, String)> =
-        sqlx::query_as("SELECT group_id, repository, kind FROM work_leases WHERE id = ?")
-            .bind(work)
-            .fetch_optional(&state.db)
-            .await?;
+    let row: Option<(i64, String, String)> = sqlx::query_as(
+        "SELECT group_id, COALESCE(repository,''), kind FROM work_leases WHERE id = ?",
+    )
+    .bind(work)
+    .fetch_optional(&state.db)
+    .await?;
     let Some((group, repository, kind)) = row else {
         return Ok(());
     };
+    if kind == "process" {
+        return Ok(());
+    }
     if kind == "library" {
         let id: i64 = sqlx::query_scalar("SELECT id FROM library_builds WHERE work_id = ?")
             .bind(work)

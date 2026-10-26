@@ -584,7 +584,7 @@ impl Forge {
                 &format!("find {branch} of {owner}/{name}"),
                 self.api(
                     Method::GET,
-                    &format!("/repos/{owner}/{name}/branches/{branch}"),
+                    &format!("/repos/{owner}/{name}/branches/{}", encode_segment(branch)),
                 ),
             )
             .await?;
@@ -650,6 +650,41 @@ impl Forge {
         }
     }
 
+    /// Opens a process branch for the group's admins, always as worker.
+    pub async fn open_process_pull_request(
+        &self,
+        owner: &str,
+        repo: &str,
+        branch: &str,
+        title: &str,
+        body: &str,
+    ) -> ForgeResult<String> {
+        let existing: Vec<Value> = self
+            .all(
+                "find a process pull request",
+                &format!("/repos/{owner}/{repo}/pulls?state=open"),
+            )
+            .await?;
+        if let Some(pull) = existing
+            .iter()
+            .find(|p| p["head"]["ref"].as_str() == Some(branch))
+        {
+            return Ok(pull["html_url"].as_str().unwrap_or_default().into());
+        }
+        let value: Value = self
+            .json(
+                "open a process pull request",
+                self.as_workshop(
+                    WorkshopUser::Worker,
+                    Method::POST,
+                    &format!("/repos/{owner}/{repo}/pulls"),
+                )
+                .json(&json!({"head":branch,"base":"main","title":title,"body":body})),
+            )
+            .await?;
+        Ok(value["html_url"].as_str().unwrap_or_default().into())
+    }
+
     // ── Pull requests ─────────────────────────────────────────────────
 }
 
@@ -665,6 +700,8 @@ struct Tree {
 /// A file, or a folder, of a repository's tree.
 #[derive(Clone, Debug, Deserialize)]
 pub struct TreeEntry {
+    #[serde(default)]
+    pub sha: String,
     pub path: String,
     /// `blob` for a file, `tree` for a folder.
     #[serde(rename = "type")]

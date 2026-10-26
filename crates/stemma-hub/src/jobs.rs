@@ -418,6 +418,7 @@ async fn start(
     sqlx::query("UPDATE jobs SET state = 'running', worker_id = ?, token_id = ?, attempts = attempts + 1, progress = NULL, updated_at = ? WHERE id = ? AND state = 'queued'")
         .bind(worker_id).bind(token_id).bind(db::now()).bind(job.id).execute(&state.db).await?;
     Ok(JobSpec {
+        process: false,
         id: job.id,
         group: GroupRef {
             id: group.group_id,

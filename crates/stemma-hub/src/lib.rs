@@ -19,12 +19,14 @@ pub mod names;
 pub mod notifications;
 pub mod oidc;
 pub mod papers;
+pub mod recipes;
 pub mod removal;
 pub mod search;
 pub mod secret;
 pub mod state;
 pub mod text;
 pub mod web;
+pub mod workshop;
 
 use std::sync::Arc;
 
@@ -82,6 +84,18 @@ pub async fn run(config: Config) -> anyhow::Result<()> {
                 tokio::select! {
                     _ = state.shutdown.cancelled() => break,
                     _ = tick.tick() => if let Err(error) = builds::dispatch(&state).await { tracing::error!(error = error.message, "dispatching builds"); }
+                }
+            }
+        });
+    }
+    {
+        let state = state.clone();
+        tokio::spawn(async move {
+            let mut tick = tokio::time::interval(std::time::Duration::from_secs(60));
+            loop {
+                tokio::select! {
+                    _ = state.shutdown.cancelled() => break,
+                    _ = tick.tick() => if let Err(error) = workshop::tick(&state).await { tracing::error!(error = error.message, "scheduling workshop requests"); }
                 }
             }
         });

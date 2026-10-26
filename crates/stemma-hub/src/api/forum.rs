@@ -124,6 +124,11 @@ pub async fn create_thread(
     Json(body): Json<CreateThread>,
 ) -> ApiResult<(StatusCode, Json<ThreadPage>)> {
     let group = Membership::of(&state, &viewer, &slug).await?;
+    if body.kind == ThreadKind::Request {
+        return Err(ApiError::invalid(
+            "Ask through the workshop to open a request",
+        ));
+    }
     let title = required_text(&body.title, "The title", 200)?;
     // A session's agent opens discussions, as itself; a job's never does.
     let agent = match viewer.agent() {
@@ -137,7 +142,10 @@ pub async fn create_thread(
             ));
         }
     };
-    if viewer.agent().is_some() && !body.attachments.is_empty() {
+    if viewer.agent().is_some()
+        && !matches!(viewer.scope, crate::auth::Scope::Process { .. })
+        && !body.attachments.is_empty()
+    {
         return Err(ApiError::forbidden("An agent's token cannot attach files"));
     }
     let (resident_agent, resident_runner) = match (body.kind, body.resident_agent) {
@@ -153,7 +161,7 @@ pub async fn create_thread(
                 .ok_or_else(|| ApiError::invalid(format!("Unknown agent @{agent}")))?;
             (Some(agent), Some(profile.runner))
         }
-        (ThreadKind::Discussion, Some(_)) => {
+        (ThreadKind::Discussion | ThreadKind::Request, Some(_)) => {
             return Err(ApiError::invalid("Only chats have a resident agent"));
         }
     };
@@ -340,6 +348,9 @@ pub async fn post_message(
 ) -> ApiResult<(StatusCode, Json<Message>)> {
     let group = Membership::of(&state, &viewer, &slug).await?;
     let row = find_thread(&state, group.group_id, number).await?;
+    if row.kind == "request" && !group.role.can_write() {
+        return Err(ApiError::forbidden("Guests read workshop requests"));
+    }
     let agent = match viewer.agent() {
         Some(scope) if scope.can_post && scope.thread_id.is_none_or(|id| id == row.id) => {
             Some(scope.agent.clone())
@@ -358,7 +369,10 @@ pub async fn post_message(
         },
     };
     // An agent's uploads would be its person's, waiting for their message.
-    if viewer.agent().is_some() && !body.attachments.is_empty() {
+    if viewer.agent().is_some()
+        && !matches!(viewer.scope, crate::auth::Scope::Process { .. })
+        && !body.attachments.is_empty()
+    {
         return Err(ApiError::forbidden("An agent's token cannot attach files"));
     }
     if body.body.trim().is_empty() && body.attachments.is_empty() {
@@ -374,6 +388,22 @@ pub async fn post_message(
     }
 
     let agent_runner = attribution_runner(&state, &viewer, agent.as_deref()).await?;
+    if let crate::auth::Scope::Process { work, .. } = viewer.scope {
+        for id in &body.attachments {
+            let allowed: bool = sqlx::query_scalar(
+                "SELECT EXISTS(SELECT 1 FROM attachments WHERE id=? AND process_work=?)",
+            )
+            .bind(id)
+            .bind(work)
+            .fetch_one(&state.db)
+            .await?;
+            if !allowed {
+                return Err(ApiError::forbidden(
+                    "A process attaches only its own uploads",
+                ));
+            }
+        }
+    }
     let message = post(
         &state,
         &group,
@@ -397,6 +427,16 @@ async fn attribution_runner(
     viewer: &Viewer,
     agent: Option<&str>,
 ) -> ApiResult<Option<String>> {
+    if let crate::auth::Scope::Process { work, .. } = viewer.scope {
+        let raw: String = sqlx::query_scalar("SELECT r.ask FROM workshop_requests r JOIN workshop_processes p ON p.thread_id=r.thread_id WHERE p.work_id=?").bind(work).fetch_one(&state.db).await?;
+        let ask: stemma_core::workshop::Ask =
+            serde_json::from_str(&raw).map_err(ApiError::internal)?;
+        return Ok(Some(if ask.runner == "claude" {
+            "claude-code".into()
+        } else {
+            ask.runner
+        }));
+    }
     if let Some(scope) = viewer.agent().filter(|scope| scope.session) {
         return Ok(stemma_core::api::AgentProfile::defaults()
             .into_iter()
@@ -446,7 +486,16 @@ pub(crate) async fn post(
     )
     .await?;
     tx.commit().await?;
+    publish_post(state, group, thread_id, number, &stored).await
+}
 
+pub(crate) async fn publish_post(
+    state: &AppState,
+    group: &Membership,
+    thread_id: i64,
+    number: u32,
+    stored: &str,
+) -> ApiResult<Message> {
     let message = load_message(state, group, thread_id, number).await?;
     let thread: Thread = find_thread_by_id(state, thread_id).await?.into();
     state.publish(
@@ -457,7 +506,7 @@ pub(crate) async fn post(
         },
     );
     state.publish(group.group_id, Event::ThreadUpdated { thread });
-    tell_mentioned(state, group, thread_id, &message, &stored).await?;
+    tell_mentioned(state, group, thread_id, &message, stored).await?;
     Ok(message)
 }
 
@@ -503,7 +552,7 @@ pub(crate) fn check_body(text: &str) -> ApiResult<String> {
 /// Adds a message to a thread with the next number, and attaches the
 /// author's uploads to it. Returns its number, and its stored text.
 #[allow(clippy::too_many_arguments)]
-async fn insert_message(
+pub(crate) async fn insert_message(
     tx: &mut Transaction<'_, Sqlite>,
     group: &Membership,
     thread_id: i64,
@@ -558,6 +607,9 @@ async fn insert_message(
             )));
         }
     }
+    if agent.is_some() {
+        sqlx::query("UPDATE messages SET workshop=1 WHERE id=? AND EXISTS(SELECT 1 FROM workshop_requests WHERE thread_id=?)").bind(message_id).bind(thread_id).execute(&mut **tx).await?;
+    }
     Ok((number as u32, stored))
 }
 
@@ -567,6 +619,7 @@ struct MessageRow {
     number: i64,
     agent: Option<String>,
     agent_runner: Option<String>,
+    workshop: bool,
     body: String,
     body_ids: Option<String>,
     reply_to: Option<i64>,
@@ -585,7 +638,7 @@ pub(crate) async fn load_messages(
     to: u32,
 ) -> ApiResult<Vec<Message>> {
     let rows: Vec<MessageRow> = sqlx::query_as(
-        "SELECT m.id, m.number, m.agent, m.agent_runner, m.body, m.body_ids, m.reply_to, m.created_at, m.edited_at,
+        "SELECT m.id, m.number, m.agent, m.agent_runner, m.workshop, m.body, m.body_ids, m.reply_to, m.created_at, m.edited_at,
                 m.deleted_at, u.id AS user_id, u.username, u.display_name
          FROM messages m JOIN users u ON u.id = m.author_id
          WHERE m.thread_id = ? AND m.number BETWEEN ? AND ?
@@ -626,6 +679,7 @@ pub(crate) async fn load_message(
 
 fn to_message(row: MessageRow, attachments: Vec<stemma_core::api::Attachment>) -> Message {
     Message {
+        workshop: row.workshop,
         number: row.number as u32,
         author: row.author.into(),
         agent: row.agent,

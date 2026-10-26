@@ -8,7 +8,8 @@ CREATE TABLE notifications (
     kind TEXT NOT NULL CHECK (
         kind IN (
             'mention', 'answer', 'held', 'failed', 'note',
-            'role', 'removed', 'approved', 'declined', 'requested'
+            'role', 'removed', 'approved', 'declined', 'requested',
+            'request_done', 'request_failed', 'request_expired', 'process_approval', 'process_pull_request'
         )
     ),
     group_id INTEGER REFERENCES groups (id) ON DELETE CASCADE,

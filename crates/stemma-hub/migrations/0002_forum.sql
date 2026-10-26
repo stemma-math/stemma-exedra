@@ -6,7 +6,7 @@ CREATE TABLE threads (
     number INTEGER NOT NULL,
     title TEXT NOT NULL,
     title_ids TEXT,
-    kind TEXT NOT NULL CHECK (kind IN ('discussion', 'chat')),
+    kind TEXT NOT NULL CHECK (kind IN ('discussion', 'chat', 'request')),
     -- The agent that answers every message of a chat.
     resident_agent TEXT,
     resident_runner TEXT,
@@ -30,6 +30,7 @@ CREATE TABLE messages (
     author_id INTEGER NOT NULL REFERENCES users (id),
     -- The agent that wrote it for its author, if one did.
     agent TEXT,
+    workshop INTEGER NOT NULL DEFAULT 0,
     agent_runner TEXT,
     body TEXT NOT NULL,
     body_ids TEXT,
@@ -45,6 +46,7 @@ CREATE TABLE attachments (
     group_id INTEGER NOT NULL REFERENCES groups (id) ON DELETE CASCADE,
     -- Unset between the upload and the message that carries it.
     message_id INTEGER REFERENCES messages (id) ON DELETE CASCADE,
+    process_work INTEGER,
     uploader_id INTEGER NOT NULL REFERENCES users (id),
     name TEXT NOT NULL,
     content_type TEXT NOT NULL,

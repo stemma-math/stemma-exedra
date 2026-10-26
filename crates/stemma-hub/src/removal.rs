@@ -120,6 +120,7 @@ pub async fn paper_contents(state: &AppState, paper: &papers::PaperRow) -> ApiRe
 /// Removes the thread `id`, with its messages, their files and its jobs.
 /// Its number is never given again: the group counts its threads apart.
 pub async fn thread(state: &AppState, id: i64) -> ApiResult<()> {
+    crate::workshop::forget_thread(state, id).await?;
     let waiting: Vec<i64> = sqlx::query_scalar(
         "SELECT id FROM jobs WHERE thread_id = ? AND state IN ('queued', 'running', 'held')",
     )
@@ -202,6 +203,13 @@ pub async fn group(state: &AppState, group_id: i64, slug: &str) -> ApiResult<()>
             .await?,
     };
     leftovers.repositories.push(forge::LIBRARY.into());
+    leftovers
+        .repositories
+        .push(crate::recipes::REPOSITORY.into());
+    let requests: Vec<i64> = sqlx::query_scalar("SELECT t.id FROM threads t JOIN workshop_requests r ON r.thread_id=t.id WHERE t.group_id=?").bind(group_id).fetch_all(&state.db).await?;
+    for id in requests {
+        crate::workshop::forget_thread(state, id).await?;
+    }
 
     for repository in &leftovers.repositories {
         crate::builds::forget_repository(state, group_id, repository).await?;
