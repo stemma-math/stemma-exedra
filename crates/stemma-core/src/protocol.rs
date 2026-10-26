@@ -6,7 +6,7 @@ pub use crate::api::JobKind;
 use crate::api::{AgentProfile, Message, ThreadKind, User};
 
 /// The version of this protocol. A hub refuses workers that speak another.
-pub const PROTOCOL_VERSION: u32 = 13;
+pub const PROTOCOL_VERSION: u32 = 14;
 
 /// The path of the workers' WebSocket, under the API's prefix.
 pub const WORKER_PATH: &str = "/worker";
@@ -17,6 +17,18 @@ pub const WORKER_PATH: &str = "/worker";
 pub enum WorkerMessage {
     /// The first message: what the worker can do.
     Hello(Hello),
+    ProcessDecision {
+        process: i64,
+        accept: bool,
+        pending: bool,
+    },
+    ProcessHeartbeat {
+        lease: LeaseRef,
+    },
+    ProcessFinished {
+        lease: LeaseRef,
+        result: Box<ProcessResult>,
+    },
     BuildHeartbeat {
         lease: LeaseRef,
     },
@@ -111,6 +123,14 @@ pub enum HubMessage {
     },
     Job(Box<JobSpec>),
     Build(Box<BuildSpec>),
+    ProcessOffer(Box<ProcessOffer>),
+    Process(Box<ProcessSpec>),
+    ProcessTaken {
+        process: i64,
+    },
+    CancelProcess {
+        lease: LeaseRef,
+    },
     CancelBuild {
         lease: LeaseRef,
     },
@@ -133,6 +153,8 @@ pub struct Welcome {
 /// A job, with what its runner needs.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct JobSpec {
+    #[serde(default)]
+    pub process: bool,
     pub id: i64,
     pub group: GroupRef,
     /// A token for the hub's API while the job lasts, scoped to its group;
@@ -224,6 +246,19 @@ pub struct GroupWorkshop {
     pub build: bool,
     pub build_concurrency: u32,
     pub concurrency: u32,
+    /// Offered runner handles and their configured models, empty means default.
+    #[serde(default)]
+    pub runners: std::collections::BTreeMap<String, String>,
+    /// Whether requests from other members reach this machine.
+    #[serde(default)]
+    pub others: Others,
+}
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Others {
+    #[default]
+    Ask,
+    Never,
 }
 
 /// A lease generation. A retry can never report for a previous holder.
@@ -260,4 +295,67 @@ pub struct BuildResult {
     pub log: String,
     /// Required on a passing library build; papers upload a PDF first.
     pub report: Option<crate::api::LibraryReport>,
+}
+
+/// An offer contains no execution credential. A machine decides locally before
+/// accepting; accepting this offer does not promise that it won the lease.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct ProcessOffer {
+    /// Durable process number, unique on this hub.
+    pub process: i64,
+    /// Stable group identity and its current name.
+    pub group: GroupRef,
+    /// The request's numbered thread, title and requester.
+    pub request: ThreadRef,
+    pub requester: User,
+    /// The committed recipe at main: blob version, recipes commit, front matter
+    /// and source prompt. Approvals must match the blob version exactly.
+    pub recipe: crate::workshop::RecipeFile,
+    /// Validated inputs, also rendered into prompt without recursive expansion.
+    pub inputs: std::collections::BTreeMap<String, String>,
+    pub prompt: String,
+    /// Recipe runner handle and optional exact model requested.
+    pub runner: String,
+    pub model: Option<String>,
+    /// Who chose this machine assignment, independent of who owns the machine.
+    pub assigned_by: User,
+    /// Stable request identity for a series approval, scoped to this group.
+    pub recurring: bool,
+    /// No acceptance is valid after this time, in Unix milliseconds.
+    pub expires_at: i64,
+}
+/// Execution contract supplied only to the first machine that accepts an offer.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct ProcessSpec {
+    /// Generation fencing heartbeat, result and token access.
+    pub lease: LeaseRef,
+    pub offer: ProcessOffer,
+    /// The winning machine's owner; all process messages are attributed to them.
+    pub owner: User,
+    /// Fetches the group; posts and attaches only in the request's thread;
+    /// pushes only the listed branches while this lease is alive.
+    pub token: String,
+    /// Every writable repository, immutable base and exclusive push branch.
+    /// A read-only recipe receives an empty list.
+    pub repositories: Vec<ProcessRepository>,
+    /// Hard end of this run, in Unix milliseconds; heartbeat never extends it.
+    pub deadline: i64,
+}
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct ProcessRepository {
+    /// Hub-relative git path, never an upstream credential.
+    pub path: String,
+    /// Immutable commit of main at launch.
+    pub base: String,
+    /// Exactly workshop/<request number>-<process number>.
+    pub branch: String,
+}
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
+pub struct ProcessResult {
+    /// Markdown summary posted by the hub, with secrets hidden.
+    pub summary: String,
+    pub error: Option<String>,
+    /// What was pushed; the hub verifies these against Forgejo before opening PRs.
+    pub pushed: Vec<crate::workshop::ProcessBranch>,
+    pub usage: Usage,
 }

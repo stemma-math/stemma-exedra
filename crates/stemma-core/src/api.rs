@@ -383,6 +383,8 @@ pub enum ThreadKind {
     Discussion,
     /// A resident agent answers every message.
     Chat,
+    /// A workshop request with its processes and discussion.
+    Request,
 }
 
 impl ThreadKind {
@@ -390,6 +392,7 @@ impl ThreadKind {
         match self {
             ThreadKind::Discussion => "discussion",
             ThreadKind::Chat => "chat",
+            ThreadKind::Request => "request",
         }
     }
 
@@ -397,6 +400,7 @@ impl ThreadKind {
         match s {
             "discussion" => Some(ThreadKind::Discussion),
             "chat" => Some(ThreadKind::Chat),
+            "request" => Some(ThreadKind::Request),
             _ => None,
         }
     }
@@ -457,6 +461,8 @@ pub struct UpdateThread {
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Message {
+    #[serde(default)]
+    pub workshop: bool,
     #[serde(default)]
     pub missing_references: Vec<String>,
     /// Its number in the thread: the `45` of `t12#45`. Never reused.
@@ -1106,6 +1112,11 @@ pub enum Event {
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum NotificationKind {
+    ProcessPullRequest,
+    ProcessApproval,
+    RequestExpired,
+    RequestFailed,
+    RequestDone,
     /// Someone mentioned them in a message.
     Mention,
     /// An agent answered a message of theirs.
@@ -1131,6 +1142,11 @@ pub enum NotificationKind {
 impl NotificationKind {
     pub fn as_str(self) -> &'static str {
         match self {
+            NotificationKind::RequestDone => "request_done",
+            NotificationKind::RequestFailed => "request_failed",
+            NotificationKind::RequestExpired => "request_expired",
+            NotificationKind::ProcessApproval => "process_approval",
+            NotificationKind::ProcessPullRequest => "process_pull_request",
             NotificationKind::Mention => "mention",
             NotificationKind::Answer => "answer",
             NotificationKind::Held => "held",
