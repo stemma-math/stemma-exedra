@@ -244,7 +244,22 @@ async fn authenticate(headers: &HeaderMap, state: &AppState) -> Result<Option<Vi
             _ => Scope::Full,
         };
         if let Scope::Process { work, attempt, .. } = &scope {
-            let alive: bool = sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM work_leases w JOIN workshop_processes p ON p.work_id=w.id WHERE w.id=? AND w.attempts=? AND w.state='running' AND w.heartbeat>? AND p.deadline>?)").bind(work).bind(*attempt).bind(now-crate::lease::EXPIRY_MILLIS).bind(now).fetch_one(&state.db).await?;
+            let alive: bool = sqlx::query_scalar(
+                "SELECT EXISTS(SELECT 1
+                 FROM work_leases w
+                 JOIN workshop_processes p ON p.work_id = w.id
+                 WHERE w.id = ?
+                 AND w.attempts = ?
+                 AND w.state = 'running'
+                 AND w.heartbeat > ?
+                 AND p.deadline > ?)",
+            )
+            .bind(work)
+            .bind(*attempt)
+            .bind(now - crate::lease::EXPIRY_MILLIS)
+            .bind(now)
+            .fetch_one(&state.db)
+            .await?;
             if !alive {
                 return Err(ApiError::forbidden("This process lease ended"));
             }

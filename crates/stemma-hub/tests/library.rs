@@ -178,8 +178,15 @@ async fn libraries_are_made_cloned_and_pushed_with_roles() {
 
     // Members can create and delete branches, but cannot update main or other refs.
     let bob = person(&hub, "bob", false).await;
-    sqlx::query("INSERT INTO memberships (group_id, user_id, role, joined_at) SELECT g.id, u.id, 'member', 0 FROM groups g, users u WHERE u.username = 'bob'")
-        .execute(&hub.state.db).await.unwrap();
+    sqlx::query(
+        "INSERT INTO memberships (group_id, user_id, role, joined_at)
+         SELECT g.id, u.id, 'member', 0
+         FROM groups g, users u
+         WHERE u.username = 'bob'",
+    )
+    .execute(&hub.state.db)
+    .await
+    .unwrap();
     let url = format!("http://bob:{bob}@{host}/git/geometry/library.git");
     assert!(
         git(work.path(), &["clone", "-q", &url, "member"])

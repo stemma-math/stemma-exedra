@@ -160,7 +160,21 @@ async fn machine(hub: &Hub, token: &str) -> Socket {
     socket
 }
 fn ask_body(recipe: &str, assignment: Value) -> Value {
-    json!({"recipe":recipe,"title":"Prove the identity","inputs":if recipe=="prove"{json!({"statement":"True"})}else{json!({"paper_reference":"notes"})},"assignment":assignment,"runner":"codex","model":null,"schedule":{"timezone":"Europe/Madrid"},"wait_hours":24})
+    let inputs = if recipe == "prove" {
+        json!({ "statement": "True" })
+    } else {
+        json!({ "paper_reference": "notes" })
+    };
+    json!({
+        "recipe": recipe,
+        "title": "Prove the identity",
+        "inputs": inputs,
+        "assignment": assignment,
+        "runner": "codex",
+        "model": null,
+        "schedule": { "timezone": "Europe/Madrid" },
+        "wait_hours": 24,
+    })
 }
 fn git(dir: &std::path::Path, token: &str, args: &[&str]) -> std::process::Output {
     std::process::Command::new("git")
@@ -289,7 +303,15 @@ async fn processes_push_only_their_branch_post_only_in_their_request_and_open_as
         403
     );
     let guest = person(&hub, "guest", false).await;
-    sqlx::query("INSERT INTO memberships(group_id,user_id,role,joined_at) SELECT g.id,u.id,'guest',0 FROM groups g,users u WHERE u.username='guest'").execute(&hub.state.db).await.unwrap();
+    sqlx::query(
+        "INSERT INTO memberships(group_id, user_id, role, joined_at)
+         SELECT g.id, u.id, 'guest', 0
+         FROM groups g, users u
+         WHERE u.username = 'guest'",
+    )
+    .execute(&hub.state.db)
+    .await
+    .unwrap();
     assert!(
         status(
             &hub,
@@ -502,7 +524,15 @@ async fn pending_offers_first_acceptance_recurring_slots_and_expiry_are_durable(
     )
     .await;
     let bob = person(&hub, "bob", false).await;
-    sqlx::query("INSERT INTO memberships(group_id,user_id,role,joined_at) SELECT g.id,u.id,'member',0 FROM groups g,users u WHERE u.username='bob'").execute(&hub.state.db).await.unwrap();
+    sqlx::query(
+        "INSERT INTO memberships(group_id, user_id, role, joined_at)
+         SELECT g.id, u.id, 'member', 0
+         FROM groups g, users u
+         WHERE u.username = 'bob'",
+    )
+    .execute(&hub.state.db)
+    .await
+    .unwrap();
     let bob_id: i64 = sqlx::query_scalar("SELECT id FROM users WHERE username='bob'")
         .fetch_one(&hub.state.db)
         .await
@@ -638,12 +668,34 @@ async fn pending_offers_first_acceptance_recurring_slots_and_expiry_are_durable(
     );
     x.unwrap();
     y.unwrap();
-    let count:i64=sqlx::query_scalar("SELECT count(*) FROM workshop_processes WHERE thread_id=(SELECT id FROM threads WHERE number=3)").fetch_one(&hub.state.db).await.unwrap();
+    let count: i64 = sqlx::query_scalar(
+        "SELECT count(*)
+         FROM workshop_processes
+         WHERE thread_id = (SELECT id FROM threads WHERE number = 3)",
+    )
+    .fetch_one(&hub.state.db)
+    .await
+    .unwrap();
     assert_eq!(count, 1);
-    sqlx::query("UPDATE workshop_requests SET next_at=? WHERE thread_id=(SELECT id FROM threads WHERE number=3)").bind(stemma_hub::db::now()-10_800_000).execute(&hub.state.db).await.unwrap();
+    sqlx::query(
+        "UPDATE workshop_requests
+         SET next_at = ?
+         WHERE thread_id = (SELECT id FROM threads WHERE number = 3)",
+    )
+    .bind(stemma_hub::db::now() - 10_800_000)
+    .execute(&hub.state.db)
+    .await
+    .unwrap();
     stemma_hub::workshop::tick(&hub.state).await.unwrap();
     stemma_hub::workshop::tick(&hub.state).await.unwrap();
-    let count:i64=sqlx::query_scalar("SELECT count(*) FROM workshop_processes WHERE thread_id=(SELECT id FROM threads WHERE number=3)").fetch_one(&hub.state.db).await.unwrap();
+    let count: i64 = sqlx::query_scalar(
+        "SELECT count(*)
+         FROM workshop_processes
+         WHERE thread_id = (SELECT id FROM threads WHERE number = 3)",
+    )
+    .fetch_one(&hub.state.db)
+    .await
+    .unwrap();
     assert_eq!(count, 2);
     call(
         &hub,
@@ -664,7 +716,14 @@ async fn pending_offers_first_acceptance_recurring_slots_and_expiry_are_durable(
         Some(expires),
     )
     .await;
-    sqlx::query("UPDATE workshop_processes SET expires_at=0 WHERE thread_id=(SELECT id FROM threads WHERE number=4)").execute(&hub.state.db).await.unwrap();
+    sqlx::query(
+        "UPDATE workshop_processes
+         SET expires_at = 0
+         WHERE thread_id = (SELECT id FROM threads WHERE number = 4)",
+    )
+    .execute(&hub.state.db)
+    .await
+    .unwrap();
     stemma_hub::workshop::tick(&hub.state).await.unwrap();
     let expired = call(
         &hub,

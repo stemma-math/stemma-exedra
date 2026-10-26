@@ -430,7 +430,15 @@ async fn attribution_runner(
     agent: Option<&str>,
 ) -> ApiResult<Option<String>> {
     if let crate::auth::Scope::Process { work, .. } = viewer.scope {
-        let raw: String = sqlx::query_scalar("SELECT r.ask FROM workshop_requests r JOIN workshop_processes p ON p.thread_id=r.thread_id WHERE p.work_id=?").bind(work).fetch_one(&state.db).await?;
+        let raw: String = sqlx::query_scalar(
+            "SELECT r.ask
+             FROM workshop_requests r
+             JOIN workshop_processes p ON p.thread_id = r.thread_id
+             WHERE p.work_id = ?",
+        )
+        .bind(work)
+        .fetch_one(&state.db)
+        .await?;
         let ask: stemma_core::workshop::Ask =
             serde_json::from_str(&raw).map_err(ApiError::internal)?;
         return Ok(Some(if ask.runner == "claude" {

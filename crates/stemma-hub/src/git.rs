@@ -130,8 +130,22 @@ async fn serve(
         attempt,
     } = viewer.scope
     {
-        let valid: bool = sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM work_leases WHERE id = ? AND group_id = ? AND repository = ? AND attempts = ? AND state = 'running')")
-            .bind(work).bind(group_id).bind(name).bind(attempt).fetch_one(&state.db).await.unwrap_or(false);
+        let valid: bool = sqlx::query_scalar(
+            "SELECT EXISTS(SELECT 1
+             FROM work_leases
+             WHERE id = ?
+             AND group_id = ?
+             AND repository = ?
+             AND attempts = ?
+             AND state = 'running')",
+        )
+        .bind(work)
+        .bind(group_id)
+        .bind(name)
+        .bind(attempt)
+        .fetch_one(&state.db)
+        .await
+        .unwrap_or(false);
         if group_id != membership.group_id || !valid {
             return refused(
                 StatusCode::FORBIDDEN,

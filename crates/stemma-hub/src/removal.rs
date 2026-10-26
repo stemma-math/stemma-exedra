@@ -206,7 +206,15 @@ pub async fn group(state: &AppState, group_id: i64, slug: &str) -> ApiResult<()>
     leftovers
         .repositories
         .push(crate::recipes::REPOSITORY.into());
-    let requests: Vec<i64> = sqlx::query_scalar("SELECT t.id FROM threads t JOIN workshop_requests r ON r.thread_id=t.id WHERE t.group_id=?").bind(group_id).fetch_all(&state.db).await?;
+    let requests: Vec<i64> = sqlx::query_scalar(
+        "SELECT t.id
+         FROM threads t
+         JOIN workshop_requests r ON r.thread_id = t.id
+         WHERE t.group_id = ?",
+    )
+    .bind(group_id)
+    .fetch_all(&state.db)
+    .await?;
     for id in requests {
         crate::workshop::forget_thread(state, id).await?;
     }

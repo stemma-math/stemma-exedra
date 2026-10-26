@@ -50,8 +50,19 @@ async fn authenticate(state: &AppState, headers: &HeaderMap) -> ApiResult<Machin
         )
     };
     let token = auth::bearer_token(headers).ok_or_else(invalid)?;
-    let row = sqlx::query_as("SELECT t.id, t.name, t.user_id AS owner_id, u.username, u.display_name FROM api_tokens t JOIN users u ON u.id = t.user_id WHERE t.token_hash = ? AND t.kind = 'personal' AND t.revoked_at IS NULL AND (t.expires_at IS NULL OR t.expires_at > ?)")
-        .bind(secret::token_hash(token)).bind(db::now()).fetch_optional(&state.db).await?;
+    let row = sqlx::query_as(
+        "SELECT t.id, t.name, t.user_id AS owner_id, u.username, u.display_name
+         FROM api_tokens t
+         JOIN users u ON u.id = t.user_id
+         WHERE t.token_hash = ?
+         AND t.kind = 'personal'
+         AND t.revoked_at IS NULL
+         AND (t.expires_at IS NULL OR t.expires_at > ?)",
+    )
+    .bind(secret::token_hash(token))
+    .bind(db::now())
+    .fetch_optional(&state.db)
+    .await?;
     row.ok_or_else(invalid)
 }
 
@@ -214,21 +225,9 @@ async fn talk(
                 let handled = match message {
                     WorkerMessage::Hello(hello) => {
                         anyhow::ensure!(hello.protocol == PROTOCOL_VERSION, "worker protocol changed");
-                        crate::builds::hello(state, worker_id, connection, &hello).await.map_err(|e| anyhow::anyhow!(e.message))?;
-                        crate::workshop::dispatch(state).await.map_err(|e| anyhow::anyhow!(e.message))?;
-                        jobs::hello(state, worker_id, connection, hello).await
+                        hello_again(state, worker_id, connection, hello).await
                     },
-                    WorkerMessage::ProcessDecision { process, accept, pending } => crate::workshop::decision(state, worker_id, connection, process, accept, pending).await,
-                    WorkerMessage::ProcessHeartbeat { lease } => crate::builds::heartbeat(state, worker_id, connection, lease).await,
-                    WorkerMessage::ProcessFinished { lease, result } => crate::workshop::finished(state, worker_id, connection, lease, *result).await,
-                    WorkerMessage::BuildHeartbeat { lease } => crate::builds::heartbeat(state, worker_id, connection, lease).await,
-                    WorkerMessage::BuildFinished { lease, result } => crate::builds::finished(state, worker_id, connection, lease, *result).await,
-                    WorkerMessage::Progress { job, text } => {
-                        jobs::progress(state, worker_id, connection, job, &text).await
-                    }
-                    WorkerMessage::Finished { job, outcome, usage } => {
-                        jobs::finished(state, worker_id, connection, job, outcome, usage).await
-                    }
+                    message => handle(state, worker_id, connection, message).await,
                 };
                 if let Err(error) = handled {
                     tracing::error!(worker = worker_id, error = error.message, "handling a machine's message");
@@ -246,5 +245,54 @@ async fn talk(
                 socket.send(WsMessage::Ping(Default::default())).await?;
             }
         }
+    }
+}
+
+/// A machine's new hello: what it can do now.
+async fn hello_again(
+    state: &AppState,
+    worker_id: i64,
+    connection: u64,
+    hello: stemma_core::protocol::Hello,
+) -> ApiResult<()> {
+    crate::builds::hello(state, worker_id, connection, &hello).await?;
+    crate::workshop::dispatch(state).await?;
+    jobs::hello(state, worker_id, connection, hello).await
+}
+
+/// What a machine says about its jobs, builds and processes.
+async fn handle(
+    state: &AppState,
+    worker_id: i64,
+    connection: u64,
+    message: WorkerMessage,
+) -> ApiResult<()> {
+    match message {
+        // `talk` checks a hello's protocol, and passes it to `hello_again`.
+        WorkerMessage::Hello(_) => Ok(()),
+        WorkerMessage::ProcessDecision {
+            process,
+            accept,
+            pending,
+        } => {
+            crate::workshop::decision(state, worker_id, connection, process, accept, pending).await
+        }
+        WorkerMessage::ProcessHeartbeat { lease } | WorkerMessage::BuildHeartbeat { lease } => {
+            crate::builds::heartbeat(state, worker_id, connection, lease).await
+        }
+        WorkerMessage::ProcessFinished { lease, result } => {
+            crate::workshop::finished(state, worker_id, connection, lease, *result).await
+        }
+        WorkerMessage::BuildFinished { lease, result } => {
+            crate::builds::finished(state, worker_id, connection, lease, *result).await
+        }
+        WorkerMessage::Progress { job, text } => {
+            jobs::progress(state, worker_id, connection, job, &text).await
+        }
+        WorkerMessage::Finished {
+            job,
+            outcome,
+            usage,
+        } => jobs::finished(state, worker_id, connection, job, outcome, usage).await,
     }
 }

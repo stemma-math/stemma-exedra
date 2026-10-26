@@ -146,8 +146,19 @@ async fn refresh_main(
     else {
         return Ok(());
     };
-    let known: bool = sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM work_leases WHERE group_id = ? AND repository = ? AND commit_sha = ? AND state != 'cancelled')")
-        .bind(group).bind(repository).bind(&head).fetch_one(&state.db).await?;
+    let known: bool = sqlx::query_scalar(
+        "SELECT EXISTS(SELECT 1
+         FROM work_leases
+         WHERE group_id = ?
+         AND repository = ?
+         AND commit_sha = ?
+         AND state != 'cancelled')",
+    )
+    .bind(group)
+    .bind(repository)
+    .bind(&head)
+    .fetch_one(&state.db)
+    .await?;
     let recorded: Option<String> = if let Some(paper) = paper {
         sqlx::query_scalar("SELECT head FROM papers WHERE id = ?")
             .bind(paper)
@@ -176,8 +187,19 @@ async fn refresh_main(
             .execute(&mut *tx)
             .await?;
     }
-    let old: Vec<(i64, i64, Option<i64>, Option<i64>)> = sqlx::query_as("SELECT id, attempts, holder, token_id FROM work_leases WHERE group_id = ? AND repository = ? AND commit_sha != ? AND state IN ('queued', 'running')")
-        .bind(group).bind(repository).bind(&head).fetch_all(&mut *tx).await?;
+    let old: Vec<(i64, i64, Option<i64>, Option<i64>)> = sqlx::query_as(
+        "SELECT id, attempts, holder, token_id
+         FROM work_leases
+         WHERE group_id = ?
+         AND repository = ?
+         AND commit_sha != ?
+         AND state IN ('queued', 'running')",
+    )
+    .bind(group)
+    .bind(repository)
+    .bind(&head)
+    .fetch_all(&mut *tx)
+    .await?;
     for (id, _, _, token) in &old {
         sqlx::query("UPDATE work_leases SET state = 'cancelled' WHERE id = ?")
             .bind(id)
@@ -198,26 +220,75 @@ async fn refresh_main(
             .await?;
         }
     }
-    let work = sqlx::query("INSERT INTO work_leases (group_id, repository, commit_sha, kind, created_at) VALUES (?, ?, ?, ?, ?) ON CONFLICT DO NOTHING")
-        .bind(group).bind(repository).bind(&head).bind(if paper.is_some() { "paper" } else { "library" }).bind(db::now()).execute(&mut *tx).await?;
+    let work = sqlx::query(
+        "INSERT INTO work_leases (group_id, repository, commit_sha, kind, created_at)
+         VALUES (?, ?, ?, ?, ?)
+         ON CONFLICT DO NOTHING",
+    )
+    .bind(group)
+    .bind(repository)
+    .bind(&head)
+    .bind(if paper.is_some() { "paper" } else { "library" })
+    .bind(db::now())
+    .execute(&mut *tx)
+    .await?;
     if work.rows_affected() > 0 {
         let id = work.last_insert_rowid();
         if let Some(paper) = paper {
-            sqlx::query("INSERT INTO paper_builds (paper_id, commit_sha, work_id, created_at) VALUES (?, ?, ?, ?)").bind(paper).bind(&head).bind(id).bind(db::now()).execute(&mut *tx).await?;
+            sqlx::query(
+                "INSERT INTO paper_builds (paper_id, commit_sha, work_id, created_at)
+                 VALUES (?, ?, ?, ?)",
+            )
+            .bind(paper)
+            .bind(&head)
+            .bind(id)
+            .bind(db::now())
+            .execute(&mut *tx)
+            .await?;
         } else {
-            sqlx::query("INSERT INTO library_builds (group_id, commit_sha, work_id, created_at) VALUES (?, ?, ?, ?)").bind(group).bind(&head).bind(id).bind(db::now()).execute(&mut *tx).await?;
+            sqlx::query(
+                "INSERT INTO library_builds (group_id, commit_sha, work_id, created_at)
+                 VALUES (?, ?, ?, ?)",
+            )
+            .bind(group)
+            .bind(&head)
+            .bind(id)
+            .bind(db::now())
+            .execute(&mut *tx)
+            .await?;
         }
     }
-    let resumed = sqlx::query("UPDATE work_leases SET state = 'queued', holder = NULL, connection = NULL, attempts = 0, heartbeat = NULL WHERE group_id = ? AND repository = ? AND commit_sha = ? AND state = 'cancelled'")
-        .bind(group).bind(repository).bind(&head).execute(&mut *tx).await?;
+    let resumed = sqlx::query(
+        "UPDATE work_leases
+         SET state = 'queued', holder = NULL, connection = NULL, attempts = 0,
+         heartbeat = NULL
+         WHERE group_id = ? AND repository = ? AND commit_sha = ? AND state = 'cancelled'",
+    )
+    .bind(group)
+    .bind(repository)
+    .bind(&head)
+    .execute(&mut *tx)
+    .await?;
     if resumed.rows_affected() > 0 {
         let table = if paper.is_some() {
             "paper_builds"
         } else {
             "library_builds"
         };
-        sqlx::query(sqlx::AssertSqlSafe(format!("UPDATE {table} SET accepted = 1, succeeded = NULL, error = NULL, finished_at = NULL WHERE work_id = (SELECT id FROM work_leases WHERE group_id = ? AND repository = ? AND commit_sha = ?)")))
-            .bind(group).bind(repository).bind(&head).execute(&mut *tx).await?;
+        sqlx::query(sqlx::AssertSqlSafe(format!(
+            "UPDATE {table}
+             SET accepted = 1, succeeded = NULL, error = NULL, finished_at = NULL
+             WHERE work_id = (SELECT id
+             FROM work_leases
+             WHERE group_id = ?
+             AND repository = ?
+             AND commit_sha = ?)"
+        )))
+        .bind(group)
+        .bind(repository)
+        .bind(&head)
+        .execute(&mut *tx)
+        .await?;
     }
     tx.commit().await?;
     let machines = state.build_machines.lock().await;
@@ -279,8 +350,16 @@ pub async fn dispatch(state: &AppState) -> ApiResult<()> {
             });
         }
     }
-    let waiting: Vec<Waiting> = sqlx::query_as("SELECT w.id, w.group_id, g.slug, g.name, w.repository, w.commit_sha, w.kind, w.attempts FROM work_leases w JOIN groups g ON g.id = w.group_id WHERE w.state = 'queued' AND w.kind != 'process' ORDER BY w.id")
-        .fetch_all(&state.db).await?;
+    let waiting: Vec<Waiting> = sqlx::query_as(
+        "SELECT w.id, w.group_id, g.slug, g.name, w.repository, w.commit_sha, w.kind,
+         w.attempts
+         FROM work_leases w
+         JOIN groups g ON g.id = w.group_id
+         WHERE w.state = 'queued' AND w.kind != 'process'
+         ORDER BY w.id",
+    )
+    .fetch_all(&state.db)
+    .await?;
     for work in waiting {
         for (holder, machine) in &machines.0 {
             let scope = machine.scope(&work.slug);
@@ -291,13 +370,30 @@ pub async fn dispatch(state: &AppState) -> ApiResult<()> {
             {
                 continue;
             }
-            let eligible: bool = sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM memberships m JOIN api_tokens t ON t.user_id = m.user_id WHERE m.group_id = ? AND m.user_id = ? AND m.role IN ('admin', 'member') AND t.id = ? AND t.revoked_at IS NULL AND (t.expires_at IS NULL OR t.expires_at > ?))")
-                .bind(work.group_id).bind(machine.owner).bind(holder).bind(db::now()).fetch_one(&state.db).await?;
+            let eligible: bool = sqlx::query_scalar(
+                "SELECT EXISTS(SELECT 1
+                 FROM memberships m
+                 JOIN api_tokens t ON t.user_id = m.user_id
+                 WHERE m.group_id = ?
+                 AND m.user_id = ?
+                 AND m.role IN ('admin', 'member')
+                 AND t.id = ?
+                 AND t.revoked_at IS NULL
+                 AND (t.expires_at IS NULL OR t.expires_at > ?))",
+            )
+            .bind(work.group_id)
+            .bind(machine.owner)
+            .bind(holder)
+            .bind(db::now())
+            .fetch_one(&state.db)
+            .await?;
             if !eligible {
                 continue;
             }
             let running: i64 = sqlx::query_scalar(
-                "SELECT count(*) FROM work_leases WHERE holder = ? AND state = 'running' AND kind != 'process'",
+                "SELECT count(*)
+                 FROM work_leases
+                 WHERE holder = ? AND state = 'running' AND kind != 'process'",
             )
             .bind(holder)
             .fetch_one(&state.db)
@@ -311,8 +407,22 @@ pub async fn dispatch(state: &AppState) -> ApiResult<()> {
             };
             let secret = crate::secret::token("stb_");
             let mut tx = state.db.begin().await?;
-            let token = sqlx::query("INSERT INTO api_tokens (user_id, name, token_hash, prefix, created_at, kind, group_id, build_work, lease_attempt, can_post, attachments, expires_at) VALUES (?, 'Build', ?, ?, ?, 'build', ?, ?, ?, 0, 'none', ?)")
-                .bind(machine.owner).bind(crate::secret::token_hash(&secret)).bind(&secret[..10]).bind(db::now()).bind(work.group_id).bind(work.id).bind(lease.attempt).bind(db::now()+lease::EXPIRY_MILLIS).execute(&mut *tx).await?.last_insert_rowid();
+            let token = sqlx::query(
+                "INSERT INTO api_tokens (user_id, name, token_hash, prefix, created_at, kind,
+                 group_id, build_work, lease_attempt, can_post, attachments, expires_at)
+                 VALUES (?, 'Build', ?, ?, ?, 'build', ?, ?, ?, 0, 'none', ?)",
+            )
+            .bind(machine.owner)
+            .bind(crate::secret::token_hash(&secret))
+            .bind(&secret[..10])
+            .bind(db::now())
+            .bind(work.group_id)
+            .bind(work.id)
+            .bind(lease.attempt)
+            .bind(db::now() + lease::EXPIRY_MILLIS)
+            .execute(&mut *tx)
+            .await?
+            .last_insert_rowid();
             if !lease::acquire(
                 &mut tx,
                 lease,
@@ -357,8 +467,27 @@ pub async fn heartbeat(
     lease: LeaseRef,
 ) -> ApiResult<()> {
     lease::heartbeat(state, holder, connection, lease).await?;
-    sqlx::query("UPDATE api_tokens SET expires_at = ? WHERE id = (SELECT token_id FROM work_leases WHERE id = ? AND holder = ? AND connection = ? AND attempts = ? AND state = 'running' AND heartbeat > ?) AND revoked_at IS NULL")
-        .bind(db::now()+lease::EXPIRY_MILLIS).bind(lease.id).bind(holder).bind(connection as i64).bind(lease.attempt).bind(db::now()-lease::EXPIRY_MILLIS).execute(&state.db).await?;
+    sqlx::query(
+        "UPDATE api_tokens
+         SET expires_at = ?
+         WHERE id = (SELECT token_id
+         FROM work_leases
+         WHERE id = ?
+         AND holder = ?
+         AND connection = ?
+         AND attempts = ?
+         AND state = 'running'
+         AND heartbeat > ?)
+         AND revoked_at IS NULL",
+    )
+    .bind(db::now() + lease::EXPIRY_MILLIS)
+    .bind(lease.id)
+    .bind(holder)
+    .bind(connection as i64)
+    .bind(lease.attempt)
+    .bind(db::now() - lease::EXPIRY_MILLIS)
+    .execute(&state.db)
+    .await?;
     Ok(())
 }
 
@@ -395,8 +524,21 @@ pub async fn finished(
         refresh(state, group, &repository, paper).await?;
     }
     let _turn = state.build_changes.lock().await;
-    let row: Option<(i64, String, Option<i64>)> = sqlx::query_as("SELECT group_id, kind, token_id FROM work_leases WHERE id = ? AND holder = ? AND connection = ? AND attempts = ? AND state IN ('running', 'cancelled')")
-        .bind(lease.id).bind(holder).bind(connection as i64).bind(lease.attempt).fetch_optional(&state.db).await?;
+    let row: Option<(i64, String, Option<i64>)> = sqlx::query_as(
+        "SELECT group_id, kind, token_id
+         FROM work_leases
+         WHERE id = ?
+         AND holder = ?
+         AND connection = ?
+         AND attempts = ?
+         AND state IN ('running', 'cancelled')",
+    )
+    .bind(lease.id)
+    .bind(holder)
+    .bind(connection as i64)
+    .bind(lease.attempt)
+    .fetch_optional(&state.db)
+    .await?;
     let Some((_group, kind, token)) = row else {
         return Ok(());
     };
@@ -447,17 +589,31 @@ pub async fn finished(
                 .await?;
         }
     } else if succeeded {
-        sqlx::query("UPDATE papers SET pdf_build = (SELECT id FROM paper_builds WHERE work_id = ?1) WHERE id = (SELECT paper_id FROM paper_builds WHERE work_id = ?1 AND accepted = 1 AND commit_sha = papers.head)")
-            .bind(lease.id).execute(&mut *tx).await?;
-    }
-    // A cancelled build's result is history only: its lease stays
-    // cancelled, so that main coming back to its commit builds it again.
-    sqlx::query("UPDATE work_leases SET state = CASE state WHEN 'cancelled' THEN state ELSE ? END, error = ? WHERE id = ?")
-        .bind(if succeeded { "passed" } else { "failed" })
-        .bind(error)
+        sqlx::query(
+            "UPDATE papers
+             SET pdf_build = (SELECT id FROM paper_builds WHERE work_id = ?1)
+             WHERE id = (SELECT paper_id
+             FROM paper_builds
+             WHERE work_id = ?1
+             AND accepted = 1
+             AND commit_sha = papers.head)",
+        )
         .bind(lease.id)
         .execute(&mut *tx)
         .await?;
+    }
+    // A cancelled build's result is history only: its lease stays
+    // cancelled, so that main coming back to its commit builds it again.
+    sqlx::query(
+        "UPDATE work_leases
+         SET state = CASE state WHEN 'cancelled' THEN state ELSE ? END, error = ?
+         WHERE id = ?",
+    )
+    .bind(if succeeded { "passed" } else { "failed" })
+    .bind(error)
+    .bind(lease.id)
+    .execute(&mut *tx)
+    .await?;
     sqlx::query("UPDATE api_tokens SET revoked_at = ? WHERE id = ?")
         .bind(db::now())
         .bind(token)
@@ -485,7 +641,16 @@ async fn token_lease(
     if allowed != work {
         return Err(ApiError::forbidden("This token belongs to another build"));
     }
-    let (holder, connection): (i64, i64) = sqlx::query_as("SELECT holder, connection FROM work_leases WHERE id = ? AND attempts = ? AND state = 'running'").bind(work).bind(attempt).fetch_optional(&state.db).await?.ok_or_else(|| ApiError::forbidden("This build lease ended"))?;
+    let (holder, connection): (i64, i64) = sqlx::query_as(
+        "SELECT holder, connection
+         FROM work_leases
+         WHERE id = ? AND attempts = ? AND state = 'running'",
+    )
+    .bind(work)
+    .bind(attempt)
+    .fetch_optional(&state.db)
+    .await?
+    .ok_or_else(|| ApiError::forbidden("This build lease ended"))?;
     Ok((holder, connection as u64, LeaseRef { id: work, attempt }))
 }
 async fn report(
@@ -549,8 +714,20 @@ pub async fn forget_repository(state: &AppState, group: i64, repository: &str) -
             });
         }
     }
-    sqlx::query("UPDATE api_tokens SET revoked_at = ? WHERE kind = 'build' AND build_work IN (SELECT id FROM work_leases WHERE group_id = ? AND repository = ?)")
-        .bind(db::now()).bind(group).bind(repository).execute(&state.db).await?;
+    sqlx::query(
+        "UPDATE api_tokens
+         SET revoked_at = ?
+         WHERE kind = 'build'
+         AND build_work IN (SELECT id
+         FROM work_leases
+         WHERE group_id = ?
+         AND repository = ?)",
+    )
+    .bind(db::now())
+    .bind(group)
+    .bind(repository)
+    .execute(&state.db)
+    .await?;
     sqlx::query("DELETE FROM work_leases WHERE group_id = ? AND repository = ?")
         .bind(group)
         .bind(repository)

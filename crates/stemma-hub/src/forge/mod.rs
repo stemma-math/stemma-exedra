@@ -435,8 +435,17 @@ pub async fn reconcile(state: &AppState) {
             }
         }
         let repos: Result<Vec<(String, String)>, _> = sqlx::query_as(
-            "SELECT g.slug, 'library' FROM groups g WHERE g.id = ?1 UNION ALL SELECT g.slug, p.repository FROM papers p JOIN groups g ON g.id = p.group_id WHERE g.id = ?1")
-            .bind(group_id).fetch_all(&state.db).await;
+            "SELECT g.slug, 'library'
+             FROM groups g
+             WHERE g.id = ?1 UNION ALL
+             SELECT g.slug, p.repository
+             FROM papers p
+             JOIN groups g ON g.id = p.group_id
+             WHERE g.id = ?1",
+        )
+        .bind(group_id)
+        .fetch_all(&state.db)
+        .await;
         if let Ok(repos) = repos {
             for (org, repo) in repos {
                 if let Err(error) = forge.protect_branch(&org, &repo, MAIN).await {

@@ -9,7 +9,8 @@ use anyhow::Context as _;
 use futures_util::{SinkExt, StreamExt};
 use stemma_core::api::{JobKind, PREFIX};
 use stemma_core::protocol::{
-    Hello, HubMessage, Outcome, PROTOCOL_VERSION, Usage, WORKER_PATH, WorkerMessage,
+    Hello, HubMessage, Others, Outcome, PROTOCOL_VERSION, ProcessResult, Usage, WORKER_PATH,
+    WorkerMessage,
 };
 use tokio::sync::mpsc;
 use tokio::task::JoinHandle;
@@ -274,16 +275,21 @@ async fn work(
                         jobs.0.insert(id, (kind, task));
                     }
                     Ok(HubMessage::ProcessOffer(offer)) => {
+                        let state = &context.config.paths.state;
                         if let Ok(true) = crate::processes::accepts(context, &offer) {
-                            let scope = crate::builds::capabilities(&settings, Some(&offer.group.slug));
-                            if let Ok(scope) = scope {
-                                match crate::approvals::receive(&context.config.paths.state, &context.hub, &owner, *offer, scope.others) {
-                                    Ok(_) => {},
-                                    Err(error) => tracing::warn!(%error, "could not retain process offer"),
-                                }
+                            // Kept for its owner to decide, here or in the app.
+                            if let Ok(scope) = crate::builds::capabilities(&settings, Some(&offer.group.slug))
+                                && let Err(error) = crate::approvals::receive(state, &context.hub, &owner, *offer, scope.others)
+                            {
+                                tracing::warn!(%error, "could not retain process offer");
                             }
                         } else {
-                            let _ = send(socket, &WorkerMessage::ProcessDecision { process: offer.process, accept: false, pending: false }).await;
+                            let declined = WorkerMessage::ProcessDecision {
+                                process: offer.process,
+                                accept: false,
+                                pending: false,
+                            };
+                            let _ = send(socket, &declined).await;
                         }
                     }
                     Ok(HubMessage::ProcessTaken { process }) => {
@@ -291,27 +297,39 @@ async fn work(
                         decisions.remove(&process);
                     }
                     Ok(HubMessage::Process(spec)) => {
-                        let lease=spec.lease;
-                        if processes.0.contains_key(&lease.id) {continue;}
+                        let lease = spec.lease;
+                        if processes.0.contains_key(&lease.id) { continue; }
+                        let running = processes.0.len();
                         let check = crate::builds::capabilities(&settings, Some(&spec.offer.group.slug)).and_then(|scope| {
-                            anyhow::ensure!(scope.enabled && processes.0.len() < scope.concurrency as usize, "This machine is at its process limit");
+                            anyhow::ensure!(
+                                scope.enabled && running < scope.concurrency as usize,
+                                "This machine is at its process limit"
+                            );
                             anyhow::ensure!(spec.owner.id == owner.id, "Process owner changed");
-                            anyhow::ensure!(spec.offer.requester.id==owner.id || scope.others!=stemma_core::protocol::Others::Never, "Other people's requests are disabled");
+                            anyhow::ensure!(
+                                spec.offer.requester.id == owner.id || scope.others != Others::Never,
+                                "Other people's requests are disabled"
+                            );
                             crate::approvals::start(&context.config.paths.state, &context.hub, &owner, &spec.offer)
                         });
-                        if let Err(error)=check {
-                            let result=stemma_core::protocol::ProcessResult {error:Some(format!("{error:#}")),..Default::default()};
-                            if let Err(error)=send(socket,&WorkerMessage::ProcessFinished{lease,result:Box::new(result)}).await {break error;}
+                        if let Err(error) = check {
+                            let result = ProcessResult { error: Some(format!("{error:#}")), ..Default::default() };
+                            let message = WorkerMessage::ProcessFinished { lease, result: Box::new(result) };
+                            if let Err(error) = send(socket, &message).await { break error; }
                             continue;
                         }
                         decisions.remove(&spec.offer.process);
-                        let context=context.clone();let results=process_results.clone();
-                        let task=tokio::spawn(async move { let result=crate::processes::run(context,*spec).await;let _=results.send((lease,result)); });
-                        processes.0.insert(lease.id,(lease,task));
+                        let context = context.clone();
+                        let results = process_results.clone();
+                        let task = tokio::spawn(async move {
+                            let result = crate::processes::run(context, *spec).await;
+                            let _ = results.send((lease, result));
+                        });
+                        processes.0.insert(lease.id, (lease, task));
                     }
                     Ok(HubMessage::CancelProcess { lease }) => {
-                        if processes.0.get(&lease.id).is_some_and(|(held,_)| *held==lease)
-                            && let Some((_,task))=processes.0.remove(&lease.id) {task.abort();}
+                        if processes.0.get(&lease.id).is_some_and(|(held, _)| *held == lease)
+                            && let Some((_, task)) = processes.0.remove(&lease.id) { task.abort(); }
                     }
                     Ok(HubMessage::Build(spec)) => {
                         let lease = spec.lease;
@@ -365,8 +383,9 @@ async fn work(
                 }
             }
             Some((lease, result)) = process_results_out.recv() => {
+                let message = WorkerMessage::ProcessFinished { lease, result: Box::new(result) };
                 if processes.0.remove(&lease.id).is_some()
-                    && let Err(error) = send(socket, &WorkerMessage::ProcessFinished { lease, result: Box::new(result) }).await { break error; }
+                    && let Err(error) = send(socket, &message).await { break error; }
             }
             Some((lease, result)) = build_results_out.recv() => {
                 if builds.0.remove(&lease.id).is_some()
@@ -389,17 +408,25 @@ async fn work(
                 }
             }
             _ = check.tick() => {
+                // Decisions taken on this machine, in the app or with `stemma workshop`.
                 if let Ok(store) = crate::approvals::read(&context.config.paths.state) {
-                    for pending in store.pending.iter().filter(|p| p.hub == context.hub && p.owner == owner.id) {
-                        let id=pending.offer.process;
-                        let decision=pending.decision.as_str();
-                        if decision != "approved" && decisions.get(&id).is_some_and(|s| s == decision) {continue;}
-                        if decision == "approved" {
-                            let scope=crate::builds::capabilities(&settings,Some(&pending.offer.group.slug));
-                            if !scope.is_ok_and(|s| processes.0.len() < s.concurrency as usize) {continue;}
+                    let mine = store.pending.iter().filter(|p| p.hub == context.hub && p.owner == owner.id);
+                    for pending in mine {
+                        let id = pending.offer.process;
+                        let decision = pending.decision.as_str();
+                        let approved = decision == "approved";
+                        if !approved && decisions.get(&id).is_some_and(|s| s == decision) { continue; }
+                        if approved {
+                            let scope = crate::builds::capabilities(&settings, Some(&pending.offer.group.slug));
+                            if !scope.is_ok_and(|s| processes.0.len() < s.concurrency as usize) { continue; }
                         }
-                        if let Err(error)=send(socket,&WorkerMessage::ProcessDecision {process:id,accept:decision=="approved",pending:decision=="pending"}).await {return error;}
-                        decisions.insert(id,decision.into());
+                        let message = WorkerMessage::ProcessDecision {
+                            process: id,
+                            accept: approved,
+                            pending: decision == "pending",
+                        };
+                        if let Err(error) = send(socket, &message).await { return error; }
+                        decisions.insert(id, decision.into());
                     }
                 }
                 let observed = std::fs::metadata(&settings.path).and_then(|m| m.modified()).ok();
