@@ -11,6 +11,7 @@
   let selected = $state("");
   let free = $state(true);
   let title = $state("");
+  let details = $state("");
   let inputs = $state<Record<string, string>>({});
   let who = $state("mine");
   let member = $state("");
@@ -84,7 +85,7 @@
       const ask: Ask = {
         recipe: free ? "" : selected,
         title,
-        inputs: free ? {} : inputs,
+        inputs: free ? (details.trim() ? { details } : {}) : inputs,
         assignment:
           who === "member"
             ? { kind: "member", user: Number(member) }
@@ -106,33 +107,38 @@
 
 <form class="card card__body stack" onsubmit={submit}>
   <h2>Ask the workshop</h2>
-  <div class="field">
-    <label class="field__label" for="ask-kind">How to ask</label>
-    <stemma-select>
-      <select
-        id="ask-kind"
-        class="input"
-        bind:value={free}
-        onchange={() => { if (!free) choose(); }}
+  <stemma-segmented label="How to ask">
+    <div class="segmented">
+      <button type="button" aria-pressed={free} onclick={() => (free = true)}>In plain words</button>
+      <button
+        type="button"
+        aria-pressed={!free}
+        onclick={() => {
+          if (free) choose();
+          free = false;
+        }}
       >
-        <option value={true}>In plain words</option>
-        <option value={false}>Choose a recipe</option>
-      </select>
-    </stemma-select>
-  </div>
+        With a recipe
+      </button>
+    </div>
+  </stemma-segmented>
   {#if free}
     <div class="field">
-      <label class="field__label" for="ask-free">What should the workshop do?</label>
-      <textarea
-        id="ask-free"
+      <label class="field__label" for="ask-title">What should the workshop do?</label>
+      <input
+        id="ask-title"
         class="input"
         bind:value={title}
         required
         maxlength="200"
         placeholder="Prove lemma 3.2 with Claude"
-      ></textarea>
+      />
+    </div>
+    <div class="field">
+      <label class="field__label" for="ask-details">Details (optional)</label>
+      <textarea id="ask-details" class="input" rows="4" bind:value={details}></textarea>
       <p class="field__hint">
-        Workshop chooses recipes and offers work to machines. A group model API key is needed.
+        The workshop chooses recipes and machines, with the group's model. Their owners approve each run.
       </p>
     </div>
   {:else}

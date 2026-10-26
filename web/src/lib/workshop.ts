@@ -157,6 +157,7 @@ export function scheduleText(ask: Ask): string {
 export interface WorkshopModel {
   provider: "anthropic" | "openai" | "openrouter";
   model: string;
+  has_key: boolean;
   last_four: string | null;
   set_by: User | null;
   set_at: number | null;
@@ -179,5 +180,6 @@ export interface WorkshopStatus {
     state: string;
     message: string | null;
     rebases: number;
+    thread: number;
   }[];
 }

@@ -4,65 +4,89 @@
   import type { WorkshopStatus } from "#lib/workshop.ts";
   import WorkshopState from "./WorkshopState.svelte";
 
+  // What the workshop's orchestrators are doing: the group's model, its use, and the merge queues.
   let { group }: { group: string } = $props();
   let status = $state<WorkshopStatus | null>(null);
-  const repositories = $derived([...new Set(status?.reviews.map((r) => r.repository) ?? [])]);
+
+  const thinking = $derived(status?.turns.filter((turn) => turn.thinking) ?? []);
+  const repositories = $derived([...new Set(status?.reviews.map((review) => review.repository))].sort());
+  const PROVIDERS: Record<string, string> = { anthropic: "Anthropic", openai: "OpenAI", openrouter: "OpenRouter" };
+
   $effect(() => {
     let active = true;
-    const load = () => api.workshopStatus(group).then((found) => {
-      if (active) status = found;
-    }).catch(toastError);
+    const load = () =>
+      api
+        .workshopStatus(group)
+        .then((found) => {
+          if (active) status = found;
+        })
+        .catch(toastError);
     void load();
     const timer = setInterval(load, 5000);
-    return () => { active = false; clearInterval(timer); };
+    return () => {
+      active = false;
+      clearInterval(timer);
+    };
   });
 </script>
 
 {#if status}
-  <section class="card card__body stack" aria-label="Orchestrators">
-    <h2>Orchestrators</h2>
+  {@const { model } = status}
+  <section class="card card__body stack" aria-label="The group's model">
     <dl class="request-facts">
-      <dt class="label">Group model</dt>
-      <dd>{status.model.last_four ? `${status.model.model} (${status.model.provider})` : "No API key set; free requests and reviews need one"}</dd>
-      <dt class="label">This month ({status.model.month}, UTC)</dt>
+      <dt class="label">The group's model</dt>
       <dd>
-        {(status.model.input_tokens + status.model.output_tokens).toLocaleString("en")} of {status.model.monthly_cap.toLocaleString("en")} tokens
-        {#if status.model.cost_usd !== null}, ${status.model.cost_usd.toFixed(4)} reported{/if}.
+        {#if model.has_key}
+          {model.model}, from {PROVIDERS[model.provider]}
+        {:else}
+          None yet: requests in plain words and reviews wait until an admin sets one
+        {/if}
       </dd>
+      <dt class="label">This month</dt>
+      <dd>
+        {(model.input_tokens + model.output_tokens).toLocaleString("en")} of
+        {model.monthly_cap.toLocaleString("en")} tokens{#if model.cost_usd !== null}, ${model.cost_usd.toFixed(2)}{/if}
+      </dd>
+      {#if thinking.length}
+        <dt class="label">Thinking about</dt>
+        <dd>
+          {#each thinking as turn, i (turn.number)}
+            {i ? ", " : ""}<a class="link" href="/g/{group}/t/{turn.number}"><span class="identifier">t{turn.number}</span></a>
+          {/each}
+        </dd>
+      {/if}
     </dl>
-    {#if status.model.stopped}
-      <p class="message message--warning" role="status">Monthly token cap reached. Thinking waits until next month or a higher cap.</p>
-    {/if}
-    {#if status.turns.length}
-      <div class="table">
-        {#each status.turns as turn (turn.number)}
-          <a class="table__row" href="/g/{group}/t/{turn.number}">
-            <span class="identifier">t{turn.number}</span>
-            <span>{turn.thinking ? "Workshop is thinking" : turn.waiting ?? "Waiting for work"}</span>
-          </a>
-        {/each}
-      </div>
+    {#if model.stopped}
+      <p class="message message--warning" role="status">
+        The workshop reached this month's cap. It stops thinking until next month or a higher cap.
+      </p>
     {/if}
   </section>
+
   {#each repositories as repository (repository)}
-    <details class="card disclosure" open>
-      <summary>Reviews and merge queue: {repository}</summary>
-      <div class="table">
-        {#each status.reviews.filter((r) => r.repository === repository) as review (review.id)}
-          <div class="table__row">
-            <span class="stack stack--tight grow">
-              <a class="link" href={review.url}>Pull request #{review.number}</a>
-              {#if review.message}
-                <span class="quiet">{review.message}</span>
-              {/if}
-              {#if review.rebases}
-                <span class="quiet">{review.rebases} of 3 rebases</span>
-              {/if}
-            </span>
-            <WorkshopState state={review.state} />
-          </div>
-        {/each}
+    <section class="stack" aria-label="Merge queue of {repository}">
+      <h2>Merge queue: {repository}</h2>
+      <div class="card">
+        <div class="table workshop-reviews">
+          {#each status.reviews.filter((review) => review.repository === repository) as review (review.id)}
+            <div class="table__row">
+              <span class="stack stack--tight">
+                <span>
+                  <a class="link" href={review.url}>Pull request {review.number}</a>, for
+                  <a class="link" href="/g/{group}/t/{review.thread}"><span class="identifier">t{review.thread}</span></a>
+                </span>
+                {#if review.message || review.rebases}
+                  <span class="quiet">
+                    {review.message ?? ""}{#if review.rebases}
+                      {review.message ? " – " : ""}{review.rebases === 1 ? "1 rebase" : `${review.rebases} rebases`} of 3{/if}
+                  </span>
+                {/if}
+              </span>
+              <WorkshopState state={review.state} />
+            </div>
+          {/each}
+        </div>
       </div>
-    </details>
+    </section>
   {/each}
 {/if}

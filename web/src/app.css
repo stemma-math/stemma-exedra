@@ -777,4 +777,5 @@ html .app .shell.is-resizing *::after {
   }
 }
 
-.workshop-requests { --columns: minmax(0, 1fr) auto; }
+.workshop-requests,
+.workshop-reviews { --columns: minmax(0, 1fr) auto; }

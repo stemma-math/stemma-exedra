@@ -3,16 +3,19 @@
 import type { Notification, Role } from "./api";
 import { ROLE_NAMES } from "./roles.ts";
 
-/** Who did it: a person, or an agent for them. */
+/** The workshop's orchestrators act for no one. */
+const byWorkshop = (n: Notification) => n.agent === "Workshop" && !n.actor;
+
+/** Who did it: a person, an agent for them, or the workshop. */
 function byOf(n: Notification): string {
-  if (n.agent === "Workshop" && !n.actor) return "Workshop";
+  if (byWorkshop(n)) return "Workshop";
   const person = n.actor?.display_name ?? "Someone";
   return n.agent ? `${n.agent}, for ${person}` : person;
 }
 
 /** The same, as a sentence starts with it. */
 export function whoOf(n: Notification): string {
-  return n.agent && (n.actor || n.agent !== "Workshop") ? `${byOf(n)},` : byOf(n);
+  return n.agent && !byWorkshop(n) ? `${byOf(n)},` : byOf(n);
 }
 
 /** The notification in a sentence, without what it is about. */

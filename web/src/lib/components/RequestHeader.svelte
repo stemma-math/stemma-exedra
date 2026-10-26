@@ -2,7 +2,7 @@
   import { api } from "#lib/api.ts";
   import { exactly } from "#lib/format.ts";
   import { toastError } from "#lib/toast.ts";
-  import { assignmentText, scheduleText, type Process, type WorkshopRequest } from "#lib/workshop.ts";
+  import { assignmentText, runnerName, scheduleText, type Process, type WorkshopRequest } from "#lib/workshop.ts";
   import Markdown from "./Markdown.svelte";
   import WorkshopState from "./WorkshopState.svelte";
 
@@ -86,7 +86,7 @@
       <dl class="request-facts">
         {#each Object.entries(request.ask.inputs) as [name, value] (name)}
           {@const input = recipe?.front.inputs[name]}
-          <dt class="label">{input?.description ?? name}</dt>
+          <dt class="label">{input?.description ?? name[0].toUpperCase() + name.slice(1)}</dt>
           <dd>
             {#if input?.kind === "paper"}
               <a class="link" href="/g/{group}/p/{value}"><span class="identifier">p/{value}</span></a>
@@ -99,24 +99,25 @@
             {/if}
           </dd>
         {/each}
-        <dt class="label">Who runs it</dt>
-        <dd>{assignmentText(request, memberNames)}</dd>
-        <dt class="label">When</dt>
-        <dd>
-          {scheduleText(request.ask)}{#if request.next_at !== null && request.ask.schedule.every && !request.paused}.
-            Next at {exactly(request.next_at, request.ask.schedule.timezone)}{/if}
-        </dd>
-        <dt class="label">Waits for a machine</dt>
-        <dd>At most {request.ask.wait_hours === 1 ? "an hour" : `${request.ask.wait_hours} hours`} per run</dd>
-        <dt class="label">Recipe</dt>
-        <dd>
-          {#if request.recipe.url}
+        {#if request.ask.recipe}
+          <dt class="label">Who runs it</dt>
+          <dd>{assignmentText(request, memberNames)}</dd>
+          <dt class="label">When</dt>
+          <dd>
+            {scheduleText(request.ask)}{#if request.next_at !== null && request.ask.schedule.every && !request.paused}.
+              Next at {exactly(request.next_at, request.ask.schedule.timezone)}{/if}
+          </dd>
+          <dt class="label">Waits for a machine</dt>
+          <dd>At most {request.ask.wait_hours === 1 ? "an hour" : `${request.ask.wait_hours} hours`} per run</dd>
+          <dt class="label">Recipe</dt>
+          <dd>
             <a class="link" href={request.recipe.url}>{request.recipe.name}</a>, version
             <code title={request.recipe.version}>{request.recipe.version.slice(0, 12)}</code>
-          {:else}
-            In plain words; Workshop chooses recipes for each process.
-          {/if}
-        </dd>
+          </dd>
+        {:else}
+          <dt class="label">Who runs it</dt>
+          <dd>The workshop chooses a recipe and machines for each process</dd>
+        {/if}
       </dl>
 
       {#if canManage && open}
@@ -144,7 +145,10 @@
           <span class="grow">Process {process.number}{process.machine ? `, on ${process.machine}` : ""}</span>
           <WorkshopState state={process.state} />
         </summary>
-        <p>{process.recipe.recipe?.front.title ?? process.recipe.name}, with {process.runner}{process.model ? ` (${process.model})` : ""}.</p>
+        <p>
+          {process.recipe.recipe?.front.title ?? process.recipe.name}, with
+          {runnerName(process.runner)}{process.model ? ` (${process.model})` : ""}.
+        </p>
         <p class="quiet">{times(process, request.ask)}.</p>
         {#if process.retry_of}<p class="quiet">A retry of process {process.retry_of}, on another machine.</p>{/if}
         {#if process.error}<p class="message message--danger">{process.error}</p>{/if}

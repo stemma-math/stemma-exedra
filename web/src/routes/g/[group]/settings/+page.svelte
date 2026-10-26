@@ -165,10 +165,6 @@
     </section>
   {/if}
 
-  {#if admin}
-    <WorkshopSettings group={group.slug} />
-  {/if}
-
   <section class="stack">
     <h2>The forge</h2>
     {#if forge}
@@ -182,6 +178,10 @@
       <p class="quiet">This hub runs without a forge: the group has no repositories.</p>
     {/if}
   </section>
+
+  {#if admin}
+    <WorkshopSettings group={group.slug} />
+  {/if}
 
 
 </main>
