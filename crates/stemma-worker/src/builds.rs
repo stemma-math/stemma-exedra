@@ -1,10 +1,10 @@
 //! Build execution has no access to model sign-ins or container credentials.
 use crate::{
-    isolation::{self, Isolator, Mount, Sandbox},
+    isolation::{self, Containers, Isolator, Mount, Sandbox},
     job::{Context, Progress},
     library::{self, Log},
 };
-use std::{path::Path, time::Duration};
+use std::{path::Path, sync::Arc, time::Duration};
 use stemma_client::config::Settings;
 use stemma_core::protocol::{BuildKind, BuildResult, BuildSpec, GroupWorkshop};
 
@@ -41,20 +41,33 @@ pub fn capabilities(settings: &Settings, group: Option<&str>) -> anyhow::Result<
     })
 }
 
-pub async fn run(context: &Context, spec: &BuildSpec) -> BuildResult {
+/// Builds, or declines with why when this machine cannot build now, so
+/// that the hub offers the build to another machine.
+pub async fn run(context: &Context, spec: &BuildSpec) -> Result<BuildResult, String> {
+    let (settings, group, containers) = prepare(context, spec)
+        .await
+        .map_err(|error| format!("{error:#}"))?;
     let log = Log::default();
-    let result =
-        tokio::time::timeout(Duration::from_secs(90 * 60), execute(context, spec, &log)).await;
+    let result = tokio::time::timeout(
+        Duration::from_secs(90 * 60),
+        execute(context, spec, &settings, &group, &containers, &log),
+    )
+    .await;
     let mut result = match result {
         Ok(Ok(result)) => result,
         Ok(Err(error)) => library::failed(&format!("{error:#}")),
         Err(_) => library::failed("The build exceeded 90 minutes"),
     };
     result.log = log.text();
-    result
+    Ok(result)
 }
 
-async fn execute(context: &Context, spec: &BuildSpec, log: &Log) -> anyhow::Result<BuildResult> {
+/// What a build needs before it starts: the group's settings, and containers
+/// with the workshop image.
+async fn prepare(
+    context: &Context,
+    spec: &BuildSpec,
+) -> anyhow::Result<(Settings, String, Arc<Containers>)> {
     let settings = Settings::load()?;
     let group = settings_group(context, spec)?;
     let capabilities = capabilities(&settings, Some(&group))?;
@@ -97,6 +110,17 @@ async fn execute(context: &Context, spec: &BuildSpec, log: &Log) -> anyhow::Resu
     else {
         anyhow::bail!("The workshop requires isolation");
     };
+    Ok((settings, group, containers))
+}
+
+async fn execute(
+    context: &Context,
+    spec: &BuildSpec,
+    settings: &Settings,
+    group: &str,
+    containers: &Containers,
+    log: &Log,
+) -> anyhow::Result<BuildResult> {
     let name = spec
         .repository
         .rsplit('/')
@@ -110,7 +134,7 @@ async fn execute(context: &Context, spec: &BuildSpec, log: &Log) -> anyhow::Resu
                 .all(|b| b.is_ascii_alphanumeric() || b"-_".contains(&b)),
         "Invalid build repository"
     );
-    let dir = settings.workspace(&group)?.join("builds").join(name);
+    let dir = settings.workspace(group)?.join("builds").join(name);
     let locks = context.config.paths.state.join("build-locks");
     std::fs::create_dir_all(&locks)?;
     let held = std::fs::OpenOptions::new()

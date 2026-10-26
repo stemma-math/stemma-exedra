@@ -149,6 +149,10 @@ pub fn router(state: AppState) -> Router {
         .route("/groups/{group}/library/builds", get(library::builds))
         .route("/groups/{group}/library/builds/{id}", get(library::build))
         .route(
+            "/groups/{group}/library/builds/{id}/again",
+            post(library::build_again),
+        )
+        .route(
             "/groups/{group}/library/declarations",
             get(library::declarations),
         )
@@ -171,6 +175,10 @@ pub fn router(state: AppState) -> Router {
         .route(
             "/groups/{group}/papers/{paper}/authors/{username}",
             put(papers::add_author).delete(papers::remove_author),
+        )
+        .route(
+            "/groups/{group}/papers/{paper}/builds/{id}/again",
+            post(papers::build_again),
         )
         .route("/groups/{group}/papers/{paper}/pdf", get(papers::pdf))
         .route("/groups/{group}/papers/{paper}/files", get(papers::files))

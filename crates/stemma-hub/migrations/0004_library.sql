@@ -18,6 +18,8 @@ CREATE TABLE library_builds (
     log TEXT,
     -- Lean's version, as it ran.
     lean TEXT,
+    -- The machine that built it, kept when it is built again.
+    machine TEXT,
     created_at INTEGER NOT NULL,
     finished_at INTEGER
 );

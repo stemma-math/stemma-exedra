@@ -6,7 +6,7 @@ pub use crate::api::JobKind;
 use crate::api::{AgentProfile, Message, ThreadKind, User};
 
 /// The version of this protocol. A hub refuses workers that speak another.
-pub const PROTOCOL_VERSION: u32 = 15;
+pub const PROTOCOL_VERSION: u32 = 16;
 
 /// The path of the workers' WebSocket, under the API's prefix.
 pub const WORKER_PATH: &str = "/worker";
@@ -35,6 +35,12 @@ pub enum WorkerMessage {
     BuildFinished {
         lease: LeaseRef,
         result: Box<BuildResult>,
+    },
+    /// This machine cannot build now (at its limit, or without the workshop
+    /// image): the hub offers the build to another machine.
+    BuildDeclined {
+        lease: LeaseRef,
+        reason: String,
     },
     /// What a job is doing now, for people watching: "Reading t12#3-5".
     Progress {

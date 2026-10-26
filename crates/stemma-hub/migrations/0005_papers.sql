@@ -36,6 +36,8 @@ CREATE TABLE paper_builds (
     log TEXT,
     -- The size of its uploaded PDF, in bytes, while it is kept.
     pdf_size INTEGER,
+    -- The machine that built it, kept when it is built again.
+    machine TEXT,
     created_at INTEGER NOT NULL,
     finished_at INTEGER
 );

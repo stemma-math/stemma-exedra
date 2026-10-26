@@ -286,6 +286,9 @@ async fn handle(
         WorkerMessage::BuildFinished { lease, result } => {
             crate::builds::finished(state, worker_id, connection, lease, *result).await
         }
+        WorkerMessage::BuildDeclined { lease, reason } => {
+            crate::builds::declined(state, worker_id, connection, lease, &reason).await
+        }
         WorkerMessage::Progress { job, text } => {
             jobs::progress(state, worker_id, connection, job, &text).await
         }

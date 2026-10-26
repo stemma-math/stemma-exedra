@@ -338,8 +338,8 @@ async fn work(
                             .and_then(|settings| crate::builds::capabilities(&settings, Some(&spec.group.slug)))
                             .is_ok_and(|scope| scope.enabled && scope.build && builds.0.len() < scope.build_concurrency as usize);
                         if !accepting {
-                            let result = crate::library::failed("This machine is not accepting another build for this group");
-                            if let Err(error) = send(socket, &WorkerMessage::BuildFinished { lease, result: Box::new(result) }).await { break error; }
+                            let reason = "This machine is not accepting another build for this group".into();
+                            if let Err(error) = send(socket, &WorkerMessage::BuildDeclined { lease, reason }).await { break error; }
                             continue;
                         }
                         let context = context.clone();
@@ -387,9 +387,13 @@ async fn work(
                 if processes.0.remove(&lease.id).is_some()
                     && let Err(error) = send(socket, &message).await { break error; }
             }
-            Some((lease, result)) = build_results_out.recv() => {
+            Some((lease, built)) = build_results_out.recv() => {
+                let message = match built {
+                    Ok(result) => WorkerMessage::BuildFinished { lease, result: Box::new(result) },
+                    Err(reason) => WorkerMessage::BuildDeclined { lease, reason },
+                };
                 if builds.0.remove(&lease.id).is_some()
-                    && let Err(error) = send(socket, &WorkerMessage::BuildFinished { lease, result: Box::new(result) }).await { break error; }
+                    && let Err(error) = send(socket, &message).await { break error; }
             }
             Some((job, text)) = progress_out.recv() => {
                 if jobs.0.contains_key(&job)

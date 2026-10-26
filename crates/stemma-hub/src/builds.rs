@@ -384,6 +384,7 @@ struct Waiting {
     commit_sha: String,
     kind: String,
     attempts: i64,
+    builder: Option<i64>,
 }
 
 pub async fn dispatch(state: &AppState) -> ApiResult<()> {
@@ -412,7 +413,7 @@ pub async fn dispatch(state: &AppState) -> ApiResult<()> {
     }
     let waiting: Vec<Waiting> = sqlx::query_as(
         "SELECT w.id, w.group_id, g.slug, g.name, w.repository, w.commit_sha, w.kind,
-         w.attempts
+         w.attempts, w.builder
          FROM work_leases w
          JOIN groups g ON g.id = w.group_id
          WHERE w.state = 'queued' AND w.kind != 'process'
@@ -427,7 +428,20 @@ pub async fn dispatch(state: &AppState) -> ApiResult<()> {
                 || !scope.build
                 || scope.build_concurrency == 0
                 || machine.sender.is_closed()
+                || work.builder.is_some_and(|builder| builder != machine.owner)
             {
+                continue;
+            }
+            let declined: bool = sqlx::query_scalar(
+                "SELECT EXISTS(SELECT 1
+                 FROM build_declines
+                 WHERE work_id = ? AND machine_id = ?)",
+            )
+            .bind(work.id)
+            .bind(holder)
+            .fetch_one(&state.db)
+            .await?;
+            if declined {
                 continue;
             }
             let eligible: bool = sqlx::query_scalar(
@@ -634,8 +648,11 @@ pub async fn finished(
     };
     sqlx::query(sqlx::AssertSqlSafe(format!(
         "UPDATE {table}
-         SET succeeded = ?, error = ?, log = ?, finished_at = ?
-         WHERE work_id = ?"
+         SET succeeded = ?1, error = ?2, log = ?3, finished_at = ?4,
+         machine = (SELECT machine
+         FROM work_leases
+         WHERE id = ?5)
+         WHERE work_id = ?5"
     )))
     .bind(succeeded)
     .bind(&error)
@@ -704,6 +721,220 @@ pub async fn finished(
     .await?;
     tx.commit().await?;
     publish(state, lease.id).await?;
+    drop(_turn);
+    dispatch(state).await
+}
+
+/// Why a queued build waits: for whose machines, and what the last machine
+/// that could not take it said.
+pub fn waiting(builder: Option<&str>, declined: Option<&str>) -> String {
+    let mut text = match builder {
+        Some(name) => format!("Waiting for {name}'s machines"),
+        None => "Waiting for a machine that builds".into(),
+    };
+    if let Some(declined) = declined {
+        text.push_str(&format!(". {declined}"));
+    }
+    text
+}
+
+/// A machine that cannot build now gives its build back: the build waits for
+/// another machine, and is not offered to this one again.
+pub async fn declined(
+    state: &AppState,
+    holder: i64,
+    connection: u64,
+    lease: LeaseRef,
+    reason: &str,
+) -> ApiResult<()> {
+    let _turn = state.build_changes.lock().await;
+    let reason = clean(reason, 500);
+    let mut tx = state.db.begin().await?;
+    let given: Option<(String, Option<i64>)> = sqlx::query_as(
+        "UPDATE work_leases
+         SET state = 'queued', holder = NULL, connection = NULL,
+         error = coalesce(machine, 'A machine') || ' could not build it: ' || ?
+         WHERE id = ?
+         AND holder = ?
+         AND connection = ?
+         AND attempts = ?
+         AND state = 'running'
+         RETURNING coalesce(machine, 'A machine'), token_id",
+    )
+    .bind(&reason)
+    .bind(lease.id)
+    .bind(holder)
+    .bind(connection as i64)
+    .bind(lease.attempt)
+    .fetch_optional(&mut *tx)
+    .await?;
+    let Some((machine, token)) = given else {
+        return Ok(());
+    };
+    sqlx::query(
+        "INSERT INTO build_declines (work_id, machine_id, machine, reason)
+         VALUES (?, ?, ?, ?)
+         ON CONFLICT DO UPDATE
+         SET machine = excluded.machine, reason = excluded.reason",
+    )
+    .bind(lease.id)
+    .bind(holder)
+    .bind(&machine)
+    .bind(&reason)
+    .execute(&mut *tx)
+    .await?;
+    sqlx::query(
+        "UPDATE api_tokens
+         SET revoked_at = ?
+         WHERE id = ?",
+    )
+    .bind(db::now())
+    .bind(token)
+    .execute(&mut *tx)
+    .await?;
+    tx.commit().await?;
+    publish(state, lease.id).await?;
+    drop(_turn);
+    dispatch(state).await
+}
+
+/// Builds again for `viewer`, a member or admin, on `builder`'s machines
+/// when they name a member or admin of the group.
+pub async fn again_for(
+    state: &AppState,
+    viewer: &Viewer,
+    group: &crate::api::Membership,
+    work: i64,
+    builder: Option<i64>,
+) -> ApiResult<()> {
+    viewer.require_full()?;
+    if group.role == stemma_core::api::Role::Guest {
+        return Err(ApiError::forbidden("Guests cannot build again"));
+    }
+    if let Some(builder) = builder {
+        let builds: bool = sqlx::query_scalar(
+            "SELECT EXISTS(SELECT 1
+             FROM memberships
+             WHERE group_id = ? AND user_id = ? AND role IN ('admin', 'member'))",
+        )
+        .bind(group.group_id)
+        .bind(builder)
+        .fetch_one(&state.db)
+        .await?;
+        if !builds {
+            return Err(ApiError::invalid(
+                "Choose a member or an admin of the group",
+            ));
+        }
+    }
+    again(state, work, builder).await
+}
+
+/// Builds main's newest commit again after it failed, on any machine or only
+/// on `builder`'s. The failed build stays, with its log, as history.
+pub async fn again(state: &AppState, work: i64, builder: Option<i64>) -> ApiResult<()> {
+    let _turn = state.build_changes.lock().await;
+    let (group, repository, commit, kind, lease_state): (i64, String, String, String, String) =
+        sqlx::query_as(
+            "SELECT group_id, repository, commit_sha, kind, state
+             FROM work_leases
+             WHERE id = ?",
+        )
+        .bind(work)
+        .fetch_optional(&state.db)
+        .await?
+        .ok_or_else(|| ApiError::not_found("Build"))?;
+    if lease_state != "failed" {
+        return Err(ApiError::conflict("Only a failed build builds again"));
+    }
+    let paper: Option<i64> = sqlx::query_scalar(
+        "SELECT id
+         FROM papers
+         WHERE group_id = ? AND repository = ?",
+    )
+    .bind(group)
+    .bind(&repository)
+    .fetch_optional(&state.db)
+    .await?;
+    let head: Option<String> = if let Some(paper) = paper {
+        sqlx::query_scalar(
+            "SELECT head
+             FROM papers
+             WHERE id = ?",
+        )
+        .bind(paper)
+        .fetch_one(&state.db)
+        .await?
+    } else {
+        sqlx::query_scalar(
+            "SELECT head
+             FROM libraries
+             WHERE group_id = ?",
+        )
+        .bind(group)
+        .fetch_one(&state.db)
+        .await?
+    };
+    if head.as_deref() != Some(&commit) {
+        return Err(ApiError::conflict("Only main's newest commit builds again"));
+    }
+    let table = if kind == "library" {
+        "library_builds"
+    } else {
+        "paper_builds"
+    };
+    let mut tx = state.db.begin().await?;
+    // The failed build keeps its log; a new one takes the lease.
+    sqlx::query(sqlx::AssertSqlSafe(format!(
+        "UPDATE {table}
+         SET work_id = NULL
+         WHERE work_id = ?"
+    )))
+    .bind(work)
+    .execute(&mut *tx)
+    .await?;
+    if let Some(paper) = paper {
+        sqlx::query(
+            "INSERT INTO paper_builds (paper_id, commit_sha, work_id, created_at)
+             VALUES (?, ?, ?, ?)",
+        )
+        .bind(paper)
+        .bind(&commit)
+        .bind(work)
+        .bind(db::now())
+        .execute(&mut *tx)
+        .await?;
+    } else {
+        sqlx::query(
+            "INSERT INTO library_builds (group_id, commit_sha, work_id, created_at)
+             VALUES (?, ?, ?, ?)",
+        )
+        .bind(group)
+        .bind(&commit)
+        .bind(work)
+        .bind(db::now())
+        .execute(&mut *tx)
+        .await?;
+    }
+    sqlx::query(
+        "UPDATE work_leases
+         SET state = 'queued', error = NULL, holder = NULL, connection = NULL,
+         machine = NULL, losses = 0, builder = ?
+         WHERE id = ?",
+    )
+    .bind(builder)
+    .bind(work)
+    .execute(&mut *tx)
+    .await?;
+    sqlx::query(
+        "DELETE FROM build_declines
+         WHERE work_id = ?",
+    )
+    .bind(work)
+    .execute(&mut *tx)
+    .await?;
+    tx.commit().await?;
+    publish(state, work).await?;
     drop(_turn);
     dispatch(state).await
 }

@@ -4,7 +4,7 @@ use stemma_core::protocol::LeaseRef;
 
 pub const HEARTBEAT_MILLIS: i64 = 15_000;
 pub const EXPIRY_MILLIS: i64 = 60_000;
-pub const MAX_ATTEMPTS: i64 = 3;
+pub const MAX_LOSSES: i64 = 3;
 
 /// Claim only a queued generation, in the caller's transaction with its scoped token.
 pub async fn acquire(
@@ -71,8 +71,8 @@ pub async fn release(
     now: i64,
 ) -> ApiResult<Vec<(i64, LeaseRef)>> {
     let mut tx = state.db.begin().await?;
-    let rows: Vec<(i64, i64, i64, Option<i64>)> = sqlx::query_as(
-        "SELECT id, attempts, holder, token_id
+    let rows: Vec<(i64, i64, i64, Option<i64>, i64)> = sqlx::query_as(
+        "SELECT id, attempts, holder, token_id, losses
          FROM work_leases
          WHERE state = 'running'
          AND ((?1 IS NULL AND heartbeat <= ?2) OR (holder = ?1 AND connection = ?3))",
@@ -83,13 +83,13 @@ pub async fn release(
     .fetch_all(&mut *tx)
     .await?;
     let mut ended = Vec::new();
-    for (id, attempt, machine, token) in rows {
+    for (id, attempt, machine, token, losses) in rows {
         let kind: String = sqlx::query_scalar("SELECT kind FROM work_leases WHERE id=?")
             .bind(id)
             .fetch_one(&mut *tx)
             .await?;
         let process = kind == "process";
-        let failed = process || attempt >= MAX_ATTEMPTS;
+        let failed = process || losses + 1 >= MAX_LOSSES;
         let error = if process {
             "The machine lost its process lease"
         } else {
@@ -97,7 +97,7 @@ pub async fn release(
         };
         sqlx::query(
             "UPDATE work_leases
-             SET state = ?, error = ?, holder = NULL, connection = NULL
+             SET state = ?, error = ?, holder = NULL, connection = NULL, losses = losses + 1
              WHERE id = ?",
         )
         .bind(if failed { "failed" } else { "queued" })

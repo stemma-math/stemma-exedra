@@ -188,7 +188,10 @@ managed workspace `builds/`, with no model credentials or agent sign-in
 mounts. The machine fetches exactly the requested commit using a short-lived
 build token that can only fetch that repository and report that build.
 Heartbeats run every 15 seconds; 60 seconds without one or a disconnected
-machine ends the lease. Work is queued again, up to three attempts. Only the
+machine ends the lease. Work is queued again, up to three lost leases.
+Before it starts, the machine checks its isolation and the workshop image;
+without them it declines the build, and the hub does not offer that build
+to it again. Only the
 latest main commit is active: older queued work is dropped, running work is
 cancelled, and a late result stays in history without replacing the last
 passing state. Logs have secrets hidden and keep their last 200 kB.

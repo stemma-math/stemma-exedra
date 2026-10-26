@@ -29,6 +29,12 @@ machine that builds”. The library keeps its last passing inspection and a
 paper its last passing PDF while newer work waits or fails. Only the latest
 commit counts: older work is cancelled and late results stay in history.
 
+A machine that cannot build, at its limit or without the workshop image,
+declines and the build goes to another; the build says which machine could
+not, and why. A failed build of `main`'s newest commit can be built again by
+a member or an admin, on any machine, on their own machines or on another
+member's. The failed build stays in history with its log.
+
 ## Names and addresses
 
 A group's admins change its name and short name in **Group settings**.

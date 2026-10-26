@@ -136,6 +136,10 @@ struct BuildRow {
     succeeded: Option<bool>,
     work_state: Option<String>,
     machine: Option<String>,
+    /// Why the build waits, when a machine could not take it.
+    work_error: Option<String>,
+    builder: Option<String>,
+    newest: bool,
     error: Option<String>,
     lean: Option<String>,
     created_at: i64,
@@ -144,8 +148,14 @@ struct BuildRow {
 
 macro_rules! build_query {
     () => {
-        "SELECT b.id, b.commit_sha, b.succeeded, b.error, b.lean, b.created_at, b.finished_at, w.state AS work_state, w.machine
-         FROM library_builds b LEFT JOIN work_leases w ON w.id = b.work_id"
+        "SELECT b.id, b.commit_sha, b.succeeded, b.error, b.lean, b.created_at, b.finished_at,
+                w.state AS work_state, coalesce(b.machine, w.machine) AS machine,
+                w.error AS work_error, u.display_name AS builder,
+                coalesce(b.commit_sha = l.head, 0) AS newest
+         FROM library_builds b
+         LEFT JOIN work_leases w ON w.id = b.work_id
+         LEFT JOIN users u ON u.id = w.builder
+         LEFT JOIN libraries l ON l.group_id = b.group_id"
     };
 }
 
@@ -165,13 +175,22 @@ impl BuildRow {
                 },
             },
             progress: match self.work_state.as_deref() {
-                Some("queued") => Some("Waiting for a machine that builds".into()),
+                Some("queued") => Some(crate::builds::waiting(
+                    self.builder.as_deref(),
+                    self.work_error.as_deref(),
+                )),
                 Some("running") => self
                     .machine
                     .as_ref()
                     .map(|name| format!("Building on {name}")),
                 _ => None,
             },
+            // A queued build has no machine yet, whoever declined it.
+            machine: self
+                .machine
+                .clone()
+                .filter(|_| self.work_state.as_deref() != Some("queued")),
+            again: self.work_state.as_deref() == Some("failed") && self.newest,
             error: self.error.clone(),
             lean: self.lean.clone(),
             created_at: db::from_millis(self.created_at),

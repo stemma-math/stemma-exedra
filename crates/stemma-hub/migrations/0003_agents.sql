@@ -70,7 +70,20 @@ CREATE TABLE work_leases (
     error TEXT,
     created_at INTEGER NOT NULL,
     review_build INTEGER NOT NULL DEFAULT 0,
+    -- Builds only on this person's machines, when someone asked for it.
+    builder INTEGER REFERENCES users (id) ON DELETE SET NULL,
+    -- Leases lost by their machines; building again starts over.
+    losses INTEGER NOT NULL DEFAULT 0,
     UNIQUE (group_id, repository, commit_sha)
+);
+
+-- Machines that could not take a build, and why; the build goes elsewhere.
+CREATE TABLE build_declines (
+    work_id INTEGER NOT NULL REFERENCES work_leases (id) ON DELETE CASCADE,
+    machine_id INTEGER NOT NULL REFERENCES api_tokens (id) ON DELETE CASCADE,
+    machine TEXT NOT NULL,
+    reason TEXT NOT NULL,
+    PRIMARY KEY (work_id, machine_id)
 );
 
 

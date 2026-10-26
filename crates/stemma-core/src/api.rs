@@ -672,6 +672,10 @@ pub struct Build {
     pub error: Option<String>,
     /// Lean's version, as it ran.
     pub lean: Option<String>,
+    /// The machine that built it, or builds it.
+    pub machine: Option<String>,
+    /// Whether it may build again: it failed, and is of main's newest commit.
+    pub again: bool,
     #[serde(with = "time::serde::rfc3339")]
     pub created_at: OffsetDateTime,
     #[serde(with = "time::serde::rfc3339::option")]
@@ -773,6 +777,10 @@ pub struct PaperBuild {
     pub progress: Option<String>,
     /// Why it failed, in a line.
     pub error: Option<String>,
+    /// The machine that built it, or builds it.
+    pub machine: Option<String>,
+    /// Whether it may build again: it failed, and is of main's newest commit.
+    pub again: bool,
     #[serde(with = "time::serde::rfc3339")]
     pub created_at: OffsetDateTime,
     #[serde(with = "time::serde::rfc3339::option")]
