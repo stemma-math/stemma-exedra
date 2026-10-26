@@ -225,13 +225,18 @@ async fn pass_on(forge: &Forge, path: &str, request: Request) -> anyhow::Result<
     Ok(response.body(Body::from_stream(answer.bytes_stream()))?)
 }
 
+/// The most of a push's request read before its pack: its command list.
+const MAX_COMMANDS: usize = 1024 * 1024;
+
 /// Parse the receive-pack command list, stopping at its flush before the pack.
 /// `None` means more bytes are needed. The returned offset starts the pack.
+/// A shallow clone's `shallow` lines come first, and name no ref.
 pub fn ref_updates(bytes: &[u8]) -> Result<Option<(Vec<String>, usize)>, &'static str> {
     let mut offset = 0;
     let mut refs = Vec::new();
+    let is_id = |s: &str| s.len() == 40 && s.bytes().all(|c| c.is_ascii_hexdigit());
     loop {
-        if offset > 1024 * 1024 {
+        if offset > MAX_COMMANDS {
             return Err("Git's command list is too large");
         }
         let Some(header) = bytes.get(offset..offset + 4) else {
@@ -253,16 +258,26 @@ pub fn ref_updates(bytes: &[u8]) -> Result<Option<(Vec<String>, usize)>, &'stati
         let line = std::str::from_utf8(line).map_err(|_| "Invalid git command")?;
         let command = line.split('\0').next().unwrap().trim_end_matches('\n');
         let fields: Vec<_> = command.split(' ').collect();
-        if fields.len() != 3
-            || !fields[..2]
-                .iter()
-                .all(|s| s.len() == 40 && s.bytes().all(|c| c.is_ascii_hexdigit()))
-        {
-            return Err("Invalid git ref update");
+        match fields[..] {
+            ["shallow", id] if refs.is_empty() && is_id(id) => {}
+            [old, new, name] if is_id(old) && is_id(new) => refs.push(name.to_owned()),
+            _ => return Err("Invalid git ref update"),
         }
-        refs.push(fields[2].to_owned());
         offset += length;
     }
+}
+
+/// Why `role` may not make these ref updates, if it may not.
+fn refused_ref(refs: &[String], role: Role) -> Option<&'static str> {
+    refs.iter().find_map(|name| {
+        if !name.starts_with("refs/heads/") && !name.starts_with("refs/tags/") {
+            Some("Pushes may update only branches and tags")
+        } else if name == "refs/heads/main" && role != Role::Admin {
+            Some("Only the group's admins may push to main; push a branch and open a pull request")
+        } else {
+            None
+        }
+    })
 }
 
 #[derive(Debug)]
@@ -270,14 +285,7 @@ struct PushError {
     message: &'static str,
     sideband: bool,
 }
-impl From<&'static str> for PushError {
-    fn from(message: &'static str) -> Self {
-        Self {
-            message,
-            sideband: false,
-        }
-    }
-}
+
 fn push_error(message: &'static str, commands: &[u8]) -> PushError {
     PushError {
         message,
@@ -288,89 +296,39 @@ fn push_error(message: &'static str, commands: &[u8]) -> PushError {
     }
 }
 
+/// Reads a push's command list, refuses it if `role` may not make its
+/// updates, and otherwise gives back the request as it came, streaming the
+/// pack after what was read.
 async fn check_push(request: Request, role: Role) -> Result<Request, PushError> {
     let (parts, body) = request.into_parts();
     let mut stream = body.into_data_stream();
-    let mut commands = Vec::new();
-    let mut offset = 0;
+    let mut read = Vec::new();
     loop {
-        let Some(chunk) = stream.next().await else {
-            return Err(push_error("Incomplete git command list", &commands));
-        };
-        let chunk = chunk.map_err(|_| "Could not read git commands")?;
-        let mut consumed = 0;
-        while consumed < chunk.len() {
-            let needed = if commands.len() < offset + 4 {
-                offset + 4
-            } else {
-                let h = std::str::from_utf8(&commands[offset..offset + 4])
-                    .map_err(|_| "Invalid git packet length")?;
-                let n = usize::from_str_radix(h, 16).map_err(|_| "Invalid git packet length")?;
-                if n == 0 {
-                    let (refs, _) = ref_updates(&commands)?.unwrap();
-                    for name in refs {
-                        if !name.starts_with("refs/heads/") && !name.starts_with("refs/tags/") {
-                            return Err(push_error(
-                                "Pushes may update only branches and tags",
-                                &commands,
-                            ));
-                        }
-                        if name == "refs/heads/main" && role != Role::Admin {
-                            return Err(push_error(
-                                "Only the group's admins may push to main; push a branch and open a pull request",
-                                &commands,
-                            ));
-                        }
-                    }
-                    let first = futures_util::stream::iter([
-                        Ok::<_, axum::Error>(axum::body::Bytes::from(commands)),
-                        Ok(chunk.slice(consumed..)),
-                    ]);
-                    return Ok(Request::from_parts(
-                        parts,
-                        Body::from_stream(first.chain(stream)),
-                    ));
+        // A command list complete with this chunk is checked at once: a
+        // push that deletes sends no pack to wait for.
+        match ref_updates(&read) {
+            Err(why) => return Err(push_error(why, &read)),
+            Ok(Some((refs, _))) => {
+                if let Some(why) = refused_ref(&refs, role) {
+                    return Err(push_error(why, &read));
                 }
-                if !(5..=65520).contains(&n) {
-                    return Err(push_error("Invalid git packet length", &commands));
-                }
-                if commands.len() == offset + n {
-                    offset += n;
-                    continue;
-                }
-                offset + n
-            };
-            let count = (needed - commands.len()).min(chunk.len() - consumed);
-            commands.extend_from_slice(&chunk[consumed..consumed + count]);
-            consumed += count;
-            if commands.len() > 1024 * 1024 {
-                return Err(push_error("Git's command list is too large", &commands));
+                let first = futures_util::stream::once(async move {
+                    Ok::<_, axum::Error>(axum::body::Bytes::from(read))
+                });
+                return Ok(Request::from_parts(
+                    parts,
+                    Body::from_stream(first.chain(stream)),
+                ));
             }
+            Ok(None) => {}
         }
-        // A flush at the end of this frame must not wait for a pack frame.
-        if commands.get(offset..offset + 4) == Some(b"0000") {
-            let (refs, _) = ref_updates(&commands)?.unwrap();
-            for name in refs {
-                if !name.starts_with("refs/heads/") && !name.starts_with("refs/tags/") {
-                    return Err(push_error(
-                        "Pushes may update only branches and tags",
-                        &commands,
-                    ));
-                }
-                if name == "refs/heads/main" && role != Role::Admin {
-                    return Err(push_error(
-                        "Only the group's admins may push to main; push a branch and open a pull request",
-                        &commands,
-                    ));
-                }
-            }
-            let first = futures_util::stream::once(async move {
-                Ok::<_, axum::Error>(axum::body::Bytes::from(commands))
-            });
-            return Ok(Request::from_parts(
-                parts,
-                Body::from_stream(first.chain(stream)),
-            ));
+        let Some(chunk) = stream.next().await else {
+            return Err(push_error("Incomplete git command list", &read));
+        };
+        let chunk = chunk.map_err(|_| push_error("Could not read git commands", &read))?;
+        read.extend_from_slice(&chunk);
+        if read.len() > MAX_COMMANDS + 65_520 {
+            return Err(push_error("Git's command list is too large", &read));
         }
     }
 }
@@ -439,5 +397,44 @@ mod tests {
         assert_eq!(ref_updates(b"0000").unwrap(), Some((vec![], 4)));
         assert!(ref_updates(b"nope").is_err());
         assert!(ref_updates(b"0001").is_err());
+    }
+
+    #[test]
+    fn shallow_clones_push_too() {
+        let shallow = format!("shallow {}", "c".repeat(40));
+        let update = format!(
+            "{} {} refs/heads/topic\0report-status\n",
+            "a".repeat(40),
+            "b".repeat(40)
+        );
+        let bytes = format!(
+            "{:04x}{shallow}{:04x}{update}0000",
+            shallow.len() + 4,
+            update.len() + 4
+        );
+        let (refs, _) = ref_updates(bytes.as_bytes()).unwrap().unwrap();
+        assert_eq!(refs, ["refs/heads/topic"]);
+        // Never after a ref update.
+        let late = format!(
+            "{:04x}{update}{:04x}{shallow}0000",
+            update.len() + 4,
+            shallow.len() + 4
+        );
+        assert!(ref_updates(late.as_bytes()).is_err());
+    }
+
+    #[test]
+    fn only_admins_update_main() {
+        let main = ["refs/heads/main".to_owned()];
+        assert!(refused_ref(&main, Role::Member).is_some());
+        assert!(refused_ref(&main, Role::Admin).is_none());
+        assert!(
+            refused_ref(
+                &["refs/heads/topic".to_owned(), "refs/tags/v1".to_owned()],
+                Role::Member
+            )
+            .is_none()
+        );
+        assert!(refused_ref(&["refs/notes/x".to_owned()], Role::Admin).is_some());
     }
 }
