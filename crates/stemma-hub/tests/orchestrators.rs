@@ -435,6 +435,8 @@ async fn a_built_pull_merges_as_workshop_and_queues_mains_build() {
     );
     stemma_hub::review::tick(&hub.state).await.unwrap();
     assert_eq!(review_state(&hub, 1).await, "merged");
+    let notices = call(&hub, &ada, "GET", "/me/notifications", None).await;
+    assert!(notices.to_string().contains("review_merged"));
     let pulls = hub._forge.pulls("geometry", "library");
     assert!(pulls[0].merged.is_some());
     let commit = pulls[0].merged.as_ref().unwrap();

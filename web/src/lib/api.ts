@@ -231,6 +231,8 @@ export type GroupEvent =
   | { type: "paper_deleted"; paper: string };
 
 export type NotificationKind =
+  | "review_merged"
+  | "review_refused"
   | "request_done"
   | "request_failed"
   | "request_expired"

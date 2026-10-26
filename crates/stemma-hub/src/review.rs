@@ -521,9 +521,9 @@ async fn finish(
         state,
         &[req.requester.id],
         &crate::notifications::Notice::new(if status == "merged" {
-            stemma_core::api::NotificationKind::RequestDone
+            stemma_core::api::NotificationKind::ReviewMerged
         } else {
-            stemma_core::api::NotificationKind::RequestFailed
+            stemma_core::api::NotificationKind::ReviewRefused
         })
         .at(r.group_id, thread, Some(number))
         .text(text),

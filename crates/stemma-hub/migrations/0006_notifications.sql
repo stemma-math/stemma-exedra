@@ -9,7 +9,8 @@ CREATE TABLE notifications (
         kind IN (
             'mention', 'answer', 'held', 'failed', 'note',
             'role', 'removed', 'approved', 'declined', 'requested',
-            'request_done', 'request_failed', 'request_expired', 'process_approval', 'process_pull_request'
+            'request_done', 'request_failed', 'request_expired', 'process_approval', 'process_pull_request',
+            'review_merged', 'review_refused'
         )
     ),
     group_id INTEGER REFERENCES groups (id) ON DELETE CASCADE,

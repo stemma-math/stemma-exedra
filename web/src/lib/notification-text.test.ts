@@ -20,6 +20,12 @@ const base: Notification = {
 describe("notifications", () => {
   it("say who did what, and where", () => {
     expect(sentenceOf(base)).toBe("Ada mentioned you in Gluing");
+    expect(sentenceOf({ ...base, kind: "review_merged" })).toBe(
+      "A pull request was merged into main in Gluing",
+    );
+    expect(sentenceOf({ ...base, kind: "review_refused" })).toBe(
+      "A pull request was refused in Gluing",
+    );
     expect(sentenceOf({ ...base, actor: null, agent: "Workshop" })).toBe(
       "Workshop mentioned you in Gluing",
     );
