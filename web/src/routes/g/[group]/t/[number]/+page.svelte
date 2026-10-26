@@ -282,7 +282,10 @@
       </p>
     </header>
 
-    {#if thread.kind === "request"}<RequestHeader group={group.slug} {number} {canManage} />{/if}
+    {#if thread.kind === "request"}
+      <!-- The loaded thread's number: the route's changes first, while the last thread shows. -->
+      <RequestHeader group={group.slug} number={thread.number} {canManage} />
+    {/if}
     {#if !messages.length}
       <p class="empty">No messages yet. Say the first thing.</p>
     {/if}

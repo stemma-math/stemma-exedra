@@ -70,7 +70,7 @@
         papers = papers.filter((p) => p.slug !== event.paper);
       } else if (event.type === "thread_created" || event.type === "thread_updated") {
         if (event.thread.kind === "chat") chats = applyThreadEvent(chats, event).slice(0, RECENT);
-        else threads = applyThreadEvent(threads, event).slice(0, RECENT);
+        else if (event.thread.kind === "discussion") threads = applyThreadEvent(threads, event).slice(0, RECENT);
       } else if (event.type === "thread_deleted") {
         // A deleted thread leaves room for another of the most recent.
         if (chats.some((t) => t.number === event.thread)) loadChats();
