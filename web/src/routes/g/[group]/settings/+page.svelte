@@ -12,6 +12,7 @@
   import { toastError } from "#lib/toast.ts";
   import Avatar from "#lib/components/Avatar.svelte";
   import Glyph from "#lib/components/Glyph.svelte";
+  import WorkshopSettings from "#lib/components/WorkshopSettings.svelte";
   import InvitationLinks from "#lib/components/InvitationLinks.svelte";
 
   const context = groupContext();
@@ -162,6 +163,10 @@
         linkOf={(token) => publicUrl(`/invite/${token}`)}
       />
     </section>
+  {/if}
+
+  {#if admin}
+    <WorkshopSettings group={group.slug} />
   {/if}
 
   <section class="stack">

@@ -5,13 +5,14 @@ import { ROLE_NAMES } from "./roles.ts";
 
 /** Who did it: a person, or an agent for them. */
 function byOf(n: Notification): string {
+  if (n.agent === "Workshop" && !n.actor) return "Workshop";
   const person = n.actor?.display_name ?? "Someone";
   return n.agent ? `${n.agent}, for ${person}` : person;
 }
 
 /** The same, as a sentence starts with it. */
 export function whoOf(n: Notification): string {
-  return n.agent ? `${byOf(n)},` : byOf(n);
+  return n.agent && (n.actor || n.agent !== "Workshop") ? `${byOf(n)},` : byOf(n);
 }
 
 /** The notification in a sentence, without what it is about. */

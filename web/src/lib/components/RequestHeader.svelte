@@ -110,8 +110,12 @@
         <dd>At most {request.ask.wait_hours === 1 ? "an hour" : `${request.ask.wait_hours} hours`} per run</dd>
         <dt class="label">Recipe</dt>
         <dd>
-          <a class="link" href={request.recipe.url}>{request.recipe.name}</a>, version
-          <code title={request.recipe.version}>{request.recipe.version.slice(0, 12)}</code>
+          {#if request.recipe.url}
+            <a class="link" href={request.recipe.url}>{request.recipe.name}</a>, version
+            <code title={request.recipe.version}>{request.recipe.version.slice(0, 12)}</code>
+          {:else}
+            In plain words; Workshop chooses recipes for each process.
+          {/if}
         </dd>
       </dl>
 
@@ -140,6 +144,7 @@
           <span class="grow">Process {process.number}{process.machine ? `, on ${process.machine}` : ""}</span>
           <WorkshopState state={process.state} />
         </summary>
+        <p>{process.recipe.recipe?.front.title ?? process.recipe.name}, with {process.runner}{process.model ? ` (${process.model})` : ""}.</p>
         <p class="quiet">{times(process, request.ask)}.</p>
         {#if process.retry_of}<p class="quiet">A retry of process {process.retry_of}, on another machine.</p>{/if}
         {#if process.error}<p class="message message--danger">{process.error}</p>{/if}

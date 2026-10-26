@@ -4,6 +4,7 @@
   import Glyph from "#lib/components/Glyph.svelte";
   import Loading from "#lib/components/Loading.svelte";
   import Markdown from "#lib/components/Markdown.svelte";
+  import WorkshopStatus from "#lib/components/WorkshopStatus.svelte";
   import WorkshopState from "#lib/components/WorkshopState.svelte";
   import { exactly } from "#lib/format.ts";
   import { groupContext } from "#lib/group.svelte.ts";
@@ -78,16 +79,18 @@
   <div class="page__head">
     <h1>Workshop</h1>
     {#if group.role !== "guest" && !asking}
-      <button type="button" class="button button--primary push" disabled={!recipes.some((r) => r.recipe)} onclick={() => (asking = true)}>
+      <button type="button" class="button button--primary push" onclick={() => (asking = true)}>
         <Glyph name="add" /> Ask the workshop
       </button>
     {/if}
   </div>
   <p class="quiet">
-    Choose a recipe and ask a member's machines to run it. Whoever owns the machine approves the use of their
-    models.
+    Ask in plain words or choose a recipe. Workshop coordinates the work;
+    whoever owns a machine approves the use of their models.
   </p>
   {#if asking}<AskWorkshop group={group.slug} {recipes} oncancel={() => (asking = false)} />{/if}
+
+  <WorkshopStatus group={group.slug} />
 
   <section class="stack" aria-label="Requests">
     <h2>Requests</h2>

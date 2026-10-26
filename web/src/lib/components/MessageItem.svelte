@@ -74,7 +74,11 @@
   {#if message.agent}
     <AgentAvatar name={message.agent} runner={message.agent_runner} />
   {:else}
-    <Avatar user={message.author} />
+    {#if message.orchestrator_model}
+      <AgentAvatar name="Workshop" />
+    {:else}
+      <Avatar user={message.author} />
+    {/if}
   {/if}
   <header class="post__head">
     {#if message.agent}
@@ -83,7 +87,10 @@
     {:else}
       <span class="post__author">{message.author.display_name}</span>
     {/if}
-    {#if message.workshop}<span class="chip chip--small chip--info">Workshop</span>{/if}
+    {#if message.orchestrator_model}
+      <span class="post__attribution" title="The group's model">{message.orchestrator_model}</span>
+    {/if}
+    {#if message.workshop && !message.orchestrator_model}<span class="chip chip--small chip--info">Workshop</span>{/if}
     <a class="post__number" href="#{message.number}" title={address}>#{message.number}</a>
     <time class="post__time" datetime={message.created_at} title={exactly(message.created_at)}>
       {when(message.created_at)}

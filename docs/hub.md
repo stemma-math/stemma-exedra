@@ -54,6 +54,20 @@ and set its public address.
 On its first start the hub prints a setup link for the first account, the
 hub's admin.
 
+## Workshop model keys
+
+Groups may give their workshop an API key in **Group settings › Workshop**.
+The hub encrypts keys in SQLite using `workshop.key`, created in its data
+folder on first start with mode 0600. Back up that file with the database.
+The API returns only the setter, time and last four characters, never the key.
+Keys are never sent to people's machines or agents.
+
+Whoever runs the hub could read them: the hub holds the encryption key and
+must decrypt each API key to call its provider. Each group should use a
+separate key made for this workshop, with a spending limit at its provider.
+The monthly token cap is checked before calls and can be exceeded by the last
+call's reported usage; it is not a replacement for the provider's limit.
+
 ## Accounts and invitations
 
 No one makes an account on their own. There are two kinds of link, both

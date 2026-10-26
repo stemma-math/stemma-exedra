@@ -181,6 +181,12 @@
           <code title={p.offer.recipe.version}>{p.offer.recipe.version.slice(0, 12)}</code>. Expires
           {exactly(p.offer.expires_at)}.
         </p>
+        {#if p.offer.rebase}
+          <p class="message message--warning">
+            Rebase {p.offer.rebase.path}: this process may force-push only
+            <code>{p.offer.rebase.branch}</code>.
+          </p>
+        {/if}
         <pre>{p.offer.prompt}</pre>
         <div class="field">
           <label class="field__label" for="approval-mode-{p.offer.process}">Approve</label

@@ -132,6 +132,7 @@ export interface Attachment {
 }
 
 export interface Message {
+  orchestrator_model?: string | null;
   workshop?: boolean;
   missing_references: string[];
   number: number;
@@ -454,6 +455,20 @@ const del = <T>(path: string) => request<T>("DELETE", path);
 const g = (group: string) => `/groups/${encodeURIComponent(group)}`;
 
 export const api = {
+  workshopModel: (group: string) =>
+    get<import("./workshop.ts").WorkshopModel>(`${g(group)}/workshop/model`),
+  updateWorkshopModel: (
+    group: string,
+    body: {
+      provider: string;
+      model: string;
+      api_key: string | null;
+      monthly_cap: number;
+      step_cap: number;
+    },
+  ) => put<import("./workshop.ts").WorkshopModel>(`${g(group)}/workshop/model`, body),
+  workshopStatus: (group: string) =>
+    get<import("./workshop.ts").WorkshopStatus>(`${g(group)}/workshop/status`),
   recipes: (group: string) =>
     get<import("./workshop.ts").RecipeFile[]>(`${g(group)}/workshop/recipes`),
   requests: (group: string, state = "open") =>

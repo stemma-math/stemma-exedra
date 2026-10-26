@@ -51,6 +51,10 @@ export interface Ask {
   wait_hours: number;
 }
 export interface Process {
+  recipe: RecipeFile;
+  inputs: Record<string, string>;
+  runner: string;
+  model: string | null;
   number: number;
   retry_of: number | null;
   slot: number;
@@ -80,6 +84,7 @@ export interface WorkshopRequest {
   processes: Process[];
 }
 export interface ProcessOffer {
+  rebase: { path: string; base: string; branch: string; force_push: boolean } | null;
   process: number;
   group: { id: number; slug: string; name: string };
   request: { number: number; title: string };
@@ -95,6 +100,12 @@ export interface ProcessOffer {
 
 /** How a request or a process is, as its chip says it. */
 const STATES: Record<string, { tone: string; text: string }> = {
+  queued: { tone: "neutral", text: "Queued" },
+  building: { tone: "info", text: "Building" },
+  reviewing: { tone: "info", text: "Reviewing" },
+  rebasing: { tone: "warning", text: "Rebasing" },
+  merged: { tone: "success", text: "Merged" },
+  refused: { tone: "danger", text: "Refused" },
   waiting: { tone: "neutral", text: "Waiting" },
   running: { tone: "info", text: "Running" },
   done: { tone: "success", text: "Done" },
@@ -141,4 +152,32 @@ export function scheduleText(ask: Ask): string {
     text = first ? `Once, at ${first}` : "Now";
   }
   return first ? `${text} (${timezone})` : text;
+}
+
+export interface WorkshopModel {
+  provider: "anthropic" | "openai" | "openrouter";
+  model: string;
+  last_four: string | null;
+  set_by: User | null;
+  set_at: number | null;
+  monthly_cap: number;
+  step_cap: number;
+  month: string;
+  input_tokens: number;
+  output_tokens: number;
+  cost_usd: number | null;
+  stopped: boolean;
+}
+export interface WorkshopStatus {
+  model: WorkshopModel;
+  turns: { number: number; thinking: boolean; waiting: string | null }[];
+  reviews: {
+    id: number;
+    repository: string;
+    number: number;
+    url: string;
+    state: string;
+    message: string | null;
+    rebases: number;
+  }[];
 }
