@@ -107,6 +107,8 @@ pub struct Toolbox {
     /// The group to use when a call names none.
     default_group: Option<String>,
     read_only: bool,
+    /// Tools that change something, offered even when read-only.
+    also: Vec<String>,
     attachment_dir: Option<std::path::PathBuf>,
 }
 
@@ -116,6 +118,7 @@ impl Toolbox {
             hub,
             default_group,
             read_only: false,
+            also: Vec::new(),
             attachment_dir: None,
         }
     }
@@ -123,6 +126,12 @@ impl Toolbox {
     /// Leaves out the tools that change anything.
     pub fn read_only(mut self, read_only: bool) -> Toolbox {
         self.read_only = read_only;
+        self
+    }
+
+    /// Offers these tools too, even when read-only.
+    pub fn also(mut self, names: Vec<String>) -> Toolbox {
+        self.also = names;
         self
     }
 
@@ -154,7 +163,9 @@ impl Toolbox {
     pub fn definitions(&self) -> Vec<ToolDef> {
         all_definitions()
             .into_iter()
-            .filter(|tool| !self.read_only || !tool.writes)
+            .filter(|tool| {
+                !self.read_only || !tool.writes || self.also.iter().any(|name| name == tool.name)
+            })
             .collect()
     }
 
@@ -215,4 +226,23 @@ async fn address_in(
         .map_err(|e| ToolError::invalid(format!("{written:?} is not an address: {e}")))?;
     let group = toolbox.group(group.or(located.group.as_deref())).await?;
     Ok((group, located.address))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_read_only_toolbox_offers_only_the_writes_it_is_given() {
+        let hub = crate::hub::Hub::new("http://127.0.0.1:1", None).unwrap();
+        let names = |toolbox: &Toolbox| -> Vec<&str> {
+            toolbox.definitions().into_iter().map(|t| t.name).collect()
+        };
+        let read_only = Toolbox::new(hub, None).read_only(true);
+        assert!(!names(&read_only).contains(&"ask_workshop"));
+        let answering = read_only.also(vec!["ask_workshop".into()]);
+        assert!(names(&answering).contains(&"ask_workshop"));
+        assert!(!names(&answering).contains(&"post_message"));
+        assert!(names(&answering).contains(&"read_thread"));
+    }
 }

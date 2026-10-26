@@ -136,8 +136,10 @@ stemma tools workshop ask prove "Prove the identity" --runner codex \
   --inputs '{"statement":"For every natural number n, n + 0 = n."}'
 ```
 
-Sessions may ask and cancel within their person's role. Answers' job tokens
-only read. These tools never approve the use of another person's models.
+Sessions may ask and cancel within their person's role. Answers may ask,
+for their person, and cannot cancel or change requests; a request an agent
+asked for opens saying which agent asked, for whom and from which thread.
+Processes never ask. These tools never approve the use of another person's models.
 
 ## Approval belongs to the machine
 

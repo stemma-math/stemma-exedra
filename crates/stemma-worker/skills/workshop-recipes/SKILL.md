@@ -18,9 +18,9 @@ only `main`: members propose recipes on a branch and a pull request, and the
 group's admins merge them. A file is UTF-8 and at most 128 KiB.
 
 Look at the recipes the group already has first (`stemma tools workshop
-recipes`, or the `recipes` tool), so as not to duplicate one and to match how
-the group writes them. `general.md` covers anything no other recipe does: a new
-recipe is worth it for work the group asks for often, or that needs its own
+recipes`, or the `list_recipes` tool), so as not to duplicate one and to match
+how the group writes them. `general.md` covers anything no other recipe does: a
+new recipe is worth it for work the group asks for often, or that needs its own
 inputs, limits or review.
 
 ## The file

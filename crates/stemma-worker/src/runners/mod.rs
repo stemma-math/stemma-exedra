@@ -51,7 +51,10 @@ pub fn allowed_tools(job: &JobSpec) -> Vec<&'static str> {
             .map(|t| t.name)
             .collect()
     } else {
-        stemma_client::tools::read_only_names()
+        // An answer reads, and may ask the workshop for work.
+        let mut names = stemma_client::tools::read_only_names();
+        names.push("ask_workshop");
+        names
     }
 }
 
@@ -87,9 +90,12 @@ pub fn mcp_args(
         "--agent".into(),
         agent.display_name.clone(),
         "--read-only".into(),
+        // An answer may ask the workshop for work.
+        "--also".into(),
+        "ask_workshop".into(),
     ];
     if job.process {
-        args.retain(|a| a != "--read-only");
+        args.truncate(args.len() - 3);
     }
     args
 }

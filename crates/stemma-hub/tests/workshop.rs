@@ -56,13 +56,36 @@ async fn processes_push_only_their_branch_post_only_in_their_request_and_open_as
         .await
         .is_success()
     );
+    // An answer asks for work, later so that no offer comes now; the new
+    // request says who asked. A process never asks.
+    let mut later = ask_body("prove", json!({"kind":"mine"}));
+    later["schedule"]["at"] = json!(stemma_hub::db::now() + 86_400_000);
+    let asked = call(
+        &hub,
+        &answer_token,
+        "POST",
+        "/groups/geometry/workshop/requests",
+        Some(later.clone()),
+    )
+    .await;
+    let number = asked["thread"]["number"].as_u64().unwrap();
+    let opened = call(
+        &hub,
+        &ada,
+        "GET",
+        &format!("/groups/geometry/threads/{number}"),
+        None,
+    )
+    .await;
+    assert_eq!(opened["messages"][0]["agent"], "Codex");
+    assert_eq!(opened["messages"][0]["body"], "Asked by Codex, for ada.");
     assert_eq!(
         status(
             &hub,
-            &answer_token,
+            token,
             "POST",
             "/api/v1/groups/geometry/workshop/requests",
-            ask_body("prove", json!({"kind":"mine"}))
+            later
         )
         .await,
         403

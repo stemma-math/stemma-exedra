@@ -239,8 +239,9 @@ revoked when the session ends. It reads the group, and posts, opens
 discussions and leaves notes for members there, always as "Claude, for
 Ada". It cannot push, attach
 files, or reach your account, your tokens, invitations, members or the
-group's settings. **A job's token** is for one answer: it only reads the
-group, and the hub posts the answer itself. Your computer's own token, and
+group's settings. **A job's token** is for one answer: it reads the group
+and may ask the workshop for work, for you, and the hub posts the answer
+itself. Your computer's own token, and
 any token made in Devices, never reaches an agent.
 
 ### Tools in the terminal
@@ -304,7 +305,9 @@ read-write; the job's folder, with its token, read-only; and the agent's
 own sign-in. It can run `lake build` or `latexmk` to check its answer.
 Without isolation, the agent only answers: Claude Code with none of its own
 tools, Codex in its read-only sandbox, OpenCode only reading. Either way,
-Stemma's tools only read.
+Stemma's tools only read, and ask the workshop: an answer asked to have
+work done makes a request on the board, for you, which opens saying which
+agent asked and from which thread. It cannot cancel or change requests.
 
 ### Held answers
 

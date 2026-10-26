@@ -255,14 +255,69 @@ pub(crate) async fn to_api(state: &AppState, mut row: Row) -> ApiResult<Request>
         processes,
     })
 }
+/// People, their sessions and their answers ask; a process never asks for
+/// more processes.
 fn may_ask(viewer: &Viewer) -> ApiResult<()> {
-    if viewer.agent().is_some_and(|a| !a.session)
-        || matches!(viewer.scope, crate::auth::Scope::Process { .. })
-    {
+    if matches!(viewer.scope, crate::auth::Scope::Process { .. }) {
+        return Err(ApiError::forbidden("A process cannot ask the workshop"));
+    }
+    Ok(())
+}
+/// People and their sessions cancel, pause and resume; answers and
+/// processes do not.
+fn may_act(viewer: &Viewer) -> ApiResult<()> {
+    if viewer.agent().is_some_and(|a| !a.session) {
         return Err(ApiError::forbidden(
-            "This token only reads workshop requests",
+            "An answer asks the workshop, but cannot change a request",
         ));
     }
+    Ok(())
+}
+/// Opens a request an agent asked for with a line saying who asked, for
+/// whom and from where.
+async fn asked_by_agent(
+    state: &AppState,
+    group: &Membership,
+    viewer: &Viewer,
+    thread: i64,
+) -> ApiResult<()> {
+    let Some(agent) = viewer.agent() else {
+        return Ok(());
+    };
+    let from: Option<i64> = match agent.thread_id {
+        Some(id) => {
+            sqlx::query_scalar(
+                "SELECT number
+             FROM threads
+             WHERE id = ?",
+            )
+            .bind(id)
+            .fetch_optional(&state.db)
+            .await?
+        }
+        None => None,
+    };
+    let mut text = format!("Asked by {}, for {}", agent.agent, viewer.display_name);
+    if let Some(number) = from {
+        text.push_str(&format!(", from [[t{number}]]"));
+    }
+    text.push('.');
+    let mut tx = state.db.begin().await?;
+    let (number, stored) = forum::insert_message(
+        &mut tx,
+        group,
+        thread,
+        viewer.id,
+        Some(&agent.agent),
+        None,
+        &text,
+        None,
+        &[],
+        true,
+    )
+    .await?;
+    tx.commit().await?;
+    forum::publish_post(state, group, thread, number, &stored).await?;
     Ok(())
 }
 pub async fn ask(
@@ -436,6 +491,7 @@ pub async fn ask(
         group.group_id,
         stemma_core::api::Event::ThreadCreated { thread: thread_api },
     );
+    asked_by_agent(&state, &group, &viewer, thread).await?;
     tick(&state).await?;
     crate::orchestrator::dispatch(&state).await?;
     Ok(Json(
@@ -453,7 +509,7 @@ pub async fn action(
     Path((slug, number)): Path<(String, u32)>,
     Json(action): Json<Action>,
 ) -> ApiResult<Json<Request>> {
-    may_ask(&viewer)?;
+    may_act(&viewer)?;
     let group = Membership::of(&state, &viewer, &slug).await?;
     let row = find(&state, group.group_id, number).await?;
     if !group.role.can_write() {
