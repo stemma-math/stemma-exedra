@@ -310,6 +310,10 @@ export interface Build {
   progress: string | null;
   error: string | null;
   lean: string | null;
+  /** The machine that built it, or builds it. */
+  machine: string | null;
+  /** Whether it may build again: it failed, and is of main's newest commit. */
+  again: boolean;
   created_at: string;
   finished_at: string | null;
 }
@@ -375,6 +379,8 @@ export interface PaperBuild {
   state: BuildState;
   progress: string | null;
   error: string | null;
+  machine: string | null;
+  again: boolean;
   created_at: string;
   finished_at: string | null;
 }
@@ -611,6 +617,12 @@ export const api = {
     get<DeclarationPage>(`${g(group)}/library/declarations/${encodeURIComponent(name)}`),
   builds: (group: string) => get<Build[]>(`${g(group)}/library/builds`),
   build: (group: string, id: number) => get<BuildLog>(`${g(group)}/library/builds/${id}`),
+  buildAgain: (group: string, id: number, builder: number | null) =>
+    post<Build>(`${g(group)}/library/builds/${id}/again`, { builder }),
+  paperBuildAgain: (group: string, paper: string, id: number, builder: number | null) =>
+    post<PaperPage>(`${g(group)}/papers/${encodeURIComponent(paper)}/builds/${id}/again`, {
+      builder,
+    }),
 
   papers: (group: string) => get<Paper[]>(`${g(group)}/papers`),
   paperContents: (group: string, slug: string) =>
