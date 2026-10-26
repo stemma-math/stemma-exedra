@@ -121,6 +121,52 @@ fn signed_in() -> Vec<String> {
         .unwrap_or_default()
 }
 #[tauri::command]
+async fn workshop_state(window: WebviewWindow) -> Result<serde_json::Value> {
+    local(&window)?;
+    let paths = stemma_client::config::Paths::discover().map_err(error)?;
+    let store = stemma_worker::approvals::read(&paths.state).map_err(error)?;
+    let log = std::fs::read_to_string(paths.state.join("logs/workshop.jsonl")).unwrap_or_default();
+    Ok(
+        serde_json::json!({"store":store,"log":log.lines().rev().take(200).collect::<Vec<_>>().into_iter().rev().collect::<Vec<_>>().join("\n")}),
+    )
+}
+#[tauri::command]
+async fn workshop_decision(
+    window: WebviewWindow,
+    process: Option<i64>,
+    approval: Option<u64>,
+    mode: String,
+    limits: stemma_worker::approvals::Limits,
+) -> Result<()> {
+    local(&window)?;
+    let paths = stemma_client::config::Paths::discover().map_err(error)?;
+    let credentials = Credentials::load().map_err(error)?.with_env();
+    let hub = credentials
+        .hub
+        .ok_or_else(|| "Sign in to a hub first".to_owned())?;
+    match mode.as_str() {
+        "revoke" => stemma_worker::approvals::revoke(
+            &paths.state,
+            &hub,
+            approval.ok_or("Missing approval")?,
+        )
+        .map_err(error),
+        "decline" => {
+            stemma_worker::approvals::decline(&paths.state, &hub, process.ok_or("Missing process")?)
+                .map_err(error)
+        }
+        "once" | "series" | "recipe" => stemma_worker::approvals::approve(
+            &paths.state,
+            &hub,
+            process.ok_or("Missing process")?,
+            &mode,
+            limits,
+        )
+        .map_err(error),
+        _ => Err("Unknown workshop decision".into()),
+    }
+}
+#[tauri::command]
 async fn diagnostics(window: WebviewWindow, group: Option<String>) -> Result<Diagnostics> {
     local(&window)?;
     Ok(Diagnostics {
@@ -441,6 +487,8 @@ fn main() {
             }
         })
         .invoke_handler(tauri::generate_handler![
+            workshop_state,
+            workshop_decision,
             snapshot,
             diagnostics,
             open_external,

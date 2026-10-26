@@ -6,7 +6,7 @@ use serde_json::{Map, Value};
 use stemma_client::config::{self, Credentials};
 use stemma_client::tools::{ToolDef, Toolbox, all_definitions};
 
-const HELP: &str = "{about}\n\nUsage: {usage}\n\nThe forum:\n  threads     List threads; new opens a thread\n  read        Read a thread, declaration or paper\n  post        Post a message\n  search      Search the forum\n  notify      Leave a note for some of the group's members\n\nLibrary and papers:\n  library     Browse the library; lookup and search declarations\n  papers      List papers; read a paper's source\n  paper       Create a paper with new\n\nFiles:\n  attachment  Download an attachment\n\n{options}";
+const HELP: &str = "{about}\n\nUsage: {usage}\n\nThe forum:\n  threads     List threads; new opens a thread\n  read        Read a thread, declaration or paper\n  post        Post a message\n  search      Search the forum\n  notify      Leave a note for some of the group's members\n\nLibrary and papers:\n  library     Browse the library; lookup and search declarations\n  papers      List papers; read a paper's source\n  paper       Create a paper with new\n\nWorkshop:\n  workshop    Recipes and requests; ask and cancel\n\nFiles:\n  attachment  Download an attachment\n\n{options}";
 
 fn add(command: Command, path: &[&'static str], def: &ToolDef) -> Command {
     let Some((&name, rest)) = path.split_first() else {
@@ -41,6 +41,7 @@ fn add(command: Command, path: &[&'static str], def: &ToolDef) -> Command {
         }
         return command;
     };
+    let command = command.subcommand_negates_reqs(true);
     if command.find_subcommand(name).is_some() {
         command.mut_subcommand(name, |child| add(child, rest, def))
     } else {
@@ -91,6 +92,8 @@ pub async fn run(matches: &ArgMatches) -> anyhow::Result<()> {
                     "{key} is outside its allowed range"
                 );
                 Value::from(number)
+            } else if schema["type"] == "object" || schema["type"] == "array" {
+                serde_json::from_str(value)?
             } else {
                 Value::from(value.clone())
             };

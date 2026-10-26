@@ -297,6 +297,8 @@ impl Settings {
         for (key, value) in [
             ("enabled", Value::Boolean(false)),
             ("build", Value::Boolean(false)),
+            ("runners", Value::Array(vec![])),
+            ("others", Value::String("ask".into())),
             ("build_concurrency", Value::Integer(1)),
             ("concurrency", Value::Integer(1)),
             (
@@ -614,6 +616,7 @@ fn parse_value(key: &str, text: &str) -> anyhow::Result<Value> {
             )
         }
     } else if key.ends_with(".files")
+        || key == "workshop.runners"
         || key.ends_with(".enabled")
         || key == "workshop.build"
         || key.ends_with("build_concurrency")
@@ -652,6 +655,18 @@ fn validate(key: &str, value: &Value) -> anyhow::Result<()> {
                 .as_integer()
                 .is_some_and(|n| n > 0 && n <= u32::MAX as i64),
             "{key} must be a positive integer"
+        );
+    } else if key == "workshop.others" {
+        anyhow::ensure!(
+            matches!(value.as_str(), Some("ask" | "never")),
+            "workshop.others must be ask or never"
+        );
+    } else if key == "workshop.runners" {
+        anyhow::ensure!(
+            value.as_array().is_some_and(|a| a
+                .iter()
+                .all(|r| matches!(r.as_str(), Some("claude" | "codex" | "opencode")))),
+            "workshop.runners must list claude, codex or opencode"
         );
     } else if key.ends_with(".args") || key.ends_with(".env") {
         anyhow::ensure!(

@@ -178,6 +178,33 @@ fn filename(disposition: &str) -> String {
     }
 }
 
+pub fn upload_definition() -> ToolDef {
+    ToolDef {
+        name: "upload_attachment",
+        terminal: &["attachment", "upload"],
+        positional: &["path"],
+        description: "Upload a local file and return its attachment id. Attach it to a message with post_message's attachments argument. Process tokens attach only in their request's thread.",
+        writes: true,
+        input_schema: json!({"type":"object","properties":{"group":{"type":"string","description":GROUP},"path":{"type":"string"}},"required":["path"]}),
+        handler: |t, a, _| {
+            Box::pin(async move {
+                let group = t.group(a["group"].as_str()).await?;
+                let path = a["path"]
+                    .as_str()
+                    .ok_or_else(|| ToolError::invalid("Expected a file path"))?;
+                let file = t
+                    .hub()
+                    .upload_attachment(&group, std::path::Path::new(path))
+                    .await?;
+                Ok(format!(
+                    "Attachment {}: {} ({} bytes)",
+                    file.id, file.name, file.size
+                ))
+            })
+        },
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

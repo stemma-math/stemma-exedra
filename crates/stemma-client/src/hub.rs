@@ -208,6 +208,84 @@ impl Hub {
         Ok(())
     }
 
+    /// Upload a local file; the hub still enforces the token's attachment policy.
+    pub async fn upload_attachment(
+        &self,
+        group: &str,
+        path: &std::path::Path,
+    ) -> Result<stemma_core::api::Attachment> {
+        let form = reqwest::multipart::Form::new()
+            .file("file", path)
+            .await
+            .map_err(|e| ApiError::Hub {
+                status: reqwest::StatusCode::BAD_REQUEST,
+                code: "file".into(),
+                message: e.to_string(),
+            })?;
+        let mut request = self
+            .http
+            .post(format!(
+                "{}{PREFIX}/groups/{}/attachments",
+                self.base,
+                encode(group)
+            ))
+            .multipart(form);
+        if let Some(token) = &self.token {
+            request = request.bearer_auth(token);
+        }
+        let response = request.send().await.map_err(|e| self.unreachable(e))?;
+        let status = response.status();
+        let value: serde_json::Value = response.json().await.map_err(|e| self.unreachable(e))?;
+        if !status.is_success() {
+            return Err(ApiError::Hub {
+                status,
+                code: value["error"]["code"].as_str().unwrap_or("upload").into(),
+                message: value["error"]["message"]
+                    .as_str()
+                    .unwrap_or("Upload refused")
+                    .into(),
+            });
+        }
+        serde_json::from_value(value).map_err(|e| ApiError::Hub {
+            status,
+            code: "unreadable".into(),
+            message: e.to_string(),
+        })
+    }
+
+    /// Workshop API, shared by the command catalog and MCP.
+    pub async fn workshop_read(
+        &self,
+        group: &str,
+        resource: &str,
+        query: &[(&str, String)],
+    ) -> Result<serde_json::Value> {
+        self.get(
+            &format!("/groups/{}/workshop/{resource}", encode(group)),
+            query,
+        )
+        .await
+    }
+    pub async fn workshop_ask(
+        &self,
+        group: &str,
+        ask: &stemma_core::workshop::Ask,
+    ) -> Result<stemma_core::workshop::Request> {
+        self.post(&format!("/groups/{}/workshop/requests", encode(group)), ask)
+            .await
+    }
+    pub async fn workshop_cancel(
+        &self,
+        group: &str,
+        request: u32,
+    ) -> Result<stemma_core::workshop::Request> {
+        self.post(
+            &format!("/groups/{}/workshop/requests/{request}", encode(group)),
+            &serde_json::json!({"action":"cancel"}),
+        )
+        .await
+    }
+
     // ── Accounts ──────────────────────────────────────────────────────
 
     pub async fn group(&self, slug: &str) -> Result<stemma_core::api::Group> {

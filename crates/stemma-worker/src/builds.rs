@@ -10,12 +10,34 @@ use stemma_core::protocol::{BuildKind, BuildResult, BuildSpec, GroupWorkshop};
 
 pub fn capabilities(settings: &Settings, group: Option<&str>) -> anyhow::Result<GroupWorkshop> {
     let isolated = settings.get("agents.isolation", group)?.value.as_str() != Some("none");
-    let get = |key| settings.get(key, group).map(|v| v.value);
+    let get = |key: &str| settings.get(key, group).map(|v| v.value);
     Ok(GroupWorkshop {
         enabled: isolated && get("workshop.enabled")?.as_bool().unwrap(),
         build: isolated && get("workshop.build")?.as_bool().unwrap(),
         build_concurrency: get("workshop.build_concurrency")?.as_integer().unwrap() as u32,
         concurrency: get("workshop.concurrency")?.as_integer().unwrap() as u32,
+        runners: {
+            let configured = get("workshop.runners")?;
+            ["claude", "codex", "opencode"]
+                .into_iter()
+                .filter(|r| {
+                    configured
+                        .as_array()
+                        .is_none_or(|a| a.is_empty() || a.iter().any(|v| v.as_str() == Some(r)))
+                })
+                .map(|r| {
+                    Ok((
+                        r.into(),
+                        get(&format!("agents.{r}.model"))?.as_str().unwrap().into(),
+                    ))
+                })
+                .collect::<anyhow::Result<_>>()?
+        },
+        others: if get("workshop.others")?.as_str() == Some("never") {
+            stemma_core::protocol::Others::Never
+        } else {
+            stemma_core::protocol::Others::Ask
+        },
     })
 }
 
@@ -195,7 +217,11 @@ fn settings_group(context: &Context, spec: &BuildSpec) -> anyhow::Result<String>
 }
 
 /// Seed the template's pinned Mathlib and its dependencies from the image.
-async fn seed_mathlib(sandbox: &dyn Sandbox, dir: &Path, log: &Log) -> anyhow::Result<bool> {
+pub(crate) async fn seed_mathlib(
+    sandbox: &dyn Sandbox,
+    dir: &Path,
+    log: &Log,
+) -> anyhow::Result<bool> {
     // The build folder outlives the image: links an earlier build made to
     // its Mathlib go first, so that another Mathlib is never built on it.
     let unlink = "for p in .lake/packages/*; do if [ -L \"$p\" ]; then case \"$(readlink \"$p\")\" in /opt/stemma/mathlib*) rm \"$p\" ;; esac; fi; done; true";

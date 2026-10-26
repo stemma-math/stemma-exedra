@@ -29,7 +29,7 @@ pub fn definitions() -> Vec<ToolDef> {
                 "type": "object",
                 "properties": {
                     "group": {"type": "string", "description": GROUP},
-                    "kind": {"type": "string", "enum": ["discussion", "chat"],
+                    "kind": {"type": "string", "enum": ["discussion", "chat", "request"],
                              "description": "Only discussions, or only chats."},
                     "limit": {"type": "integer", "minimum": 1, "maximum": 200,
                               "description": "How many; 30 if absent."}
@@ -72,6 +72,7 @@ pub fn definitions() -> Vec<ToolDef> {
                     "thread": {"type": "string",
                                "description": "The thread (t12), or the message to reply to (t12#45)."},
                     "body": {"type": "string", "description": "The message, in Markdown."},
+                    "attachments": {"type":"array","items":{"type":"integer"},"description":"Ids returned by upload_attachment."},
                     "reply_to": {"type": "integer", "minimum": 1,
                                  "description": "The number of the message it replies to."},
                     "group": {"type": "string", "description": GROUP}
@@ -266,6 +267,8 @@ async fn read_thread(toolbox: &Toolbox, args: Value) -> ToolResult {
 
 #[derive(Deserialize)]
 struct Post {
+    #[serde(default)]
+    attachments: Vec<i64>,
     thread: String,
     body: String,
     reply_to: Option<u32>,
@@ -292,7 +295,7 @@ async fn post_message(toolbox: &Toolbox, args: Value, agent: Option<&str>) -> To
             &PostMessage {
                 body: args.body,
                 reply_to,
-                attachments: Vec::new(),
+                attachments: args.attachments,
                 agent: agent.map(str::to_owned),
             },
         )

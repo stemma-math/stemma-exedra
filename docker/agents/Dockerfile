@@ -52,6 +52,7 @@ COPY Cargo.toml Cargo.lock ./
 COPY crates/ crates/
 COPY lean/ lean/
 COPY latex/ latex/
+COPY recipes/ recipes/
 COPY docker/agents/ docker/agents/
 COPY docker/workshop/ docker/workshop/
 RUN --mount=type=cache,target=/usr/local/cargo/registry \

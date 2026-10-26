@@ -10,6 +10,7 @@ mod attachments;
 mod forum;
 mod library;
 mod papers;
+mod workshop;
 
 use serde::de::DeserializeOwned;
 use serde_json::Value;
@@ -24,7 +25,9 @@ pub fn all_definitions() -> Vec<ToolDef> {
     let mut tools = forum::definitions();
     tools.extend(library::definitions());
     tools.extend(papers::definitions());
+    tools.extend(workshop::definitions());
     tools.push(attachments::definition());
+    tools.push(attachments::upload_definition());
     tools
 }
 

@@ -121,7 +121,7 @@ async fn session(context: &Arc<Context>, token: &str) -> Ended {
     if let Err(error) = send(&mut socket, &hello).await {
         return Ended::Dropped(error);
     }
-    match welcome(&mut socket).await {
+    let owner = match welcome(&mut socket).await {
         Ok(Ok(welcome)) => {
             if let Err(error) = context
                 .config
@@ -147,11 +147,12 @@ async fn session(context: &Arc<Context>, token: &str) -> Ended {
                 "local tools",
                 "local tools"
             );
+            welcome.owner
         }
         Ok(Err(reason)) => return Ended::Refused(crate::machine::Stopped::Refused(reason).into()),
         Err(error) => return Ended::Dropped(error),
-    }
-    let ended = work(context, &mut socket, RunningJobs::default()).await;
+    };
+    let ended = work(context, &mut socket, RunningJobs::default(), owner).await;
     let _ = socket.close(None).await;
     Ended::Dropped(ended)
 }
@@ -205,10 +206,18 @@ impl Drop for RunningBuilds {
 
 /// Runs the hub's jobs until the connection ends; then stops them, for the
 /// hub queues them again.
-async fn work(context: &Arc<Context>, socket: &mut Socket, mut jobs: RunningJobs) -> anyhow::Error {
+async fn work(
+    context: &Arc<Context>,
+    socket: &mut Socket,
+    mut jobs: RunningJobs,
+    owner: stemma_core::api::User,
+) -> anyhow::Error {
     let (progress, mut progress_out) = mpsc::unbounded_channel::<(i64, String)>();
     let (finished, mut finished_out) = mpsc::unbounded_channel::<(i64, Outcome, Usage)>();
     let mut builds = RunningBuilds::default();
+    let mut processes = RunningBuilds::default();
+    let (process_results, mut process_results_out) = mpsc::unbounded_channel();
+    let mut decisions: HashMap<i64, String> = HashMap::new();
     let (build_results, mut build_results_out) = mpsc::unbounded_channel();
     let mut heartbeat = tokio::time::interval(Duration::from_secs(15));
     let mut heard = Instant::now();
@@ -264,6 +273,46 @@ async fn work(context: &Arc<Context>, socket: &mut Socket, mut jobs: RunningJobs
                         });
                         jobs.0.insert(id, (kind, task));
                     }
+                    Ok(HubMessage::ProcessOffer(offer)) => {
+                        if let Ok(true) = crate::processes::accepts(context, &offer) {
+                            let scope = crate::builds::capabilities(&settings, Some(&offer.group.slug));
+                            if let Ok(scope) = scope {
+                                match crate::approvals::receive(&context.config.paths.state, &context.hub, &owner, *offer, scope.others) {
+                                    Ok(_) => {},
+                                    Err(error) => tracing::warn!(%error, "could not retain process offer"),
+                                }
+                            }
+                        } else {
+                            let _ = send(socket, &WorkerMessage::ProcessDecision { process: offer.process, accept: false, pending: false }).await;
+                        }
+                    }
+                    Ok(HubMessage::ProcessTaken { process }) => {
+                        let _ = crate::approvals::taken(&context.config.paths.state, &context.hub, process);
+                        decisions.remove(&process);
+                    }
+                    Ok(HubMessage::Process(spec)) => {
+                        let lease=spec.lease;
+                        if processes.0.contains_key(&lease.id) {continue;}
+                        let check = crate::builds::capabilities(&settings, Some(&spec.offer.group.slug)).and_then(|scope| {
+                            anyhow::ensure!(scope.enabled && processes.0.len() < scope.concurrency as usize, "This machine is at its process limit");
+                            anyhow::ensure!(spec.owner.id == owner.id, "Process owner changed");
+                            anyhow::ensure!(spec.offer.requester.id==owner.id || scope.others!=stemma_core::protocol::Others::Never, "Other people's requests are disabled");
+                            crate::approvals::start(&context.config.paths.state, &context.hub, &owner, &spec.offer)
+                        });
+                        if let Err(error)=check {
+                            let result=stemma_core::protocol::ProcessResult {error:Some(format!("{error:#}")),..Default::default()};
+                            if let Err(error)=send(socket,&WorkerMessage::ProcessFinished{lease,result:Box::new(result)}).await {break error;}
+                            continue;
+                        }
+                        decisions.remove(&spec.offer.process);
+                        let context=context.clone();let results=process_results.clone();
+                        let task=tokio::spawn(async move { let result=crate::processes::run(context,*spec).await;let _=results.send((lease,result)); });
+                        processes.0.insert(lease.id,(lease,task));
+                    }
+                    Ok(HubMessage::CancelProcess { lease }) => {
+                        if processes.0.get(&lease.id).is_some_and(|(held,_)| *held==lease)
+                            && let Some((_,task))=processes.0.remove(&lease.id) {task.abort();}
+                    }
                     Ok(HubMessage::Build(spec)) => {
                         let lease = spec.lease;
                         if builds.0.contains_key(&lease.id) { continue; }
@@ -308,9 +357,16 @@ async fn work(context: &Arc<Context>, socket: &mut Socket, mut jobs: RunningJobs
                 }
             }
             _ = heartbeat.tick() => {
+                for (lease, _) in processes.0.values() {
+                    if let Err(error) = send(socket, &WorkerMessage::ProcessHeartbeat { lease: *lease }).await { return error; }
+                }
                 for (lease, _) in builds.0.values() {
                     if let Err(error) = send(socket, &WorkerMessage::BuildHeartbeat { lease: *lease }).await { return error; }
                 }
+            }
+            Some((lease, result)) = process_results_out.recv() => {
+                if processes.0.remove(&lease.id).is_some()
+                    && let Err(error) = send(socket, &WorkerMessage::ProcessFinished { lease, result: Box::new(result) }).await { break error; }
             }
             Some((lease, result)) = build_results_out.recv() => {
                 if builds.0.remove(&lease.id).is_some()
@@ -333,6 +389,19 @@ async fn work(context: &Arc<Context>, socket: &mut Socket, mut jobs: RunningJobs
                 }
             }
             _ = check.tick() => {
+                if let Ok(store) = crate::approvals::read(&context.config.paths.state) {
+                    for pending in store.pending.iter().filter(|p| p.hub == context.hub && p.owner == owner.id) {
+                        let id=pending.offer.process;
+                        let decision=pending.decision.as_str();
+                        if decisions.get(&id).is_some_and(|s| s == decision) {continue;}
+                        if decision == "approved" {
+                            let scope=crate::builds::capabilities(&settings,Some(&pending.offer.group.slug));
+                            if !scope.is_ok_and(|s| processes.0.len() < s.concurrency as usize) {continue;}
+                        }
+                        if let Err(error)=send(socket,&WorkerMessage::ProcessDecision {process:id,accept:decision=="approved",pending:decision=="pending"}).await {return error;}
+                        decisions.insert(id,decision.into());
+                    }
+                }
                 let observed = std::fs::metadata(&settings.path).and_then(|m| m.modified()).ok();
                 if observed != modification {
                     modification = observed;

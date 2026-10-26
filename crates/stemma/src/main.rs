@@ -6,6 +6,7 @@ mod machine;
 mod output;
 mod settings;
 mod tools;
+mod workshop;
 
 use std::io::{BufRead, IsTerminal};
 use std::path::PathBuf;
@@ -38,6 +39,9 @@ This computer:
   config      Explain and edit settings
   doctor      Check this computer
 
+Workshop:
+  workshop    Approve work on this computer
+
 Running a hub:
   hub         Run a hub
 
@@ -57,6 +61,8 @@ enum Command {
     Hub(HubArgs),
     /// Manage this computer's agents and service.
     Machine(machine::MachineArgs),
+    /// Approve and inspect this computer's workshop processes.
+    Workshop(workshop::WorkshopArgs),
     /// Sign in to a hub from this machine.
     Login(client::LoginArgs),
     /// Sign out of the hub, revoking this machine's token.
@@ -148,6 +154,7 @@ async fn main() -> anyhow::Result<()> {
     match cli.command {
         Command::Hub(args) => hub(args).await,
         Command::Machine(args) => machine::machine(args).await,
+        Command::Workshop(args) => workshop::run(args),
         Command::Login(args) => client::login(args).await,
         Command::Logout => client::logout().await,
         Command::Doctor(args) => {
