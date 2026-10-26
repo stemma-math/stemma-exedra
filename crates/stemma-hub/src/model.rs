@@ -318,7 +318,8 @@ impl Client {
         let _ = rustls::crypto::ring::default_provider().install_default();
         Ok(Self {
             http: reqwest::Client::builder()
-                .timeout(Duration::from_secs(90))
+                // Reasoning models may think for minutes before answering.
+                .timeout(Duration::from_secs(300))
                 .connect_timeout(Duration::from_secs(10))
                 .redirect(reqwest::redirect::Policy::none())
                 .build()?,
@@ -360,10 +361,14 @@ impl Client {
                 tokio::time::sleep(Duration::from_millis(250 * (1 << attempt))).await;
                 continue;
             }
-            let body = response.text().await.map_err(|_| {
-                ApiError::invalid(format!(
-                    "{provider} returned an unreadable response ({status})"
-                ))
+            // Some providers answer 200 at once and keep the body open while
+            // the model thinks, so a slow model times out here.
+            let body = response.text().await.map_err(|error| {
+                ApiError::invalid(if error.is_timeout() {
+                    format!("{provider} took more than five minutes to answer")
+                } else {
+                    format!("{provider}'s answer was cut off ({status})")
+                })
             })?;
             let value = serde_json::from_str::<Value>(&body);
             if !status.is_success() {
@@ -386,10 +391,20 @@ impl Client {
                 });
             }
             let value = value.map_err(|_| {
+                let start: String = body.trim().chars().take(200).collect();
                 ApiError::invalid(format!(
-                    "{provider} returned an unreadable response ({status})"
+                    "{provider} answered with something other than JSON: {}",
+                    stemma_core::secrets::hide(&start.replace(key, "[hidden]"))
                 ))
             })?;
+            // OpenRouter reports an upstream failure after its 200 in the body.
+            if let Some(reason) = value["error"]["message"].as_str() {
+                let safe = stemma_core::secrets::hide(&reason.replace(key, "[hidden]"));
+                return Err(ApiError::invalid(format!(
+                    "{provider} failed while answering: {}",
+                    safe.chars().take(500).collect::<String>()
+                )));
+            }
             return Ok(value);
         }
         unreachable!()

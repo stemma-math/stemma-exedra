@@ -317,6 +317,33 @@ async fn no_key_and_provider_errors_are_explicit_and_never_echo_keys() {
             .unwrap()
             .ends_with("Trying again in a minute")
     );
+    // OpenRouter reports a failure upstream inside a 200.
+    model.reply(
+        axum::http::StatusCode::OK,
+        json!({"error":{"message":"Upstream overloaded"}}),
+    );
+    sqlx::query("UPDATE workshop_requests SET retry_at = 0")
+        .execute(&hub.state.db)
+        .await
+        .unwrap();
+    stemma_hub::orchestrator::dispatch(&hub.state)
+        .await
+        .unwrap();
+    idle(&hub).await;
+    let req = call(
+        &hub,
+        &ada,
+        "GET",
+        "/groups/geometry/workshop/requests/1",
+        None,
+    )
+    .await;
+    assert!(
+        req["waiting"]
+            .as_str()
+            .unwrap()
+            .contains("failed while answering: Upstream overloaded")
+    );
 }
 async fn opened(
     hub: &Hub,
