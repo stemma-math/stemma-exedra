@@ -1,20 +1,22 @@
 {
   "name": "stemma-web",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "private": true,
   "description": "Stemma's web app, served by the hub",
   "license": "MIT",
   "type": "module",
   "scripts": {
     "dev": "vite dev",
-    "build": "vite build",
+    "build": "vite build && node scripts/check-browser.mjs",
     "preview": "vite preview",
     "check": "svelte-kit sync && svelte-check --tsconfig ./tsconfig.json --fail-on-warnings",
     "lint": "biome lint --error-on-warnings .",
     "format": "biome format --write .",
     "format:check": "biome format .",
     "test": "vitest run",
-    "prepare": "svelte-kit sync || echo ''"
+    "prepare": "svelte-kit sync || echo ''",
+    "dev:desktop": "STEMMA_DESKTOP=1 vite dev --host 127.0.0.1 --port 1420 --strictPort",
+    "build:desktop": "STEMMA_DESKTOP=1 vite build"
   },
   "devDependencies": {
     "@biomejs/biome": "2.5.15",
@@ -29,8 +31,9 @@
     "vitest": "^5.0.4"
   },
   "dependencies": {
-    "@stemma-math/design": "https://github.com/stemma-math/design/releases/download/v0.4.0/stemma-math-design-0.4.0.tgz",
-    "@stemma-math/design-elements": "https://github.com/stemma-math/design/releases/download/v0.4.0/stemma-math-design-elements-0.4.0.tgz",
+    "@stemma-math/design": "https://github.com/stemma-math/design/releases/download/v0.16.0/stemma-math-design-0.16.0.tgz",
+    "@stemma-math/design-elements": "https://github.com/stemma-math/design/releases/download/v0.16.0/stemma-math-design-elements-0.16.0.tgz",
+    "@tauri-apps/api": "^2.12.4",
     "katex": "^0.19.0",
     "markdown-it": "^15.0.2"
   },

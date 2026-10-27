@@ -1,0 +1,12 @@
+# What compiling makes: latexmk's and LaTeX's files, and the PDF, which
+# Stemma keeps apart.
+*.aux
+*.bbl
+*.blg
+*.fdb_latexmk
+*.fls
+*.log
+*.out
+*.toc
+*.synctex.gz
+*.pdf

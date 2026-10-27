@@ -1,66 +1,85 @@
 <script lang="ts">
   import { goto } from "$app/navigation";
-  import { page } from "$app/state";
   import { api } from "#lib/api.ts";
-  import PaperEditor from "#lib/components/PaperEditor.svelte";
   import { groupContext } from "#lib/group.svelte.ts";
-  import { isSlug } from "#lib/address.ts";
-  import { slugify } from "#lib/paper.ts";
+  import { asksForWork } from "#lib/roles.ts";
   import { toastError } from "#lib/toast.ts";
 
   const context = groupContext();
   const group = $derived(context.group);
-
-  const given = page.url.searchParams.get("slug") ?? "";
-  let slug = $state(given);
-  let edited = $state(given !== "");
+  let slug = $state("");
+  let slugEdited = $state(false);
   let title = $state("");
-  let body = $state("");
-  let reason = $state("Started the paper");
+  let creating = $state(false);
 
   // The short name follows the title until it is written by hand.
   $effect(() => {
-    if (!edited) slug = title.trim() ? slugify(title).slice(0, 60).replace(/-+$/, "") : "";
+    if (!slugEdited) {
+      slug = title
+        .toLowerCase()
+        .normalize("NFD")
+        .replace(/[̀-ͯ]/g, "")
+        .replace(/[^a-z0-9]+/g, "-")
+        .replace(/^-+|-+$/g, "")
+        .split("-")
+        .slice(0, 4)
+        .join("-")
+        .slice(0, 60);
+    }
   });
 
-  async function save() {
-    if (!isSlug(slug)) {
-      toastError(new Error("The short name is lowercase letters, digits and inner dashes."));
-      return;
-    }
+  async function create(event: SubmitEvent) {
+    event.preventDefault();
+    creating = true;
     try {
-      await api.createPaper(group.slug, { slug, title, body, reason });
-      await goto(`/g/${group.slug}/p/${slug}`);
+      const paper = await api.createPaper(group.slug, slug.trim(), title.trim());
+      await goto(`/g/${group.slug}/p/${paper.slug}`);
     } catch (error) {
       toastError(error);
+    } finally {
+      creating = false;
     }
   }
 </script>
 
-<svelte:head><title>New paper · {group.name} · Stemma</title></svelte:head>
+<svelte:head><title>New paper – {group.name}</title></svelte:head>
 
 <main class="page page--narrow stack">
-  <h1>New paper</h1>
-  <div class="field">
-    <label class="field__label" for="paper-slug">Short name</label>
-    <input
-      id="paper-slug"
-      class="input input--mono"
-      bind:value={slug}
-      oninput={() => (edited = true)}
-      required
-      maxlength="60"
-      placeholder="compactification"
-    />
-    <span class="field__hint">Its address: <code>p/{slug || "…"}</code>. It cannot change.</span>
-  </div>
-  <PaperEditor
-    group={group.slug}
-    bind:title
-    bind:body
-    bind:reason
-    onsave={save}
-    oncancel={() => history.back()}
-    saveLabel="Start the paper"
-  />
+  <h1>New working paper</h1>
+  <p class="quiet">
+    A working paper is the readable account of what the group is doing: a LaTeX repository of the group, made from a
+    template.
+  </p>
+  {#if asksForWork(group.role)}
+    <form class="card card__body form" onsubmit={create}>
+      <div class="field">
+        <label class="field__label" for="paper-title">Title</label>
+        <input id="paper-title" class="input" bind:value={title} required maxlength="200" />
+      </div>
+      <div class="field">
+        <label class="field__label" for="paper-slug">Short name</label>
+        <input
+          id="paper-slug"
+          class="input input--mono"
+          bind:value={slug}
+          oninput={() => (slugEdited = true)}
+          required
+          maxlength="60"
+          pattern="[a-z0-9]+(-[a-z0-9]+)*"
+          placeholder="notes"
+        />
+        <span class="field__hint">
+          Lowercase letters, digits and dashes: its address is <span class="identifier">p/{slug || "notes"}</span>,
+          and its repository <span class="identifier">paper-{slug || "notes"}</span>. You are its first author.
+        </span>
+      </div>
+      <div class="row row--end">
+        <button type="submit" class="button button--primary" disabled={creating}>Create the paper</button>
+      </div>
+    </form>
+  {:else}
+    <p class="message message--info">
+      <span class="message__text">Admins and members create papers; as a guest, you read them.</span>
+    </p>
+  {/if}
 </main>

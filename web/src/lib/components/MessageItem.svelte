@@ -1,4 +1,6 @@
 <script lang="ts">
+  import { ask } from "#lib/ask.svelte.ts";
+  import { hubUrl } from "#lib/transport.svelte.ts";
   import { api, type Message } from "#lib/api.ts";
   import { exactly, fileSize, when } from "#lib/format.ts";
   import { toastError } from "#lib/toast.ts";
@@ -53,7 +55,13 @@
   }
 
   async function remove() {
-    if (!confirm(`Delete message #${message.number}? Its number stays, with nothing in it.`)) return;
+    const yes = await ask({
+      title: `Delete message #${message.number}?`,
+      text: "Its number stays, with nothing in it.",
+      action: "Delete",
+      danger: true,
+    });
+    if (!yes) return;
     try {
       onchange(await api.deleteMessage(group, thread, message.number));
     } catch (error) {
@@ -64,7 +72,9 @@
 
 <li class="post" id={String(message.number)} aria-label="Message {message.number}">
   {#if message.agent}
-    <AgentAvatar name={message.agent} />
+    <AgentAvatar name={message.agent} runner={message.agent_runner} />
+  {:else if message.orchestrator_model != null}
+    <AgentAvatar name="Workshop" />
   {:else}
     <Avatar user={message.author} />
   {/if}
@@ -74,6 +84,11 @@
       <span class="post__attribution">for {message.author.display_name}</span>
     {:else}
       <span class="post__author">{message.author.display_name}</span>
+    {/if}
+    {#if message.orchestrator_model}
+      <span class="post__attribution" title="The group's model">with {message.orchestrator_model}</span>
+    {:else if message.workshop && message.orchestrator_model == null}
+      <span class="chip chip--small chip--info">Workshop</span>
     {/if}
     <a class="post__number" href="#{message.number}" title={address}>#{message.number}</a>
     <time class="post__time" datetime={message.created_at} title={exactly(message.created_at)}>
@@ -137,7 +152,7 @@
         </div>
       </form>
     {:else if message.body}
-      <Markdown text={message.body} {group} />
+      <Markdown text={message.body} missing={message.missing_references} {group} />
     {/if}
   </div>
 
@@ -146,8 +161,8 @@
       {#each images as image (image.id)}
         <li>
           <figure class="post__image">
-            <a href={image.url} target="_blank" rel="noopener">
-              <img src={image.url} alt={image.name} loading="lazy" />
+            <a href={hubUrl(image.url)} target="_blank" rel="noopener noreferrer">
+              <img src={hubUrl(image.url)} alt={image.name} loading="lazy" />
             </a>
             <figcaption class="quiet">{image.name}</figcaption>
           </figure>
@@ -155,7 +170,7 @@
       {/each}
       {#each files as file (file.id)}
         <li>
-          <a class="post__attachment" href={file.url} download={file.name}>
+          <a class="post__attachment" href={hubUrl(file.url)} download={file.name}>
             <Glyph name="download" small />
             <span class="identifier">{file.name}</span>
             <span class="quiet">{fileSize(file.size)}</span>

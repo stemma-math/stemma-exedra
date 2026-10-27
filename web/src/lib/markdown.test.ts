@@ -30,47 +30,14 @@ describe("markdown", () => {
     expect(html).toContain('href="/g/geometry/t/3"');
   });
 
-  it("links papers, declarations and tasks, and keeps invalid references as text", () => {
+  it("links declarations, and keeps invalid references as text", () => {
     const html = render("[[lean:Foo.bar]] [[p/notes#gluing]] [[w3]] [[t0]]");
     expect(html).toContain(
       '<a class="ref" href="/g/geometry/lib/Foo.bar" data-ref="lean:Foo.bar">lean:Foo.bar</a>',
     );
-    expect(html).toContain('href="/g/geometry/p/notes#gluing"');
-    expect(html).toContain('<a class="ref" href="/g/geometry/w/3" data-ref="w3">w3</a>');
+    expect(html).toContain("[[p/notes#gluing]]");
+    expect(html).toContain("[[w3]]");
     expect(html).toContain("[[t0]]");
-  });
-
-  it("turns status markers into callouts", () => {
-    const html = render(
-      "> [!conjecture] Properness\n> Every map is proper.\n\n> [!OPEN]\n> Why?\n\n> [!note]\n> Plain.",
-    );
-    expect(html).toContain('<div class="highlight highlight--violet" data-callout="conjecture">');
-    expect(html).toContain('<p class="highlight__title">Conjecture: Properness</p>');
-    expect(html).toContain("<p>Every map is proper.</p>");
-    expect(html).toContain('<p class="highlight__title">Open question</p>');
-    expect(html).toContain("<blockquote>");
-    expect(html).not.toContain("[!conjecture]");
-  });
-
-  it("gives a paper's headings their sections' slugs", () => {
-    const html = renderMarkdown("# Gluing\n\n## Gluing\n\n> # quoted", {
-      group: "geometry",
-      sections: true,
-    });
-    expect(html).toContain('<h1 id="gluing">');
-    expect(html).toContain('<h2 id="gluing-2">');
-    expect(html).toContain("<h1>quoted</h1>");
-    expect(render("# Gluing")).toContain("<h1>Gluing</h1>");
-  });
-
-  it("marks the blocks that changed", () => {
-    const html = renderMarkdown("Same.\n\nNew $x$.\n\n$$\ny\n$$\n", {
-      group: "geometry",
-      changed: new Set([2, 5]),
-    });
-    expect(html).toContain("<p>Same.</p>");
-    expect(html).toContain('<p class="highlight highlight--accent is-changed">New');
-    expect(html.match(/is-changed/g)?.length).toBe(2);
   });
 
   it("does not see references or math in code", () => {
@@ -83,6 +50,35 @@ describe("markdown", () => {
     const html = render('<script>alert("x")</script> [[t1#2/<b>.png]]');
     expect(html).not.toContain("<script>");
     expect(html).not.toContain("<b>");
+  });
+
+  it("refuses executable and native URL schemes, including encoded ones", () => {
+    for (const url of [
+      "javascript:alert(1)",
+      "JaVaScRiPt:alert(1)",
+      "javascript&#58;alert(1)",
+      "vbscript:run",
+      "data:text/html,test",
+      "file:///etc/passwd",
+      "tauri://localhost",
+      "ipc://localhost",
+      "hub://localhost/api/v1/me",
+    ]) {
+      expect(render(`[link](${url})`)).not.toContain("<a");
+    }
+  });
+
+  it("keeps KaTeX untrusted", () => {
+    for (const tex of [
+      "\\href{javascript:alert(1)}{click}",
+      "\\htmlClass{evil}{x}",
+      "\\includegraphics{https://evil.test/a.svg}",
+    ]) {
+      const html = render(`$${tex}$`);
+      expect(html).not.toContain("href=");
+      expect(html).not.toContain('<span class="evil"');
+      expect(html).not.toContain("<img");
+    }
   });
 
   it("opens outside links on their own", () => {

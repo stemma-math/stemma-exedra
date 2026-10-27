@@ -1,5 +1,5 @@
 {
-  "comment": "Addresses, references and the slugs of a paper's sections, shared by the Rust and web parsers. Each valid address maps to its canonical spelling.",
+  "comment": "Addresses and references, shared by the Rust and web parsers. Each valid address maps to its canonical spelling.",
   "valid": {
     "t1": "t1",
     "t12": "t12",
@@ -8,14 +8,11 @@
     "t3#4-4": "t3#4",
     "t12#45/photo.jpg": "t12#45/photo.jpg",
     "t12#45/the board.png": "t12#45/the board.png",
-    "p/compactification": "p/compactification",
-    "p/compactification#gluing": "p/compactification#gluing",
-    "p/a-1#b-2": "p/a-1#b-2",
     "lean:Foo.bar": "lean:Foo.bar",
     "lean:Nat.add_comm'": "lean:Nat.add_comm'",
-    "lean:α.β₁": "lean:α.β₁",
-    "w7": "w7",
-    "w4294967295": "w4294967295"
+    "lean:\u03b1.\u03b2\u2081": "lean:\u03b1.\u03b2\u2081",
+    "p/notes": "p/notes",
+    "p/number-theory-2": "p/number-theory-2"
   },
   "invalid": [
     "",
@@ -38,37 +35,68 @@
     "t12#45/..",
     "t12#45/a/b",
     "p/",
-    "p/Upper",
+    "p/Notes",
     "p/a--b",
     "p/-a",
-    "p/a-",
-    "p/a#",
-    "p/a#b#c",
+    "p/notes#gluing",
+    "p/notes/main.tex",
     "lean:",
     "lean:Foo..bar",
     "lean:.Foo",
     "lean:Foo.",
     "lean:Foo bar",
     "w",
-    "w0"
+    "w0",
+    "w7",
+    "w4294967295"
   ],
   "references": [
-    { "text": "See [[t12#45-50]] and [[lean:Foo.bar]].", "found": ["t12#45-50", "lean:Foo.bar"] },
-    { "text": "[[ w7 ]]", "found": [" w7 "] },
-    { "text": "[[t0]] [[]]", "found": ["t0", ""] },
-    { "text": "`[[t1]]` ``a ` [[t2]]`` [[t3]]\n```\n[[t4]]\n```\n[[t5]]", "found": ["t3", "t5"] },
-    { "text": "[[t1] [t2]] [[t3", "found": [] },
-    { "text": "[[[t1]]]", "found": ["t1"] },
-    { "text": "[[t1\n]]", "found": [] }
-  ],
-  "sections": [
     {
-      "text": "Intro.\n\n# Setting\n\n## The map $f$ is *proper*\n\n```\n# not a heading\n```\n\n## Théorème ##\n\n#hashtag\n\n## Proof\n\n### Proof\n\n# ∀\n",
-      "slugs": ["setting", "the-map-f-is-proper", "theoreme", "proof", "proof-2", "section"]
+      "text": "See [[t12#45-50]] and [[lean:Foo.bar]].",
+      "found": [
+        "t12#45-50",
+        "lean:Foo.bar"
+      ]
     },
     {
-      "text": "    # indented code\n~~~\n# fenced\n~~~\n####### seven\n###### Six, 6 ######\n",
-      "slugs": ["six-6"]
+      "text": "[[ w7 ]]",
+      "found": [
+        " w7 "
+      ]
+    },
+    {
+      "text": "As [[p/notes]] says.",
+      "found": [
+        "p/notes"
+      ]
+    },
+    {
+      "text": "[[t0]] [[]]",
+      "found": [
+        "t0",
+        ""
+      ]
+    },
+    {
+      "text": "`[[t1]]` ``a ` [[t2]]`` [[t3]]\n```\n[[t4]]\n```\n[[t5]]",
+      "found": [
+        "t3",
+        "t5"
+      ]
+    },
+    {
+      "text": "[[t1] [t2]] [[t3",
+      "found": []
+    },
+    {
+      "text": "[[[t1]]]",
+      "found": [
+        "t1"
+      ]
+    },
+    {
+      "text": "[[t1\n]]",
+      "found": []
     }
   ]
 }

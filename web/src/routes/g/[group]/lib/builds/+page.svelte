@@ -1,4 +1,5 @@
 <script lang="ts">
+  import Loading from "#lib/components/Loading.svelte";
   import { api, type Build } from "#lib/api.ts";
   import BuildChip from "#lib/components/BuildChip.svelte";
   import { listen } from "#lib/events.ts";
@@ -20,21 +21,13 @@
   $effect(() => {
     load();
     return listen(group.slug, (event) => {
-      if (event.type === "resync" || event.type === "build_updated") load();
+      if ((event.type === "resync" || event.type === "names_changed") || event.type === "build_updated") load();
     });
   });
 
-  async function rebuild() {
-    try {
-      await api.rebuild(group.slug);
-      await load();
-    } catch (error) {
-      toastError(error);
-    }
-  }
 </script>
 
-<svelte:head><title>Builds · Library · {group.name} · Stemma</title></svelte:head>
+<svelte:head><title>Builds – Library – {group.name}</title></svelte:head>
 
 <main class="page page--narrow stack">
   <nav class="breadcrumbs" aria-label="Where">
@@ -45,14 +38,13 @@
   </nav>
   <div class="page__head">
     <h1>Builds</h1>
-    <button type="button" class="button push" onclick={rebuild}>Build main again</button>
   </div>
   <p class="quiet">
-    A group worker with Lean builds each new commit of <code>main</code>, and inspects it. The library's
-    state is its last build that passed.
+    Each new commit of main is built on a group's connected workshop machine.
+    The library's state is its last build that passed.
   </p>
   {#if builds === null}
-    <span class="spinner" role="status" aria-label="Loading"></span>
+    <Loading label="Loading" />
   {:else if builds.length === 0}
     <div class="card card--empty card__body"><p class="empty">No builds yet.</p></div>
   {:else}

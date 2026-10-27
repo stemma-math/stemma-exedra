@@ -89,9 +89,74 @@ jobs:
           tar czf "$name.tar.gz" "$name"
           gh release upload "v$VERSION" "$name.tar.gz" --repo "$GITHUB_REPOSITORY" --clobber
 
+  # The desktop app, which drives the `stemma` installed beside it. It is not
+  # signed by a developer: macOS gets an ad hoc signature.
+  app:
+    name: Build the app for ${{ matrix.target }}
+    needs: version
+    if: needs.version.outputs.new == 'true'
+    strategy:
+      matrix:
+        include:
+          - target: x86_64-unknown-linux-gnu
+            runner: ubuntu-22.04
+            bundles: '["deb", "appimage"]'
+          - target: aarch64-apple-darwin
+            runner: macos-latest
+            bundles: '["dmg"]'
+    runs-on: ${{ matrix.runner }}
+    steps:
+      - uses: actions/checkout@v5
+      # https://v2.tauri.app/start/prerequisites/#linux
+      - name: Install Tauri system libraries
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install --yes --no-install-recommends \
+            libwebkit2gtk-4.1-dev build-essential curl wget file libxdo-dev \
+            libssl-dev libayatana-appindicator3-dev librsvg2-dev
+      - uses: pnpm/action-setup@v4
+        with:
+          package_json_file: web/package.json
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 24
+          cache: pnpm
+          cache-dependency-path: |
+            web/pnpm-lock.yaml
+            desktop/pnpm-lock.yaml
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: desktop/src-tauri -> target
+          key: ${{ matrix.target }}
+      - name: Install the app's and the web app's dependencies
+        run: |
+          pnpm --dir web install --frozen-lockfile
+          pnpm --dir desktop install --frozen-lockfile
+      - name: Build the app
+        env:
+          VERSION: ${{ needs.version.outputs.version }}
+          BUNDLES: ${{ matrix.bundles }}
+        run: |
+          config=$(printf '{"version":"%s","bundle":{"active":true,"targets":%s,"macOS":{"signingIdentity":"-"}}}' "$VERSION" "$BUNDLES")
+          pnpm --dir desktop tauri build --config "$config"
+      - name: Upload to the draft
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ needs.version.outputs.version }}
+        run: |
+          name=stemma-app-$VERSION-${{ matrix.target }}
+          bundle=desktop/src-tauri/target/release/bundle
+          for file in "$bundle"/dmg/*.dmg "$bundle"/deb/*.deb "$bundle"/appimage/*.AppImage; do
+            [[ -f "$file" ]] || continue
+            cp "$file" "$name.${file##*.}"
+            gh release upload "v$VERSION" "$name.${file##*.}" --repo "$GITHUB_REPOSITORY" --clobber
+          done
+
   release:
     name: Publish v${{ needs.version.outputs.version }}
-    needs: [version, build]
+    needs: [version, build, app]
     runs-on: ubuntu-latest
     steps:
       # The release notes, when the release has them: docs/releases/v<version>.md.
@@ -103,8 +168,8 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           VERSION: ${{ needs.version.outputs.version }}
         run: |
-          gh release download "v$VERSION" --repo "$GITHUB_REPOSITORY" --pattern 'stemma-*.tar.gz'
-          sha256sum stemma-*.tar.gz > SHA256SUMS
+          gh release download "v$VERSION" --repo "$GITHUB_REPOSITORY" --pattern 'stemma-*'
+          sha256sum stemma-* > SHA256SUMS
           gh release upload "v$VERSION" SHA256SUMS --repo "$GITHUB_REPOSITORY" --clobber
       - name: Publish the release, and tag the commit
         env:
@@ -121,9 +186,22 @@ jobs:
           gh release edit "v$VERSION" --repo "$GITHUB_REPOSITORY" \
             --notes-file notes.md --prerelease="$prerelease" --draft=false
 
+  # The command line's formula, and the app's cask.
   notify-tap:
     needs: release
+    strategy:
+      matrix:
+        package: [stemma, stemma-app]
     uses: stemma-math/homebrew-tap/.github/workflows/notify.yml@main
     with:
-      package: stemma
+      package: ${{ matrix.package }}
     secrets: inherit
+
+  # The documentation, on GitHub Pages, for the version just published.
+  docs:
+    needs: release
+    permissions:
+      contents: read
+      pages: write
+      id-token: write
+    uses: ./.github/workflows/docs.yml

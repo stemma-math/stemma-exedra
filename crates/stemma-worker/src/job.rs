@@ -1,6 +1,4 @@
-//! Running one job: its folder, its prompt, and the runner that does it;
-//! for a library's build, Lean; for a task of the workshop, both (see
-//! [`crate::workshop`]).
+//! Running a personal reply in group scratch, with private launch files in state.
 
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -9,21 +7,38 @@ use std::time::Duration;
 use stemma_client::format;
 use stemma_core::api::{AgentProfile, ThreadKind, runners as names};
 use stemma_core::protocol::{
-    ContextItem, Conversation, GroupRef, JobSpec, Outcome, PaperUpdate, ThreadRef, Work,
+    ContextItem, Conversation, GroupRef, JobSpec, Outcome, ThreadRef, Usage, Work,
 };
 use tokio::sync::mpsc;
 
 use crate::config::WorkerConfig;
-use crate::runners::Work as RunnerWork;
-use crate::{library, runners, workshop};
+use crate::isolation::{HostSandbox, Isolator};
+use crate::runners;
+use crate::runners::{Answer, Work as RunnerWork};
 
 /// Stemma's instructions to an agent answering in a thread.
 pub const REPLY_INSTRUCTIONS: &str = include_str!("../prompts/reply.md");
 
-/// Stemma's instructions to an editor updating a paper.
-pub const PAPER_INSTRUCTIONS: &str = include_str!("../prompts/paper.md");
+/// What an answer in a container of its own is told of its workspace.
+const CONTAINED: &str = "\
+- You work in the group's workspace, `/stemma`, in a container of your
+  own: `/stemma/library/` and `/stemma/papers/<slug>/` are clones of its
+  repositories at `main`, and you start in a scratch folder under
+  `/stemma/scratch/`. You may run anything, such as `lake build` or
+  `latexmk`, to check your answer. Nothing you write is kept.";
 
-/// What every job of a worker shares.
+/// What an answer on its person's computer is told.
+const ON_THE_COMPUTER: &str = "\
+- You can read the group's workspace, two folders above the one you start
+  in (`../../library/` and `../../papers/<slug>/`, clones of its
+  repositories at `main`), but you cannot run commands or edit files:
+  answer from what you read and reason.
+- If you are asked to run something, or would need to, say that you cannot
+  because your person's computer answers here without isolation: with
+  Docker or Podman (`agents.isolation`, in This machine › Isolation), its
+  answers run in a container where you could.";
+
+/// What every job of a machine shares.
 pub struct Context {
     pub config: WorkerConfig,
     /// The hub's address.
@@ -31,20 +46,18 @@ pub struct Context {
     /// The `stemma` binary, for the agents' MCP server.
     pub stemma: PathBuf,
     pub work_dir: PathBuf,
-    /// A lock per group on its warm checkout of the library, which builds
-    /// and tasks share.
-    pub checkouts: std::sync::Mutex<std::collections::HashMap<String, Arc<tokio::sync::Mutex<()>>>>,
+    /// How it isolates agent jobs; none if it cannot, and then it
+    /// runs none.
+    pub isolator: Option<Isolator>,
 }
 
 impl Context {
-    /// The lock on a group's warm checkout of the library.
-    pub fn checkout_lock(&self, group: &str) -> Arc<tokio::sync::Mutex<()>> {
-        self.checkouts
-            .lock()
-            .expect("not poisoned")
-            .entry(group.to_owned())
-            .or_default()
-            .clone()
+    /// The machine itself, where people's own jobs run.
+    pub fn host(&self) -> HostSandbox {
+        HostSandbox {
+            hub: self.hub.clone(),
+            stemma: self.stemma.clone(),
+        }
     }
 }
 
@@ -75,7 +88,7 @@ pub fn describe_call(name: &str, args: &serde_json::Value) -> String {
     let arg = |key: &str| args.get(key).and_then(|v| v.as_str()).map(str::to_owned);
     let name = name.rsplit("__").next().unwrap_or(name);
     match name {
-        "read_thread" | "read_paper" => match arg("address") {
+        "read_thread" => match arg("address") {
             Some(address) => format!("Reading {address}"),
             None => "Reading".into(),
         },
@@ -84,19 +97,16 @@ pub fn describe_call(name: &str, args: &serde_json::Value) -> String {
             None => "Searching".into(),
         },
         "list_threads" => "Looking through the threads".into(),
-        "list_papers" => "Looking through the papers".into(),
-        "paper_changes" => "Looking at what changed".into(),
         "library_lookup" => match arg("name") {
             Some(name) => format!("Looking up lean:{}", name.trim_start_matches("lean:")),
             None => "Looking in the library".into(),
         },
         "library_state" => "Looking at the library".into(),
-        "list_tasks" | "task_status" => "Looking at the workshop's tasks".into(),
-        "create_task" => match arg("title") {
-            Some(title) => format!("Handing “{title}” to the workshop"),
-            None => "Handing a task to the workshop".into(),
+        "list_papers" => "Looking at the papers".into(),
+        "read_paper" => match arg("address") {
+            Some(address) => format!("Reading {address}"),
+            None => "Reading a paper".into(),
         },
-        // What harnesses do on their own, for the workshop.
         "Bash" | "bash" | "shell" => match arg("command") {
             Some(command) => {
                 let command: String = command.chars().take(80).collect();
@@ -126,18 +136,12 @@ pub struct Prompt {
     pub user: String,
 }
 
-/// Stemma's instructions, filled in, and the profile's own.
+/// Stemma's instructions, filled in.
 fn instructions(template: &str, group: &GroupRef, conversation: &Conversation) -> String {
-    let mut system = template
+    template
         .replace("{agent}", &conversation.agent.display_name)
         .replace("{requester}", &conversation.requester.display_name)
-        .replace("{group}", &group.name);
-    if let Some(more) = conversation.agent.instructions.as_deref() {
-        system.push_str("\nFrom the group, for you:\n\n");
-        system.push_str(more.trim());
-        system.push('\n');
-    }
-    system
+        .replace("{group}", &group.name)
 }
 
 /// A thread's messages, with the messages left out marked.
@@ -168,6 +172,7 @@ pub fn conversation_text(group: &GroupRef, conversation: &Conversation) -> Strin
     let thread = &conversation.thread;
     let kind = match thread.kind {
         ThreadKind::Discussion => "a discussion",
+        ThreadKind::Request => "a workshop request",
         ThreadKind::Chat => "a chat, where you answer every message",
     };
     let mut user = format!(
@@ -184,7 +189,7 @@ pub fn conversation_text(group: &GroupRef, conversation: &Conversation) -> Strin
 }
 
 /// The prompt for an answer.
-pub fn reply_prompt(group: &GroupRef, conversation: &Conversation) -> Prompt {
+pub fn reply_prompt(group: &GroupRef, conversation: &Conversation, contained: bool) -> Prompt {
     let thread = &conversation.thread;
     let mut user = conversation_text(group, conversation);
     user.push_str(&format!(
@@ -195,122 +200,20 @@ pub fn reply_prompt(group: &GroupRef, conversation: &Conversation) -> Prompt {
         conversation.requester.username
     ));
     Prompt {
-        system: instructions(REPLY_INSTRUCTIONS, group, conversation),
+        system: instructions(
+            &REPLY_INSTRUCTIONS.replace(
+                "{workspace}",
+                if contained {
+                    CONTAINED
+                } else {
+                    ON_THE_COMPUTER
+                },
+            ),
+            group,
+            conversation,
+        ),
         user,
     }
-}
-
-/// The prompt for an editor's update of a paper.
-pub fn paper_prompt(group: &GroupRef, update: &PaperUpdate) -> Prompt {
-    let conversation = &update.conversation;
-    let paper = &update.paper;
-    let system =
-        instructions(PAPER_INSTRUCTIONS, group, conversation).replace("{slug}", &paper.slug);
-    let mut user = conversation_text(group, conversation);
-
-    user.push_str("---\n\n");
-    match &paper.title {
-        Some(title) => user.push_str(&format!(
-            "The paper p/{}, “{title}”, at revision {}:\n\n<current>\n{}</current>\n\n",
-            paper.slug,
-            paper.revision,
-            if paper.body.is_empty() {
-                "(empty)\n"
-            } else {
-                &paper.body
-            }
-        )),
-        None => user.push_str(&format!(
-            "The paper p/{} does not exist yet: you start it.\n\n",
-            paper.slug
-        )),
-    }
-    if !update.related.is_empty() {
-        user.push_str("Other threads about the paper:\n\n");
-        for related in &update.related {
-            let thread = &related.thread;
-            let about = match &related.anchor {
-                Some(anchor) => format!(", anchored to {anchor}"),
-                None => String::new(),
-            };
-            user.push_str(&format!(
-                "#### Thread t{}, “{}”{about}\n\n",
-                thread.number, thread.title
-            ));
-            user.push_str(&thread_text(thread, &related.context));
-        }
-        user.push_str("---\n\n");
-    }
-    if update.nightly {
-        let (slug, revision) = (&paper.slug, paper.revision);
-        user.push_str(&format!(
-            "Nobody asked in a message: this is the nightly update of p/{slug}. Bring it up to \
-             date with what the threads about it said since its revision {revision}, and with \
-             the library. If nothing changes what it should say, end with its text as it is.\n"
-        ));
-    } else {
-        user.push_str(&format!(
-            "Update p/{} as message t{}#{}, by {} (@{}), asks.\n",
-            paper.slug,
-            conversation.thread.number,
-            conversation.trigger,
-            conversation.requester.display_name,
-            conversation.requester.username
-        ));
-    }
-    Prompt { system, user }
-}
-
-/// The text between the last `<tag>` of `text` and its closing tag.
-fn tagged<'a>(text: &'a str, tag: &str) -> Option<&'a str> {
-    let open = format!("<{tag}>");
-    let close = format!("</{tag}>");
-    let start = text.rfind(&open)? + open.len();
-    let end = text[start..].find(&close).map(|n| start + n)?;
-    Some(&text[start..end])
-}
-
-/// Reads an editor's answer: the reason, the title and the new text.
-pub fn read_paper(answer: &str, update: &PaperUpdate) -> anyhow::Result<Outcome> {
-    let Some(body) = tagged(answer, "paper") else {
-        anyhow::bail!(
-            "{} did not end with the paper's text, between <paper> and </paper>",
-            update.conversation.agent.display_name
-        );
-    };
-    let mut body = body.trim_matches('\n').to_owned();
-    // A text wrapped whole in a fence is the text.
-    let lines: Vec<&str> = body.lines().collect();
-    if lines.len() >= 2
-        && lines[0].trim_start().starts_with("```")
-        && lines[lines.len() - 1].trim() == "```"
-    {
-        body = lines[1..lines.len() - 1].join("\n");
-    }
-    anyhow::ensure!(
-        !body.trim().is_empty() || update.paper.body.trim().is_empty(),
-        "{} returned an empty paper",
-        update.conversation.agent.display_name
-    );
-    let title = tagged(answer, "title")
-        .map(|t| t.trim().to_owned())
-        .filter(|t| !t.is_empty() && t.chars().count() <= 200)
-        .or_else(|| update.paper.title.clone())
-        .unwrap_or_else(|| update.paper.slug.replace('-', " "));
-    let reason = tagged(answer, "reason")
-        .map(|r| r.split_whitespace().collect::<Vec<_>>().join(" "))
-        .filter(|r| !r.is_empty())
-        .unwrap_or_else(|| {
-            format!(
-                "Updated as t{}#{} asked",
-                update.conversation.thread.number, update.conversation.trigger
-            )
-        });
-    Ok(Outcome::Paper {
-        title,
-        body: format!("{}\n", body.trim_end()),
-        reason: reason.chars().take(1_000).collect(),
-    })
 }
 
 /// A job's folder, removed when the job is over, with its token in a file
@@ -342,40 +245,35 @@ impl Drop for JobDir {
     }
 }
 
-/// Runs a job to its outcome.
-pub async fn run(context: Arc<Context>, job: JobSpec, progress: Progress) -> Outcome {
+/// Runs a job to its outcome, with what its runner said it consumed.
+pub async fn run(context: Arc<Context>, job: JobSpec, progress: Progress) -> (Outcome, Usage) {
+    let mut usage = Usage::default();
     let outcome = match &job.work {
         Work::Reply(conversation) => {
-            let prompt = reply_prompt(&job.group, conversation);
+            let contained = matches!(context.isolator, Some(Isolator::Containers(_)));
+            let prompt = reply_prompt(&job.group, conversation, contained);
             ask(&context, &job, &conversation.agent, &prompt, &progress)
                 .await
-                .and_then(|body| {
+                .and_then(|answer| {
+                    usage = answer.usage;
                     anyhow::ensure!(
-                        !body.trim().is_empty(),
+                        !answer.text.trim().is_empty(),
                         "{} gave no answer",
                         conversation.agent.display_name
                     );
                     Ok(Outcome::Answer {
-                        body: body.trim().to_owned(),
+                        body: answer.text.trim().to_owned(),
                     })
                 })
         }
-        Work::PaperUpdate(update) => {
-            let prompt = paper_prompt(&job.group, update);
-            let agent = &update.conversation.agent;
-            ask(&context, &job, agent, &prompt, &progress)
-                .await
-                .and_then(|answer| read_paper(&answer, update))
-        }
-        Work::LibraryBuild(build) => library::build(&context, &job, build, &progress).await,
-        Work::TaskRun(run) => workshop::run(&context, &job, run, &progress).await,
     };
-    outcome.unwrap_or_else(|error| {
+    let outcome = outcome.unwrap_or_else(|error| {
         tracing::warn!(job = job.id, error = format!("{error:#}"), "a job failed");
         Outcome::Failed {
             error: format!("{error:#}"),
         }
-    })
+    });
+    (outcome, usage)
 }
 
 /// What an agent says to a prompt, through its runner.
@@ -385,21 +283,64 @@ async fn ask(
     agent: &AgentProfile,
     prompt: &Prompt,
     progress: &Progress,
-) -> anyhow::Result<String> {
+) -> anyhow::Result<Answer> {
     let dir = JobDir::create(&context.work_dir, job)?;
     progress.say("Thinking");
-    let work = RunnerWork {
-        dir: &dir.path,
-        edits: false,
-        max_turns: None,
-    };
-    let configured = &context.config.runners;
-    let name = &agent.display_name;
-    if agent.runner == names::API {
-        let config = configured.api.clone().unwrap_or_default();
-        let run = runners::api::run(context, &config, job, agent, prompt, progress);
-        return within(config.timeout_minutes.unwrap_or(10), name, run).await;
+    let paths = &context.config.paths;
+    let settings = &context.config.settings;
+    let hub = stemma_client::Hub::new(&context.hub, Some(job.token.clone()))?;
+    let workspace = crate::workspace::Workspace::open(
+        settings,
+        paths,
+        &hub,
+        &job.group.slug,
+        job.group.id,
+        &job.token,
+    )
+    .await?;
+    let scratch = crate::workspace::Scratch::create(&workspace.path, job.id)?;
+    let host = context.host();
+    let mut container = None;
+    let mut contained_program = None;
+    // The agent's sign-in for containers, held while it answers.
+    let mut _held = None;
+    if let Some(Isolator::Containers(containers)) = &context.isolator {
+        use crate::isolation::owner_of;
+        let (env, mut files) = containers.sign_in(&agent.runner, dirs::home_dir().as_deref())?;
+        if let Some(handle) = crate::sign_in::handle_of(&agent.runner) {
+            files.extend(crate::sign_in::mounts(paths, handle));
+            _held = crate::sign_in::hold(paths, handle).await?;
+        }
+        let mounts = answer_mounts(&workspace.path, &dir.path, files);
+        let mut spec = containers.spec(
+            job.id,
+            owner_of(&workspace.path),
+            mounts,
+            env,
+            Duration::from_secs(
+                60 * cli_runner(context, &agent.runner)?
+                    .timeout_minutes
+                    .unwrap_or(15)
+                    + 60,
+            ),
+        );
+        // The sign-in's values, from the person's credentials, or else the
+        // computer's environment.
+        spec.pass_values = crate::sign_in::values(&spec.pass_env);
+        container = Some(containers.start(&spec, &workspace.path).await?);
+        contained_program = containers.program(&agent.runner);
     }
+    let sandbox: &dyn crate::isolation::Sandbox = match &container {
+        Some(container) => container,
+        None => &host,
+    };
+    let work = RunnerWork {
+        dir: &scratch.0,
+        root: &workspace.path,
+        sandbox,
+        contained_program,
+    };
+    let name = &agent.display_name;
     let minutes = cli_runner(context, &agent.runner)?
         .timeout_minutes
         .unwrap_or(15);
@@ -411,16 +352,40 @@ async fn ask(
     .await
 }
 
+/// What an answer's container is given of the computer, and nothing else:
+/// the group's workspace, read-write, where it works; the job's folder, with
+/// its token and the agent's launch files, read-only; and the agent's
+/// sign-in files.
+pub fn answer_mounts(
+    workspace: &Path,
+    job_dir: &Path,
+    sign_in: Vec<crate::isolation::Mount>,
+) -> Vec<crate::isolation::Mount> {
+    use crate::isolation::{Mount, ROOT};
+    let mut mounts = vec![
+        Mount::Bind {
+            source: workspace.to_owned(),
+            target: ROOT.into(),
+            read_only: false,
+        },
+        Mount::Bind {
+            source: job_dir.to_owned(),
+            target: job_dir.to_owned(),
+            read_only: true,
+        },
+    ];
+    mounts.extend(sign_in);
+    mounts
+}
+
 /// The configuration of one of the worker's command-line runners.
 pub fn cli_runner(context: &Context, runner: &str) -> anyhow::Result<crate::config::CliRunner> {
-    let configured = &context.config.runners;
-    let config = match runner {
-        names::CLAUDE_CODE => configured.claude_code.clone(),
-        names::CODEX => configured.codex.clone(),
-        names::OPENCODE => configured.opencode.clone(),
-        _ => None,
-    };
-    config.ok_or_else(|| anyhow::anyhow!("this worker has no runner {runner}"))
+    context
+        .config
+        .runners
+        .get(runner)
+        .cloned()
+        .ok_or_else(|| anyhow::anyhow!("this machine has no runner {runner}"))
 }
 
 /// Runs one of the command-line runners: Claude Code, Codex or OpenCode.
@@ -432,7 +397,7 @@ pub async fn run_cli(
     work: &RunnerWork<'_>,
     prompt: &Prompt,
     progress: &Progress,
-) -> anyhow::Result<String> {
+) -> anyhow::Result<Answer> {
     let config = cli_runner(context, &agent.runner)?;
     match agent.runner.as_str() {
         names::CLAUDE_CODE => {
@@ -445,7 +410,7 @@ pub async fn run_cli(
         names::OPENCODE => {
             runners::opencode::run(context, &config, job, agent, dir, work, prompt, progress).await
         }
-        other => anyhow::bail!("this worker has no runner {other}"),
+        other => anyhow::bail!("this machine has no runner {other}"),
     }
 }
 
@@ -465,8 +430,52 @@ pub async fn within<T>(
 mod tests {
     use super::*;
     use serde_json::json;
-    use stemma_core::api::{AgentScope, User};
-    use stemma_core::protocol::PaperSpec;
+
+    #[test]
+    fn an_answers_container_gets_only_the_workspace_its_job_and_its_sign_in() {
+        use crate::isolation::{Mount, ROOT};
+        let sign_in = vec![Mount::Bind {
+            source: "/home/ada/.codex/auth.json".into(),
+            target: "/home/stemma/.codex/auth.json".into(),
+            read_only: true,
+        }];
+        let mounts = answer_mounts(
+            Path::new("/data/groups/geometry"),
+            Path::new("/state/jobs/7-0000abcd"),
+            sign_in,
+        );
+        let binds: Vec<_> = mounts
+            .iter()
+            .map(|mount| match mount {
+                Mount::Bind {
+                    source,
+                    target,
+                    read_only,
+                } => (
+                    source.display().to_string(),
+                    target.display().to_string(),
+                    *read_only,
+                ),
+                Mount::Hidden { .. } => panic!("nothing hidden"),
+            })
+            .collect();
+        assert_eq!(
+            binds,
+            [
+                ("/data/groups/geometry".into(), ROOT.into(), false),
+                (
+                    "/state/jobs/7-0000abcd".into(),
+                    "/state/jobs/7-0000abcd".into(),
+                    true
+                ),
+                (
+                    "/home/ada/.codex/auth.json".into(),
+                    "/home/stemma/.codex/auth.json".into(),
+                    true
+                ),
+            ]
+        );
+    }
 
     #[test]
     fn describes_tool_calls() {
@@ -491,119 +500,5 @@ mod tests {
             describe_call("edit", &json!({"filePath": "Geometry/Basic.lean"})),
             "Editing Geometry/Basic.lean"
         );
-    }
-
-    fn update(title: Option<&str>) -> PaperUpdate {
-        PaperUpdate {
-            conversation: Conversation {
-                agent: AgentProfile {
-                    handle: "editor".into(),
-                    display_name: "Editor".into(),
-                    runner: "api".into(),
-                    model: None,
-                    endpoint: None,
-                    instructions: None,
-                    scope: AgentScope::Group,
-                    role: Default::default(),
-                },
-                thread: ThreadRef {
-                    number: 4,
-                    title: "Decisions".into(),
-                    kind: ThreadKind::Discussion,
-                },
-                trigger: 7,
-                requester: User {
-                    id: 1,
-                    username: "ada".into(),
-                    display_name: "Ada".into(),
-                },
-                context: Vec::new(),
-            },
-            paper: PaperSpec {
-                slug: "gluing-maps".into(),
-                title: title.map(str::to_owned),
-                revision: if title.is_some() { 3 } else { 0 },
-                body: if title.is_some() {
-                    "Old.\n".into()
-                } else {
-                    String::new()
-                },
-            },
-            related: Vec::new(),
-            nightly: false,
-        }
-    }
-
-    #[test]
-    fn reads_an_editors_answer() {
-        let answer = "I read the thread.\n\n<reason>Added the\n decision of t4#7.</reason>\n<title>Gluing maps</title>\n<paper>\n# Setting\n\nNew.\n</paper>\n";
-        let Outcome::Paper {
-            title,
-            body,
-            reason,
-        } = read_paper(answer, &update(Some("Old title"))).unwrap()
-        else {
-            panic!("expected a paper");
-        };
-        assert_eq!(title, "Gluing maps");
-        assert_eq!(body, "# Setting\n\nNew.\n");
-        assert_eq!(reason, "Added the decision of t4#7.");
-
-        // A fenced text, with no reason nor title.
-        let answer = "<paper>\n```markdown\nNew.\n```\n</paper>";
-        let Outcome::Paper {
-            title,
-            body,
-            reason,
-        } = read_paper(answer, &update(None)).unwrap()
-        else {
-            panic!("expected a paper");
-        };
-        assert_eq!(title, "gluing maps");
-        assert_eq!(body, "New.\n");
-        assert_eq!(reason, "Updated as t4#7 asked");
-
-        assert!(read_paper("No paper here.", &update(None)).is_err());
-        assert!(read_paper("<paper>\n</paper>", &update(Some("T"))).is_err());
-    }
-
-    #[test]
-    fn an_editors_prompt_has_the_paper() {
-        let prompt = paper_prompt(
-            &GroupRef {
-                slug: "geometry".into(),
-                name: "Geometry".into(),
-            },
-            &update(Some("Gluing maps")),
-        );
-        assert!(
-            prompt
-                .system
-                .contains("update the\nworking paper p/gluing-maps")
-        );
-        assert!(
-            prompt
-                .user
-                .contains("at revision 3:\n\n<current>\nOld.\n</current>")
-        );
-        assert!(
-            prompt
-                .user
-                .contains("Update p/gluing-maps as message t4#7, by Ada (@ada), asks.")
-        );
-
-        let nightly = PaperUpdate {
-            nightly: true,
-            ..update(Some("Gluing maps"))
-        };
-        let prompt = paper_prompt(
-            &GroupRef {
-                slug: "geometry".into(),
-                name: "Geometry".into(),
-            },
-            &nightly,
-        );
-        assert!(prompt.user.contains("the nightly update of p/gluing-maps"));
-        assert!(!prompt.user.contains("as message t4#7"));
     }
 }

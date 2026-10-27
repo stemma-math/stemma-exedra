@@ -1,7 +1,7 @@
 <script lang="ts">
   import type { Paper } from "#lib/api.ts";
-  import { exactly, when } from "#lib/format.ts";
-  import Attribution from "./Attribution.svelte";
+  import { when } from "#lib/format.ts";
+  import BuildChip from "./BuildChip.svelte";
 
   let { papers, group }: { papers: Paper[]; group: string } = $props();
 </script>
@@ -11,22 +11,13 @@
     {#each papers as paper (paper.slug)}
       <a class="table__row" href="/g/{group}/p/{paper.slug}">
         <span class="stack stack--tight">
-          <span class="thread-row__title">
-            <strong>{paper.title}</strong>
-            {#if paper.last_read === null}
-              <span class="chip chip--accent">New to you</span>
-            {:else if paper.last_read < paper.revision}
-              <span class="chip chip--accent">Changed since you read it</span>
-            {/if}
-          </span>
+          <strong>{paper.title}</strong>
           <span class="quiet">
-            <span class="identifier">p/{paper.slug}</span> · revision {paper.revision}, by
-            <Attribution user={paper.updated_by} agent={paper.updated_agent} />
+            <span class="identifier">p/{paper.slug}</span>, by {paper.authors.map((a) => a.display_name).join(", ")}
           </span>
         </span>
-        <time class="quiet when" datetime={paper.updated_at} title={exactly(paper.updated_at)}>
-          {when(paper.updated_at)}
-        </time>
+        <span class="quiet when">{paper.pdf ? `PDF ${when(paper.pdf.built_at)}` : "No PDF yet"}</span>
+        {#if paper.latest}<BuildChip build={paper.latest} />{:else}<span></span>{/if}
       </a>
     {/each}
   </div>

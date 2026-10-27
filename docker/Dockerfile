@@ -1,5 +1,5 @@
-# The Stemma image: one binary, `stemma`, with the web app embedded, and git,
-# which the hub needs to keep the groups' libraries.
+# The Stemma image: one binary, `stemma`, with the web app embedded. The
+# hub runs beside Forgejo (see compose.yaml), which keeps the repositories.
 # Build from the repository's root:
 #
 #     docker build -f docker/Dockerfile -t stemma .
@@ -18,12 +18,14 @@ WORKDIR /src
 COPY Cargo.toml Cargo.lock ./
 COPY crates/ crates/
 COPY lean/ lean/
+COPY latex/ latex/
+COPY docker/agents/ docker/agents/
 COPY --from=web /src/web/build web/build
 RUN cargo build --release --locked --bin stemma
 
 FROM debian:bookworm-slim
 RUN apt-get update \
-    && apt-get install --yes --no-install-recommends ca-certificates git \
+    && apt-get install --yes --no-install-recommends ca-certificates \
     && rm -rf /var/lib/apt/lists/* \
     && useradd --system --home-dir /var/lib/stemma --create-home stemma
 COPY --from=rust /src/target/release/stemma /usr/local/bin/stemma

@@ -1,7 +1,14 @@
 target/
+**/target/
+**/node_modules/
 web/node_modules/
 web/build/
 web/.svelte-kit/
 data/
 .git/
 **/.lake/
+docker/.env
+
+desktop/node_modules/
+desktop/dist/
+desktop/src-tauri/gen/

@@ -20,6 +20,8 @@
     agents?: string[];
     /** The agent that answers every message, in a chat. */
     resident?: string | null;
+    /** Told what is written, as it is written. */
+    oninput?: (body: string) => void;
   }
 
   let {
@@ -33,6 +35,7 @@
     oncancelreply,
     agents = [],
     resident = null,
+    oninput,
   }: Props = $props();
 
   const summon = $derived(
@@ -56,6 +59,10 @@
   let dropping = $state(false);
   let textarea: HTMLTextAreaElement | undefined = $state();
   let nextKey = 0;
+
+  $effect(() => {
+    oninput?.(body);
+  });
 
   const uploading = $derived(uploads.some((u) => !u.attachment));
   const empty = $derived(body.trim() === "" && uploads.length === 0);
@@ -181,7 +188,7 @@
     <ul class="row plain-list" aria-label="Files">
       {#each uploads as upload (upload.key)}
         <li class="chip chip--outline">
-          {#if !upload.attachment}<span class="spinner" role="status" aria-label="Uploading"></span>{/if}
+          {#if !upload.attachment}<span class="skeleton upload-placeholder" role="status" aria-label="Uploading"></span>{/if}
           <span class="identifier">{upload.name}</span>
           <span class="quiet numeric">{fileSize(upload.size)}</span>
           <button

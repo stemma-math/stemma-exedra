@@ -1,0 +1,45 @@
+% {{title}}: a working paper of {{group}}, kept by Stemma.
+%
+% Check this paper locally with `latexmk -pdf main.tex` (pdfLaTeX and BibTeX).
+% Stemma currently accepts pushes without building PDFs. The agents' image
+% includes TeX Live and latexmk (docker/agents/Dockerfile).
+% References are in references.bib. Long papers may use \input{sections/introduction}.
+\documentclass[11pt]{amsart}
+
+\usepackage[T1]{fontenc}
+\usepackage{lmodern}
+\usepackage{amssymb}
+\usepackage{mathtools}
+\usepackage{enumitem}
+\usepackage[hidelinks]{hyperref}
+
+\newtheorem{theorem}{Theorem}[section]
+\newtheorem{lemma}[theorem]{Lemma}
+\newtheorem{proposition}[theorem]{Proposition}
+\newtheorem{corollary}[theorem]{Corollary}
+\theoremstyle{definition}
+\newtheorem{definition}[theorem]{Definition}
+\newtheorem{example}[theorem]{Example}
+\theoremstyle{remark}
+\newtheorem{remark}[theorem]{Remark}
+
+\title{{{title}}}
+\author{{{author}}}
+
+\begin{document}
+
+\begin{abstract}
+  What this paper is about, in a few lines.
+\end{abstract}
+
+\maketitle
+
+\section{Introduction}
+
+Start here. Cite what you use from \texttt{references.bib}, as
+in~\cite{example}.
+
+\bibliographystyle{amsplain}
+\bibliography{references}
+
+\end{document}

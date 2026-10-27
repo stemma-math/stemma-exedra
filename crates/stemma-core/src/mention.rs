@@ -1,6 +1,6 @@
 //! Mentions: `@claude` in a message summons the agent with that handle.
 
-use crate::reference::{closing_run, fence_marker, is_closing};
+use crate::reference::{closing_run, prose_spans};
 
 /// Whether `handle` can name an agent: a lowercase letter, then up to 31
 /// lowercase letters, digits, `-` or `_`.
@@ -22,27 +22,25 @@ fn is_handle_byte(b: u8) -> bool {
 /// not in code. Handles are matched without case, and a trailing `-` or
 /// `_` is punctuation, not part of the handle.
 pub fn mentions(text: &str) -> Vec<String> {
-    let mut found: Vec<String> = Vec::new();
-    let mut fence: Option<(u8, usize)> = None;
-    for line in text.split_inclusive('\n') {
-        if let Some(marker) = fence_marker(line) {
-            match fence {
-                None => fence = Some(marker),
-                Some((ch, len)) if marker.0 == ch && marker.1 >= len && is_closing(line) => {
-                    fence = None
-                }
-                Some(_) => {}
-            }
-            continue;
-        }
-        if fence.is_none() {
-            scan_line(line, &mut found);
+    let mut found = Vec::new();
+    for (_, handle) in mention_spans(text) {
+        if is_handle(&handle) && !found.contains(&handle) {
+            found.push(handle);
         }
     }
     found
 }
 
-fn scan_line(line: &str, found: &mut Vec<String>) {
+/// Every mention with its byte span, including the broader account namespace.
+pub fn mention_spans(text: &str) -> Vec<(std::ops::Range<usize>, String)> {
+    let mut found = Vec::new();
+    for span in prose_spans(text) {
+        scan_line(&text[span.clone()], span.start, &mut found);
+    }
+    found
+}
+
+fn scan_line(line: &str, base: usize, found: &mut Vec<(std::ops::Range<usize>, String)>) {
     let bytes = line.as_bytes();
     let mut i = 0;
     while i < bytes.len() {
@@ -61,13 +59,13 @@ fn scan_line(line: &str, found: &mut Vec<String>) {
                     .is_some_and(|c| c.is_alphanumeric() || matches!(c, '.' | '_' | '-' | '@'));
                 let len = bytes[i + 1..]
                     .iter()
-                    .take_while(|&&b| is_handle_byte(b.to_ascii_lowercase()))
+                    .take_while(|&&b| b.is_ascii_alphanumeric() || b"._-".contains(&b))
                     .count();
                 let handle = line[i + 1..i + 1 + len]
-                    .trim_end_matches(['-', '_'])
+                    .trim_end_matches(['.', '-', '_'])
                     .to_ascii_lowercase();
-                if !after_word && is_handle(&handle) && !found.contains(&handle) {
-                    found.push(handle);
+                if !after_word && !handle.is_empty() && handle.len() <= 32 {
+                    found.push((base + i..base + i + 1 + handle.len(), handle));
                 }
                 i += 1 + len;
             }

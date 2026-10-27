@@ -1,10 +1,10 @@
 //! The forum's tools: list threads, read a thread or some of its messages,
-//! post a message and search.
+//! post a message, open a thread and search.
 
 use serde::Deserialize;
 use serde_json::{Value, json};
 use stemma_core::Address;
-use stemma_core::api::{PostMessage, ThreadKind};
+use stemma_core::api::{CreateThread, PostMessage, SendNote, ThreadKind};
 
 use super::{GROUP, ToolDef, ToolError, ToolResult, Toolbox, address_in, parse};
 use crate::format;
@@ -18,41 +18,17 @@ const MAX_RANGE: u32 = 200;
 
 pub fn definitions() -> Vec<ToolDef> {
     vec![
-        ToolDef {
-            name: "list_threads",
-            description: "List the threads of a group, most recently active first, with their \
-                          addresses (t12), titles and number of messages.",
-            input_schema: json!({
-                "type": "object",
-                "properties": {
-                    "group": {"type": "string", "description": GROUP},
-                    "kind": {"type": "string", "enum": ["discussion", "chat"],
-                             "description": "Only discussions, or only chats."},
-                    "limit": {"type": "integer", "minimum": 1, "maximum": 200,
-                              "description": "How many; 30 if absent."}
-                }
-            }),
-            writes: false,
-        },
-        ToolDef {
-            name: "read_thread",
-            description: "Read a thread, a message or a range of messages, by address: t12 \
-                          (the thread), t12#45 (a message) or t12#45-50 (messages 45 to 50). \
-                          Links to the web app work too. Each message comes headed by its \
-                          address, its author and its time. Papers (p/slug), declarations \
-                          (lean:Name) and the workshop's tasks (w7) are read too.",
-            input_schema: json!({
-                "type": "object",
-                "properties": {
-                    "address": {"type": "string", "description": "t12, t12#45 or t12#45-50."},
-                    "group": {"type": "string", "description": GROUP}
-                },
-                "required": ["address"]
-            }),
-            writes: false,
-        },
+        ToolDef::read("list_threads", |toolbox, args, _agent| {
+            Box::pin(list_threads(toolbox, args))
+        }),
+        ToolDef::read("read_thread", |toolbox, args, _agent| {
+            Box::pin(read_thread(toolbox, args))
+        }),
         ToolDef {
             name: "post_message",
+            handler: |toolbox, args, agent| Box::pin(post_message(toolbox, args, agent)),
+            terminal: &["post"],
+            positional: &["thread", "body"],
             description: "Post a message in a thread, in Markdown, with $…$ math and [[t12#45]] \
                           references. It is shown as written by you, the agent, for the person \
                           you work for. Give a message's address (t12#45) to reply to it.",
@@ -62,6 +38,7 @@ pub fn definitions() -> Vec<ToolDef> {
                     "thread": {"type": "string",
                                "description": "The thread (t12), or the message to reply to (t12#45)."},
                     "body": {"type": "string", "description": "The message, in Markdown."},
+                    "attachments": {"type":"array","items":{"type":"integer"},"description":"Ids returned by upload_attachment."},
                     "reply_to": {"type": "integer", "minimum": 1,
                                  "description": "The number of the message it replies to."},
                     "group": {"type": "string", "description": GROUP}
@@ -71,38 +48,85 @@ pub fn definitions() -> Vec<ToolDef> {
             writes: true,
         },
         ToolDef {
-            name: "search",
-            description: "Search a group's threads and messages for words, regardless of case. \
-                          Results come with their addresses, to read them with read_thread.",
+            name: "notify",
+            handler: |toolbox, args, agent| Box::pin(notify(toolbox, args, agent)),
+            terminal: &["notify"],
+            positional: &["to", "body"],
+            description: "Leave a note for some of the group's members: it reaches them as a \
+                          notification, shown as written by you, the agent, for the person you \
+                          work for. Use it when someone must know of something and no thread \
+                          is the place to say it, and keep it short: cite what it is about by \
+                          address ([[t12#45]], [[lean:Foo.bar]]).",
             input_schema: json!({
                 "type": "object",
                 "properties": {
-                    "query": {"type": "string", "description": "The words to find, all of them."},
-                    "group": {"type": "string", "description": GROUP},
-                    "limit": {"type": "integer", "minimum": 1, "maximum": 100,
-                              "description": "How many results; 20 if absent."}
+                    "to": {"type": "string",
+                           "description": "Their usernames, separated by commas or spaces: @ada, @bob."},
+                    "body": {"type": "string", "description": "The note, in Markdown."},
+                    "group": {"type": "string", "description": GROUP}
                 },
-                "required": ["query"]
+                "required": ["to", "body"]
             }),
-            writes: false,
+            writes: true,
         },
+        ToolDef {
+            name: "open_thread",
+            handler: |toolbox, args, _agent| Box::pin(open_thread(toolbox, args)),
+            terminal: &["threads", "new"],
+            positional: &["title", "body"],
+            description: "Open a new thread in the group, to ask it something: a short title, \
+                          and a first message in Markdown that cites by address what it is \
+                          about ([[t12#45]], [[lean:Foo.bar]]). Use it sparingly, only \
+                          when a decision is needed and no thread fits. Returns the thread's \
+                          address.",
+            input_schema: json!({
+                "type": "object",
+                "properties": {
+                    "title": {"type": "string", "description": "What it asks, in a line."},
+                    "body": {"type": "string", "description": "The question, in Markdown."},
+                    "group": {"type": "string", "description": GROUP}
+                },
+                "required": ["title", "body"]
+            }),
+            writes: true,
+        },
+        ToolDef::read("search", |toolbox, args, _agent| {
+            Box::pin(search(toolbox, args))
+        }),
     ]
 }
 
-/// Runs a forum tool, if `name` is one.
-pub async fn call(
-    toolbox: &Toolbox,
-    name: &str,
-    args: Value,
-    agent: Option<&str>,
-) -> Option<ToolResult> {
-    Some(match name {
-        "list_threads" => list_threads(toolbox, args).await,
-        "read_thread" => read_thread(toolbox, args).await,
-        "post_message" => post_message(toolbox, args, agent).await,
-        "search" => search(toolbox, args).await,
-        _ => return None,
-    })
+#[derive(Deserialize)]
+struct OpenThread {
+    title: String,
+    body: String,
+    group: Option<String>,
+}
+
+async fn open_thread(toolbox: &Toolbox, args: Value) -> ToolResult {
+    let args: OpenThread = parse(args)?;
+    let group = toolbox.group(args.group.as_deref()).await?;
+    let page = toolbox
+        .hub()
+        .create_thread(
+            &group,
+            &CreateThread {
+                title: args.title,
+                kind: ThreadKind::Discussion,
+                resident_agent: None,
+                anchor: None,
+                body: Some(args.body),
+                attachments: Vec::new(),
+            },
+        )
+        .await?;
+    let number = page.thread.number;
+    Ok(format!(
+        "Opened t{number}, “{}”: cite it as [[t{number}]]. {}{}\n",
+        page.thread.title,
+        toolbox.hub().base(),
+        Address::Thread(number).web_path(&group)
+    ))
 }
 
 #[derive(Deserialize)]
@@ -122,6 +146,7 @@ async fn list_threads(toolbox: &Toolbox, args: Value) -> ToolResult {
 
 #[derive(Deserialize)]
 struct ReadThread {
+    file: Option<String>,
     address: String,
     group: Option<String>,
 }
@@ -155,17 +180,14 @@ async fn read_thread(toolbox: &Toolbox, args: Value) -> ToolResult {
             thread, message, ..
         } => (thread, message, message),
         Address::Messages { thread, from, to } => (thread, from, to.min(from + MAX_RANGE - 1)),
-        Address::Paper { .. } => {
-            let args = json!({"address": address.to_string(), "group": group});
-            return super::papers::read_paper(toolbox, args).await;
-        }
         Address::Declaration(name) => {
             let args = json!({"name": name, "group": group});
             return super::library::lookup(toolbox, args).await;
         }
-        Address::Task(number) => {
-            let args = json!({"address": format!("w{number}"), "group": group});
-            return super::tasks::status(toolbox, args).await;
+
+        Address::Paper(slug) => {
+            let args = json!({"address": format!("p/{slug}"), "file": args.file, "group": group});
+            return super::papers::read(toolbox, args).await;
         }
     };
     let messages = hub.messages(&group, thread, from, to).await?;
@@ -191,6 +213,8 @@ async fn read_thread(toolbox: &Toolbox, args: Value) -> ToolResult {
 
 #[derive(Deserialize)]
 struct Post {
+    #[serde(default)]
+    attachments: Vec<i64>,
     thread: String,
     body: String,
     reply_to: Option<u32>,
@@ -217,7 +241,7 @@ async fn post_message(toolbox: &Toolbox, args: Value, agent: Option<&str>) -> To
             &PostMessage {
                 body: args.body,
                 reply_to,
-                attachments: Vec::new(),
+                attachments: args.attachments,
                 agent: agent.map(str::to_owned),
             },
         )
@@ -231,6 +255,41 @@ async fn post_message(toolbox: &Toolbox, args: Value, agent: Option<&str>) -> To
         toolbox.hub().base(),
         address.web_path(&group)
     ))
+}
+
+#[derive(Deserialize)]
+struct Notify {
+    to: String,
+    body: String,
+    group: Option<String>,
+}
+
+async fn notify(toolbox: &Toolbox, args: Value, agent: Option<&str>) -> ToolResult {
+    let args: Notify = parse(args)?;
+    let to: Vec<String> = args
+        .to
+        .split(|c: char| c == ',' || c.is_whitespace())
+        .map(|name| name.trim().trim_start_matches('@'))
+        .filter(|name| !name.is_empty())
+        .map(str::to_owned)
+        .collect();
+    if to.is_empty() {
+        return Err(ToolError::invalid("Say who the note is for"));
+    }
+    let group = toolbox.group(args.group.as_deref()).await?;
+    toolbox
+        .hub()
+        .send_note(
+            &group,
+            &SendNote {
+                to: to.clone(),
+                body: args.body,
+                agent: agent.map(str::to_owned),
+            },
+        )
+        .await?;
+    let to: Vec<String> = to.iter().map(|name| format!("@{name}")).collect();
+    Ok(format!("Left a note for {}.\n", to.join(", ")))
 }
 
 #[derive(Deserialize)]

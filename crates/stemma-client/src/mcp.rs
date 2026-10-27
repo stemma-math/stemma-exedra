@@ -17,13 +17,7 @@ use serde_json::Value;
 
 use crate::tools::Toolbox;
 
-const INSTRUCTIONS: &str = "Stemma is where a research group does mathematics by talking. \
-These tools reach the group's forum, threads of numbered messages in Markdown with $…$ math; its \
-working papers, readable accounts of its lines of work; its Lean library; and its workshop, which \
-works on the library in the background. Everything has an address: t12 is thread 12, t12#45 its \
-message 45, t12#45-50 messages 45 to 50; p/notes is a paper and p/notes#gluing a section of it; \
-lean:Foo.bar is a declaration of the library; w7 is a task of the workshop. Cite what you use by \
-address, written as a reference: [[t12#45]], [[p/notes#gluing]], [[lean:Foo.bar]], [[w7]].";
+const INSTRUCTIONS: &str = "Stemma is where a research group does mathematics by talking. Read the forum, library and working papers with these tools. Cite addresses as [[t12#45]], [[lean:Foo.bar]] or [[p/notes]].";
 
 /// The MCP server.
 #[derive(Clone)]
@@ -92,6 +86,10 @@ impl ServerHandler for StemmaServer {
                 };
                 let mut annotations = ToolAnnotations::default();
                 annotations.read_only_hint = Some(!def.writes);
+                // Current writes append messages, threads or tasks; none destroys data.
+                annotations.destructive_hint = Some(false);
+                annotations.idempotent_hint = Some(!def.writes);
+                annotations.open_world_hint = Some(true);
                 Tool::new(def.name, def.description, Arc::new(schema)).annotate(annotations)
             })
             .collect();
@@ -111,8 +109,12 @@ impl ServerHandler for StemmaServer {
             None => agent_name(context.client_info().as_ref()),
         };
         let args = request.arguments.map(Value::Object).unwrap_or(Value::Null);
-        let result = match self.toolbox.call(&request.name, args, Some(&agent)).await {
-            Ok(text) => CallToolResult::success(vec![ContentBlock::text(text)]),
+        let result = match self
+            .toolbox
+            .call_content(&request.name, args, Some(&agent))
+            .await
+        {
+            Ok(content) => CallToolResult::success(content),
             Err(error) => CallToolResult::error(vec![ContentBlock::text(error.to_string())]),
         };
         Ok(result.into())

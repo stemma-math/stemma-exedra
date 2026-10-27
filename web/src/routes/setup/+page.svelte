@@ -33,17 +33,14 @@
   }
 </script>
 
-<svelte:head><title>Set up · Stemma</title></svelte:head>
+<svelte:head><title>Set up</title></svelte:head>
 
 <main class="page page--centered">
   <div class="sign-in">
-    <div class="sign-in__brand">
-      <stemma-mark></stemma-mark>
-      <h1 class="wordmark">Stemma</h1>
-    </div>
+
     {#if needed === false}
       <p class="message message--info">
-        <span class="message__text">This hub is set up. <a href="/signin">Sign in</a>.</span>
+        <span class="message__text">This hub is set up. <a href="/login">Log in</a>.</span>
       </p>
     {:else if needed}
       <form class="card card--raised card__body form" onsubmit={submit}>

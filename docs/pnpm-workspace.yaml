@@ -1,0 +1,3 @@
+# esbuild, through Vite, finds its binary without its install script.
+allowBuilds:
+  esbuild: false

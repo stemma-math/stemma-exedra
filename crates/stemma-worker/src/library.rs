@@ -1,40 +1,18 @@
-//! Builds of a group's library, and their inspection.
-//!
-//! A worker with Lean keeps a warm checkout of each group's library in its
-//! work folder (`libraries/<group>`), with its `.lake` between builds. To
-//! build a commit it fetches `main` from the hub with the job's token and
-//! checks the commit out; gets Mathlib's cache, if the library depends on
-//! Mathlib and its dependencies changed since the last time; and runs
-//! `lake build`, which builds again only the modules that changed.
-//!
-//! Then it runs the inspection, `lean/Inspect.lean` in Stemma's repository,
-//! with the library's own toolchain: compiled once per toolchain into a
-//! program (`inspect/<toolchain>` in the work folder), or interpreted if it
-//! cannot be compiled. It inspects only the modules whose build changed and
-//! those that import them, and keeps what it found of the others from the
-//! last time (`.lake/stemma/inspection.json`): a commit that changes no
-//! module is not inspected at all, and Mathlib is imported once, when one
-//! is.
-
+//! Library build and inspection helpers, reused from the earlier build executor.
+use crate::isolation::Sandbox;
+use crate::job::{Context, Progress};
+use anyhow::Context as _;
+use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 use std::process::{ExitStatus, Stdio};
 use std::sync::{Arc, Mutex};
-
-use anyhow::Context as _;
-use serde::{Deserialize, Serialize};
-use sha2::{Digest, Sha256};
 use stemma_core::api::{Declaration, LibraryReport};
-use stemma_core::protocol::{Built, JobSpec, LibraryBuild, Outcome};
+use stemma_core::protocol::BuildResult as Built;
 use tokio::io::{AsyncBufReadExt, AsyncRead, BufReader};
 use tokio::process::Command;
-
-use crate::job::{Context, Progress, within};
-
-/// The inspection program.
 pub const INSPECT: &str = include_str!("../../../lean/Inspect.lean");
-
-/// The most of a build's log sent to the hub, in bytes: its end.
 const MAX_LOG: usize = 200_000;
 
 /// What a build wrote, kept as it goes.
@@ -98,7 +76,7 @@ async fn pump(reader: impl AsyncRead + Unpin, log: Log, each: impl Fn(&str)) {
 /// Runs a command, writing what it says to the log; `each` sees every line
 /// of its output.
 pub async fn run(
-    mut command: Command,
+    command: Command,
     log: &Log,
     each: impl Fn(&str) + Send + Sync + 'static,
 ) -> anyhow::Result<ExitStatus> {
@@ -109,6 +87,32 @@ pub async fn run(
         shown.push(' ');
         shown.push_str(&arg.to_string_lossy());
     }
+    run_shown(command, &shown, log, each).await
+}
+
+/// Runs `program` with `args` in `dir` where `sandbox` says, as [`run`],
+/// shown in the log as itself.
+pub async fn run_in(
+    sandbox: &dyn Sandbox,
+    program: &str,
+    args: &[&str],
+    dir: &Path,
+    log: &Log,
+    each: impl Fn(&str) + Send + Sync + 'static,
+) -> anyhow::Result<ExitStatus> {
+    let args: Vec<String> = args.iter().map(|a| (*a).to_owned()).collect();
+    let command = sandbox.command(program, &args, &[], dir);
+    let shown = format!("{program} {}", args.join(" "));
+    run_shown(command, shown.trim(), log, each).await
+}
+
+/// Runs a command, shown in the log as `shown`.
+async fn run_shown(
+    mut command: Command,
+    shown: &str,
+    log: &Log,
+    each: impl Fn(&str) + Send + Sync + 'static,
+) -> anyhow::Result<ExitStatus> {
     log.line(&format!("$ {shown}"));
     command
         .stdin(Stdio::null())
@@ -146,18 +150,24 @@ pub async fn quietly(command: Command, log: &Log) -> anyhow::Result<bool> {
     Ok(run(command, log, |_| {}).await?.success())
 }
 
-/// Git, with the job's token for the hub, and nothing asked of anyone.
+/// Git, with the job's token for the hub, and nothing asked of anyone;
+/// on the machine, so with no hooks and no file-system monitor, which a
+/// job's files could otherwise name.
 pub fn git(dir: &Path, token: &str) -> Command {
     let mut command = Command::new("git");
     command
         .current_dir(dir)
         .env("GIT_TERMINAL_PROMPT", "0")
-        .env("GIT_CONFIG_COUNT", "1")
+        .env("GIT_CONFIG_COUNT", "3")
         .env("GIT_CONFIG_KEY_0", "http.extraHeader")
         .env(
             "GIT_CONFIG_VALUE_0",
             format!("Authorization: Bearer {token}"),
-        );
+        )
+        .env("GIT_CONFIG_KEY_1", "core.hooksPath")
+        .env("GIT_CONFIG_VALUE_1", "/dev/null")
+        .env("GIT_CONFIG_KEY_2", "core.fsmonitor")
+        .env("GIT_CONFIG_VALUE_2", "false");
     command
 }
 
@@ -178,7 +188,8 @@ pub async fn git_output(dir: &Path, token: &str, args: &[&str]) -> anyhow::Resul
     Ok(String::from_utf8_lossy(&output.stdout).trim().to_owned())
 }
 
-/// The modules a build made, from its `.olean` files.
+/// The modules a build made, from its `.olean` files: those that are
+/// files, not links, since a job's agent may have made them.
 pub fn built_modules(root: &Path) -> Vec<String> {
     fn walk(dir: &Path, prefix: &str, found: &mut Vec<String>) {
         let Ok(entries) = std::fs::read_dir(dir) else {
@@ -186,15 +197,20 @@ pub fn built_modules(root: &Path) -> Vec<String> {
         };
         for entry in entries.flatten() {
             let path = entry.path();
+            let Ok(kind) = entry.file_type() else {
+                continue;
+            };
             let name = entry.file_name().to_string_lossy().into_owned();
             let module = if prefix.is_empty() {
                 name.clone()
             } else {
                 format!("{prefix}.{name}")
             };
-            if path.is_dir() {
+            if kind.is_dir() {
                 walk(&path, &module, found);
-            } else if let Some(module) = module.strip_suffix(".olean") {
+            } else if kind.is_file()
+                && let Some(module) = module.strip_suffix(".olean")
+            {
                 found.push(module.to_owned());
             }
         }
@@ -260,48 +276,6 @@ fn stemma_dir(dir: &Path) -> PathBuf {
     dir.join(".lake").join("stemma")
 }
 
-/// Builds and inspects a commit of the library: a build that does not pass
-/// is an outcome too, with its log.
-pub async fn build(
-    context: &Context,
-    job: &JobSpec,
-    build: &LibraryBuild,
-    progress: &Progress,
-) -> anyhow::Result<Outcome> {
-    let config = context.config.lean.clone().unwrap_or_default();
-    let minutes = config.timeout_minutes.unwrap_or(90);
-    let log = Log::default();
-    let dir = checkout_dir(context, &job.group.slug);
-    let lock = context.checkout_lock(&job.group.slug);
-    let work = async {
-        let _held = lock.lock().await;
-        progress.say(format!(
-            "Fetching {}",
-            &build.commit[..build.commit.len().min(10)]
-        ));
-        let url = format!("{}{}", context.hub, build.repository);
-        if let Err(error) = fetch(&dir, &url, &job.token, &log).await {
-            return Ok(failed(&format!("{error:#}")));
-        }
-        if !checkout(&dir, &build.commit, &job.token, &log).await? {
-            return Ok(failed("The commit is not on main"));
-        }
-        build_and_inspect(context, &dir, &log, progress, config.cache.unwrap_or(true)).await
-    };
-    let built = match within(minutes, "The build", work).await {
-        Ok(built) => built,
-        Err(error) => {
-            log.line(&format!("{error:#}"));
-            failed(&format!("{error:#}"))
-        }
-    };
-    Ok(Outcome::Built(Box::new(Built {
-        log: log.text(),
-        ..built
-    })))
-}
-
-/// A build that did not pass, for `error`.
 pub fn failed(error: &str) -> Built {
     Built {
         succeeded: false,
@@ -311,11 +285,13 @@ pub fn failed(error: &str) -> Built {
     }
 }
 
-/// The warm checkout of a group's library.
-pub fn checkout_dir(context: &Context, group: &str) -> PathBuf {
-    context.work_dir.join("libraries").join(group)
+pub fn inspection_root(context: &Context, group: i64) -> PathBuf {
+    context
+        .work_dir
+        .join("inspect")
+        .join(sha256(context.hub.as_bytes()))
+        .join(group.to_string())
 }
-
 /// Brings the warm checkout's `origin/main` to the hub's, making the
 /// checkout if there is none.
 pub async fn fetch(dir: &Path, url: &str, token: &str, log: &Log) -> anyhow::Result<()> {
@@ -341,7 +317,7 @@ pub async fn fetch(dir: &Path, url: &str, token: &str, log: &Log) -> anyhow::Res
     ]);
     anyhow::ensure!(
         quietly(fetch, log).await?,
-        "Could not fetch the library from the hub"
+        "Could not fetch the repository from the hub"
     );
     Ok(())
 }
@@ -362,7 +338,12 @@ pub async fn checkout(dir: &Path, commit: &str, token: &str, log: &Log) -> anyho
 
 /// Gets Mathlib's cache, if the library depends on Mathlib and its
 /// dependencies or toolchain changed since the cache was last got here.
-pub async fn get_cache(dir: &Path, log: &Log, progress: &Progress) -> anyhow::Result<()> {
+pub async fn get_cache(
+    sandbox: &dyn Sandbox,
+    dir: &Path,
+    log: &Log,
+    progress: &Progress,
+) -> anyhow::Result<()> {
     if !uses_mathlib(dir) {
         return Ok(());
     }
@@ -384,9 +365,10 @@ pub async fn get_cache(dir: &Path, log: &Log, progress: &Progress) -> anyhow::Re
         return Ok(());
     }
     progress.say("Getting Mathlib's cache");
-    let mut get = Command::new("lake");
-    get.current_dir(dir).args(["exe", "cache", "get"]);
-    if quietly(get, log).await? {
+    if run_in(sandbox, "lake", &["exe", "cache", "get"], dir, log, |_| {})
+        .await?
+        .success()
+    {
         std::fs::create_dir_all(stemma_dir(dir))?;
         std::fs::write(&stamp_file, stamp)?;
     } else {
@@ -396,12 +378,15 @@ pub async fn get_cache(dir: &Path, log: &Log, progress: &Progress) -> anyhow::Re
 }
 
 /// Runs `lake build`; whether it passed.
-pub async fn lake_build(dir: &Path, log: &Log, progress: &Progress) -> anyhow::Result<bool> {
+pub async fn lake_build(
+    sandbox: &dyn Sandbox,
+    dir: &Path,
+    log: &Log,
+    progress: &Progress,
+) -> anyhow::Result<bool> {
     progress.say("Building");
-    let mut lake = Command::new("lake");
-    lake.current_dir(dir).arg("build");
     let progress_lines = progress.clone();
-    let built = run(lake, log, move |line| {
+    let built = run_in(sandbox, "lake", &["build"], dir, log, move |line| {
         if let Some(step) = build_progress(line) {
             progress_lines.say(step);
         }
@@ -413,17 +398,18 @@ pub async fn lake_build(dir: &Path, log: &Log, progress: &Progress) -> anyhow::R
 /// Gets the cache if needed, builds, and inspects the library checked out
 /// in `dir`.
 pub async fn build_and_inspect(
-    context: &Context,
+    inspections: &Path,
+    sandbox: &dyn Sandbox,
     dir: &Path,
     log: &Log,
     progress: &Progress,
     cache: bool,
 ) -> anyhow::Result<Built> {
     if cache {
-        get_cache(dir, log, progress).await?;
+        get_cache(sandbox, dir, log, progress).await?;
     }
     let started = std::time::Instant::now();
-    if !lake_build(dir, log, progress).await? {
+    if !lake_build(sandbox, dir, log, progress).await? {
         return Ok(failed("lake build failed: see the log"));
     }
     log.line(&format!(
@@ -431,7 +417,7 @@ pub async fn build_and_inspect(
         started.elapsed().as_secs_f64()
     ));
     let started = std::time::Instant::now();
-    let report = inspect(&context.work_dir, dir, log, progress).await?;
+    let report = inspect(sandbox, inspections, true, dir, log, progress).await?;
     log.line(&format!(
         "Inspected in {:.1}s.",
         started.elapsed().as_secs_f64()
@@ -516,9 +502,32 @@ fn toolchain(dir: &Path) -> String {
 }
 
 /// The inspection, compiled with the library's toolchain into a program in
-/// the work folder, once per toolchain and version of the inspection; none
-/// if it cannot be compiled.
-async fn inspection_program(work_dir: &Path, dir: &Path, log: &Log) -> Option<PathBuf> {
+/// `root`, once per toolchain and version of the inspection, if `compiles`;
+/// none if it is not there and cannot be compiled.
+async fn inspection_program(
+    sandbox: &dyn Sandbox,
+    root: &Path,
+    compiles: bool,
+    dir: &Path,
+    log: &Log,
+) -> Option<PathBuf> {
+    std::fs::create_dir_all(root).ok()?;
+    let held = std::fs::OpenOptions::new()
+        .create(true)
+        .truncate(false)
+        .read(true)
+        .write(true)
+        .open(root.join("compile.lock"))
+        .ok()?;
+    loop {
+        match held.try_lock() {
+            Ok(()) => break,
+            Err(std::fs::TryLockError::WouldBlock) => {
+                tokio::time::sleep(std::time::Duration::from_millis(100)).await
+            }
+            Err(_) => return None,
+        }
+    }
     let toolchain = toolchain(dir);
     if toolchain.is_empty() {
         return None;
@@ -533,12 +542,15 @@ async fn inspection_program(work_dir: &Path, dir: &Path, log: &Log) -> Option<Pa
             }
         })
         .collect();
-    let package = work_dir.join("inspect").join(name);
+    let package = root.join(name);
     let program = package.join(".lake/build/bin/inspect");
     let stamp = package.join("inspection");
     let version = sha256(INSPECT.as_bytes());
     if program.is_file() && std::fs::read_to_string(&stamp).is_ok_and(|s| s == version) {
         return Some(program);
+    }
+    if !compiles {
+        return None;
     }
     let made = (|| -> std::io::Result<()> {
         std::fs::create_dir_all(&package)?;
@@ -553,10 +565,17 @@ async fn inspection_program(work_dir: &Path, dir: &Path, log: &Log) -> Option<Pa
     if made.is_err() {
         return None;
     }
-    let mut lake = Command::new("lake");
-    lake.current_dir(&package).args(["build", "inspect"]);
     log.line("Compiling the inspection for this toolchain, once.");
-    match quietly(lake, log).await {
+    let built = run_in(
+        sandbox,
+        "lake",
+        &["build", "inspect"],
+        &package,
+        log,
+        |_| {},
+    )
+    .await;
+    match built.map(|status| status.success()) {
         Ok(true) if program.is_file() => {
             let _ = std::fs::write(&stamp, version);
             Some(program)
@@ -569,21 +588,39 @@ async fn inspection_program(work_dir: &Path, dir: &Path, log: &Log) -> Option<Pa
 }
 
 /// Where the modules of the library built in `dir` and of its dependencies
-/// are, as Lake lays them out.
-fn lean_path(dir: &Path) -> anyhow::Result<std::ffi::OsString> {
+/// are, as Lake lays them out, and as `sandbox` sees them.
+fn lean_path(sandbox: &dyn Sandbox, dir: &Path) -> anyhow::Result<String> {
     let mut paths = vec![dir.join(".lake/build/lib/lean")];
     if let Ok(packages) = std::fs::read_dir(dir.join(".lake/packages")) {
         let mut packages: Vec<PathBuf> = packages.flatten().map(|e| e.path()).collect();
         packages.sort();
         paths.extend(packages.into_iter().map(|p| p.join(".lake/build/lib/lean")));
     }
-    Ok(std::env::join_paths(paths)?)
+    let seen: Vec<PathBuf> = paths.iter().map(|p| sandbox.path(p)).collect();
+    Ok(std::env::join_paths(seen)?.to_string_lossy().into_owned())
+}
+
+/// A file's contents, if it is a file and not a link: what a job's agent
+/// made is read no further than its folder.
+fn read_file(path: &Path) -> std::io::Result<Vec<u8>> {
+    let metadata = std::fs::symlink_metadata(path)?;
+    if !metadata.is_file() {
+        return Err(std::io::Error::other(format!(
+            "{} is not a file",
+            path.display()
+        )));
+    }
+    std::fs::read(path)
 }
 
 /// Runs the inspection on the library built in `dir`, again only on what
-/// changed since the last time; its report, or why there is none.
+/// changed since the last time; its report, or why there is none. The
+/// compiled inspection is in `inspections`, where it is compiled if
+/// `compiles`.
 pub async fn inspect(
-    work_dir: &Path,
+    sandbox: &dyn Sandbox,
+    inspections: &Path,
+    compiles: bool,
     dir: &Path,
     log: &Log,
     progress: &Progress,
@@ -597,7 +634,7 @@ pub async fn inspect(
         let olean = dir
             .join(".lake/build/lib/lean")
             .join(format!("{}.olean", module.replace('.', "/")));
-        hashes.insert(module.clone(), sha256(&std::fs::read(&olean)?));
+        hashes.insert(module.clone(), sha256(&read_file(&olean)?));
     }
 
     let kept_file = stemma_dir(dir).join("inspection.json");
@@ -635,24 +672,27 @@ pub async fn inspect(
         // The compiled inspection is given the library's and its
         // dependencies' modules itself: `lake env` would load the whole
         // workspace again, which takes a while.
-        let mut command = match inspection_program(work_dir, dir, log).await {
+        let mut command = match inspection_program(sandbox, inspections, compiles, dir, log).await {
             Some(program) => {
-                let mut command = Command::new(program);
-                command.env("LEAN_PATH", lean_path(dir)?);
-                command
+                let program = sandbox.path(&program).display().to_string();
+                let env = [("LEAN_PATH".to_owned(), lean_path(sandbox, dir)?)];
+                sandbox.command(&program, &args, &env, dir)
             }
             None => {
                 let source = stemma_dir(dir).join("Inspect.lean");
                 std::fs::create_dir_all(stemma_dir(dir))?;
                 std::fs::write(&source, INSPECT)?;
-                let mut command = Command::new("lake");
-                command.args(["env", "lean", "--run"]).arg(source);
-                command
+                let mut lake: Vec<String> = vec![
+                    "env".into(),
+                    "lean".into(),
+                    "--run".into(),
+                    sandbox.path(&source).display().to_string(),
+                ];
+                lake.extend(args.iter().cloned());
+                sandbox.command("lake", &lake, &[], dir)
             }
         };
-        command.current_dir(dir);
         command
-            .args(&args)
             .stdin(Stdio::null())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
@@ -718,6 +758,34 @@ pub async fn inspect(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn inspection_caches_are_separate_for_each_hub_and_group() {
+        use stemma_client::config::{Credentials, Paths, Settings};
+        let temp = tempfile::tempdir().unwrap();
+        let paths = Paths {
+            config: temp.path().join("config"),
+            state: temp.path().join("state"),
+            data: temp.path().join("data"),
+        };
+        let settings = Settings::parse(
+            paths.config.join("config.toml"),
+            "",
+            &paths,
+            Default::default(),
+        )
+        .unwrap();
+        let credentials = Credentials {
+            hub: Some("https://one.example.org".into()),
+            ..Default::default()
+        };
+        let config = crate::WorkerConfig::resolve(&settings, &paths, &credentials, None).unwrap();
+        let mut context = Context::new(config, "stemma".into()).unwrap();
+        let first = inspection_root(&context, 1);
+        assert_ne!(first, inspection_root(&context, 2));
+        context.hub = "https://two.example.org".into();
+        assert_ne!(first, inspection_root(&context, 1));
+    }
 
     #[test]
     fn reads_lakes_progress() {

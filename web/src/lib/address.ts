@@ -6,9 +6,8 @@ export type Address =
   | { kind: "message"; thread: number; message: number }
   | { kind: "messages"; thread: number; from: number; to: number }
   | { kind: "attachment"; thread: number; message: number; name: string }
-  | { kind: "paper"; slug: string; section: string | null }
-  | { kind: "declaration"; name: string }
-  | { kind: "task"; task: number };
+  | { kind: "paper"; slug: string }
+  | { kind: "declaration"; name: string };
 
 const MAX = 4294967295;
 
@@ -43,16 +42,8 @@ export function parseAddress(s: string): Address | null {
     return leanName(name) ? { kind: "declaration", name } : null;
   }
   if (s.startsWith("p/")) {
-    const rest = s.slice(2);
-    const hash = rest.indexOf("#");
-    const slug = hash === -1 ? rest : rest.slice(0, hash);
-    const section = hash === -1 ? null : rest.slice(hash + 1);
-    if (!isSlug(slug) || (section !== null && !isSlug(section))) return null;
-    return { kind: "paper", slug, section };
-  }
-  if (s.startsWith("w")) {
-    const task = number(s.slice(1));
-    return task === null ? null : { kind: "task", task };
+    const slug = s.slice(2);
+    return isSlug(slug) ? { kind: "paper", slug } : null;
   }
   if (!s.startsWith("t")) return null;
 
@@ -98,11 +89,9 @@ export function formatAddress(a: Address): string {
     case "attachment":
       return `t${a.thread}#${a.message}/${a.name}`;
     case "paper":
-      return a.section === null ? `p/${a.slug}` : `p/${a.slug}#${a.section}`;
+      return `p/${a.slug}`;
     case "declaration":
       return `lean:${a.name}`;
-    case "task":
-      return `w${a.task}`;
   }
 }
 
@@ -117,13 +106,9 @@ export function addressPath(a: Address, group: string): string {
     case "messages":
       return `/g/${group}/t/${a.thread}#${a.from}`;
     case "paper":
-      return a.section === null
-        ? `/g/${group}/p/${a.slug}`
-        : `/g/${group}/p/${a.slug}#${a.section}`;
+      return `/g/${group}/p/${a.slug}`;
     case "declaration":
       return `/g/${group}/lib/${a.name}`;
-    case "task":
-      return `/g/${group}/w/${a.task}`;
   }
 }
 

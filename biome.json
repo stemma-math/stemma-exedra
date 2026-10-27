@@ -6,7 +6,15 @@
     "useIgnoreFile": true
   },
   "files": {
-    "includes": ["web/**", "!web/build", "!web/.svelte-kit"]
+    "includes": [
+      "web/**",
+      "desktop/**",
+      "!web/build",
+      "!web/.svelte-kit",
+      "!desktop/dist",
+      "!desktop/src-tauri/gen",
+      "!web/static/agents"
+    ]
   },
   "formatter": {
     "indentStyle": "space",
@@ -16,6 +24,22 @@
   "html": {
     "experimentalFullSupportEnabled": true
   },
+  "overrides": [
+    {
+      "includes": [
+        "web/src/lib/desktop/**/*.svelte",
+        "web/src/lib/components/AccountFrame.svelte",
+        "web/src/lib/components/PublicFrame.svelte"
+      ],
+      "html": {
+        "formatter": {
+          "enabled": true,
+          "indentScriptAndStyle": true,
+          "selfCloseVoidElements": "always"
+        }
+      }
+    }
+  ],
   "linter": {
     "rules": {
       "recommended": true

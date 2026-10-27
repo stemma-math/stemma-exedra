@@ -6,7 +6,6 @@ function job(id: number, state: Job["state"]): Job {
   return {
     id,
     kind: "reply",
-    paper: null,
     thread: 1,
     trigger: 1,
     agent: "claude",
@@ -23,12 +22,6 @@ function job(id: number, state: Job["state"]): Job {
 }
 
 describe("jobs", () => {
-  it("says what the workshop does", () => {
-    const run: Job = { ...job(3, "running"), kind: "task_run", task: 7, agent_name: "Workshop" };
-    expect(jobStatus(run)).toBe("Workshop is working on w7…");
-    expect(jobStatus({ ...run, state: "queued" })).toBe("Workshop will work on w7");
-  });
-
   it("keeps the jobs on their way, in order", () => {
     let jobs = applyJob([], job(2, "queued"));
     jobs = applyJob(jobs, job(1, "running"));
@@ -45,20 +38,16 @@ describe("jobs", () => {
     expect(applyJob(jobs, job(2, "cancelled"))).toEqual([]);
   });
 
-  it("says what the agent is doing", () => {
-    expect(jobStatus(job(1, "running"))).toBe("Claude is answering…");
-    expect(jobStatus(job(1, "queued"))).toBe("Claude will answer");
+  it("keeps a held answer until it is published or discarded", () => {
+    let jobs = applyJob([], job(1, "held"));
+    expect(jobs.map((j) => j.state)).toEqual(["held"]);
+    expect(jobStatus(jobs[0])).toBe("Claude answered");
+    jobs = applyJob(jobs, job(1, "done"));
+    expect(jobs).toEqual([]);
   });
-});
 
-describe("an editor's job", () => {
-  it("says which paper it updates", () => {
-    const editing: Job = {
-      ...job(9, "running"),
-      kind: "paper_update",
-      paper: "notes",
-      agent_name: "Editor",
-    };
-    expect(jobStatus(editing)).toBe("Editor is updating p/notes…");
+  it("says what the agent is doing", () => {
+    expect(jobStatus(job(1, "running"))).toBe("Claude is answering");
+    expect(jobStatus(job(1, "queued"))).toBe("Claude will answer");
   });
 });

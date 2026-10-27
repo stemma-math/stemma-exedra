@@ -1,24 +1,42 @@
-//! The Stemma hub: accounts, groups, the forum and the agents in it, working
-//! papers and libraries, behind a JSON API, with the web app, the workers'
-//! WebSocket and git over HTTP for the libraries.
+//! The Stemma hub: accounts, groups, the forum and the agents in it, and
+//! the libraries and working papers, behind a JSON API, with the web app
+//! and the workers' WebSocket. The groups' repositories are kept by a
+//! forge beside it, which people sign in to through the hub, and whose git
+//! the hub passes on to workers and personal tokens.
 
 pub mod api;
 pub mod auth;
+pub mod builds;
 pub mod config;
 pub mod db;
 pub mod error;
+pub mod forge;
 pub mod git;
 pub mod jobs;
+pub mod lease;
 pub mod library;
+pub mod model;
+pub mod names;
+pub mod notifications;
+pub mod oidc;
+pub mod orchestrator;
+pub mod papers;
+pub mod recipes;
+pub mod removal;
+pub mod review;
+pub mod search;
 pub mod secret;
 pub mod state;
+pub mod text;
 pub mod web;
 pub mod workshop;
+mod workshop_read;
 
 use std::sync::Arc;
 
 use anyhow::Context;
 use axum::Router;
+use axum::routing::post;
 use sqlx::SqlitePool;
 use stemma_core::api::NewAccount;
 use tower_http::trace::TraceLayer;
@@ -28,9 +46,19 @@ pub use state::{AppState, Hub};
 
 /// The hub's HTTP application.
 pub fn app(state: AppState) -> Router {
+    let hook = Router::new()
+        .route(forge::HOOK_PATH, post(forge::hook::receive))
+        .with_state(state.clone());
     api::router(state.clone())
-        .merge(git::router(state))
+        .merge(git::router(state.clone()))
+        .merge(builds::router(state.clone()))
+        .merge(oidc::router(state.clone()))
+        .merge(hook)
         .fallback(web::serve)
+        .layer(axum::middleware::from_fn_with_state(
+            state.clone(),
+            names::redirect,
+        ))
         .layer(TraceLayer::new_for_http())
 }
 
@@ -40,26 +68,49 @@ pub async fn open(config: Config) -> anyhow::Result<AppState> {
         .await
         .with_context(|| format!("creating {}", config.data_dir.display()))?;
     let db = db::open(&config.database_path()).await?;
-    Ok(Arc::new(Hub::new(db, config)))
+    Ok(Arc::new(Hub::new(db, config)?))
 }
 
 /// Runs the hub until it is interrupted.
 pub async fn run(config: Config) -> anyhow::Result<()> {
     let state = open(config).await?;
     remove_unclaimed_uploads(&state).await?;
+    oidc::forget_expired(&state.db).await?;
     jobs::recover(&state).await?;
-    library::ensure_all(&state).await?;
-    // The workshop's nights begin and end on their own.
-    let ticking = state.clone();
-    tokio::spawn(async move {
-        let mut every = tokio::time::interval(std::time::Duration::from_secs(30));
-        loop {
-            every.tick().await;
-            if let Err(error) = workshop::tick(&ticking).await {
-                tracing::error!(error = error.message, "could not look at the night");
+    orchestrator::recover(&state)
+        .await
+        .map_err(|e| anyhow::anyhow!(e.message))?;
+    builds::recover(&state)
+        .await
+        .map_err(|e| anyhow::anyhow!(e.message))?;
+    {
+        let state = state.clone();
+        tokio::spawn(async move {
+            let mut tick = tokio::time::interval(std::time::Duration::from_secs(5));
+            loop {
+                tokio::select! {
+                    _ = state.shutdown.cancelled() => break,
+                    _ = tick.tick() => background(&state).await,
+                }
             }
-        }
-    });
+        });
+    }
+    {
+        let state = state.clone();
+        tokio::spawn(async move {
+            let mut tick = tokio::time::interval(std::time::Duration::from_secs(60));
+            loop {
+                tokio::select! {
+                    _ = state.shutdown.cancelled() => break,
+                    _ = tick.tick() => schedule(&state).await,
+                }
+            }
+        });
+    }
+    {
+        let state = state.clone();
+        tokio::spawn(async move { forge::reconcile(&state).await });
+    }
 
     if user_count(&state.db).await? == 0 {
         let token = secret::token("");
@@ -75,9 +126,25 @@ pub async fn run(config: Config) -> anyhow::Result<()> {
         .await
         .with_context(|| format!("listening on {}", state.config.listen))?;
     tracing::info!("Stemma hub listening on http://{}", state.config.listen);
-    axum::serve(listener, app(state))
-        .with_graceful_shutdown(shutdown())
-        .await?;
+    let stopping = state.shutdown.clone();
+    let server = axum::serve(listener, app(state.clone()))
+        .with_graceful_shutdown(stopping.clone().cancelled_owned());
+    let drain = async {
+        server.await?;
+        state.sockets.close();
+        state.sockets.wait().await;
+        Ok::<_, std::io::Error>(())
+    };
+    tokio::pin!(drain);
+    tokio::select! {
+        result = &mut drain => { result?; return Ok(()); }
+        _ = shutdown() => {}
+    }
+    stopping.cancel();
+    match tokio::time::timeout(std::time::Duration::from_secs(5), drain).await {
+        Ok(result) => result?,
+        Err(_) => tracing::warn!("Shutdown grace period ended"),
+    }
     Ok(())
 }
 
@@ -126,4 +193,21 @@ async fn remove_unclaimed_uploads(state: &AppState) -> anyhow::Result<()> {
         let _ = tokio::fs::remove_file(state.config.attachments_dir().join(key)).await;
     }
     Ok(())
+}
+
+async fn background(state: &AppState) {
+    if let Err(error) = builds::dispatch(state).await {
+        tracing::error!(error = error.message, "dispatching builds");
+    }
+    if let Err(error) = review::tick(state).await {
+        tracing::error!(error = error.message, "reviewing workshop pull requests");
+    }
+    if let Err(error) = orchestrator::dispatch(state).await {
+        tracing::error!(error = error.message, "dispatching workshop turns");
+    }
+}
+async fn schedule(state: &AppState) {
+    if let Err(error) = workshop::tick(state).await {
+        tracing::error!(error = error.message, "scheduling workshop requests");
+    }
 }

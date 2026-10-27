@@ -1,4 +1,6 @@
 <script lang="ts">
+  import Loading from "#lib/components/Loading.svelte";
+  import { publicUrl } from "#lib/transport.svelte.ts";
   import { goto } from "$app/navigation";
   import { page } from "$app/state";
   import { api, type DeclarationState, type DeclarationSummary, type LibraryState } from "#lib/api.ts";
@@ -41,7 +43,7 @@
   $effect(() => {
     loadLibrary();
     return listen(group.slug, (event) => {
-      if (event.type === "resync" || event.type === "build_updated") {
+      if ((event.type === "resync" || event.type === "names_changed") || event.type === "build_updated") {
         loadLibrary();
         loadDeclarations();
       }
@@ -65,10 +67,10 @@
     goto(`/g/${group.slug}/lib${qs ? `?${qs}` : ""}`, { reset: false });
   }
 
-  const cloneUrl = $derived(library ? `${location.origin}${library.clone_path}` : "");
+  const cloneUrl = $derived(library ? publicUrl(library.clone_path) : "");
 </script>
 
-<svelte:head><title>Library · {group.name} · Stemma</title></svelte:head>
+<svelte:head><title>Library – {group.name}</title></svelte:head>
 
 <main class="page stack">
   <div class="page__head">
@@ -77,15 +79,16 @@
   </div>
 
   {#if library === null}
-    <span class="spinner" role="status" aria-label="Loading"></span>
+    <Loading label="Loading" />
   {:else if !library.available}
     <div class="card card--empty card__body">
-      <p class="empty">This hub keeps no library for the group: it needs <code>git</code> installed.</p>
+      <p class="empty">This hub keeps no library for the group: it needs a forge.</p>
     </div>
   {:else}
     <div class="library-layout">
       <aside class="stack">
         <LibraryStatus {library} group={group.slug} />
+
         <details class="card disclosure">
           <summary>Work on it with git</summary>
           <p>It is a Lean project on Mathlib. Clone it with a personal token, from your settings, as the password:</p>
@@ -93,7 +96,10 @@
             <code class="identifier grow" id="clone-command">git clone {cloneUrl}</code>
             <stemma-copy-button for="clone-command" label="Copy the command"></stemma-copy-button>
           </span>
-          <p class="quiet">Each push to <code>main</code> is built and inspected.</p>
+          <p class="quiet">
+            Or sign in to the forge with your Stemma account, and clone it from there. Each push to <code>main</code> is
+            built and inspected.
+          </p>
         </details>
         {#if library.modules.length}
           <section class="stack stack--tight">
@@ -136,7 +142,7 @@
         </search>
         {#if module}<h2 class="identifier">{module}</h2>{/if}
         {#if declarations === null}
-          <span class="spinner" role="status" aria-label="Loading"></span>
+          <Loading label="Loading" />
         {:else if declarations.length === 0}
           <div class="card card--empty card__body">
             <p class="empty">

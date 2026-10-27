@@ -1,0 +1,21 @@
+{
+  "name": "stemma-desktop",
+  "version": "0.2.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "pnpm --dir ../web dev:desktop",
+    "build": "pnpm --dir ../web build:desktop",
+    "lint": "biome lint --error-on-warnings .",
+    "tauri": "tauri",
+    "format:check": "biome format ."
+  },
+  "devDependencies": {
+    "@biomejs/biome": "2.5.15",
+    "@tauri-apps/cli": "^2.0.0"
+  },
+  "engines": {
+    "node": ">=22"
+  },
+  "packageManager": "pnpm@12.9.0"
+}

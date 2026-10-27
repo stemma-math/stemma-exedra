@@ -1,0 +1,22 @@
+{
+  "identifier": "local",
+  "description": "Local capabilities are disabled because Tauri treats hub as local. Runtime grants these permissions only to the exact interface origin.",
+  "local": false,
+  "windows": ["main"],
+  "permissions": [
+    "allow-snapshot",
+    "allow-workshop-state",
+    "allow-workshop-decision",
+    "allow-diagnostics",
+    "allow-open-external",
+    "allow-login",
+    "allow-action",
+    "allow-test-sign-in",
+    "allow-sign-out",
+    "allow-subscribe",
+    "allow-unsubscribe",
+    "core:event:allow-listen",
+    "core:event:allow-unlisten",
+    "core:window:allow-start-dragging"
+  ]
+}

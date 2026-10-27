@@ -3,7 +3,7 @@ name = "stemma-hub"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
-description = "The Stemma hub: accounts, groups, the forum, papers, libraries and the API"
+description = "The Stemma hub: accounts, groups, the forum, libraries, papers and the API"
 repository.workspace = true
 license.workspace = true
 
@@ -13,30 +13,40 @@ argon2.workspace = true
 axum.workspace = true
 base64.workspace = true
 futures-util.workspace = true
-jiff.workspace = true
+hmac.workspace = true
+jsonwebtoken.workspace = true
 mime_guess.workspace = true
+p256.workspace = true
 rand.workspace = true
+reqwest = { workspace = true, features = ["stream"] }
+ring.workspace = true
 rust-embed.workspace = true
+rustls.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 sha2.workspace = true
 sqlx.workspace = true
 stemma-core.workspace = true
-tempfile.workspace = true
+subtle.workspace = true
 thiserror.workspace = true
 time.workspace = true
-tokio = { workspace = true, features = ["process", "time"] }
+tokio = { workspace = true, features = ["time"] }
 tokio-stream.workspace = true
-tokio-util.workspace = true
+tokio-util = { workspace = true, features = ["rt"] }
 toml.workspace = true
 tower-http.workspace = true
 tracing.workspace = true
+url.workspace = true
 
 [dev-dependencies]
 http-body-util.workspace = true
-reqwest.workspace = true
-rustls.workspace = true
+stemma-fake-forge.workspace = true
+stemma-fake-model.workspace = true
+stemma-worker.workspace = true
+tempfile.workspace = true
+tokio-tungstenite.workspace = true
 tower.workspace = true
+wiremock.workspace = true
 
 [lints]
 workspace = true

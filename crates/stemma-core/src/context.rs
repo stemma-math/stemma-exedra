@@ -104,6 +104,9 @@ mod tests {
 
     fn message(number: u32, body: &str, reply_to: Option<u32>) -> Message {
         Message {
+            orchestrator_model: None,
+            workshop: false,
+            missing_references: Vec::new(),
             number,
             author: User {
                 id: 1,
@@ -111,6 +114,7 @@ mod tests {
                 display_name: "Ada".into(),
             },
             agent: None,
+            agent_runner: None,
             body: body.into(),
             reply_to,
             attachments: Vec::new(),

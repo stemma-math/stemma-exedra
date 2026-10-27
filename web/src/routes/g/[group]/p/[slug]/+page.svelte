@@ -1,204 +1,318 @@
 <script lang="ts">
+  import Loading from "#lib/components/Loading.svelte";
+  import { scriptedSelect } from "#lib/scripted-select.ts";
+  import { ask as askFirst } from "#lib/ask.svelte.ts";
+  import { hubUrl, publicUrl } from "#lib/transport.svelte.ts";
+  import { goto } from "$app/navigation";
   import { page } from "$app/state";
-  import { tick } from "svelte";
-  import { ApiError, api, type PaperPage, type Thread } from "#lib/api.ts";
-  import Attribution from "#lib/components/Attribution.svelte";
-  import Markdown from "#lib/components/Markdown.svelte";
+  import { api, type Member, type PaperPage } from "#lib/api.ts";
+  import BuildAgain from "#lib/components/BuildAgain.svelte";
+  import BuildChip from "#lib/components/BuildChip.svelte";
+  import Glyph from "#lib/components/Glyph.svelte";
   import { listen } from "#lib/events.ts";
-  import { exactly, when } from "#lib/format.ts";
+  import { goesWith } from "#lib/contents.ts";
+  import { exactly, fileSize } from "#lib/format.ts";
   import { groupContext } from "#lib/group.svelte.ts";
-  import { changedLines } from "#lib/paper.ts";
-  import { toastError } from "#lib/toast.ts";
+  import { session } from "#lib/session.svelte.ts";
+  import { toast, toastError } from "#lib/toast.ts";
 
   const context = groupContext();
   const group = $derived(context.group);
   const slug = $derived(page.params.slug ?? "");
-
   let paper = $state<PaperPage | null>(null);
   let missing = $state(false);
-  let showChanges = $state(true);
-  /** A revision newer than the one shown, if one came. */
-  let newer = $state<number | null>(null);
-
-  const changes = $derived(
-    paper?.read_body != null ? changedLines(paper.read_body, paper.body) : null,
-  );
-  const changedCount = $derived(changes ? countBlocks(paper?.body ?? "", changes.changed) : 0);
-
-  /** How many runs of changed lines there are: about how many passages. */
-  function countBlocks(body: string, changed: Set<number>): number {
-    let runs = 0;
-    const lines = body.split("\n").length;
-    for (let i = 0; i < lines; i++) if (changed.has(i) && !changed.has(i - 1)) runs++;
-    return runs;
-  }
+  /** Deleted while open, by someone else. */
+  let gone = $state(false);
+  let members = $state<Member[]>([]);
+  let adding = $state("");
 
   async function load() {
+    const wanted = slug;
     try {
-      const found = await api.paper(group.slug, slug);
-      paper = found;
-      missing = false;
-      newer = null;
-      if (found.paper.last_read !== found.paper.revision) {
-        api.markRead(group.slug, slug, found.paper.revision).catch(() => {});
-      }
-      await tick();
-      const target = page.url.hash.slice(1);
-      if (target) document.getElementById(decodeURIComponent(target))?.scrollIntoView();
+      const found = await api.paper(group.slug, wanted);
+      if (wanted === slug) paper = found;
     } catch (error) {
-      if (error instanceof ApiError && error.status === 404) missing = true;
-      else toastError(error);
+      missing = true;
+      toastError(error);
     }
   }
 
   $effect(() => {
     void slug;
-    paper = null;
+    missing = false;
     load();
     return listen(group.slug, (event) => {
-      if (event.type === "resync") load();
-      else if (event.type === "paper_updated" && event.paper.slug === slug && paper) {
-        if (event.paper.revision > paper.paper.revision) newer = event.paper.revision;
-      } else if ((event.type === "thread_created" || event.type === "thread_updated") && paper) {
-        const anchor = event.thread.anchor;
-        if (anchor === `p/${slug}` || anchor?.startsWith(`p/${slug}#`)) {
-          paper.threads = [event.thread, ...paper.threads.filter((t) => t.number !== event.thread.number)];
-        }
-      }
+      if ((event.type === "resync" || event.type === "names_changed")) return load();
+      // The log comes with the paper's page.
+      if (event.type === "paper_updated" && event.paper.slug === slug) load();
+      if (event.type === "paper_deleted" && event.paper === slug) gone = true;
     });
   });
 
-  /** The threads anchored to a section, or to the whole paper. */
-  function threadsOf(threads: Thread[], section: string | null): Thread[] {
-    const anchor = section === null ? `p/${slug}` : `p/${slug}#${section}`;
-    return threads.filter((t) => t.anchor === anchor);
+  const me = $derived(session.me?.id);
+  const author = $derived(paper?.authors.some((a) => a.id === me) ?? false);
+  const changesAuthors = $derived(author || group.role === "admin");
+  /** Whoever created it, or an admin, deletes it; other authors leave it. */
+  const deletes = $derived(paper?.created_by.id === me || group.role === "admin");
+
+  async function remove() {
+    if (!paper) return;
+    try {
+      const contents = goesWith(await api.paperContents(group.slug, paper.slug));
+      const yes = await askFirst({
+        title: `Delete “${paper.title}”?`,
+        text:
+          `This also deletes its repository, builds and PDFs${contents ? `, and ${contents}` : ""}, ` +
+          "here and in the forge. It cannot be undone.",
+        action: "Delete the paper",
+        danger: true,
+      });
+      if (!yes) return;
+      await api.deletePaper(group.slug, paper.slug);
+      toast("The paper was deleted.");
+      await goto(`/g/${group.slug}/papers`);
+    } catch (error) {
+      toastError(error);
+    }
   }
 
-  const discuss = (section: string | null) =>
-    `/g/${group.slug}/t/new?anchor=${encodeURIComponent(section ? `p/${slug}#${section}` : `p/${slug}`)}`;
+  $effect(() => {
+    if (!changesAuthors) return;
+    api
+      .members(group.slug)
+      .then((found) => {
+        members = found;
+      })
+      .catch(() => {});
+  });
+
+  // Those who may be added: admins and members who are not authors yet.
+  const candidates = $derived(
+    members.filter((m) => m.role !== "guest" && !(paper?.authors ?? []).some((a) => a.id === m.id)),
+  );
+
+  // The browser's own PDF viewer shows it; a new build's PDF is a new address.
+  const pdfUrl = $derived(paper?.pdf ? `${hubUrl(paper.pdf.url)}?build=${paper.pdf.build}` : "");
+  const cloneUrl = $derived(paper ? publicUrl(paper.clone_path) : "");
+
+  async function addAuthor(event: SubmitEvent) {
+    event.preventDefault();
+    if (!paper || !adding) return;
+    try {
+      await api.addAuthor(group.slug, paper.slug, adding);
+      adding = "";
+      await load();
+    } catch (error) {
+      toastError(error);
+    }
+  }
+
+  async function removeAuthor(username: string) {
+    if (!paper) return;
+    const yes = await askFirst({ title: `Take ${username} from the authors of p/${paper.slug}?`, action: "Take", danger: true });
+    if (!yes) return;
+    try {
+      await api.removeAuthor(group.slug, paper.slug, username);
+      await load();
+    } catch (error) {
+      toastError(error);
+    }
+  }
+
 </script>
 
-<svelte:head><title>{paper ? `${paper.paper.title} · ` : ""}{group.name} · Stemma</title></svelte:head>
+<svelte:head><title>{paper?.title ?? slug} – {group.name}</title></svelte:head>
 
-<main class="page">
-  {#if missing}
-    <div class="page--narrow stack">
-      <h1>Paper not found</h1>
-      <p>There is no paper <span class="identifier">p/{slug}</span> in {group.name}.</p>
-      <p><a class="button" href="/g/{group.slug}/p/new?slug={slug}">Start it</a></p>
-    </div>
+<main class="page stack">
+  {#if gone}
+    <h1>This paper was deleted</h1>
+    <p>Its repository went with it. <a class="link" href="/g/{group.slug}/papers">Back to the papers</a>.</p>
   {:else if paper}
-    {@const p = paper.paper}
-    <div class="paper-layout">
-      <article class="stack">
-        <header class="stack stack--tight">
-          <nav class="breadcrumbs" aria-label="Where">
-            <ol>
-              <li><a href="/g/{group.slug}/p">Papers</a></li>
-              <li><span aria-current="page">p/{p.slug}</span></li>
-            </ol>
-          </nav>
-          <div class="thread-head">
-            <h1>{p.title}</h1>
-            <span class="row" data-density="compact">
-              <stemma-copy-button value="p/{p.slug}" label="Copy the address p/{p.slug}"></stemma-copy-button>
-            </span>
+    <header class="stack stack--tight">
+      <div class="thread-head">
+        <h1>{paper.title}</h1>
+        <span class="row" data-density="compact">
+          <span class="identifier quiet">p/{paper.slug}</span>
+          <stemma-copy-button value="p/{paper.slug}" label="Copy the address p/{paper.slug}"></stemma-copy-button>
+        </span>
+      </div>
+      <p class="quiet">
+        By {paper.authors.map((a) => a.display_name).join(", ")}. Started by {paper.created_by.display_name},
+        <time datetime={paper.created_at}>{exactly(paper.created_at)}</time>.
+      </p>
+    </header>
+
+    <div class="row">
+
+      <a class="button" href="/g/{group.slug}/p/{paper.slug}/edit"><Glyph name="edit" /> Editor</a>
+
+      <button type="button" class="button" data-opens="paper-build">
+        Build
+        {#if paper.latest}<BuildChip build={paper.latest} />{/if}
+      </button>
+      <button type="button" class="button" data-opens="paper-authors">
+        <Glyph name="group" /> Authors <span class="count">{paper.authors.length}</span>
+      </button>
+      <button type="button" class="button button--quiet" data-opens="paper-clone-dialog">Clone</button>
+      {#if deletes}
+        <stemma-menu>
+          <button type="button" class="button button--quiet button--icon" aria-label="More for this paper">
+            <Glyph name="more" />
+          </button>
+          <div class="menu">
+            <button type="button" class="menu__item menu__item--danger" onclick={remove}>Delete</button>
           </div>
-          <p class="quiet">
-            Revision {p.revision}, by <Attribution user={p.updated_by} agent={p.updated_agent} />,
-            <time datetime={p.updated_at} title={exactly(p.updated_at)}>{when(p.updated_at)}</time>.
-          </p>
-          <div class="row">
-            <a class="button" href="/g/{group.slug}/p/{p.slug}/edit">Edit</a>
-            <a class="button button--quiet" href="/g/{group.slug}/p/{p.slug}/history">History</a>
-            <a class="button button--quiet" href={discuss(null)}>Discuss</a>
-          </div>
-        </header>
-
-        {#if newer}
-          <div class="message message--info" role="status">
-            <span class="message__text">Revision {newer} is here.</span>
-            <button type="button" class="button button--link" onclick={load}>Show it</button>
-          </div>
-        {/if}
-
-        {#if paper.since_read.length}
-          <section class="card card__body stack stack--tight" aria-label="What changed">
-            <div class="row">
-              <h2 class="label grow">
-                What changed since you read revision {p.last_read}
-              </h2>
-              <label class="row quiet">
-                <input type="checkbox" class="choice" bind:checked={showChanges} />
-                Highlight changes
-              </label>
-            </div>
-            <ul class="plain-list stack stack--tight">
-              {#each paper.since_read as revision (revision.number)}
-                <li>
-                  <strong>{revision.reason}</strong>
-                  <span class="quiet">
-                    — revision {revision.number}, <Attribution user={revision.author} agent={revision.agent} />,
-                    <time datetime={revision.created_at} title={exactly(revision.created_at)}>{when(revision.created_at)}</time>
-                  </span>
-                </li>
-              {/each}
-            </ul>
-            {#if changes}
-              <p class="quiet">
-                {changedCount === 1 ? "One passage is new or changed" : `${changedCount} passages are new or changed`}{changes.removals
-                  ? `; text was removed in ${changes.removals === 1 ? "one place" : `${changes.removals} places`}`
-                  : ""}.
-              </p>
-            {/if}
-          </section>
-        {/if}
-
-        {#if paper.body.trim()}
-          <Markdown
-            text={paper.body}
-            group={group.slug}
-            sections
-            changed={showChanges ? changes?.changed : undefined}
-          />
-        {:else}
-          <p class="empty">This paper is empty. <a href="/g/{group.slug}/p/{p.slug}/edit">Write it</a>.</p>
-        {/if}
-      </article>
-
-      <aside class="paper-aside stack" aria-label="Sections and threads">
-        {#if paper.sections.length}
-          <section class="stack stack--tight">
-            <h2 class="label">Sections</h2>
-            <ul class="plain-list stack stack--tight">
-              {#each paper.sections as section (section.slug)}
-                {@const threads = threadsOf(paper.threads, section.slug)}
-                <li class="paper-aside__section" style="--depth: {section.level - 1}">
-                  <a href="#{section.slug}">{section.title || section.slug}</a>
-                  {#each threads as thread (thread.number)}
-                    <a class="paper-aside__thread quiet" href="/g/{group.slug}/t/{thread.number}">
-                      <span class="identifier">t{thread.number}</span> {thread.title}
-                    </a>
-                  {/each}
-                  <a class="paper-aside__thread quiet" href={discuss(section.slug)}>Discuss this section</a>
-                </li>
-              {/each}
-            </ul>
-          </section>
-        {/if}
-        {#if threadsOf(paper.threads, null).length}
-          <section class="stack stack--tight">
-            <h2 class="label">About the whole paper</h2>
-            {#each threadsOf(paper.threads, null) as thread (thread.number)}
-              <a href="/g/{group.slug}/t/{thread.number}">
-                <span class="identifier quiet">t{thread.number}</span> {thread.title}
-              </a>
-            {/each}
-          </section>
-        {/if}
-      </aside>
+        </stemma-menu>
+      {/if}
     </div>
+
+    {#if paper.latest?.error}
+      <p class="message message--danger">
+        <span class="message__text">
+          The newest build failed: {paper.latest.error}.{#if paper.pdf} The PDF shown is the last one made.{/if}
+          <button type="button" class="button button--link" data-opens="paper-build">
+            {paper.latest.again && group.role !== "guest" ? "Its log, and building again" : "Its log"}
+          </button>
+        </span>
+      </p>
+    {:else if paper.latest && (paper.latest.state === "running" || paper.latest.state === "queued")}
+      <p class="row quiet">
+        {paper.latest.progress ?? "No new builds are scheduled"}
+      </p>
+    {/if}
+
+    {#if paper.pdf}
+      <!-- No sandbox: it disables native PDF viewers. The browser loads a same-origin
+           hub response with application/pdf and nosniff, never HTML. In the app,
+           hub resources have a separate origin with no native capabilities. -->
+      {#if __STEMMA_DESKTOP__}
+        <object class="paper-pdf card" data={pdfUrl} type="application/pdf" title="The PDF of p/{paper.slug}">
+          <div class="card__body stack">
+            <p class="quiet">This browser cannot show the PDF here.</p>
+            <p><a class="button" href={pdfUrl} target="_blank" rel="noopener noreferrer">Open the PDF <Glyph name="arrow-up-right" small /></a></p>
+          </div>
+        </object>
+      {:else if navigator.pdfViewerEnabled}
+        <iframe class="paper-pdf card" src={pdfUrl} title="The PDF of p/{paper.slug}"></iframe>
+      {:else}
+        <div class="card card__body stack">
+          <p class="quiet">This browser cannot show the PDF here.</p>
+          <p><a class="button" href={pdfUrl} target="_blank" rel="noopener noreferrer">Open the PDF <Glyph name="arrow-up-right" small /></a></p>
+        </div>
+      {/if}
+      <p class="quiet">
+        Compiled from <span class="identifier">{paper.pdf.commit.slice(0, 10)}</span>,
+        <time datetime={paper.pdf.built_at}>{exactly(paper.pdf.built_at)}</time>, {fileSize(paper.pdf.size)}.
+        <a class="button button--link" href={pdfUrl} target="_blank" rel="noopener noreferrer">Open the PDF <Glyph name="arrow-up-right" small /></a>
+      </p>
+    {:else}
+      <div class="card card--empty card__body">
+        <p class="empty">No PDF is available yet. A workshop machine builds each new commit of main.</p>
+      </div>
+    {/if}
+
+    <stemma-dialog id="paper-build">
+      <dialog class="dialog" aria-labelledby="paper-build-title">
+        <div class="dialog__body">
+          <h2 class="dialog__title" id="paper-build-title">The newest build</h2>
+          {#if paper.latest}
+            {@const build = paper.latest}
+            {@const slug = paper.slug}
+            <p class="row">
+              <BuildChip {build} />
+              <span>
+                Of <span class="identifier">{build.commit.slice(0, 10)}</span>,
+                <time datetime={build.created_at}>{exactly(build.created_at)}</time>{#if build.machine},
+                  on {build.machine}{/if}.
+              </span>
+            </p>
+            {#if build.error}
+              <p class="message message--danger"><span class="message__text">{build.error}</span></p>
+              {#if build.again && group.role !== "guest"}
+                <BuildAgain
+                  group={group.slug}
+                  again={async (builder) => {
+                    paper = await api.paperBuildAgain(group.slug, slug, build.id, builder);
+                  }}
+                />
+              {/if}
+            {:else if build.progress}
+              <p class="quiet">{build.progress}</p>
+            {/if}
+            {#if paper.log}
+              <div class="document"><pre class="build-log"><code>{paper.log}</code></pre></div>
+            {/if}
+          {:else}
+            <p class="dialog__text">The paper has not been compiled yet.</p>
+          {/if}
+          <p class="dialog__text">
+            It compiles from <code>main.tex</code> with <code>latexmk -pdf</code>: pdfLaTeX and BibTeX. A workshop machine builds each new commit of main.
+          </p>
+          <div class="dialog__actions">
+        
+            <button type="button" class="button button--primary" data-closes>Close</button>
+          </div>
+        </div>
+      </dialog>
+    </stemma-dialog>
+
+    <stemma-dialog id="paper-authors">
+      <dialog class="dialog" aria-labelledby="paper-authors-title">
+        <div class="dialog__body">
+          <h2 class="dialog__title" id="paper-authors-title">Authors</h2>
+          <p class="dialog__text">Authors manage who writes the paper.</p>
+          <ul class="plain-list stack stack--tight">
+            {#each paper.authors as a (a.id)}
+              <li class="row">
+                <span class="grow">{a.display_name} <span class="quiet">@{a.username}</span></span>
+                {#if changesAuthors && paper.authors.length > 1}
+                  <button type="button" class="button button--quiet button--small" onclick={() => removeAuthor(a.username)}>
+                    Remove
+                  </button>
+                {/if}
+              </li>
+            {/each}
+          </ul>
+          {#if changesAuthors && candidates.length}
+            <form class="row" onsubmit={addAuthor}>
+              <label class="visually-hidden" for="paper-author">Add an author</label>
+              <stemma-select><select use:scriptedSelect={[adding]} id="paper-author" class="input grow" bind:value={adding}>
+                <option value="">Add an author…</option>
+                {#each candidates as m (m.id)}
+                  <option value={m.username}>{m.display_name} (@{m.username})</option>
+                {/each}
+              </select></stemma-select>
+              <button type="submit" class="button" disabled={!adding}>Add</button>
+            </form>
+          {/if}
+          <div class="dialog__actions">
+            <button type="button" class="button button--primary" data-closes>Close</button>
+          </div>
+        </div>
+      </dialog>
+    </stemma-dialog>
+
+    <stemma-dialog id="paper-clone-dialog">
+      <dialog class="dialog" aria-labelledby="paper-clone-title">
+        <div class="dialog__body">
+          <h2 class="dialog__title" id="paper-clone-title">Work on it on your machine</h2>
+          <p class="dialog__text">Clone it with a personal token, from Settings › Devices, as the password:</p>
+          <span class="row">
+            <code class="identifier grow" id="paper-clone">git clone {cloneUrl}</code>
+            <stemma-copy-button for="paper-clone" label="Copy the command"></stemma-copy-button>
+          </span>
+          <div class="dialog__actions">
+            <button type="button" class="button button--primary" data-closes>Close</button>
+          </div>
+        </div>
+      </dialog>
+    </stemma-dialog>
+
+
+  {:else if missing}
+    <h1>Paper not found</h1>
+    <p>There is no paper <span class="identifier">p/{slug}</span> in the group.</p>
   {:else}
-    <span class="spinner" role="status" aria-label="Loading"></span>
+    <Loading label="Loading" />
   {/if}
 </main>

@@ -22,6 +22,15 @@ pub fn locate(input: &str) -> Result<Located, AddressError> {
     if let Some(located) = web_link(s) {
         return located;
     }
+    if let Some((group, address)) = s.split_once('/')
+        && crate::address::is_slug(group)
+        && let Ok(address) = normalize(address).parse()
+    {
+        return Ok(Located {
+            group: Some(group.into()),
+            address,
+        });
+    }
     Ok(Located {
         group: None,
         address: normalize(s).parse()?,
@@ -52,10 +61,8 @@ fn web_link(s: &str) -> Option<Result<Located, AddressError>> {
     let canonical = match (kind, fragment) {
         ("t", Some(fragment)) => format!("t{path}#{fragment}"),
         ("t", None) => format!("t{path}"),
-        ("p", Some(section)) => format!("p/{path}#{section}"),
-        ("p", None) => format!("p/{path}"),
         ("lib", _) => format!("lean:{path}"),
-        ("w", _) => format!("w{path}"),
+        ("p", _) => format!("p/{path}"),
         _ => return None,
     };
     Some(normalize(&canonical).parse().map(|address| Located {
@@ -78,9 +85,9 @@ mod tests {
         assert_eq!(located("t12#45-50"), (None, "t12#45-50".into()));
         assert_eq!(located("  t12 "), (None, "t12".into()));
         assert_eq!(located("[[t12#45-50]]"), (None, "t12#45-50".into()));
-        assert_eq!(located("[[ w7 ]]"), (None, "w7".into()));
         assert_eq!(located("t12#45–50"), (None, "t12#45-50".into()));
         assert_eq!(located("lean:Foo.bar"), (None, "lean:Foo.bar".into()));
+        assert_eq!(located("[[p/notes]]"), (None, "p/notes".into()));
     }
 
     #[test]
@@ -99,14 +106,10 @@ mod tests {
             (group.clone(), "t12#45-50".into())
         );
         assert_eq!(
-            located("/g/geometry/p/notes#gluing"),
-            (group.clone(), "p/notes#gluing".into())
-        );
-        assert_eq!(
             located("/g/geometry/lib/Foo.bar"),
             (group.clone(), "lean:Foo.bar".into())
         );
-        assert_eq!(located("/g/geometry/w/7"), (group, "w7".into()));
+        assert_eq!(located("/g/geometry/p/notes"), (group, "p/notes".into()));
     }
 
     #[test]

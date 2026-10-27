@@ -1,0 +1,26 @@
+[package]
+name = "stemma-fake-forge"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+description = "A stand-in for Forgejo in Stemma's tests: the part of its API the hub uses, and git"
+repository.workspace = true
+license.workspace = true
+publish = false
+
+[dependencies]
+axum.workspace = true
+base64.workspace = true
+futures-util.workspace = true
+hmac.workspace = true
+reqwest.workspace = true
+rustls.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+sha2.workspace = true
+tempfile.workspace = true
+tokio = { workspace = true, features = ["net", "process"] }
+tokio-util.workspace = true
+
+[lints]
+workspace = true

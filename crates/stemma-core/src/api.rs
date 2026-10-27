@@ -48,6 +48,9 @@ pub struct Me {
     /// Whether they administer the hub: create groups.
     pub hub_admin: bool,
     pub groups: Vec<Group>,
+    /// How many of their notifications are unread.
+    #[serde(default)]
+    pub unread: u32,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -79,6 +82,7 @@ pub struct NewAccount {
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct UpdateMe {
+    pub username: Option<String>,
     pub display_name: String,
 }
 
@@ -100,11 +104,87 @@ pub struct ApiToken {
     pub created_at: OffsetDateTime,
     #[serde(with = "time::serde::rfc3339::option")]
     pub last_used_at: Option<OffsetDateTime>,
+    /// When it stops working by itself, if it does.
+    #[serde(default, with = "time::serde::rfc3339::option")]
+    pub expires_at: Option<OffsetDateTime>,
+    #[serde(default)]
+    pub connected: bool,
+    #[serde(default)]
+    pub runners: Vec<String>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct CreateToken {
     pub name: String,
+    /// How long it lasts, in minutes; until revoked if absent.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub expires_in_minutes: Option<u32>,
+}
+
+/// Whose attachments an agent may download, fixed when its token is made.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum AttachmentRule {
+    None,
+    #[default]
+    Mine,
+    Group,
+}
+impl AttachmentRule {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::None => "none",
+            Self::Mine => "mine",
+            Self::Group => "group",
+        }
+    }
+    pub fn allows(self, owner: i64, author: i64) -> bool {
+        match self {
+            Self::None => false,
+            Self::Mine => owner == author,
+            Self::Group => true,
+        }
+    }
+    pub fn refusal(self) -> &'static str {
+        match self {
+            Self::None => {
+                "Not allowed to read this file: your settings do not let agents read anyone's attachments (`agents.attachments`)."
+            }
+            _ => {
+                "Not allowed to read this file: your settings let agents read only your own attachments (`agents.attachments`)."
+            }
+        }
+    }
+}
+impl std::str::FromStr for AttachmentRule {
+    type Err = &'static str;
+    fn from_str(value: &str) -> Result<Self, Self::Err> {
+        match value {
+            "none" => Ok(Self::None),
+            "mine" => Ok(Self::Mine),
+            "group" => Ok(Self::Group),
+            _ => Err("attachments must be none, mine or group"),
+        }
+    }
+}
+
+/// A token for a session with one of the person's agents, in one group:
+/// it reads the group, and posts and opens threads there as the agent.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct CreateAgentToken {
+    pub attachments: AttachmentRule,
+    pub group: String,
+    /// One of [`runners::ALL`]: whose agent the session is with.
+    pub runner: String,
+    /// The computer the session runs on, for the token's name.
+    pub host: String,
+}
+
+/// What to do with a held answer.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct PublishHeld {
+    /// Whether to replace each secret with `[hidden]` first.
+    pub hidden: bool,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -116,11 +196,71 @@ pub struct CreatedToken {
 
 // ── Groups ────────────────────────────────────────────────────────────
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+/// A person's proposal for a new group.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct CreateGroupRequest {
+    pub slug: String,
+    pub name: String,
+    pub purpose: String,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct GroupRequest {
+    pub id: i64,
+    pub slug: String,
+    pub name: String,
+    pub purpose: String,
+    pub requester: User,
+    pub status: String,
+    #[serde(with = "time::serde::rfc3339")]
+    pub created_at: OffsetDateTime,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct HubGroup {
+    pub slug: String,
+    pub name: String,
+    pub members: i64,
+    #[serde(with = "time::serde::rfc3339")]
+    pub created_at: OffsetDateTime,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct HubPerson {
+    #[serde(flatten)]
+    pub user: User,
+    pub hub_admin: bool,
+}
+
+/// What the hub's page asks for: those whose names hold `q`, a page at a
+/// time.
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
+pub struct HubSearch {
+    #[serde(default)]
+    pub q: String,
+    #[serde(default)]
+    pub offset: u32,
+}
+
+/// A page of what the hub's page searched, and whether there is more.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct HubPage<T> {
+    pub items: Vec<T>,
+    pub more: bool,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct UpdateHubPerson {
+    pub hub_admin: bool,
+}
+
+/// What someone may do in a group.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Role {
     Admin,
     Member,
+    Guest,
 }
 
 impl Role {
@@ -128,6 +268,7 @@ impl Role {
         match self {
             Role::Admin => "admin",
             Role::Member => "member",
+            Role::Guest => "guest",
         }
     }
 
@@ -135,14 +276,24 @@ impl Role {
         match s {
             "admin" => Some(Role::Admin),
             "member" => Some(Role::Member),
+            "guest" => Some(Role::Guest),
             _ => None,
         }
+    }
+
+    /// Whether it manages the group.
+    pub fn is_admin(self) -> bool {
+        self == Role::Admin
+    }
+    pub fn can_write(self) -> bool {
+        matches!(self, Role::Admin | Role::Member)
     }
 }
 
 /// A group, as one of its members sees it.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Group {
+    pub id: i64,
     pub slug: String,
     pub name: String,
     /// The role of the person asking.
@@ -171,11 +322,14 @@ pub struct UpdateMember {
     pub role: Role,
 }
 
-/// A link that lets people join a group. Its secret is shown once.
+/// A link that lets people in. Its secret is shown once.
+///
+/// A group's link adds an existing account to the group, with its role. The
+/// hub's makes an account, and nothing else: it has no role.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Invitation {
     pub id: i64,
-    pub role: Role,
+    pub role: Option<Role>,
     pub created_by: User,
     #[serde(with = "time::serde::rfc3339")]
     pub created_at: OffsetDateTime,
@@ -187,9 +341,12 @@ pub struct Invitation {
 
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
 pub struct CreateInvitation {
+    /// A group's link: the role it gives, a member's if absent. The hub's
+    /// links take none.
     pub role: Option<Role>,
-    /// Days until it expires; never, if absent.
-    pub expires_in_days: Option<u32>,
+    /// When it stops working; never, if absent.
+    #[serde(default, with = "time::serde::rfc3339::option")]
+    pub expires_at: Option<OffsetDateTime>,
     /// How many people may use it; any number, if absent.
     pub max_uses: Option<u32>,
 }
@@ -198,11 +355,12 @@ pub struct CreateInvitation {
 pub struct CreatedInvitation {
     #[serde(flatten)]
     pub invitation: Invitation,
-    /// The secret of the link: `/invite/<token>` on the hub.
+    /// The secret of the link: `/invite/<token>` for a group's,
+    /// `/signup?token=<token>` for the hub's.
     pub token: String,
 }
 
-/// What anyone with an invitation's link may know about it.
+/// What anyone with a group's link may know about it.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct InvitationInfo {
     pub group_slug: String,
@@ -210,10 +368,10 @@ pub struct InvitationInfo {
     pub role: Role,
 }
 
-/// Accepts an invitation: as the person signed in, or with a new account.
-#[derive(Clone, Debug, Default, Serialize, Deserialize)]
-pub struct AcceptInvitation {
-    pub account: Option<NewAccount>,
+/// What anyone with the hub's link may know about it.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct SignUpInfo {
+    pub invited_by: User,
 }
 
 // ── The forum ─────────────────────────────────────────────────────────
@@ -225,6 +383,8 @@ pub enum ThreadKind {
     Discussion,
     /// A resident agent answers every message.
     Chat,
+    /// A workshop request with its processes and discussion.
+    Request,
 }
 
 impl ThreadKind {
@@ -232,6 +392,7 @@ impl ThreadKind {
         match self {
             ThreadKind::Discussion => "discussion",
             ThreadKind::Chat => "chat",
+            ThreadKind::Request => "request",
         }
     }
 
@@ -239,6 +400,7 @@ impl ThreadKind {
         match s {
             "discussion" => Some(ThreadKind::Discussion),
             "chat" => Some(ThreadKind::Chat),
+            "request" => Some(ThreadKind::Request),
             _ => None,
         }
     }
@@ -252,7 +414,8 @@ pub struct Thread {
     pub kind: ThreadKind,
     /// The agent profile that answers every message of a chat.
     pub resident_agent: Option<String>,
-    /// What the thread is about: a paper section or a declaration.
+    pub resident_runner: Option<String>,
+    /// What the thread is about: a declaration of the library.
     pub anchor: Option<Address>,
     pub created_by: User,
     #[serde(with = "time::serde::rfc3339")]
@@ -261,6 +424,17 @@ pub struct Thread {
     pub last_activity_at: OffsetDateTime,
     /// The number of the last message, deleted or not.
     pub last_message: u32,
+}
+
+/// What goes with a thread or a paper when it is deleted, to say so before.
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
+pub struct Contents {
+    /// Messages, not counting deleted ones.
+    pub messages: u32,
+    /// Files attached to them.
+    pub files: u32,
+    /// A paper's own threads, anchored to it.
+    pub threads: u32,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -287,11 +461,19 @@ pub struct UpdateThread {
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Message {
+    #[serde(default)]
+    pub orchestrator_model: Option<String>,
+    #[serde(default)]
+    pub workshop: bool,
+    #[serde(default)]
+    pub missing_references: Vec<String>,
     /// Its number in the thread: the `45` of `t12#45`. Never reused.
     pub number: u32,
     pub author: User,
     /// The agent that wrote it for its author, if one did.
     pub agent: Option<String>,
+    /// The runner that wrote it, kept independently of the profile name.
+    pub agent_runner: Option<String>,
     /// Markdown, with `$…$` math and `[[…]]` references. Empty once
     /// deleted.
     pub body: String,
@@ -331,6 +513,7 @@ pub struct ThreadPage {
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Attachment {
+    pub author: User,
     pub id: i64,
     pub name: String,
     pub content_type: String,
@@ -375,112 +558,14 @@ pub struct SearchHit {
     /// The message (`t12#45`), or the thread when its title matched.
     pub address: Address,
     pub thread_title: String,
+    /// The kind of the thread it is in.
+    pub thread_kind: ThreadKind,
     pub author: Option<User>,
     pub agent: Option<String>,
     /// A piece of the text around what matched.
     pub snippet: String,
     #[serde(with = "time::serde::rfc3339")]
     pub created_at: OffsetDateTime,
-}
-
-// ── Working papers ────────────────────────────────────────────────────
-
-/// A working paper: the readable account of a line of work.
-#[derive(Clone, Debug, Serialize, Deserialize)]
-pub struct Paper {
-    /// The `compactification` of `p/compactification`.
-    pub slug: String,
-    pub title: String,
-    /// Its current revision, from 1.
-    pub revision: u32,
-    pub created_by: User,
-    #[serde(with = "time::serde::rfc3339")]
-    pub created_at: OffsetDateTime,
-    /// Who wrote the current revision, and the agent that wrote it for them.
-    pub updated_by: User,
-    pub updated_agent: Option<String>,
-    #[serde(with = "time::serde::rfc3339")]
-    pub updated_at: OffsetDateTime,
-    /// The revision the person asking read last; none if never.
-    pub last_read: Option<u32>,
-}
-
-/// A revision of a paper: who wrote it, and why.
-#[derive(Clone, Debug, Serialize, Deserialize)]
-pub struct Revision {
-    pub number: u32,
-    pub title: String,
-    pub author: User,
-    /// The agent that wrote it for its author, if one did.
-    pub agent: Option<String>,
-    pub reason: String,
-    #[serde(with = "time::serde::rfc3339")]
-    pub created_at: OffsetDateTime,
-}
-
-/// A revision with its text.
-#[derive(Clone, Debug, Serialize, Deserialize)]
-pub struct RevisionText {
-    #[serde(flatten)]
-    pub revision: Revision,
-    pub body: String,
-}
-
-/// A section of a paper: a heading, addressable as `p/slug#section`.
-#[derive(Clone, Debug, Serialize, Deserialize)]
-pub struct SectionInfo {
-    pub slug: String,
-    pub title: String,
-    pub level: u8,
-}
-
-/// A paper as someone opens it.
-#[derive(Clone, Debug, Serialize, Deserialize)]
-pub struct PaperPage {
-    pub paper: Paper,
-    /// Markdown, with `$…$` math, `[[…]]` references and callouts.
-    pub body: String,
-    pub sections: Vec<SectionInfo>,
-    /// The revisions after the one the person read last, newest first:
-    /// empty if they are up to date, or never read it.
-    pub since_read: Vec<Revision>,
-    /// The text as they read it last, if it changed since.
-    pub read_body: Option<String>,
-    /// The threads anchored to the paper or one of its sections.
-    pub threads: Vec<Thread>,
-}
-
-#[derive(Clone, Debug, Serialize, Deserialize)]
-pub struct CreatePaper {
-    pub slug: String,
-    pub title: String,
-    #[serde(default)]
-    pub body: String,
-    /// Why; "Started the paper" if absent.
-    pub reason: Option<String>,
-    /// The agent writing it for the person whose token asks, as for
-    /// messages.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub agent: Option<String>,
-}
-
-/// A new revision of a paper, written over `base_revision`: if the paper
-/// has moved past it, the edit is refused, and should be made again over
-/// the newer text.
-#[derive(Clone, Debug, Serialize, Deserialize)]
-pub struct EditPaper {
-    /// A new title, if it changes.
-    pub title: Option<String>,
-    pub body: String,
-    pub reason: String,
-    pub base_revision: u32,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub agent: Option<String>,
-}
-
-#[derive(Clone, Debug, Serialize, Deserialize)]
-pub struct MarkRead {
-    pub revision: u32,
 }
 
 // ── The library ───────────────────────────────────────────────────────
@@ -587,6 +672,10 @@ pub struct Build {
     pub error: Option<String>,
     /// Lean's version, as it ran.
     pub lean: Option<String>,
+    /// The machine that built it, or builds it.
+    pub machine: Option<String>,
+    /// Whether it may build again: it failed, and is of main's newest commit.
+    pub again: bool,
     #[serde(with = "time::serde::rfc3339")]
     pub created_at: OffsetDateTime,
     #[serde(with = "time::serde::rfc3339::option")]
@@ -611,10 +700,13 @@ pub struct ModuleSummary {
 /// The library as it stands: its last successful build.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct LibraryState {
-    /// Whether the hub keeps a library for the group: it needs `git`.
+    /// Whether the group has a library: the hub needs a forge to keep it.
     pub available: bool,
-    /// Where to clone it from, relative to the hub: `/git/geometry.git`.
+    /// Where to clone it from with a personal token, relative to the hub:
+    /// `/git/geometry/library.git`.
     pub clone_path: String,
+    /// Where it is in the forge, for people signed in there.
+    pub forge: Option<ForgeLinks>,
     /// The commit `main` is at.
     pub head: Option<String>,
     /// The newest build, whatever its state.
@@ -625,6 +717,15 @@ pub struct LibraryState {
     pub declarations: u32,
     /// How many depend on `sorry`.
     pub sorry: u32,
+}
+
+/// Where a group's library is in the forge.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct ForgeLinks {
+    /// The group's organization.
+    pub organization: String,
+    /// The library's repository.
+    pub repository: String,
 }
 
 /// A declaration in a list.
@@ -639,8 +740,7 @@ pub struct DeclarationSummary {
     pub doc: Option<String>,
 }
 
-/// Where something is referenced: a message or a paper; or a thread about
-/// it.
+/// Where something is referenced: a message; or a thread about it.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct ReferenceSite {
     pub address: Address,
@@ -657,334 +757,214 @@ pub struct DeclarationPage {
     pub commit: String,
     /// The declarations of the library that use it.
     pub used_by: Vec<String>,
-    /// The papers that reference it, the threads about it, and the
-    /// messages that reference it.
+    /// The threads about it, and the messages that reference it.
     pub references: Vec<ReferenceSite>,
 }
 
-// ── Agents ────────────────────────────────────────────────────────────
+// ── Working papers ────────────────────────────────────────────────────
 
-/// The runners a worker can run an agent with.
-pub mod runners {
-    /// Claude Code, headless, with the member's own login.
-    pub const CLAUDE_CODE: &str = "claude-code";
-    /// Codex, headless, with the member's own login.
-    pub const CODEX: &str = "codex";
-    /// Stemma's own harness, over an OpenAI-compatible chat API.
-    pub const API: &str = "api";
-    /// OpenCode, headless, with a model of any provider it supports.
-    pub const OPENCODE: &str = "opencode";
-    /// Every runner this version knows.
-    pub const ALL: &[&str] = &[CLAUDE_CODE, CODEX, API, OPENCODE];
-    /// The runners that can work on the library for the workshop: those
-    /// that edit files and run commands.
-    pub const WORKSHOP: &[&str] = &[OPENCODE, CLAUDE_CODE, CODEX];
-}
+/// The file a paper's build compiles, at the root of its repository.
+pub const PAPER_MAIN: &str = "main.tex";
 
-/// Whose worker runs an agent.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum AgentScope {
-    /// The worker of whoever summons it, with their own login: `@claude`
-    /// is each person's own Claude.
-    Personal,
-    /// The group's workers.
-    Group,
-}
-
-impl AgentScope {
-    pub fn as_str(self) -> &'static str {
-        match self {
-            AgentScope::Personal => "personal",
-            AgentScope::Group => "group",
-        }
-    }
-
-    pub fn parse(s: &str) -> Option<AgentScope> {
-        match s {
-            "personal" => Some(AgentScope::Personal),
-            "group" => Some(AgentScope::Group),
-            _ => None,
-        }
-    }
-}
-
-/// An agent a group can summon by its handle: `@claude`.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-pub struct AgentProfile {
-    pub handle: String,
-    /// The name its messages are signed with: `Claude, for Ada`.
-    pub display_name: String,
-    /// One of [`runners::ALL`].
-    pub runner: String,
-    /// The model, if not the runner's default.
-    #[serde(default)]
-    pub model: Option<String>,
-    /// For the `api` runner: which of the worker's endpoints to use.
-    #[serde(default)]
-    pub endpoint: Option<String>,
-    /// What to tell it beyond Stemma's own instructions.
-    #[serde(default)]
-    pub instructions: Option<String>,
-    pub scope: AgentScope,
-    /// What it does when summoned.
-    #[serde(default)]
-    pub role: AgentRole,
-}
-
-/// What an agent does when summoned.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum AgentRole {
-    /// It answers, with a message.
-    #[default]
-    Answer,
-    /// It updates the working paper the message names, from the threads.
-    Editor,
-    /// It hands what the message asks to the workshop, as a task.
-    Workshop,
-}
-
-impl AgentRole {
-    pub fn as_str(self) -> &'static str {
-        match self {
-            AgentRole::Answer => "answer",
-            AgentRole::Editor => "editor",
-            AgentRole::Workshop => "workshop",
-        }
-    }
-
-    pub fn parse(s: &str) -> Option<AgentRole> {
-        match s {
-            "answer" => Some(AgentRole::Answer),
-            "editor" => Some(AgentRole::Editor),
-            "workshop" => Some(AgentRole::Workshop),
-            _ => None,
-        }
-    }
-}
-
-// ── The workshop ──────────────────────────────────────────────────────
-
-/// Where a task of the workshop is.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum TaskState {
-    /// Waiting for its turn, a worker, or the night.
-    Open,
-    /// A worker is on it.
-    Running,
-    /// Done: what it did is in the library, if it did anything.
-    Done,
-    /// It could not be done: the build did not pass, or the runner failed.
-    Failed,
-    /// It was done, but could not be put in the library: `main` moved
-    /// where it worked, or kept moving.
-    Blocked,
-    /// Someone cancelled it.
-    Cancelled,
-}
-
-impl TaskState {
-    pub fn as_str(self) -> &'static str {
-        match self {
-            TaskState::Open => "open",
-            TaskState::Running => "running",
-            TaskState::Done => "done",
-            TaskState::Failed => "failed",
-            TaskState::Blocked => "blocked",
-            TaskState::Cancelled => "cancelled",
-        }
-    }
-
-    pub fn parse(s: &str) -> Option<TaskState> {
-        match s {
-            "open" => Some(TaskState::Open),
-            "running" => Some(TaskState::Running),
-            "done" => Some(TaskState::Done),
-            "failed" => Some(TaskState::Failed),
-            "blocked" => Some(TaskState::Blocked),
-            "cancelled" => Some(TaskState::Cancelled),
-            _ => None,
-        }
-    }
-
-    /// Whether the task is over.
-    pub fn is_final(self) -> bool {
-        !matches!(self, TaskState::Open | TaskState::Running)
-    }
-}
-
-/// When a task runs.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum TaskSchedule {
-    /// As soon as a worker is free.
-    #[default]
-    Now,
-    /// In the group's night window.
-    Night,
-}
-
-impl TaskSchedule {
-    pub fn as_str(self) -> &'static str {
-        match self {
-            TaskSchedule::Now => "now",
-            TaskSchedule::Night => "night",
-        }
-    }
-
-    pub fn parse(s: &str) -> Option<TaskSchedule> {
-        match s {
-            "now" => Some(TaskSchedule::Now),
-            "night" => Some(TaskSchedule::Night),
-            _ => None,
-        }
-    }
-}
-
-/// A task of the workshop: work on the library, asked for in a
-/// conversation, done in the background.
+/// A build of a commit of a paper: compiled into a PDF with `latexmk`.
 #[derive(Clone, Debug, Serialize, Deserialize)]
-pub struct Task {
-    /// Its number in the group: the `7` of `w7`.
-    pub number: u32,
-    pub title: String,
-    /// What to do, as asked.
-    pub instructions: String,
-    /// The message that asked for it: `t12#48`. The report goes to its
-    /// thread.
-    pub origin: Address,
-    /// Who asked: the work is theirs, done by the workshop.
-    pub requester: User,
-    /// The agent that handed it to the workshop for them, if one did.
-    pub agent: Option<String>,
-    pub state: TaskState,
-    pub schedule: TaskSchedule,
-    /// The runner and model that work on it, once one does.
-    pub runner: Option<String>,
-    pub model: Option<String>,
-    /// What it is doing, while it runs; why it waits, while it is open.
+pub struct PaperBuild {
+    pub id: i64,
+    /// The commit, in full.
+    pub commit: String,
+    pub state: BuildState,
+    /// What it is doing, while it runs; why it waits, while it waits.
     pub progress: Option<String>,
-    /// Why it failed or is blocked.
-    pub reason: Option<String>,
-    /// The commits it put in the library, in order.
-    pub commits: Vec<String>,
-    /// The message in the origin's thread that reports on it.
-    pub report_message: Option<Address>,
+    /// Why it failed, in a line.
+    pub error: Option<String>,
+    /// The machine that built it, or builds it.
+    pub machine: Option<String>,
+    /// Whether it may build again: it failed, and is of main's newest commit.
+    pub again: bool,
     #[serde(with = "time::serde::rfc3339")]
     pub created_at: OffsetDateTime,
-    #[serde(with = "time::serde::rfc3339")]
-    pub updated_at: OffsetDateTime,
-    #[serde(with = "time::serde::rfc3339::option")]
-    pub started_at: Option<OffsetDateTime>,
     #[serde(with = "time::serde::rfc3339::option")]
     pub finished_at: Option<OffsetDateTime>,
 }
 
-/// A task with what its run wrote and reported.
+/// A paper's PDF: that of its last build that made one.
 #[derive(Clone, Debug, Serialize, Deserialize)]
-pub struct TaskPage {
+pub struct PaperPdf {
+    /// The build that made it.
+    pub build: i64,
+    pub commit: String,
+    /// In bytes.
+    pub size: u64,
+    /// Where to read it, relative to the hub.
+    pub url: String,
+    #[serde(with = "time::serde::rfc3339")]
+    pub built_at: OffsetDateTime,
+}
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct Paper {
+    /// Its address is `p/<slug>`.
+    pub slug: String,
+    pub title: String,
+    /// Its repository in the group's organization: `paper-<slug>`.
+    pub repository: String,
+    /// Where to clone it from with a personal token, relative to the hub.
+    pub clone_path: String,
+    /// Where it is in the forge, for people signed in there.
+    pub forge_url: Option<String>,
+    /// Who writes it: its creator first.
+    pub authors: Vec<User>,
+    pub created_by: User,
+    #[serde(with = "time::serde::rfc3339")]
+    pub created_at: OffsetDateTime,
+    /// The newest build, whatever its state.
+    pub latest: Option<PaperBuild>,
+    /// The last PDF made, which a failed build leaves as it is.
+    pub pdf: Option<PaperPdf>,
+}
+
+/// A paper, with what its newest build wrote.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct PaperPage {
     #[serde(flatten)]
-    pub task: Task,
-    /// The run's report, in Markdown: what was done, what is pending.
-    pub report: Option<String>,
-    /// What the run did, step by step, trimmed to its end when long.
+    pub paper: Paper,
+    /// The newest build's log, trimmed to its end when long.
     pub log: String,
 }
 
-/// Hands a task to the workshop.
 #[derive(Clone, Debug, Serialize, Deserialize)]
-pub struct CreateTask {
+pub struct CreatePaper {
+    /// Lowercase letters, digits and inner dashes.
+    pub slug: String,
     pub title: String,
-    pub instructions: String,
-    /// The message that asks for it: `t12#48`. With a job's token, the
-    /// message the job answers if absent.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub origin: Option<String>,
-    #[serde(default)]
-    pub schedule: TaskSchedule,
-    /// The agent handing it over for the person whose token asks.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub agent: Option<String>,
 }
 
-/// How a group's workshop works.
+/// A file of a paper's source, at its `main`.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PaperFile {
+    pub path: String,
+    pub size: u64,
+}
+
+/// A paper's source files, at the commit its `main` is at.
 #[derive(Clone, Debug, Serialize, Deserialize)]
-pub struct WorkshopSettings {
-    /// The night window, in the group's time zone: `01:00` to `07:00`.
-    pub night_from: String,
-    pub night_to: String,
-    /// An IANA time zone, such as `Europe/Madrid`.
-    pub time_zone: String,
-    /// Whether it is night now.
-    pub night_now: bool,
-    /// Whether the person asking lends their own worker to the workshop
-    /// during the night window.
-    pub lend: bool,
-    /// The members who lend theirs.
-    pub lenders: Vec<User>,
+pub struct PaperSource {
+    pub commit: String,
+    pub files: Vec<PaperFile>,
 }
 
-/// Changes to the workshop's settings: the window and time zone, by an
-/// admin; whether one lends their worker, by anyone, for themselves.
-#[derive(Clone, Debug, Default, Serialize, Deserialize)]
-pub struct UpdateWorkshop {
-    pub night_from: Option<String>,
-    pub night_to: Option<String>,
-    pub time_zone: Option<String>,
-    pub lend: Option<bool>,
+/// One file of a paper's source, as text.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct PaperFileText {
+    pub path: String,
+    pub commit: String,
+    pub text: String,
 }
+// ── Agents ────────────────────────────────────────────────────────────
 
-// ── Workers ───────────────────────────────────────────────────────────
+/// The runners an agent runs with: the harnesses Stemma launches.
+pub mod runners {
+    /// Claude Code, with the person's own sign-in.
+    pub const CLAUDE_CODE: &str = "claude-code";
+    /// Codex, with the person's own sign-in.
+    pub const CODEX: &str = "codex";
+    /// OpenCode, with a model of any provider it supports.
+    pub const OPENCODE: &str = "opencode";
+    /// Every runner this version knows.
+    pub const ALL: &[&str] = &[CLAUDE_CODE, CODEX, OPENCODE];
 
-/// Whose a worker is, which decides whose jobs it runs.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+    /// How a runner is called in what people read.
+    pub fn name(runner: &str) -> &str {
+        match runner {
+            CLAUDE_CODE => "Claude Code",
+            CODEX => "Codex",
+            OPENCODE => "OpenCode",
+            other => other,
+        }
+    }
+
+    /// The program a runner runs, unless told otherwise.
+    pub fn program(runner: &str) -> Option<&'static str> {
+        match runner {
+            CLAUDE_CODE => Some("claude"),
+            CODEX => Some("codex"),
+            OPENCODE => Some("opencode"),
+            _ => None,
+        }
+    }
+}
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
-pub enum WorkerScope {
-    /// A group's: it runs the group's agents.
-    Group,
-    /// A member's: it runs only the jobs that member asks for.
-    Member,
+pub enum Isolation {
+    Docker,
+    Podman,
+    /// On the machine itself, as its user: its owner's explicit choice.
+    Host,
 }
 
-/// A worker registered with the hub.
-#[derive(Clone, Debug, Serialize, Deserialize)]
-pub struct Worker {
-    pub id: i64,
-    pub name: String,
-    pub scope: WorkerScope,
-    /// The group of a group worker.
-    pub group: Option<String>,
-    /// The member of a member worker.
-    pub owner: Option<User>,
-    /// The first characters of its token, to recognise it.
-    pub prefix: String,
-    pub online: bool,
-    /// What it announced when it last connected.
-    pub runners: Vec<String>,
-    pub lean: bool,
-    /// Whether it works on the workshop's tasks.
-    #[serde(default)]
-    pub workshop: bool,
-    pub version: Option<String>,
-    #[serde(with = "time::serde::rfc3339")]
-    pub created_at: OffsetDateTime,
-    #[serde(with = "time::serde::rfc3339::option")]
-    pub last_seen_at: Option<OffsetDateTime>,
+impl Isolation {
+    /// Whether the jobs run in containers.
+    pub fn contained(self) -> bool {
+        !matches!(self, Isolation::Host)
+    }
+
+    /// As people read it.
+    pub fn describe(self) -> &'static str {
+        match self {
+            Isolation::Docker => "in containers, with Docker",
+            Isolation::Podman => "in containers, with Podman",
+            Isolation::Host => "on the machine itself, unisolated",
+        }
+    }
+
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Isolation::Docker => "docker",
+            Isolation::Podman => "podman",
+            Isolation::Host => "host",
+        }
+    }
+
+    pub fn parse(text: &str) -> Option<Isolation> {
+        match text {
+            "docker" => Some(Isolation::Docker),
+            "podman" => Some(Isolation::Podman),
+            "host" => Some(Isolation::Host),
+            _ => None,
+        }
+    }
 }
 
-#[derive(Clone, Debug, Serialize, Deserialize)]
-pub struct CreateWorker {
-    pub name: String,
+/// One of Stemma's three fixed agents; runtime settings belong to the computer.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AgentProfile {
+    pub handle: String,
+    pub display_name: String,
+    pub runner: String,
 }
-
-/// A new worker, with the secret of its token, shown once.
-#[derive(Clone, Debug, Serialize, Deserialize)]
-pub struct CreatedWorker {
-    #[serde(flatten)]
-    pub worker: Worker,
-    pub secret: String,
+impl AgentProfile {
+    pub fn defaults() -> Vec<Self> {
+        [
+            ("claude", "Claude", runners::CLAUDE_CODE),
+            ("codex", "Codex", runners::CODEX),
+            ("opencode", "OpenCode", runners::OPENCODE),
+        ]
+        .into_iter()
+        .map(|(handle, name, runner)| Self {
+            handle: handle.into(),
+            display_name: name.into(),
+            runner: runner.into(),
+        })
+        .collect()
+    }
+    pub fn default_for(handle: &str) -> Option<Self> {
+        Self::defaults().into_iter().find(|a| a.handle == handle)
+    }
+    pub fn default_of_runner(runner: &str) -> Option<Self> {
+        Self::defaults().into_iter().find(|a| a.runner == runner)
+    }
+    pub fn profile(&self) -> Self {
+        self.clone()
+    }
 }
 
 // ── Jobs ──────────────────────────────────────────────────────────────
@@ -996,6 +976,9 @@ pub enum JobState {
     Queued,
     /// A worker is on it.
     Running,
+    /// Its answer seems to hold a secret, and waits for its requester to
+    /// publish it, hidden or not, or to discard it.
+    Held,
     Done,
     Failed,
     Cancelled,
@@ -1006,6 +989,7 @@ impl JobState {
         match self {
             JobState::Queued => "queued",
             JobState::Running => "running",
+            JobState::Held => "held",
             JobState::Done => "done",
             JobState::Failed => "failed",
             JobState::Cancelled => "cancelled",
@@ -1016,6 +1000,7 @@ impl JobState {
         match s {
             "queued" => Some(JobState::Queued),
             "running" => Some(JobState::Running),
+            "held" => Some(JobState::Held),
             "done" => Some(JobState::Done),
             "failed" => Some(JobState::Failed),
             "cancelled" => Some(JobState::Cancelled),
@@ -1038,30 +1023,18 @@ impl JobState {
 pub enum JobKind {
     /// Answer a message that summoned the agent, or a message in its chat.
     Reply,
-    /// Update a working paper, as a message asked an editor.
-    PaperUpdate,
-    /// Build a commit of the library, and inspect it.
-    LibraryBuild,
-    /// Work on a task of the workshop.
-    TaskRun,
 }
 
 impl JobKind {
     pub fn as_str(self) -> &'static str {
         match self {
             JobKind::Reply => "reply",
-            JobKind::PaperUpdate => "paper_update",
-            JobKind::LibraryBuild => "library_build",
-            JobKind::TaskRun => "task_run",
         }
     }
 
     pub fn parse(s: &str) -> Option<JobKind> {
         match s {
             "reply" => Some(JobKind::Reply),
-            "paper_update" => Some(JobKind::PaperUpdate),
-            "library_build" => Some(JobKind::LibraryBuild),
-            "task_run" => Some(JobKind::TaskRun),
             _ => None,
         }
     }
@@ -1071,17 +1044,15 @@ impl JobKind {
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Job {
     pub id: i64,
+    /// The running computer's personal-token name.
+    pub machine: Option<String>,
     pub kind: JobKind,
     /// The thread of the message that asked for it, if one did.
     pub thread: Option<u32>,
     /// The message that asked for it.
     pub trigger: Option<u32>,
-    /// For a paper's update, the paper's slug.
-    pub paper: Option<String>,
-    /// For a task's run, the task's number: the `7` of `w7`.
-    #[serde(default)]
-    pub task: Option<u32>,
-    /// The agent's handle and name; for a build, `lean` and `Lean`.
+    /// The agent's handle and name; for a build, `lean` and `Lean`, or
+    /// `latex` and `LaTeX`.
     pub agent: String,
     pub agent_name: String,
     pub requester: User,
@@ -1094,6 +1065,9 @@ pub struct Job {
     pub error: Option<String>,
     /// The message with the answer, once there is one.
     pub answer: Option<u32>,
+    /// A held answer, with its secrets marked: only ever to its requester.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub held: Option<Vec<crate::secrets::Part>>,
     #[serde(with = "time::serde::rfc3339")]
     pub created_at: OffsetDateTime,
     #[serde(with = "time::serde::rfc3339")]
@@ -1106,6 +1080,7 @@ pub struct Job {
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum Event {
+    NamesChanged,
     ThreadCreated {
         thread: Thread,
     },
@@ -1123,16 +1098,207 @@ pub enum Event {
     JobUpdated {
         job: Job,
     },
-    /// A paper has a new revision, or is new.
-    PaperUpdated {
-        paper: Paper,
-    },
     /// A build of the library started, ended or waits.
     BuildUpdated {
         build: Build,
     },
-    /// A task of the workshop is new, or changed.
-    TaskUpdated {
-        task: Task,
+    /// A paper is new, or changed: its authors, or a build of it.
+    PaperUpdated {
+        paper: Box<Paper>,
     },
+    /// A thread or a chat was deleted, with its messages.
+    ThreadDeleted {
+        thread: u32,
+    },
+    /// A paper was deleted, with its repository.
+    PaperDeleted {
+        paper: String,
+    },
+}
+
+// ── Notifications ─────────────────────────────────────────────────────
+
+/// Why a person is told something.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum NotificationKind {
+    ReviewMerged,
+    ReviewRefused,
+    ProcessPullRequest,
+    ProcessApproval,
+    RequestExpired,
+    RequestFailed,
+    RequestDone,
+    /// Someone mentioned them in a message.
+    Mention,
+    /// An agent answered a message of theirs.
+    Answer,
+    /// An agent's answer seems to hold a secret, and waits for them.
+    Held,
+    /// An agent could not answer them.
+    Failed,
+    /// A person or an agent left them a note.
+    Note,
+    /// Their role in a group changed.
+    Role,
+    /// They were removed from a group.
+    Removed,
+    /// Their request for a group was approved: the group is theirs.
+    Approved,
+    /// Their request for a group was declined.
+    Declined,
+    /// Someone asks for a group: to the hub's admins.
+    Requested,
+}
+
+impl NotificationKind {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            NotificationKind::ReviewMerged => "review_merged",
+            NotificationKind::ReviewRefused => "review_refused",
+            NotificationKind::RequestDone => "request_done",
+            NotificationKind::RequestFailed => "request_failed",
+            NotificationKind::RequestExpired => "request_expired",
+            NotificationKind::ProcessApproval => "process_approval",
+            NotificationKind::ProcessPullRequest => "process_pull_request",
+            NotificationKind::Mention => "mention",
+            NotificationKind::Answer => "answer",
+            NotificationKind::Held => "held",
+            NotificationKind::Failed => "failed",
+            NotificationKind::Note => "note",
+            NotificationKind::Role => "role",
+            NotificationKind::Removed => "removed",
+            NotificationKind::Approved => "approved",
+            NotificationKind::Declined => "declined",
+            NotificationKind::Requested => "requested",
+        }
+    }
+
+    pub fn parse(s: &str) -> Option<NotificationKind> {
+        Some(match s {
+            "review_merged" => NotificationKind::ReviewMerged,
+            "review_refused" => NotificationKind::ReviewRefused,
+            "request_done" => NotificationKind::RequestDone,
+            "request_failed" => NotificationKind::RequestFailed,
+            "request_expired" => NotificationKind::RequestExpired,
+            "process_approval" => NotificationKind::ProcessApproval,
+            "process_pull_request" => NotificationKind::ProcessPullRequest,
+            "mention" => NotificationKind::Mention,
+            "answer" => NotificationKind::Answer,
+            "held" => NotificationKind::Held,
+            "failed" => NotificationKind::Failed,
+            "note" => NotificationKind::Note,
+            "role" => NotificationKind::Role,
+            "removed" => NotificationKind::Removed,
+            "approved" => NotificationKind::Approved,
+            "declined" => NotificationKind::Declined,
+            "requested" => NotificationKind::Requested,
+            _ => return None,
+        })
+    }
+}
+
+/// The group a notification is about.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct NotifiedGroup {
+    pub slug: String,
+    pub name: String,
+}
+
+/// The thread a notification is about, and the message in it.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct NotifiedThread {
+    pub number: u32,
+    pub kind: ThreadKind,
+    pub title: String,
+    /// The latest message it is about.
+    pub message: Option<u32>,
+    /// The start of that message, as it reads now.
+    pub excerpt: Option<String>,
+}
+
+/// Something a person is told.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct Notification {
+    pub id: i64,
+    pub kind: NotificationKind,
+    /// How many of the same, in the same thread, it gathers.
+    pub count: u32,
+    /// Who did it, if someone did.
+    pub actor: Option<User>,
+    /// The agent that did it for them, if one did.
+    pub agent: Option<String>,
+    pub group: Option<NotifiedGroup>,
+    pub thread: Option<NotifiedThread>,
+    /// A note's text, in Markdown, or what it is about: a role, a group's
+    /// name.
+    pub text: Option<String>,
+    /// Whether what it is about is gone: a deleted thread or message.
+    pub gone: bool,
+    pub read: bool,
+    #[serde(with = "time::serde::rfc3339")]
+    pub updated_at: OffsetDateTime,
+}
+
+/// A page of a person's notifications, newest first.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct NotificationPage {
+    pub items: Vec<Notification>,
+    pub unread: u32,
+    pub more: bool,
+}
+
+/// What one asks for: the notifications before one, a page at a time;
+/// with `q`, only those that say it.
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
+pub struct NotificationQuery {
+    pub before: Option<i64>,
+    pub q: Option<String>,
+}
+
+/// What to do with some of one's notifications.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum NotificationChange {
+    Read,
+    Unread,
+    Delete,
+}
+
+/// Some of one's notifications, and what to do with them.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct ChangeNotifications {
+    pub ids: Vec<i64>,
+    pub change: NotificationChange,
+}
+
+/// What a person accepts as notes, and how long they keep what they read.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct NotificationSettings {
+    /// How many notes they accept an hour; none for no limit.
+    pub notes_per_hour: Option<u32>,
+    /// Whether they accept notes from people's agents, not only people.
+    pub notes_from_agents: bool,
+    /// How many days they keep read notifications; none for always.
+    pub keep_read_days: Option<u32>,
+}
+
+/// A note for some of a group's members, from a person or their agent.
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
+pub struct SendNote {
+    /// Their usernames.
+    pub to: Vec<String>,
+    /// Markdown, with `$…$` math and `[[…]]` references.
+    pub body: String,
+    /// The agent that writes it for the person, with a personal token.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub agent: Option<String>,
+}
+
+/// What the hub sends on a person's own event stream.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(tag = "type", rename_all = "snake_case")]
+pub enum PersonalEvent {
+    /// Their notifications changed: how many are unread now.
+    Notifications { unread: u32 },
 }

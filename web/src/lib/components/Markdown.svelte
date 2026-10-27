@@ -4,17 +4,16 @@
 
   interface Props {
     text: string;
+    missing?: string[];
     group: string;
-    /** Whether headings are a paper's sections, with their slugs as ids. */
-    sections?: boolean;
-    /** Lines whose blocks are shown as changed. */
-    changed?: Set<number>;
+    /** A short text among interface, at its size. */
+    compact?: boolean;
   }
 
-  let { text, group, sections = false, changed }: Props = $props();
+  let { text, group, missing = [], compact = false }: Props = $props();
 
   let element: HTMLElement | undefined = $state();
-  const html = $derived(renderMarkdown(text, { group, sections, changed }));
+  const html = $derived(renderMarkdown(text, { group, missing }));
 
   $effect(() => {
     // Again whenever the text changes.
@@ -23,7 +22,7 @@
   });
 </script>
 
-<div class="document" bind:this={element}>
+<div class="document" class:document--compact={compact} bind:this={element}>
   <!-- Rendered from Markdown with raw HTML escaped. -->
   {@html html}
 </div>

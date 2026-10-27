@@ -1,46 +1,25 @@
-//! The Stemma worker: it connects outbound to a hub with a worker token,
-//! says what it can run, and runs the jobs the hub hands it: agents'
-//! answers and editors' revisions of papers, with the runners it offers
-//! (`claude-code`, `codex`, `opencode`, `api`); if it has Lean, builds of a
-//! group's library; and with Lean and a runner that edits files, the
-//! workshop's tasks.
-//!
-//! A group's worker runs the group's agents, with keys in its
-//! configuration; a member's worker runs only that member's jobs, with
-//! their own logins. Credentials never leave the worker's machine.
-
+//! Running personal replies and interactive sessions on a computer.
+pub mod builds;
 pub mod config;
 pub mod connection;
+pub mod detect;
+pub mod doctor;
+pub mod image;
+pub mod isolation;
 pub mod job;
+pub mod launch;
 pub mod library;
+pub mod machine;
+pub mod papers;
 pub mod runners;
-pub mod workshop;
-
-use std::path::Path;
-use std::sync::Arc;
+pub mod service;
+pub mod session;
+pub mod sign_in;
+pub mod workspace;
 
 use anyhow::Context as _;
 
 pub use config::WorkerConfig;
-
-/// Runs a worker with the configuration at `path` until it is stopped.
-pub async fn run(path: &Path) -> anyhow::Result<()> {
-    let config = WorkerConfig::load(path)?;
-    let token = config.token()?;
-    let stemma = match &config.stemma {
-        Some(path) => path.clone(),
-        None => std::env::current_exe().context("finding the stemma binary")?,
-    };
-    let context = Context::new(config, stemma)?;
-    tokio::select! {
-        served = connection::serve(Arc::new(context), token) => served,
-        _ = tokio::signal::ctrl_c() => {
-            tracing::info!("Stopping");
-            Ok(())
-        }
-    }
-}
-
 pub use job::Context;
 
 impl Context {
@@ -54,7 +33,23 @@ impl Context {
             hub,
             stemma,
             work_dir,
-            checkouts: Default::default(),
+            isolator: None,
         })
     }
+    pub async fn start(
+        config: WorkerConfig,
+        stemma: std::path::PathBuf,
+    ) -> anyhow::Result<Context> {
+        let mut context = Context::new(config, stemma)?;
+        let search = std::env::var_os("PATH");
+        context.isolator = Some(
+            isolation::resolve(&context.config.isolation, &context.hub, search.as_deref())
+                .await
+                .map_err(anyhow::Error::msg)?,
+        );
+        Ok(context)
+    }
 }
+
+pub mod approvals;
+pub mod processes;

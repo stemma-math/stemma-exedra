@@ -1,49 +1,24 @@
 //! OpenCode, headless (`opencode run`), with a model of any provider it
-//! supports: OpenRouter's open models among them, with the keys of the
-//! worker's own configuration.
+//! supports: OpenRouter's open models among them, with the keys of its own
+//! configuration.
 //!
-//! It gets a configuration of its own, through `OPENCODE_CONFIG`: Stemma's
-//! tools through `stemma mcp`, read-only, with the job's token; to answer,
-//! none of its own tools that edit or run commands; to work on a task, its
-//! tools that edit files and run commands, allowed without asking, in the
-//! task's worktree. Stemma's instructions come first in its message. Its
-//! output, with `--format json`, is a stream of JSON events: tool calls
-//! become progress, and the text after the last of them is the answer.
+//! Launched as [`crate::launch`] says, with the request as its message: to
+//! answer, with none of its own tools that edit or run commands; to work
+//! on a task, with its tools that edit files and run commands, allowed
+//! without asking, in the task's worktree. Its output, with
+//! `--format json`, is a stream of JSON events: tool calls become
+//! progress, and the text after the last of them is the answer. Each step's
+//! end (`step_finish`) says its cost, in dollars, and its tokens: `input`,
+//! `output`, `reasoning` (counted here as output) and `cache` (`read`,
+//! `write`).
 
-use serde_json::{Value, json};
+use serde_json::Value;
 use stemma_core::api::AgentProfile;
-use stemma_core::protocol::JobSpec;
-use tokio::process::Command;
+use stemma_core::protocol::{JobSpec, Usage};
 
-use super::{Work, failed, mcp_args, run_command};
+use super::{Answer, Work, failed, prepared, run_command, tokens};
 use crate::config::CliRunner;
 use crate::job::{Context, JobDir, Progress, Prompt};
-
-/// OpenCode's configuration for a job.
-fn configuration(
-    context: &Context,
-    job: &JobSpec,
-    agent: &AgentProfile,
-    dir: &JobDir,
-    edits: bool,
-) -> Value {
-    let mut command = vec![context.stemma.display().to_string()];
-    command.extend(mcp_args(context, job, agent, dir));
-    let allow = if edits { "allow" } else { "deny" };
-    let mut config = json!({
-        "$schema": "https://opencode.ai/config.json",
-        "autoupdate": false,
-        "share": "disabled",
-        "mcp": {
-            "stemma": {"type": "local", "command": command, "enabled": true}
-        },
-        "permission": {"edit": allow, "bash": allow, "webfetch": "deny"}
-    });
-    if !edits {
-        config["tools"] = json!({"write": false, "edit": false, "patch": false, "bash": false});
-    }
-    config
-}
 
 /// What OpenCode said, from its events.
 #[derive(Default)]
@@ -52,6 +27,7 @@ struct Said {
     answer: String,
     error: Option<String>,
     events: usize,
+    usage: Usage,
 }
 
 impl Said {
@@ -76,6 +52,23 @@ impl Said {
                     self.answer.push_str(text);
                 }
             }
+            Some("step_finish") => {
+                let tokens_of = &part["tokens"];
+                let output = match (
+                    tokens(&tokens_of["output"]),
+                    tokens(&tokens_of["reasoning"]),
+                ) {
+                    (Some(o), Some(r)) => Some(o + r),
+                    (o, r) => o.or(r),
+                };
+                self.usage.add(&Usage {
+                    input_tokens: tokens(&tokens_of["input"]),
+                    output_tokens: output,
+                    cache_read_tokens: tokens(&tokens_of["cache"]["read"]),
+                    cache_write_tokens: tokens(&tokens_of["cache"]["write"]),
+                    cost_usd: part["cost"].as_f64(),
+                });
+            }
             Some("error") => {
                 let error = &event["error"];
                 let message = error["data"]["message"]
@@ -90,6 +83,17 @@ impl Said {
     }
 }
 
+/// What a run consumed, from its whole output: all its steps.
+pub fn usage_of_output(output: &str) -> Usage {
+    let (sender, _) = tokio::sync::mpsc::unbounded_channel();
+    let progress = Progress::new(0, sender);
+    let mut said = Said::default();
+    for line in output.lines() {
+        said.read(line, &progress);
+    }
+    said.usage
+}
+
 #[allow(clippy::too_many_arguments)]
 pub async fn run(
     context: &Context,
@@ -100,24 +104,11 @@ pub async fn run(
     work: &Work<'_>,
     prompt: &Prompt,
     progress: &Progress,
-) -> anyhow::Result<String> {
-    let config_file = dir.path.join("opencode.json");
-    std::fs::write(
-        &config_file,
-        serde_json::to_vec_pretty(&configuration(context, job, agent, dir, work.edits))?,
-    )?;
-
-    let program = config.command.as_deref().unwrap_or("opencode");
-    let mut command = Command::new(program);
-    command
-        .current_dir(work.dir)
-        .env("OPENCODE_CONFIG", &config_file)
-        .args(["run", "--format", "json"]);
-    if let Some(model) = agent.model.as_ref().or(config.model.as_ref()) {
-        command.args(["--model", model]);
-    }
-    command.args(&config.args);
-    command.arg(format!("{}\n---\n\n{}", prompt.system, prompt.user));
+) -> anyhow::Result<Answer> {
+    let mut prepared = prepared(context, config, job, agent, dir, work, prompt)?;
+    // The request is its message, last.
+    prepared.args.push(prompt.user.clone());
+    let command = super::command(&prepared, work);
 
     let mut said = Said::default();
     let mut plain = String::new();
@@ -133,12 +124,15 @@ pub async fn run(
         anyhow::bail!("OpenCode stopped: {error}");
     }
     if !ran.status.success() {
-        return Err(failed(program, &ran));
+        return Err(failed(&prepared.program, &ran));
     }
     // Without events, its output is the answer.
     let answer = if said.events == 0 { plain } else { said.answer };
     anyhow::ensure!(!answer.trim().is_empty(), "OpenCode gave no answer");
-    Ok(answer.trim().to_owned())
+    Ok(Answer {
+        text: answer.trim().to_owned(),
+        usage: said.usage,
+    })
 }
 
 #[cfg(test)]
@@ -163,5 +157,31 @@ mod tests {
         assert_eq!(said.answer, "It is proper.");
         assert_eq!(said.events, 4);
         assert_eq!(seen.try_recv().unwrap().1, "Reading t1#2");
+    }
+
+    #[test]
+    fn reads_what_a_run_consumed() {
+        let (sender, _seen) = mpsc::unbounded_channel();
+        let progress = Progress::new(1, sender);
+        let mut said = Said::default();
+        for line in include_str!("../../tests/fixtures/opencode-events.jsonl").lines() {
+            said.read(line, &progress);
+        }
+        assert_eq!(said.answer, "Done.");
+        let cost = said.usage.cost_usd.unwrap();
+        assert!((cost - 0.0123).abs() < 1e-9, "{cost}");
+        assert_eq!(
+            Usage {
+                cost_usd: None,
+                ..said.usage
+            },
+            Usage {
+                input_tokens: Some(3_000),
+                output_tokens: Some(700),
+                cache_read_tokens: Some(12_000),
+                cache_write_tokens: Some(500),
+                cost_usd: None,
+            }
+        );
     }
 }

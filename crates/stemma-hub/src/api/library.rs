@@ -2,18 +2,18 @@
 //! declarations, from the report of its last successful build.
 
 use axum::extract::{Path, Query, State};
-use axum::http::StatusCode;
 use serde::Deserialize;
 use sqlx::AssertSqlSafe;
 use stemma_core::Address;
 use stemma_core::api::{
-    Build, BuildLog, DeclarationPage, DeclarationState, DeclarationSummary, LibraryState,
-    ModuleSummary, ReferenceSite,
+    Build, BuildLog, DeclarationPage, DeclarationState, DeclarationSummary, ForgeLinks,
+    LibraryState, ModuleSummary, ReferenceSite,
 };
 
 use super::{Json, Membership};
 use crate::auth::Viewer;
 use crate::error::{ApiError, ApiResult};
+use crate::forge::LIBRARY;
 use crate::library::{self, DECLARATION_COLUMNS, DeclarationRow};
 use crate::state::AppState;
 
@@ -29,7 +29,7 @@ pub async fn state(
             .bind(group.group_id)
             .fetch_optional(&state.db)
             .await?;
-    let available = state.git && head.is_some();
+    let available = state.forge.is_some() && head.is_some();
     let latest = library::builds(&state, group.group_id, 1).await?.pop();
     let current = library::current(&state, group.group_id).await?;
     let mut modules = Vec::new();
@@ -52,7 +52,15 @@ pub async fn state(
     }
     Ok(Json(LibraryState {
         available,
-        clone_path: format!("/git/{}.git", group.slug),
+        clone_path: library::clone_path(&group.slug),
+        forge: state
+            .forge
+            .as_deref()
+            .filter(|_| available)
+            .map(|forge| ForgeLinks {
+                organization: forge.public_url(&group.slug),
+                repository: forge.public_url(&format!("{}/{LIBRARY}", group.slug)),
+            }),
         head: head.flatten(),
         latest,
         declarations: modules.iter().map(|m| m.declarations).sum(),
@@ -83,20 +91,44 @@ pub async fn build(
     Ok(Json(BuildLog { build, log }))
 }
 
-/// Builds `main` again, as when a worker with Lean was missing.
-pub async fn rebuild(
+/// Who builds again: anyone's machines, or one person's.
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Again {
+    pub builder: Option<i64>,
+}
+
+/// Builds a failed build's commit again; members and admins ask.
+pub async fn build_again(
     State(state): State<AppState>,
     viewer: Viewer,
-    Path(group): Path<String>,
-) -> ApiResult<(StatusCode, Json<Build>)> {
-    viewer.require_full()?;
+    Path((group, id)): Path<(String, i64)>,
+    Json(body): Json<Again>,
+) -> ApiResult<Json<Build>> {
     let group = Membership::of(&state, &viewer, &group).await?;
-    let head = library::main_commit(&library::repository(&state, group.group_id))
-        .await
-        .ok_or_else(|| ApiError::not_found("Library"))?;
-    let id = library::queue(&state, group.group_id, &head, viewer.id).await?;
-    let (build, _) = library::build(&state, group.group_id, id).await?;
-    Ok((StatusCode::CREATED, Json(build)))
+    let work: Option<i64> = sqlx::query_scalar(
+        "SELECT work_id
+         FROM library_builds
+         WHERE group_id = ? AND id = ?",
+    )
+    .bind(group.group_id)
+    .bind(id)
+    .fetch_optional(&state.db)
+    .await?
+    .ok_or_else(|| ApiError::not_found("Build"))?;
+    let work = work.ok_or_else(|| ApiError::conflict("This build was already built again"))?;
+    crate::builds::again_for(&state, &viewer, &group, work, body.builder).await?;
+    let current: i64 = sqlx::query_scalar(
+        "SELECT id
+         FROM library_builds
+         WHERE work_id = ?",
+    )
+    .bind(work)
+    .fetch_one(&state.db)
+    .await?;
+    Ok(Json(
+        library::build(&state, group.group_id, current).await?.0,
+    ))
 }
 
 #[derive(Deserialize)]
@@ -194,23 +226,17 @@ pub async fn declaration(
         .bind(build)
         .fetch_one(&state.db)
         .await?;
-    let reference = format!("[[lean:{name}]]");
+
     let messages: Vec<(i64, i64, String)> = sqlx::query_as(
         "SELECT t.number, m.number, t.title FROM messages m JOIN threads t ON t.id = m.thread_id
-         WHERE t.group_id = ? AND m.deleted_at IS NULL AND instr(m.body, ?) > 0
+         WHERE t.group_id = ? AND m.deleted_at IS NULL AND EXISTS (SELECT 1 FROM json_each(m.body_ids, '$.parts') part
+             WHERE json_extract(part.value, '$.Named.target.Reference.group') = ?
+               AND json_extract(part.value, '$.Named.target.Reference.object.Declaration') = ?)
          ORDER BY m.created_at DESC LIMIT 50",
     )
     .bind(group.group_id)
-    .bind(&reference)
-    .fetch_all(&state.db)
-    .await?;
-    let papers: Vec<(String, String)> = sqlx::query_as(
-        "SELECT p.slug, r.title FROM papers p
-         JOIN paper_revisions r ON r.paper_id = p.id AND r.number = p.revision
-         WHERE p.group_id = ? AND instr(r.body, ?) > 0 ORDER BY p.updated_at DESC",
-    )
     .bind(group.group_id)
-    .bind(&reference)
+    .bind(&name)
     .fetch_all(&state.db)
     .await?;
     // The threads about it, as "Discuss it" starts them.
@@ -222,16 +248,7 @@ pub async fn declaration(
     .bind(format!("lean:{name}"))
     .fetch_all(&state.db)
     .await?;
-    let mut references: Vec<ReferenceSite> = papers
-        .into_iter()
-        .map(|(slug, title)| ReferenceSite {
-            address: Address::Paper {
-                slug,
-                section: None,
-            },
-            title,
-        })
-        .collect();
+    let mut references: Vec<ReferenceSite> = Vec::new();
     for (number, title) in threads {
         references.push(ReferenceSite {
             address: Address::Thread(number as u32),

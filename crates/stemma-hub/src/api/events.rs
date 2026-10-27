@@ -31,14 +31,19 @@ pub async fn stream(
             }
             Ok(_) => None,
             Err(BroadcastStreamRecvError::Lagged(_)) => {
-                Some(SseEvent::default().event("resync").data(""))
+                Some(SseEvent::default().event("resync").data("{}"))
             }
         };
         std::future::ready(event.map(Ok))
     });
+    // An event with no data is never dispatched: each carries `{}`.
     let opening = futures_util::stream::once(std::future::ready(Ok(SseEvent::default()
         .event("ready")
-        .data(""))));
-    Ok(Sse::new(opening.chain(events))
-        .keep_alive(KeepAlive::new().interval(Duration::from_secs(20))))
+        .data("{}"))));
+    Ok(Sse::new(
+        opening
+            .chain(events)
+            .take_until(state.shutdown.clone().cancelled_owned()),
+    )
+    .keep_alive(KeepAlive::new().interval(Duration::from_secs(20))))
 }

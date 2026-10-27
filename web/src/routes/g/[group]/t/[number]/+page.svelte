@@ -1,18 +1,25 @@
 <script lang="ts">
+  import RequestHeader from "#lib/components/RequestHeader.svelte";
+  import Loading from "#lib/components/Loading.svelte";
+  import { goto } from "$app/navigation";
   import { page } from "$app/state";
   import { tick } from "svelte";
   import { addressPath, parseAddress } from "#lib/address.ts";
-  import { ApiError, api, type Job, type Message, type Thread } from "#lib/api.ts";
+  import { ApiError, api, AGENTS, type Job, type Message, type Thread } from "#lib/api.ts";
   import Composer from "#lib/components/Composer.svelte";
+  import Glyph from "#lib/components/Glyph.svelte";
+  import { goesWith } from "#lib/contents.ts";
   import JobItem from "#lib/components/JobItem.svelte";
   import MessageItem from "#lib/components/MessageItem.svelte";
-  import { listen } from "#lib/events.ts";
+  import UnderConstruction from "#lib/components/UnderConstruction.svelte";
+  import { listen, listenToMe } from "#lib/events.ts";
   import { exactly } from "#lib/format.ts";
   import { groupContext } from "#lib/group.svelte.ts";
   import { applyJob } from "#lib/jobs.ts";
   import { forgetReferences } from "#lib/references.ts";
+  import { ask } from "#lib/ask.svelte.ts";
   import { session } from "#lib/session.svelte.ts";
-  import { toastError } from "#lib/toast.ts";
+  import { toast, toastError } from "#lib/toast.ts";
 
   const context = groupContext();
   const group = $derived(context.group);
@@ -23,6 +30,8 @@
   let jobs = $state<Job[]>([]);
   let agents = $state<string[]>([]);
   let missing = $state(false);
+  /** Deleted while open, by someone else. */
+  let gone = $state(false);
   let replyTo = $state<number | null>(null);
   let renaming = $state(false);
   let title = $state("");
@@ -30,7 +39,8 @@
 
   const viewer = $derived(session.me?.id ?? 0);
   const admin = $derived(group.role === "admin");
-  const canRename = $derived(thread !== null && (admin || thread.created_by.id === viewer));
+  /** Whoever opened it, or an admin, renames and deletes it. */
+  const canManage = $derived(thread !== null && (admin || thread.created_by.id === viewer));
 
   async function load() {
     try {
@@ -59,19 +69,50 @@
     }
   }
 
-  $effect(() => {
-    api
-      .agents(group.slug)
-      .then((found) => {
-        agents = found.map((a) => a.handle);
-      })
-      .catch(() => {});
-  });
+  $effect(() => { agents = AGENTS.map((a) => a.handle); });
 
   async function cancel(job: Job) {
     try {
       await api.cancelJob(group.slug, job.id);
       jobs = jobs.filter((j) => j.id !== job.id);
+    } catch (error) {
+      toastError(error);
+    }
+  }
+
+  /** Posts a held answer: with its secrets hidden, or, once confirmed, as it is. */
+  async function publishHeld(job: Job, hidden: boolean) {
+    if (!hidden) {
+      const yes = await ask({
+        title: "Publish with the secret?",
+        text: "Everyone in the group will read it. Revoke that token or key afterwards, wherever it came from.",
+        action: "Publish",
+        danger: true,
+      });
+      if (!yes) return;
+    }
+    try {
+      await api.publishHeld(group.slug, job.id, hidden);
+      jobs = jobs.filter((j) => j.id !== job.id);
+      if (!hidden) toast("Published. Revoke the token or key it showed.", "warning");
+    } catch (error) {
+      toastError(error);
+    }
+  }
+
+  async function discardHeld(job: Job) {
+    try {
+      await api.discardHeld(group.slug, job.id);
+      jobs = jobs.filter((j) => j.id !== job.id);
+    } catch (error) {
+      toastError(error);
+    }
+  }
+
+  /** The thread's jobs again: a held answer's text comes only this way. */
+  async function reloadJobs() {
+    try {
+      jobs = await api.threadJobs(group.slug, number);
     } catch (error) {
       toastError(error);
     }
@@ -83,18 +124,39 @@
     messages = [];
     jobs = [];
     replyTo = null;
-    load();
+    load().then(markRead);
     return listen(group.slug, (event) => {
-      if (event.type === "resync") return load();
+      if ((event.type === "resync" || event.type === "names_changed")) return load();
       if ((event.type === "message_created" || event.type === "message_updated") && event.thread === number) {
         upsert(event.message);
+      } else if (event.type === "thread_deleted" && event.thread === number) {
+        gone = true;
       } else if (event.type === "thread_updated" && event.thread.number === number) {
         thread = event.thread;
       } else if (event.type === "job_updated" && event.job.thread === number) {
-        jobs = applyJob(jobs, event.job);
+        if (event.job.state === "held" && event.job.requester.id === viewer) reloadJobs();
+        else jobs = applyJob(jobs, event.job);
       }
       if (event.type === "thread_created" || event.type === "message_created") forgetReferences(group.slug);
     });
+  });
+
+  /** What one was told of this thread is read, while one reads it. */
+  function markRead() {
+    if (document.visibilityState !== "visible" || !session.me?.unread || missing) return;
+    api.readThread(group.slug, number).catch(() => {});
+  }
+
+  $effect(() => {
+    void number;
+    const stop = listenToMe((event) => {
+      if (event.type === "notifications" && event.unread) markRead();
+    });
+    document.addEventListener("visibilitychange", markRead);
+    return () => {
+      stop();
+      document.removeEventListener("visibilitychange", markRead);
+    };
   });
 
   // Show the message the address points to, once it is there.
@@ -130,19 +192,51 @@
     }
   }
 
+  async function remove() {
+    if (!thread) return;
+    try {
+      const contents = goesWith(await api.threadContents(group.slug, number));
+      const yes = await ask({
+        title: `Delete “${thread.title}”?`,
+        text: `${contents ? `This also deletes ${contents}. ` : ""}It cannot be undone.`,
+        action: "Delete the thread",
+        danger: true,
+      });
+      if (!yes) return;
+      await api.deleteThread(group.slug, number);
+      toast("The thread was deleted.");
+      await goto(`/g/${group.slug}/forum`);
+    } catch (error) {
+      toastError(error);
+    }
+  }
+
   function reply(to: number) {
     replyTo = to;
     composer?.focus();
   }
 </script>
 
-<svelte:head><title>{thread ? `${thread.title} · ` : ""}{group.name} · Stemma</title></svelte:head>
+<svelte:head><title>{thread ? `${thread.title} – ` : ""}{group.name}</title></svelte:head>
 
+<!-- Chats are under construction; discussions are not. -->
+{#if thread?.kind === "chat"}
+  <UnderConstruction back="/g/{group.slug}" label="Back to the dashboard" />
+{:else}
 <main class="page page--narrow">
-  {#if missing}
+  {#if gone}
+    <h1>This thread was deleted</h1>
+    <p>Its messages went with it. <a class="link" href="/g/{group.slug}/forum">Back to the forum</a>.</p>
+  {:else if missing}
     <h1>Thread not found</h1>
     <p>There is no thread <span class="identifier">t{number}</span> in {group.name}.</p>
   {:else if thread}
+    <nav class="breadcrumbs" aria-label="Where">
+      <ol>
+        <li><a href="/g/{group.slug}/{thread.kind === "request" ? "workshop" : "forum"}">{thread.kind === "request" ? "Workshop" : "Forum"}</a></li>
+        <li><span aria-current="page" class="identifier">t{thread.number}</span></li>
+      </ol>
+    </nav>
     <header class="stack stack--tight">
       {#if renaming}
         <form class="row" onsubmit={rename}>
@@ -157,31 +251,41 @@
           <span class="row" data-density="compact">
             <span class="identifier quiet">t{thread.number}</span>
             <stemma-copy-button value="t{thread.number}" label="Copy the address t{thread.number}"></stemma-copy-button>
-            {#if canRename}
-              <button
-                type="button"
-                class="button button--quiet button--small"
-                onclick={() => {
-                  title = thread?.title ?? "";
-                  renaming = true;
-                }}
-              >
-                Rename
-              </button>
+            {#if canManage}
+              <stemma-menu>
+                <button type="button" class="button button--quiet button--icon button--small" aria-label="More for this thread">
+                  <Glyph name="more" small />
+                </button>
+                <div class="menu">
+                  <button
+                    type="button"
+                    class="menu__item"
+                    onclick={() => {
+                      title = thread?.title ?? "";
+                      renaming = true;
+                    }}
+                  >
+                    <Glyph name="edit" small /> Rename
+                  </button>
+                  <hr class="menu__separator" />
+                  <button type="button" class="menu__item menu__item--danger" onclick={remove}>Delete</button>
+                </div>
+              </stemma-menu>
             {/if}
           </span>
         </div>
       {/if}
       <p class="quiet">
-        {#if thread.kind === "chat"}
-          <span class="chip chip--info">Chat{thread.resident_agent ? ` with @${thread.resident_agent}` : ""}</span>
-        {/if}
         Started by {thread.created_by.display_name},
         <time datetime={thread.created_at}>{exactly(thread.created_at)}</time>{#if thread.anchor}{@const anchor = parseAddress(thread.anchor)},
           about <a class="identifier link" href={anchor ? addressPath(anchor, group.slug) : "#"}>{thread.anchor}</a>{/if}.
       </p>
     </header>
 
+    {#if thread.kind === "request"}
+      <!-- The loaded thread's number: the route's changes first, while the last thread shows. -->
+      <RequestHeader group={group.slug} number={thread.number} {canManage} />
+    {/if}
     {#if !messages.length}
       <p class="empty">No messages yet. Say the first thing.</p>
     {/if}
@@ -198,7 +302,13 @@
         />
       {/each}
       {#each jobs as job (job.id)}
-        <JobItem {job} group={group.slug} canCancel={admin || job.requester.id === viewer} oncancel={cancel} />
+        <JobItem
+          {job}
+          canCancel={admin || job.requester.id === viewer}
+          oncancel={cancel}
+          onpublish={publishHeld}
+          ondiscard={discardHeld}
+        />
       {/each}
     </ol>
 
@@ -210,9 +320,9 @@
       oncancelreply={() => (replyTo = null)}
       onsubmit={post}
       {agents}
-      resident={thread.kind === "chat" ? thread.resident_agent : null}
     />
   {:else}
-    <span class="spinner" role="status" aria-label="Loading"></span>
+    <Loading label="Loading" />
   {/if}
 </main>
+{/if}

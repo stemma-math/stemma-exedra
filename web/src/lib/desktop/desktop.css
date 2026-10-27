@@ -1,0 +1,100 @@
+/* Native frame and settings composition; all treatments use design tokens. */
+html[data-desktop] .app {
+  height: 100dvh;
+  overflow: hidden;
+}
+html[data-desktop] .shell {
+  height: 100dvh;
+  min-height: 0;
+}
+html[data-desktop] .sidebar {
+  height: 100dvh;
+  border: 0;
+  padding-top: var(--space-8);
+}
+html[data-desktop] .shell__main {
+  margin: 0;
+  padding-top: var(--space-8);
+  border-radius: 0;
+  background: var(--surface-page);
+  overflow: auto;
+  overscroll-behavior: none;
+}
+html[data-desktop] body {
+  background: var(--surface-subtle);
+  cursor: default;
+  -webkit-user-select: none;
+  user-select: none;
+}
+/* In the app, the interface is not text to select; what people wrote, and
+ * what one may want to copy, still is. */
+html[data-desktop]
+:is(
+  .document,
+  .message__text,
+  .identifier,
+  .copy-block,
+  pre,
+  code,
+  input,
+  textarea,
+  [contenteditable]
+) {
+  -webkit-user-select: text;
+  user-select: text;
+}
+.desktop-drag {
+  position: fixed;
+  inset: 0 0 auto;
+  z-index: 20;
+  height: var(--space-8);
+}
+.setting__limits {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: var(--space-4);
+}
+
+.checklist {
+  margin: 0;
+  padding: 0;
+}
+.panel {
+  padding: var(--space-5);
+}
+/* The window may be smaller than the card: the entrance scrolls, and the
+ * card is centred only while it fits, so its top is never cut off. */
+.entrance {
+  position: relative;
+  isolation: isolate;
+  display: grid;
+  justify-items: center;
+  height: 100dvh;
+  overflow-y: auto;
+  overscroll-behavior: none;
+  padding: var(--space-12) var(--space-6);
+}
+.entrance__light {
+  position: fixed;
+  inset: 0;
+  z-index: -1;
+}
+.entrance__card {
+  width: min(100%, calc(var(--space-16) * 6));
+  margin-block: auto;
+}
+.entrance__card stemma-mark {
+  width: var(--space-8);
+}
+
+.offer {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  gap: var(--space-2);
+  align-items: start;
+}
+
+html[data-desktop] .sidebar,
+.entrance {
+  box-sizing: border-box;
+}

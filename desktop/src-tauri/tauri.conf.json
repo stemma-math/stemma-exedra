@@ -1,0 +1,42 @@
+{
+  "$schema": "https://schema.tauri.app/config/2",
+  "productName": "Stemma",
+  "identifier": "org.stemma.desktop",
+  "build": {
+    "beforeDevCommand": "pnpm dev",
+    "devUrl": "http://127.0.0.1:1420",
+    "beforeBuildCommand": "pnpm build",
+    "frontendDist": "../dist"
+  },
+  "app": {
+    "windows": [
+      {
+        "label": "main",
+        "title": "Stemma",
+        "width": 1480,
+        "height": 940,
+        "minWidth": 800,
+        "minHeight": 440,
+        "titleBarStyle": "Overlay",
+        "hiddenTitle": true,
+        "dragDropEnabled": false,
+        "create": false,
+        "url": "index.html"
+      }
+    ],
+    "security": {
+      "csp": "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' hub: http://hub.localhost data:; font-src 'self'; connect-src 'self' hub: http://hub.localhost ipc: http://ipc.localhost; frame-src hub: http://hub.localhost; object-src hub: http://hub.localhost; base-uri 'none'; form-action 'none'",
+      "devCsp": "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' hub: http://hub.localhost data:; font-src 'self'; connect-src 'self' ws://127.0.0.1:1420 hub: http://hub.localhost ipc: http://ipc.localhost; frame-src hub: http://hub.localhost; object-src hub: http://hub.localhost; base-uri 'none'; form-action 'none'"
+    }
+  },
+  "bundle": {
+    "active": false,
+    "icon": [
+      "../../web/node_modules/@stemma-math/design/icons/app/icon-32.png",
+      "../../web/node_modules/@stemma-math/design/icons/app/icon-128.png",
+      "../../web/node_modules/@stemma-math/design/icons/app/icon-256.png",
+      "../../web/node_modules/@stemma-math/design/icons/app/icon.icns",
+      "../../web/node_modules/@stemma-math/design/icons/app/icon.ico"
+    ]
+  }
+}

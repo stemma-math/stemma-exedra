@@ -1,5 +1,11 @@
-# A minimal hub. Put it behind a reverse proxy that serves HTTPS, and set
-# STEMMA_PUBLIC_URL to the address people use.
+# The hub and Forgejo, wired together: the hub keeps the groups'
+# repositories in Forgejo, and Forgejo signs people in through the hub.
+#
+# Set them up once, which writes the secrets to docker/.env:
+#
+#     docker/setup.sh
+#
+# Then:
 #
 #     docker compose -f docker/compose.yaml up -d
 #     docker compose -f docker/compose.yaml logs hub   # the setup link
@@ -7,6 +13,11 @@
 # Or create the first account from the command line:
 #
 #     docker compose -f docker/compose.yaml exec hub stemma hub create-admin --username ada
+#
+# As it is, both answer on this machine only, over HTTP. Otherwise, put
+# each behind a reverse proxy that serves HTTPS, and set STEMMA_PUBLIC_URL
+# and FORGEJO_PUBLIC_URL in docker/.env to the addresses people use, before
+# setting them up.
 
 services:
   hub:
@@ -14,12 +25,58 @@ services:
       context: ..
       dockerfile: docker/Dockerfile
     restart: unless-stopped
+    depends_on:
+      - forgejo
     environment:
-      STEMMA_PUBLIC_URL: https://stemma.example.org
+      STEMMA_PUBLIC_URL: ${STEMMA_PUBLIC_URL:-http://localhost:8080}
+      # Where the hub reaches Forgejo, where people do, and where Forgejo
+      # reaches the hub.
+      STEMMA_FORGE_URL: http://forgejo:3000
+      STEMMA_FORGE_PUBLIC_URL: ${FORGEJO_PUBLIC_URL:-http://localhost:3000}
+      STEMMA_FORGE_HUB_URL: http://hub:8080
+      STEMMA_FORGE_TOKEN: ${STEMMA_FORGE_TOKEN:-}
+      STEMMA_FORGE_WEBHOOK_SECRET: ${STEMMA_FORGE_WEBHOOK_SECRET:-}
+      STEMMA_FORGE_CLIENT_SECRET: ${STEMMA_FORGE_CLIENT_SECRET:-}
     ports:
       - "127.0.0.1:8080:8080"
     volumes:
       - stemma-data:/var/lib/stemma
 
+  forgejo:
+    image: codeberg.org/forgejo/forgejo:16
+    restart: unless-stopped
+    environment:
+      FORGEJO__server__ROOT_URL: ${FORGEJO_PUBLIC_URL:-http://localhost:3000}/
+      FORGEJO__server__DISABLE_SSH: "true"
+      FORGEJO__server__OFFLINE_MODE: "true"
+      FORGEJO__database__DB_TYPE: sqlite3
+      FORGEJO__security__INSTALL_LOCK: "true"
+      FORGEJO__repository__DEFAULT_BRANCH: main
+      FORGEJO__repository__DEFAULT_PRIVATE: private
+      # Accounts come from the hub, which people sign in through: Forgejo
+      # has no password form of its own, and takes no password over HTTP.
+      FORGEJO__service__DISABLE_REGISTRATION: "false"
+      FORGEJO__service__ALLOW_ONLY_EXTERNAL_REGISTRATION: "true"
+      FORGEJO__service__SHOW_REGISTRATION_BUTTON: "false"
+      FORGEJO__service__ENABLE_INTERNAL_SIGNIN: "false"
+      FORGEJO__service__ENABLE_BASIC_AUTHENTICATION: "false"
+      FORGEJO__service__REQUIRE_SIGNIN_VIEW: "true"
+      FORGEJO__service__DEFAULT_KEEP_EMAIL_PRIVATE: "true"
+      FORGEJO__oauth2_client__ENABLE_AUTO_REGISTRATION: "true"
+      FORGEJO__oauth2_client__USERNAME: nickname
+      FORGEJO__oauth2_client__ACCOUNT_LINKING: disabled
+      FORGEJO__oauth2_client__OPENID_CONNECT_SCOPES: openid profile email
+      FORGEJO__openid__ENABLE_OPENID_SIGNIN: "false"
+      FORGEJO__openid__ENABLE_OPENID_SIGNUP: "false"
+      # Its webhooks reach the hub on the compose network.
+      FORGEJO__webhook__ALLOWED_HOST_LIST: private
+      FORGEJO__mailer__ENABLED: "false"
+      FORGEJO__actions__ENABLED: "false"
+    ports:
+      - "127.0.0.1:3000:3000"
+    volumes:
+      - forgejo-data:/data
+
 volumes:
   stemma-data:
+  forgejo-data:

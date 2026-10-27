@@ -1,67 +1,24 @@
 //! The library's tools: how it stands, a declaration, and a search.
 
 use serde::Deserialize;
-use serde_json::{Value, json};
+use serde_json::Value;
 use stemma_core::Address;
 
-use super::{GROUP, ToolDef, ToolError, ToolResult, Toolbox, address_in, parse};
+use super::{ToolDef, ToolError, ToolResult, Toolbox, address_in, parse};
 use crate::format;
 
 pub fn definitions() -> Vec<ToolDef> {
     vec![
-        ToolDef {
-            name: "library_state",
-            description: "How the group's Lean library stands: its last build, how many \
-                          declarations it has, which depend on sorry, and its modules.",
-            input_schema: json!({
-                "type": "object",
-                "properties": {"group": {"type": "string", "description": GROUP}}
-            }),
-            writes: false,
-        },
-        ToolDef {
-            name: "library_lookup",
-            description: "A declaration of the group's Lean library, by name (Foo.bar, or \
-                          lean:Foo.bar): its kind, type, docstring, module and place, whether \
-                          it is proved or depends on sorry, its axioms, the declarations it uses \
-                          and those that use it, and the messages and papers that reference it.",
-            input_schema: json!({
-                "type": "object",
-                "properties": {
-                    "name": {"type": "string", "description": "The declaration's full name."},
-                    "group": {"type": "string", "description": GROUP}
-                },
-                "required": ["name"]
-            }),
-            writes: false,
-        },
-        ToolDef {
-            name: "library_search",
-            description: "Search the group's Lean library for declarations whose name, type or \
-                          docstring contain every word of the query, regardless of case.",
-            input_schema: json!({
-                "type": "object",
-                "properties": {
-                    "query": {"type": "string", "description": "The words to find."},
-                    "group": {"type": "string", "description": GROUP},
-                    "limit": {"type": "integer", "minimum": 1, "maximum": 100,
-                              "description": "How many results; 20 if absent."}
-                },
-                "required": ["query"]
-            }),
-            writes: false,
-        },
+        ToolDef::read("library_state", |toolbox, args, _agent| {
+            Box::pin(state(toolbox, args))
+        }),
+        ToolDef::read("library_lookup", |toolbox, args, _agent| {
+            Box::pin(lookup(toolbox, args))
+        }),
+        ToolDef::read("library_search", |toolbox, args, _agent| {
+            Box::pin(search(toolbox, args))
+        }),
     ]
-}
-
-/// Runs a library's tool, if `name` is one.
-pub async fn call(toolbox: &Toolbox, name: &str, args: Value) -> Option<ToolResult> {
-    Some(match name {
-        "library_state" => state(toolbox, args).await,
-        "library_lookup" => lookup(toolbox, args).await,
-        "library_search" => search(toolbox, args).await,
-        _ => return None,
-    })
 }
 
 #[derive(Deserialize)]

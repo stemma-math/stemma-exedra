@@ -1,24 +1,21 @@
-//! Groups, their members and the invitations that bring people in.
+//! Groups and their members.
 
 use axum::extract::{Path, State};
-use axum::http::{HeaderMap, StatusCode};
-use axum::response::IntoResponse;
-use stemma_core::address::is_slug;
-use stemma_core::api::{
-    AcceptInvitation, CreateGroup, CreateInvitation, CreatedInvitation, Group, Invitation,
-    InvitationInfo, Member, Role, UpdateMember,
-};
+use axum::http::StatusCode;
+use stemma_core::api::{CreateGroup, Group, Member, NotificationKind, Role, UpdateMember};
 
 use super::{Json, Membership, UserColumns, required_text};
-use crate::auth::{self, Viewer};
+use crate::auth::Viewer;
 use crate::db;
 use crate::error::{ApiError, ApiResult};
-use crate::secret;
+use crate::forge;
+use crate::library;
+use crate::notifications::{self, Notice};
 use crate::state::AppState;
 
 pub async fn groups_of(state: &AppState, user_id: i64) -> ApiResult<Vec<Group>> {
-    let rows: Vec<(String, String, String, i64)> = sqlx::query_as(
-        "SELECT g.slug, g.name, m.role, g.created_at
+    let rows: Vec<(i64, String, String, String, i64)> = sqlx::query_as(
+        "SELECT g.id, g.slug, g.name, m.role, g.created_at
          FROM groups g JOIN memberships m ON m.group_id = g.id
          WHERE m.user_id = ? ORDER BY g.name",
     )
@@ -27,10 +24,11 @@ pub async fn groups_of(state: &AppState, user_id: i64) -> ApiResult<Vec<Group>> 
     .await?;
     Ok(rows
         .into_iter()
-        .map(|(slug, name, role, created_at)| Group {
+        .map(|(id, slug, name, role, created_at)| Group {
+            id,
             slug,
             name,
-            role: Role::parse(&role).unwrap_or(Role::Member),
+            role: Role::parse(&role).unwrap_or(Role::Guest),
             created_at: db::from_millis(created_at),
         })
         .collect())
@@ -39,7 +37,7 @@ pub async fn groups_of(state: &AppState, user_id: i64) -> ApiResult<Vec<Group>> 
 /// The viewer's groups. A job's token sees only its job's group.
 pub async fn list(State(state): State<AppState>, viewer: Viewer) -> ApiResult<Json<Vec<Group>>> {
     let mut groups = groups_of(&state, viewer.id).await?;
-    if let Some(job) = viewer.job() {
+    if let Some(job) = viewer.agent() {
         let slug: String = sqlx::query_scalar("SELECT slug FROM groups WHERE id = ?")
             .bind(job.group_id)
             .fetch_one(&state.db)
@@ -57,30 +55,64 @@ pub async fn get(
     Ok(Json(Membership::of(&state, &viewer, &slug).await?.group()))
 }
 
-/// Creates a group, with its creator as its admin. Only for hub admins.
+/// Creates a group, with its creator as its admin: its organization in
+/// the forge, with its teams and its library, then the group. Only for hub
+/// admins, and only with a forge.
 pub async fn create(
     State(state): State<AppState>,
     viewer: Viewer,
     Json(body): Json<CreateGroup>,
 ) -> ApiResult<(StatusCode, Json<Group>)> {
-    viewer.require_full()?;
-    if !viewer.hub_admin {
-        return Err(ApiError::forbidden(
-            "Only the hub's admins can create groups",
-        ));
-    }
-    let slug = body.slug.trim().to_owned();
-    if !is_slug(&slug) || slug.len() > 40 {
-        return Err(ApiError::invalid(
-            "A group's short name is up to 40 lowercase letters, digits and inner dashes",
-        ));
-    }
+    viewer.require_hub_admin()?;
+    let _guard = state.group_changes.lock().await;
+    let group = create_for(&state, &viewer, body, None).await?;
+    Ok((StatusCode::CREATED, Json(group)))
+}
+
+pub(super) async fn available_slug(state: &AppState, value: &str) -> ApiResult<String> {
+    crate::names::available(state, "group", value, None).await
+}
+
+/// The caller serializes group changes; approval and membership are kept together.
+pub(super) async fn create_for(
+    state: &AppState,
+    owner: &Viewer,
+    body: CreateGroup,
+    request: Option<i64>,
+) -> ApiResult<Group> {
+    let forge = forge::require(state)?;
+    let slug = available_slug(state, &body.slug).await?;
     let name = required_text(&body.name, "The name", 80)?;
+    forge::create_group(forge, state, &slug, &name, &library::template(&slug, &name)).await?;
+    match insert_group(state, owner, &slug, &name, request).await {
+        Ok(group) => {
+            library::created(state, group, owner.id).await?;
+            forge::sync_members_or_log(state, group).await;
+        }
+        Err(error) => {
+            // The organization is the group's alone: without the group, it
+            // goes too.
+            let _ = forge.delete_repository(&slug, forge::LIBRARY).await;
+            let _ = forge.delete_organization(&slug).await;
+            return Err(error);
+        }
+    }
+    Ok(Membership::of(state, owner, &slug).await?.group())
+}
+
+/// Keeps a new group, with `viewer` as its admin.
+async fn insert_group(
+    state: &AppState,
+    viewer: &Viewer,
+    slug: &str,
+    name: &str,
+    request: Option<i64>,
+) -> ApiResult<i64> {
     let now = db::now();
     let mut tx = state.db.begin().await?;
     let inserted = sqlx::query("INSERT INTO groups (slug, name, created_at) VALUES (?, ?, ?)")
-        .bind(&slug)
-        .bind(&name)
+        .bind(slug)
+        .bind(name)
         .bind(now)
         .execute(&mut *tx)
         .await;
@@ -101,24 +133,14 @@ pub async fn create(
     .bind(now)
     .execute(&mut *tx)
     .await?;
-    for profile in crate::jobs::default_profiles() {
-        super::agents::insert(&mut *tx, group_id, &profile).await?;
+    if let Some(id) = request {
+        sqlx::query("UPDATE group_requests SET status = 'approved' WHERE id = ?")
+            .bind(id)
+            .execute(&mut *tx)
+            .await?;
     }
     tx.commit().await?;
-    if let Err(error) = crate::library::ensure(&state, group_id, viewer.id).await {
-        tracing::error!(
-            group = slug,
-            error = error.message,
-            "could not make the library"
-        );
-    }
-    let group = Group {
-        slug,
-        name,
-        role: Role::Admin,
-        created_at: db::from_millis(now),
-    };
-    Ok((StatusCode::CREATED, Json(group)))
+    Ok(group_id)
 }
 
 #[derive(sqlx::FromRow)]
@@ -147,7 +169,7 @@ pub async fn members(
         rows.into_iter()
             .map(|row| Member {
                 user: row.user.into(),
-                role: Role::parse(&row.role).unwrap_or(Role::Member),
+                role: Role::parse(&row.role).unwrap_or(Role::Guest),
                 joined_at: db::from_millis(row.joined_at),
             })
             .collect(),
@@ -176,6 +198,8 @@ async fn role_of(state: &AppState, group_id: i64, user_id: i64) -> ApiResult<Rol
         .ok_or_else(|| ApiError::not_found("Member"))
 }
 
+/// Changes a member's role: only an admin, and never leaving the group
+/// without one.
 pub async fn update_member(
     State(state): State<AppState>,
     viewer: Viewer,
@@ -187,7 +211,7 @@ pub async fn update_member(
     group.require_admin()?;
     let current = role_of(&state, group.group_id, user_id).await?;
     if current == Role::Admin
-        && body.role == Role::Member
+        && body.role != Role::Admin
         && admin_count(&state, group.group_id).await? == 1
     {
         return Err(ApiError::conflict("A group needs at least one admin"));
@@ -198,6 +222,14 @@ pub async fn update_member(
         .bind(user_id)
         .execute(&state.db)
         .await?;
+    forge::sync_members_or_log(&state, group.group_id).await;
+    if current != body.role && user_id != viewer.id {
+        let notice = Notice::new(NotificationKind::Role)
+            .group(group.group_id)
+            .by(viewer.id, None)
+            .text(body.role.as_str());
+        notifications::notify(&state, &[user_id], &notice).await?;
+    }
     Ok(StatusCode::NO_CONTENT)
 }
 
@@ -221,220 +253,84 @@ pub async fn remove_member(
         .bind(user_id)
         .execute(&state.db)
         .await?;
-    Ok(StatusCode::NO_CONTENT)
-}
-
-#[derive(sqlx::FromRow)]
-struct InvitationRow {
-    id: i64,
-    role: String,
-    created_at: i64,
-    expires_at: Option<i64>,
-    max_uses: Option<i64>,
-    uses: i64,
-    #[sqlx(flatten)]
-    creator: UserColumns,
-}
-
-impl From<InvitationRow> for Invitation {
-    fn from(row: InvitationRow) -> Self {
-        Invitation {
-            id: row.id,
-            role: Role::parse(&row.role).unwrap_or(Role::Member),
-            created_by: row.creator.into(),
-            created_at: db::from_millis(row.created_at),
-            expires_at: row.expires_at.map(db::from_millis),
-            max_uses: row.max_uses.map(|n| n as u32),
-            uses: row.uses as u32,
-        }
-    }
-}
-
-/// The invitations that can still be used.
-pub async fn invitations(
-    State(state): State<AppState>,
-    viewer: Viewer,
-    Path(slug): Path<String>,
-) -> ApiResult<Json<Vec<Invitation>>> {
-    viewer.require_full()?;
-    let group = Membership::of(&state, &viewer, &slug).await?;
-    group.require_admin()?;
-    let rows: Vec<InvitationRow> = sqlx::query_as(
-        "SELECT i.id, i.role, i.created_at, i.expires_at, i.max_uses, i.uses,
-                u.id AS user_id, u.username, u.display_name
-         FROM invitations i JOIN users u ON u.id = i.created_by
-         WHERE i.group_id = ? AND i.revoked_at IS NULL
-           AND (i.expires_at IS NULL OR i.expires_at > ?)
-           AND (i.max_uses IS NULL OR i.uses < i.max_uses)
-         ORDER BY i.created_at DESC",
-    )
-    .bind(group.group_id)
-    .bind(db::now())
-    .fetch_all(&state.db)
-    .await?;
-    Ok(Json(rows.into_iter().map(Invitation::from).collect()))
-}
-
-pub async fn create_invitation(
-    State(state): State<AppState>,
-    viewer: Viewer,
-    Path(slug): Path<String>,
-    Json(body): Json<CreateInvitation>,
-) -> ApiResult<(StatusCode, Json<CreatedInvitation>)> {
-    viewer.require_full()?;
-    let group = Membership::of(&state, &viewer, &slug).await?;
-    group.require_admin()?;
-    if body.max_uses == Some(0) || body.expires_in_days == Some(0) {
-        return Err(ApiError::invalid(
-            "An invitation is used at least once and lasts at least a day",
-        ));
-    }
-    let role = body.role.unwrap_or(Role::Member);
-    let token = secret::token("");
-    let now = db::now();
-    let expires_at = body
-        .expires_in_days
-        .map(|days| now + i64::from(days) * 24 * 60 * 60 * 1000);
-    let id = sqlx::query(
-        "INSERT INTO invitations (group_id, token_hash, role, created_by, created_at, expires_at, max_uses)
-         VALUES (?, ?, ?, ?, ?, ?, ?)",
-    )
-    .bind(group.group_id)
-    .bind(secret::token_hash(&token))
-    .bind(role.as_str())
-    .bind(viewer.id)
-    .bind(now)
-    .bind(expires_at)
-    .bind(body.max_uses.map(i64::from))
-    .execute(&state.db)
-    .await?
-    .last_insert_rowid();
-    let invitation = Invitation {
-        id,
-        role,
-        created_by: viewer.user(),
-        created_at: db::from_millis(now),
-        expires_at: expires_at.map(db::from_millis),
-        max_uses: body.max_uses,
-        uses: 0,
-    };
-    Ok((
-        StatusCode::CREATED,
-        Json(CreatedInvitation { invitation, token }),
-    ))
-}
-
-pub async fn revoke_invitation(
-    State(state): State<AppState>,
-    viewer: Viewer,
-    Path((slug, id)): Path<(String, i64)>,
-) -> ApiResult<StatusCode> {
-    viewer.require_full()?;
-    let group = Membership::of(&state, &viewer, &slug).await?;
-    group.require_admin()?;
-    let done = sqlx::query(
-        "UPDATE invitations SET revoked_at = ? WHERE id = ? AND group_id = ? AND revoked_at IS NULL",
-    )
-    .bind(db::now())
-    .bind(id)
-    .bind(group.group_id)
-    .execute(&state.db)
-    .await?;
-    if done.rows_affected() == 0 {
-        return Err(ApiError::not_found("Invitation"));
+    forge::sync_members_or_log(&state, group.group_id).await;
+    if user_id != viewer.id {
+        let notice = Notice::new(NotificationKind::Removed)
+            .group(group.group_id)
+            .by(viewer.id, None);
+        notifications::notify(&state, &[user_id], &notice).await?;
     }
     Ok(StatusCode::NO_CONTENT)
 }
 
-struct ValidInvitation {
-    id: i64,
-    group_id: i64,
-    group_slug: String,
-    group_name: String,
-    role: Role,
-}
-
-async fn valid_invitation(state: &AppState, token: &str) -> ApiResult<ValidInvitation> {
-    let row: Option<(i64, i64, String, String, String)> = sqlx::query_as(
-        "SELECT i.id, g.id, g.slug, g.name, i.role
-         FROM invitations i JOIN groups g ON g.id = i.group_id
-         WHERE i.token_hash = ? AND i.revoked_at IS NULL
-           AND (i.expires_at IS NULL OR i.expires_at > ?)
-           AND (i.max_uses IS NULL OR i.uses < i.max_uses)",
-    )
-    .bind(secret::token_hash(token))
-    .bind(db::now())
-    .fetch_optional(&state.db)
-    .await?;
-    let (id, group_id, group_slug, group_name, role) = row.ok_or_else(|| {
-        ApiError::new(
-            StatusCode::NOT_FOUND,
-            "invalid_invitation",
-            "This invitation is not valid: it may have expired, been used up or been revoked",
-        )
-    })?;
-    Ok(ValidInvitation {
-        id,
-        group_id,
-        group_slug,
-        group_name,
-        role: Role::parse(&role).unwrap_or(Role::Member),
-    })
-}
-
-pub async fn invitation_info(
+/// A group's admins may change either name, preserving its identity.
+pub async fn update(
     State(state): State<AppState>,
-    Path(token): Path<String>,
-) -> ApiResult<Json<InvitationInfo>> {
-    let invitation = valid_invitation(&state, &token).await?;
-    Ok(Json(InvitationInfo {
-        group_slug: invitation.group_slug,
-        group_name: invitation.group_name,
-        role: invitation.role,
-    }))
-}
-
-/// Joins the group of an invitation: as the person signed in, or as a new
-/// account, which is then signed in.
-pub async fn accept_invitation(
-    State(state): State<AppState>,
-    viewer: Option<Viewer>,
-    Path(token): Path<String>,
-    Json(body): Json<AcceptInvitation>,
-) -> ApiResult<impl IntoResponse> {
-    let invitation = valid_invitation(&state, &token).await?;
-    let (user_id, cookie) = match (body.account, viewer) {
-        (Some(account), _) => {
-            let id = super::account::create_user(&state, account, false).await?;
-            (id, auth::start_session(&state, id).await?)
+    viewer: Viewer,
+    Path(slug): Path<String>,
+    Json(body): Json<serde_json::Value>,
+) -> ApiResult<Json<Group>> {
+    viewer.require_full()?;
+    let _guard = state.group_changes.lock().await;
+    let _forge_guard = state.forge_sync.lock().await;
+    let group = Membership::of(&state, &viewer, &slug).await?;
+    group.require_admin()?;
+    let next = match body.get("slug") {
+        Some(value) => {
+            crate::names::available(
+                &state,
+                "group",
+                value.as_str().unwrap_or(""),
+                Some(group.group_id),
+            )
+            .await?
         }
-        (None, Some(viewer)) => {
-            viewer.require_full()?;
-            (viewer.id, HeaderMap::new())
-        }
-        (None, None) => return Err(ApiError::unauthenticated()),
+        None => group.slug.clone(),
     };
-
+    let name = required_text(
+        body.get("name")
+            .and_then(|v| v.as_str())
+            .unwrap_or(&group.name),
+        "The name",
+        80,
+    )?;
+    if let Some(forge) = state.forge.as_ref() {
+        forge
+            .edit_organization(&group.slug, &name)
+            .await
+            .map_err(forge::api_error)?;
+        if next != group.slug {
+            forge
+                .rename_organization(&group.slug, &next)
+                .await
+                .map_err(forge::api_error)?;
+        }
+    }
+    let mut workers = state.workers.lock().await;
     let mut tx = state.db.begin().await?;
-    let joined = sqlx::query(
-        "INSERT INTO memberships (group_id, user_id, role, joined_at) VALUES (?, ?, ?, ?)
-         ON CONFLICT DO NOTHING",
-    )
-    .bind(invitation.group_id)
-    .bind(user_id)
-    .bind(invitation.role.as_str())
-    .bind(db::now())
-    .execute(&mut *tx)
-    .await?
-    .rows_affected();
-    if joined > 0 {
-        sqlx::query("UPDATE invitations SET uses = uses + 1 WHERE id = ?")
-            .bind(invitation.id)
+    if next != group.slug {
+        sqlx::query("INSERT OR IGNORE INTO group_names (name, group_id) VALUES (?, ?)")
+            .bind(&group.slug)
+            .bind(group.group_id)
             .execute(&mut *tx)
             .await?;
     }
+    sqlx::query("UPDATE groups SET slug = ?, name = ? WHERE id = ?")
+        .bind(&next)
+        .bind(&name)
+        .bind(group.group_id)
+        .execute(&mut *tx)
+        .await?;
     tx.commit().await?;
-
-    let me = super::account::me_of(&state, user_id).await?;
-    Ok((cookie, Json(me)))
+    workers.rename_group(&group.slug, &next);
+    drop(workers);
+    state
+        .build_machines
+        .lock()
+        .await
+        .rename_group(&group.slug, &next);
+    if next != group.slug {
+        crate::text::names_changed(&state, crate::text::Changed::Group(group.group_id)).await?;
+    }
+    Ok(Json(Membership::of(&state, &viewer, &next).await?.group()))
 }

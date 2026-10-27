@@ -8,6 +8,8 @@ default:
 [group('development')]
 setup:
     pnpm --dir web install --frozen-lockfile
+    pnpm --dir desktop install --frozen-lockfile
+    pnpm --dir docs install --frozen-lockfile
 
 # Run the hub, with the web app as last built.
 [group('development')]
@@ -19,6 +21,11 @@ hub *args:
 web:
     pnpm --dir web dev
 
+# Serve the documentation at 127.0.0.1:5180, as it is edited.
+[group('development')]
+docs:
+    pnpm --dir docs dev
+
 # Format every file in the repository.
 [group('development')]
 format:
@@ -26,9 +33,9 @@ format:
 
 alias fmt := format
 
-# Run every check: formatting, lints, types, tests and the web build.
+# Run every check: formatting, lints, types, tests, and the web and documentation builds.
 [group('checks')]
-check: check-format lint test build-web
+check: check-format lint test build-web build-docs
 
 # Check that every file is formatted.
 [group('checks')]
@@ -39,31 +46,36 @@ check-format:
         nix fmt -- --ci
     else
         cargo fmt --all --check
+        cargo fmt --manifest-path desktop/src-tauri/Cargo.toml --all --check
         pnpm --dir web format:check
+        pnpm --dir desktop format:check
     fi
 
 # Lint the Rust crates and the web app, and check the web app's types.
 [group('checks')]
 lint:
     cargo clippy --all-targets -- --deny warnings
+    cargo clippy --manifest-path desktop/src-tauri/Cargo.toml --all-targets -- --deny warnings
     pnpm --dir web lint
     pnpm --dir web check
+    pnpm --dir desktop lint
 
 # Run the Rust and web tests.
 [group('checks')]
 test:
     cargo test
+    cargo test --manifest-path desktop/src-tauri/Cargo.toml
     pnpm --dir web test
-
-# Build and inspect the test library with Lean, which must be installed.
-[group('checks')]
-test-lean:
-    STEMMA_TEST_LEAN=1 cargo test -p stemma-worker --test end_to_end lean
 
 # Build the web app into web/build.
 [group('build')]
 build-web:
     pnpm --dir web build
+
+# Build the documentation into docs/.vitepress/dist.
+[group('build')]
+build-docs:
+    pnpm --dir docs build
 
 # Build the release binary, with the web app embedded.
 [group('build')]

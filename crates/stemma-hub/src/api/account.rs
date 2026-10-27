@@ -6,8 +6,8 @@ use axum::extract::{Path, State};
 use axum::http::{HeaderMap, StatusCode};
 use axum::response::IntoResponse;
 use stemma_core::api::{
-    ApiToken, ChangePassword, CreateToken, CreatedToken, Health, Me, NewAccount, Setup, SetupState,
-    SignIn, UpdateMe,
+    ApiToken, ChangePassword, CreateAgentToken, CreateToken, CreatedToken, Health, Me, NewAccount,
+    Setup, SetupState, SignIn, UpdateMe,
 };
 
 use super::{Json, required_text};
@@ -56,23 +56,20 @@ pub async fn setup(
 
 /// Validates a new account and creates it.
 pub async fn create_user(state: &AppState, account: NewAccount, hub_admin: bool) -> ApiResult<i64> {
-    let username = account.username.trim().to_lowercase();
-    if !valid_username(&username) {
-        return Err(ApiError::invalid(
-            "A username is 1 to 32 lowercase letters, digits, '.', '_' or '-', starting with a letter or digit",
-        ));
-    }
+    let _guard = state.group_changes.lock().await;
+    let username = crate::names::available(state, "user", &account.username, None).await?;
     let display_name = required_text(&account.display_name, "The name", 80)?;
     check_password(&account.password)?;
     let hash = auth::hash_password(account.password).await?;
     let result = sqlx::query(
-        "INSERT INTO users (username, display_name, password_hash, hub_admin, created_at)
-         VALUES (?, ?, ?, ?, ?)",
+        "INSERT INTO users (username, display_name, password_hash, hub_admin, subject, created_at)
+         VALUES (?, ?, ?, ?, ?, ?)",
     )
     .bind(&username)
     .bind(&display_name)
     .bind(hash)
     .bind(hub_admin)
+    .bind(secret::token(""))
     .bind(db::now())
     .execute(&state.db)
     .await;
@@ -85,13 +82,17 @@ pub async fn create_user(state: &AppState, account: NewAccount, hub_admin: bool)
     }
 }
 
+/// Whether `name` can be a username: also a valid account name in the
+/// forge.
 pub fn valid_username(name: &str) -> bool {
-    let mut bytes = name.bytes();
-    name.len() <= 32
-        && bytes
-            .next()
-            .is_some_and(|b| b.is_ascii_lowercase() || b.is_ascii_digit())
-        && bytes.all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b"._-".contains(&b))
+    let plain = |b: u8| b.is_ascii_lowercase() || b.is_ascii_digit();
+    let bytes = name.as_bytes();
+    !bytes.is_empty()
+        && bytes.len() <= 32
+        && bytes.first().copied().is_some_and(plain)
+        && bytes.last().copied().is_some_and(plain)
+        && bytes.iter().all(|&b| plain(b) || b"._-".contains(&b))
+        && bytes.windows(2).all(|w| plain(w[0]) || plain(w[1]))
 }
 
 fn check_password(password: &str) -> ApiResult<()> {
@@ -109,11 +110,12 @@ pub async fn sign_in(
     State(state): State<AppState>,
     Json(body): Json<SignIn>,
 ) -> ApiResult<impl IntoResponse> {
-    let row: Option<(i64, String)> =
-        sqlx::query_as("SELECT id, password_hash FROM users WHERE username = ?")
-            .bind(body.username.trim().to_lowercase())
-            .fetch_optional(&state.db)
-            .await?;
+    let row: Option<(i64, String)> = sqlx::query_as(
+        "SELECT id, password_hash FROM users WHERE username = ? AND deleted_at IS NULL",
+    )
+    .bind(body.username.trim().to_lowercase())
+    .fetch_optional(&state.db)
+    .await?;
     // Without the account, check a password all the same, so that the time
     // taken does not tell which usernames exist.
     let (user_id, hash) = match row {
@@ -125,7 +127,7 @@ pub async fn sign_in(
         return Err(ApiError::new(
             StatusCode::UNAUTHORIZED,
             "wrong_credentials",
-            "Wrong username or password",
+            "That username and password don't match.",
         ));
     };
     let cookie = auth::start_session(&state, user_id).await?;
@@ -143,7 +145,7 @@ pub async fn sign_out(
 /// The person signed in. A job's token sees only its job's group.
 pub async fn me(State(state): State<AppState>, viewer: Viewer) -> ApiResult<Json<Me>> {
     let mut me = me_of(&state, viewer.id).await?;
-    if let Some(job) = viewer.job() {
+    if let Some(job) = viewer.agent() {
         let slug: String = sqlx::query_scalar("SELECT slug FROM groups WHERE id = ?")
             .bind(job.group_id)
             .fetch_one(&state.db)
@@ -168,6 +170,7 @@ pub async fn me_of(state: &AppState, user_id: i64) -> ApiResult<Me> {
         },
         hub_admin,
         groups: super::groups::groups_of(state, user_id).await?,
+        unread: crate::notifications::unread(state, user_id).await?,
     })
 }
 
@@ -177,12 +180,63 @@ pub async fn update_me(
     Json(body): Json<UpdateMe>,
 ) -> ApiResult<Json<Me>> {
     viewer.require_full()?;
+    let _guard = state.group_changes.lock().await;
+    let _forge_guard = state.forge_sync.lock().await;
+    let current_username: String =
+        sqlx::query_scalar("SELECT username FROM users WHERE id = ? AND deleted_at IS NULL")
+            .bind(viewer.id)
+            .fetch_optional(&state.db)
+            .await?
+            .ok_or_else(ApiError::unauthenticated)?;
+    let username = match body.username {
+        Some(value) => crate::names::available(&state, "user", &value, Some(viewer.id)).await?,
+        None => current_username.clone(),
+    };
     let display_name = required_text(&body.display_name, "The name", 80)?;
-    sqlx::query("UPDATE users SET display_name = ? WHERE id = ?")
+    let mut old_login = None;
+    if username != current_username
+        && let Some(forge) = state.forge.as_ref()
+    {
+        let (known, subject): (Option<String>, String) =
+            sqlx::query_as("SELECT forge_login, subject FROM users WHERE id = ?")
+                .bind(viewer.id)
+                .fetch_one(&state.db)
+                .await?;
+        let login = match known {
+            Some(login) => Some(login),
+            None => forge
+                .linked_user(&subject)
+                .await
+                .map_err(crate::forge::api_error)?
+                .map(|u| u.login),
+        };
+        if let Some(login) = login {
+            forge
+                .rename_user(&login, &username)
+                .await
+                .map_err(crate::forge::api_error)?;
+            old_login = Some(login);
+        }
+    }
+    let mut tx = state.db.begin().await?;
+    if username != current_username {
+        sqlx::query("INSERT OR IGNORE INTO user_names (name, user_id) VALUES (?, ?)")
+            .bind(&current_username)
+            .bind(viewer.id)
+            .execute(&mut *tx)
+            .await?;
+    }
+    sqlx::query("UPDATE users SET username = ?, display_name = ?, forge_login = COALESCE(?, forge_login) WHERE id = ?")
+        .bind(&username)
         .bind(display_name)
+        .bind(old_login.as_ref().map(|_| &username))
         .bind(viewer.id)
-        .execute(&state.db)
+        .execute(&mut *tx)
         .await?;
+    tx.commit().await?;
+    if username != current_username {
+        crate::text::names_changed(&state, crate::text::Changed::User(viewer.id)).await?;
+    }
     Ok(Json(me_of(&state, viewer.id).await?))
 }
 
@@ -228,6 +282,7 @@ struct TokenRow {
     prefix: String,
     created_at: i64,
     last_used_at: Option<i64>,
+    expires_at: Option<i64>,
 }
 
 impl From<TokenRow> for ApiToken {
@@ -238,6 +293,9 @@ impl From<TokenRow> for ApiToken {
             prefix: row.prefix,
             created_at: db::from_millis(row.created_at),
             last_used_at: row.last_used_at.map(db::from_millis),
+            expires_at: row.expires_at.map(db::from_millis),
+            connected: false,
+            runners: Vec::new(),
         }
     }
 }
@@ -248,14 +306,26 @@ pub async fn list_tokens(
 ) -> ApiResult<Json<Vec<ApiToken>>> {
     viewer.require_full()?;
     let rows: Vec<TokenRow> = sqlx::query_as(
-        "SELECT id, name, prefix, created_at, last_used_at FROM api_tokens
+        "SELECT id, name, prefix, created_at, last_used_at, expires_at FROM api_tokens
          WHERE user_id = ? AND kind = 'personal' AND revoked_at IS NULL
+           AND (expires_at IS NULL OR expires_at > ?)
          ORDER BY created_at DESC",
     )
     .bind(viewer.id)
+    .bind(db::now())
     .fetch_all(&state.db)
     .await?;
-    Ok(Json(rows.into_iter().map(ApiToken::from).collect()))
+    let workers = state.workers.lock().await;
+    Ok(Json(
+        rows.into_iter()
+            .map(|row| {
+                let mut token = ApiToken::from(row);
+                token.connected = workers.is_online(token.id);
+                token.runners = workers.runners(token.id);
+                token
+            })
+            .collect(),
+    ))
 }
 
 pub async fn create_token(
@@ -264,19 +334,31 @@ pub async fn create_token(
     Json(body): Json<CreateToken>,
 ) -> ApiResult<(StatusCode, Json<CreatedToken>)> {
     viewer.require_full()?;
+    if viewer.with_token && !viewer.personal_token {
+        return Err(ApiError::forbidden(
+            "Only a device's token or a browser session makes tokens",
+        ));
+    }
     let name = required_text(&body.name, "The name", 80)?;
     let secret = secret::token(API_TOKEN_PREFIX);
     let prefix: String = secret.chars().take(API_TOKEN_PREFIX.len() + 6).collect();
     let now = db::now();
+    let expires_at = match body.expires_in_minutes {
+        Some(0) => return Err(ApiError::invalid("A token lasts at least a minute")),
+        Some(minutes) => Some(now + i64::from(minutes) * 60_000),
+        None => None,
+    };
     let id = sqlx::query(
-        "INSERT INTO api_tokens (user_id, name, token_hash, prefix, created_at)
-         VALUES (?, ?, ?, ?, ?)",
+        "INSERT INTO api_tokens (user_id, name, token_hash, prefix, created_at, expires_at, kind)
+         VALUES (?, ?, ?, ?, ?, ?, ?)",
     )
     .bind(viewer.id)
     .bind(&name)
     .bind(secret::token_hash(&secret))
     .bind(&prefix)
     .bind(now)
+    .bind(expires_at)
+    .bind("personal")
     .execute(&state.db)
     .await?
     .last_insert_rowid();
@@ -286,6 +368,50 @@ pub async fn create_token(
         prefix,
         created_at: db::from_millis(now),
         last_used_at: None,
+        expires_at: expires_at.map(db::from_millis),
+        connected: false,
+        runners: Vec::new(),
+    };
+    Ok((StatusCode::CREATED, Json(CreatedToken { token, secret })))
+}
+
+/// Makes a token for a session with one of the viewer's agents, in one
+/// of their groups (see [`auth::create_agent_token`]).
+pub async fn create_agent_token(
+    State(state): State<AppState>,
+    viewer: Viewer,
+    Json(body): Json<CreateAgentToken>,
+) -> ApiResult<(StatusCode, Json<CreatedToken>)> {
+    viewer.require_full()?;
+    if viewer.with_token && !viewer.personal_token {
+        return Err(ApiError::forbidden(
+            "Only a device's token or a browser session makes tokens",
+        ));
+    }
+    let group = super::Membership::of(&state, &viewer, &body.group).await?;
+    let profile = stemma_core::api::AgentProfile::default_of_runner(&body.runner)
+        .ok_or_else(|| ApiError::invalid(format!("There is no runner {}", body.runner)))?;
+    let host = required_text(&body.host, "The computer's name", 80)?;
+    let name = format!("{}, a session on {host}", profile.display_name);
+    let (id, secret, expires_at) = auth::create_agent_token(
+        &state.db,
+        viewer.id,
+        group.group_id,
+        &profile.display_name,
+        &name,
+        body.attachments,
+    )
+    .await?;
+    let prefix: String = secret.chars().take(API_TOKEN_PREFIX.len() + 6).collect();
+    let token = ApiToken {
+        id,
+        name,
+        prefix,
+        created_at: db::from_millis(db::now()),
+        last_used_at: None,
+        expires_at: Some(db::from_millis(expires_at)),
+        connected: false,
+        runners: Vec::new(),
     };
     Ok((StatusCode::CREATED, Json(CreatedToken { token, secret })))
 }
@@ -298,7 +424,7 @@ pub async fn revoke_token(
     viewer.require_full()?;
     let done = sqlx::query(
         "UPDATE api_tokens SET revoked_at = ?
-         WHERE id = ? AND user_id = ? AND kind = 'personal' AND revoked_at IS NULL",
+         WHERE id = ? AND user_id = ? AND kind IN ('personal', 'agent') AND revoked_at IS NULL",
     )
     .bind(db::now())
     .bind(id)
@@ -308,7 +434,27 @@ pub async fn revoke_token(
     if done.rows_affected() == 0 {
         return Err(ApiError::not_found("Token"));
     }
+    crate::jobs::disconnect(&state, id).await?;
     Ok(StatusCode::NO_CONTENT)
+}
+
+/// The current personal token, without its secret.
+pub async fn token_identity(
+    State(state): State<AppState>,
+    headers: axum::http::HeaderMap,
+    viewer: Viewer,
+) -> ApiResult<Json<ApiToken>> {
+    if !viewer.personal_token {
+        return Err(ApiError::forbidden("A personal token is required"));
+    }
+    let secret = crate::auth::bearer_token(&headers).ok_or_else(ApiError::unauthenticated)?;
+    let row: TokenRow = sqlx::query_as("SELECT id, name, prefix, created_at, last_used_at, expires_at FROM api_tokens WHERE token_hash = ? AND kind = 'personal' AND revoked_at IS NULL")
+        .bind(crate::secret::token_hash(secret)).fetch_one(&state.db).await?;
+    let mut token = ApiToken::from(row);
+    let computers = state.workers.lock().await;
+    token.connected = computers.is_online(token.id);
+    token.runners = computers.runners(token.id);
+    Ok(Json(token))
 }
 
 #[cfg(test)]
@@ -325,6 +471,9 @@ mod tests {
             "Ada",
             "-ada",
             ".a",
+            "ada.",
+            "ada__lovelace",
+            "ada.-lovelace",
             "ada lovelace",
             "ñ",
             &"a".repeat(33),

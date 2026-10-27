@@ -1,1196 +1,1719 @@
-//! The workshop: what works on the library in the background.
-//!
-//! A task is handed over in conversation: an agent answering in a thread
-//! calls `create_task` when someone asks it to ("formalize this tonight"),
-//! or a message mentions the workshop's agent (`@workshop formalize the
-//! lemma in t12#48`). Each task is a job, `task_run`, for a group worker
-//! that offers the workshop, with Lean and the workshop agent's runner; or,
-//! during the group's night window, for a member's worker its owner lends
-//! to the workshop. A group's tasks run one at a time, and a task asked for
-//! the night waits for the night window.
-//!
-//! The worker pushes what it did to `main` with the job's token, and tells
-//! how it went: the build and inspection of what it pushed become the
-//! library's state, one message in the thread the task came from reports
-//! on it, and the editor is asked to update the papers that reference what
-//! changed, or that the thread is about.
-//!
-//! At night the editor also brings up to date the papers whose threads said
-//! something new since their last revision (see [`update_papers`]).
-
-use std::collections::{HashMap, HashSet};
-
-use sqlx::FromRow;
-use stemma_core::Address;
-use stemma_core::api::{
-    AgentProfile, AgentRole, AgentScope, Event, JobKind, Task, TaskPage, TaskSchedule, TaskState,
-    User, WorkshopSettings,
+//! The board and process queue. The hub offers work; only machines approve it.
+use crate::{
+    api::{Json, Membership, forum, required_text},
+    auth::Viewer,
+    db,
+    error::{ApiError, ApiResult},
+    forge, lease,
+    notifications::{self, Notice},
+    recipes,
+    state::AppState,
 };
-use stemma_core::protocol::{Conversation, PaperSpec, TaskEnd, TaskOutcome, TaskRun};
+use axum::extract::{Path, Query, State};
+use serde::Deserialize;
+use stemma_core::{
+    api::{NotificationKind, Thread, ThreadKind, User},
+    protocol::*,
+    recipe::{InputKind, Repository},
+    workshop::*,
+};
 
-use crate::api::{Membership, forum, papers};
-use crate::db;
-use crate::error::{ApiError, ApiResult};
-use crate::jobs;
-use crate::library;
-use crate::state::AppState;
-
-/// The most of a run's log that is kept, in bytes: its end.
-const MAX_LOG: usize = 200_000;
-
-/// The most of a runner's report that goes into the thread, in characters.
-const MAX_REPORT_CHARS: usize = 20_000;
-
-/// How many papers a run is given with their text.
-const MAX_PAPERS: usize = 4;
-
-/// How many changed declarations a report names.
-const MAX_CHANGED: usize = 40;
-
-// ── The night ─────────────────────────────────────────────────────────
-
-/// A group's night window, as dispatching sees it.
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
-pub struct Night {
-    /// Whether it is night now.
-    pub now: bool,
-    /// The window, for what people read: `01:00–07:00 (Europe/Madrid)`.
-    pub window: String,
-    /// How long the window is, in minutes.
-    pub length: i64,
-    /// The members who lend their workers to the workshop at night.
-    pub lenders: HashSet<i64>,
-}
-
-/// Minutes after midnight, from `HH:MM`.
-pub fn parse_clock(text: &str) -> Option<i64> {
-    let (hours, minutes) = text.trim().split_once(':')?;
-    if hours.is_empty() || hours.len() > 2 || minutes.len() != 2 {
-        return None;
-    }
-    let (hours, minutes): (i64, i64) = (hours.parse().ok()?, minutes.parse().ok()?);
-    ((0..24).contains(&hours) && (0..60).contains(&minutes)).then_some(hours * 60 + minutes)
-}
-
-/// `HH:MM`, from minutes after midnight.
-pub fn clock(minutes: i64) -> String {
-    format!("{:02}:{:02}", minutes / 60 % 24, minutes % 60)
-}
-
-/// The time zone a group names, or UTC if it is unknown here.
-fn zone(name: &str) -> jiff::tz::TimeZone {
-    jiff::tz::TimeZone::get(name).unwrap_or(jiff::tz::TimeZone::UTC)
-}
-
-/// Whether `at` is in the window from `from` to `to`, minutes after
-/// midnight in the time zone `zone`; a window may span midnight, and one
-/// that starts where it ends is empty.
-pub fn is_night(at: jiff::Timestamp, zone_name: &str, from: i64, to: i64) -> bool {
-    let local = at.to_zoned(zone(zone_name));
-    let minute = i64::from(local.hour()) * 60 + i64::from(local.minute());
-    if from <= to {
-        from <= minute && minute < to
-    } else {
-        minute >= from || minute < to
-    }
-}
-
-/// Every group's night, now.
-pub async fn nights(state: &AppState) -> ApiResult<HashMap<i64, Night>> {
-    let groups: Vec<(i64, i64, i64, String)> =
-        sqlx::query_as("SELECT id, night_from, night_to, time_zone FROM groups")
-            .fetch_all(&state.db)
-            .await?;
-    let lenders: Vec<(i64, i64)> =
-        sqlx::query_as("SELECT group_id, user_id FROM memberships WHERE lends_worker = 1")
-            .fetch_all(&state.db)
-            .await?;
-    let now = jiff::Timestamp::now();
-    let mut nights: HashMap<i64, Night> = groups
-        .into_iter()
-        .map(|(id, from, to, time_zone)| {
-            let night = Night {
-                now: is_night(now, &time_zone, from, to),
-                window: format!("{}–{} ({time_zone})", clock(from), clock(to)),
-                length: (to - from).rem_euclid(24 * 60),
-                lenders: HashSet::new(),
-            };
-            (id, night)
-        })
-        .collect();
-    for (group_id, user_id) in lenders {
-        if let Some(night) = nights.get_mut(&group_id) {
-            night.lenders.insert(user_id);
-        }
-    }
-    Ok(nights)
-}
-
-/// Hands waiting tasks to workers when a night begins or ends somewhere,
-/// and updates the papers once a night: run every minute or so.
-pub async fn tick(state: &AppState) -> ApiResult<()> {
-    let now = nights(state).await?;
-    let asked = update_papers(state, &now).await?;
-    let changed = {
-        let workers = state.workers.lock().await;
-        workers.nights.iter().any(|(id, night)| {
-            now.get(id)
-                .is_some_and(|n| n.now != night.now || n.lenders != night.lenders)
-        }) || now.keys().any(|id| !workers.nights.contains_key(id))
-    };
-    if asked || changed {
-        jobs::dispatch(state).await?;
-    }
-    Ok(())
-}
-
-/// Once a night, in each group's night window, asks the editor to update
-/// the papers whose threads said something new since their last revision.
-/// An editor of the group's runs on the group's workers, for whoever said
-/// it; a personal one, only for a member who lends their worker at night.
-/// Returns whether it asked for any update.
-pub async fn update_papers(state: &AppState, nights: &HashMap<i64, Night>) -> ApiResult<bool> {
-    let now = db::now();
-    let mut asked = false;
-    for (&group_id, night) in nights {
-        if !night.now {
-            continue;
-        }
-        let Some(editor) = editor(state, group_id).await? else {
-            continue;
-        };
-        let mut lenders: Vec<i64> = night.lenders.iter().copied().collect();
-        lenders.sort_unstable();
-        // Wait for someone to lend their worker, if the editor needs one.
-        if editor.scope == AgentScope::Personal && lenders.is_empty() {
-            continue;
-        }
-        // Not again within a window's length of the last time: once a night.
-        let tonight: Option<i64> = sqlx::query_scalar(
-            "UPDATE groups SET papers_updated_at = ?1
-             WHERE id = ?2 AND (papers_updated_at IS NULL OR papers_updated_at < ?1 - ?3)
-             RETURNING id",
-        )
-        .bind(now)
-        .bind(group_id)
-        .bind(night.length * 60 * 1000)
-        .fetch_optional(&state.db)
-        .await?;
-        if tonight.is_some() {
-            asked |= update_group_papers(state, group_id, &editor, &lenders).await?;
-        }
-    }
-    Ok(asked)
-}
-
-async fn update_group_papers(
-    state: &AppState,
-    group_id: i64,
-    editor: &AgentProfile,
-    lenders: &[i64],
-) -> ApiResult<bool> {
-    // The papers, but not those an editor is updating already.
-    let papers: Vec<(String, i64)> = sqlx::query_as(
-        "SELECT p.slug, p.updated_at FROM papers p
-         WHERE p.group_id = ?1
-           AND NOT EXISTS (SELECT 1 FROM jobs j
-                           WHERE j.group_id = ?1 AND j.kind = 'paper_update'
-                             AND j.paper_slug = p.slug AND j.state IN ('queued', 'running'))
-         ORDER BY p.updated_at",
-    )
-    .bind(group_id)
-    .fetch_all(&state.db)
-    .await?;
-    let mut asked = false;
-    for (slug, updated_at) in papers {
-        // The thread about it where someone said something new last.
-        let mut said = None;
-        for (thread_id, _) in papers::threads_about(state, group_id, &slug).await? {
-            let author: Option<i64> = sqlx::query_scalar(
-                "SELECT author_id FROM messages
-                 WHERE thread_id = ? AND agent IS NULL AND deleted_at IS NULL AND created_at > ?
-                 ORDER BY number DESC LIMIT 1",
-            )
-            .bind(thread_id)
-            .bind(updated_at)
-            .fetch_optional(&state.db)
-            .await?;
-            if let Some(author) = author {
-                said = Some((thread_id, author));
-                break;
-            }
-        }
-        let Some((thread_id, author)) = said else {
-            continue;
-        };
-        let requester = match editor.scope {
-            AgentScope::Personal if !lenders.contains(&author) => lenders[0],
-            _ => author,
-        };
-        let last: i64 = sqlx::query_scalar("SELECT last_message FROM threads WHERE id = ?")
-            .bind(thread_id)
-            .fetch_one(&state.db)
-            .await?;
-        jobs::queue_agent_job(
-            state,
-            group_id,
-            thread_id,
-            last as u32,
-            requester,
-            editor,
-            JobKind::PaperUpdate,
-            Some(&slug),
-            true,
-        )
-        .await?;
-        asked = true;
-    }
-    Ok(asked)
-}
-
-// ── Tasks ─────────────────────────────────────────────────────────────
-
-#[derive(FromRow)]
-struct TaskRow {
-    id: i64,
-    group_id: i64,
-    number: i64,
-    title: String,
-    instructions: String,
+#[derive(sqlx::FromRow)]
+pub(crate) struct Row {
     thread_id: i64,
-    thread_number: i64,
-    origin_message: i64,
-    user_id: i64,
-    username: String,
-    display_name: String,
-    agent: Option<String>,
+    recipe: String,
+    ask: String,
     state: String,
-    schedule: String,
-    job_id: Option<i64>,
-    runner: Option<String>,
-    model: Option<String>,
-    reason: Option<String>,
-    commits: String,
-    report_message: Option<i64>,
-    created_at: i64,
-    updated_at: i64,
-    started_at: Option<i64>,
-    finished_at: Option<i64>,
-    job_progress: Option<String>,
+    recurring: bool,
+    paused: bool,
+    next_at: Option<i64>,
 }
-
-macro_rules! task_query {
-    () => {
-        "SELECT k.id, k.group_id, k.number, k.title, k.instructions, k.thread_id,
-                t.number AS thread_number, k.origin_message, u.id AS user_id, u.username,
-                u.display_name, k.agent, k.state, k.schedule, k.job_id, k.runner, k.model,
-                k.reason, k.commits, k.report_message, k.created_at, k.updated_at,
-                k.started_at, k.finished_at, j.progress AS job_progress
-         FROM tasks k JOIN threads t ON t.id = k.thread_id
-              JOIN users u ON u.id = k.requester_id
-              LEFT JOIN jobs j ON j.id = k.job_id"
-    };
+const ROW: &str = "SELECT r.thread_id, r.recipe, r.ask, r.state, r.recurring, r.paused, r.next_at
+                   FROM workshop_requests r";
+fn decode<T: serde::de::DeserializeOwned>(s: &str) -> ApiResult<T> {
+    serde_json::from_str(s).map_err(ApiError::internal)
 }
-
-impl TaskRow {
-    fn state(&self) -> TaskState {
-        TaskState::parse(&self.state).unwrap_or(TaskState::Failed)
-    }
-
-    fn origin(&self) -> Address {
-        Address::Message {
-            thread: self.thread_number as u32,
-            message: self.origin_message as u32,
-        }
-    }
-
-    /// The task as people see it; `note` says why it waits, if it does.
-    fn to_api(&self, note: Option<String>) -> Task {
-        let state = self.state();
-        Task {
-            number: self.number as u32,
-            title: self.title.clone(),
-            instructions: self.instructions.clone(),
-            origin: self.origin(),
-            requester: User {
-                id: self.user_id,
-                username: self.username.clone(),
-                display_name: self.display_name.clone(),
-            },
-            agent: self.agent.clone(),
-            state,
-            schedule: TaskSchedule::parse(&self.schedule).unwrap_or_default(),
-            runner: self.runner.clone(),
-            model: self.model.clone(),
-            progress: match state {
-                TaskState::Running => self.job_progress.clone(),
-                TaskState::Open => note,
-                _ => None,
-            },
-            reason: self.reason.clone(),
-            commits: serde_json::from_str(&self.commits).unwrap_or_default(),
-            report_message: self.report_message.map(|message| Address::Message {
-                thread: self.thread_number as u32,
-                message: message as u32,
-            }),
-            created_at: db::from_millis(self.created_at),
-            updated_at: db::from_millis(self.updated_at),
-            started_at: self.started_at.map(db::from_millis),
-            finished_at: self.finished_at.map(db::from_millis),
-        }
-    }
-
-    async fn to_api_noted(&self, state: &AppState) -> ApiResult<Task> {
-        let note = match (self.state(), self.job_id) {
-            (TaskState::Open, Some(job)) => jobs::note_of(state, job).await?,
-            _ => None,
-        };
-        Ok(self.to_api(note))
-    }
+fn encode<T: serde::Serialize>(v: &T) -> ApiResult<String> {
+    serde_json::to_string(v).map_err(ApiError::internal)
 }
-
-async fn find(state: &AppState, group_id: i64, number: u32) -> ApiResult<TaskRow> {
-    sqlx::query_as(concat!(
-        task_query!(),
-        " WHERE k.group_id = ? AND k.number = ?"
-    ))
-    .bind(group_id)
+pub(crate) async fn user(state: &AppState, id: i64) -> ApiResult<User> {
+    let (username, display_name): (String, String) = sqlx::query_as(
+        "SELECT username, display_name
+         FROM users
+         WHERE id = ?",
+    )
+    .bind(id)
+    .fetch_one(&state.db)
+    .await?;
+    Ok(User {
+        id,
+        username,
+        display_name,
+    })
+}
+async fn find(state: &AppState, group: i64, number: u32) -> ApiResult<Row> {
+    sqlx::query_as(sqlx::AssertSqlSafe(format!(
+        "{ROW}
+         JOIN threads t ON t.id = r.thread_id
+         WHERE t.group_id = ? AND t.number = ?"
+    )))
+    .bind(group)
     .bind(number)
     .fetch_optional(&state.db)
     .await?
-    .ok_or_else(|| ApiError::not_found("Task"))
+    .ok_or_else(|| ApiError::not_found("Request"))
 }
-
-async fn of_job(state: &AppState, job_id: i64) -> ApiResult<Option<TaskRow>> {
-    Ok(
-        sqlx::query_as(concat!(task_query!(), " WHERE k.job_id = ?"))
-            .bind(job_id)
-            .fetch_optional(&state.db)
-            .await?,
-    )
+#[derive(Deserialize)]
+pub struct Filter {
+    state: Option<String>,
 }
-
-/// Tells the task's group how the task of a job is, if the job runs one;
-/// `note` is why the job waits, as the job's own news says.
-pub async fn publish_of_job(state: &AppState, job_id: i64, note: Option<String>) -> ApiResult<()> {
-    if let Some(row) = of_job(state, job_id).await? {
-        state.publish(
-            row.group_id,
-            Event::TaskUpdated {
-                task: row.to_api(note),
-            },
-        );
-    }
-    Ok(())
+pub async fn list_recipes(
+    State(state): State<AppState>,
+    viewer: Viewer,
+    Path(slug): Path<String>,
+) -> ApiResult<Json<Vec<RecipeFile>>> {
+    let group = Membership::of(&state, &viewer, &slug).await?;
+    Ok(Json(recipes::list(&state, &group.slug).await?))
 }
-
-/// Tells the task's group how it is. It does not say why an open task
-/// waits: the news of its job, which follows, does. Callers may hold the
-/// workers' lock.
-async fn publish(state: &AppState, task_id: i64) -> ApiResult<()> {
-    let row: Option<TaskRow> = sqlx::query_as(concat!(task_query!(), " WHERE k.id = ?"))
-        .bind(task_id)
-        .fetch_optional(&state.db)
-        .await?;
-    if let Some(row) = row {
-        let task = row.to_api(None);
-        state.publish(row.group_id, Event::TaskUpdated { task });
-    }
-    Ok(())
+pub async fn read_recipe(
+    State(state): State<AppState>,
+    viewer: Viewer,
+    Path((slug, name)): Path<(String, String)>,
+) -> ApiResult<Json<RecipeFile>> {
+    let group = Membership::of(&state, &viewer, &slug).await?;
+    Ok(Json(recipes::read(&state, &group.slug, &name).await?))
 }
-
-/// Looks at where the library's `main` is, soon: a run may have pushed.
-/// It is not done here, for callers may hold the workers' lock, which
-/// queueing a build takes.
-fn refresh_soon(state: &AppState, group_id: i64, requester_id: i64) {
-    let state = state.clone();
-    tokio::spawn(async move {
-        if let Err(error) = library::settle(&state, group_id, requester_id).await {
-            tracing::error!(
-                group_id,
-                error = error.message,
-                "could not look at the library"
-            );
-        }
-    });
-}
-
-/// The group's tasks, newest first; only those in `only`, if given.
 pub async fn list(
-    state: &AppState,
-    group_id: i64,
-    only: Option<TaskState>,
-    limit: u32,
-) -> ApiResult<Vec<Task>> {
-    let rows: Vec<TaskRow> = sqlx::query_as(concat!(
-        task_query!(),
-        " WHERE k.group_id = ?1 AND (?2 IS NULL OR k.state = ?2) ORDER BY k.number DESC LIMIT ?3"
-    ))
-    .bind(group_id)
-    .bind(only.map(TaskState::as_str))
-    .bind(limit)
+    State(state): State<AppState>,
+    viewer: Viewer,
+    Path(slug): Path<String>,
+    Query(filter): Query<Filter>,
+) -> ApiResult<Json<Vec<Request>>> {
+    let group = Membership::of(&state, &viewer, &slug).await?;
+    let rows: Vec<Row> = sqlx::query_as(sqlx::AssertSqlSafe(format!(
+        "{ROW}
+         JOIN threads t ON t.id = r.thread_id
+         WHERE t.group_id = ?
+         ORDER BY t.number DESC LIMIT 200"
+    )))
+    .bind(group.group_id)
     .fetch_all(&state.db)
     .await?;
-    let mut tasks = Vec::with_capacity(rows.len());
+    let mut out = Vec::new();
     for row in rows {
-        tasks.push(row.to_api_noted(state).await?);
+        let matches = match filter.state.as_deref() {
+            None | Some("open") => ["waiting", "running"].contains(&row.state.as_str()),
+            Some("scheduled") => !row.recurring && row.next_at.is_some(),
+            Some("recurring") => {
+                row.recurring && ["waiting", "running"].contains(&row.state.as_str())
+            }
+            Some("finished") => !["waiting", "running"].contains(&row.state.as_str()),
+            Some(_) => return Err(ApiError::invalid("Unknown board filter")),
+        };
+        if matches {
+            out.push(to_api(&state, row).await?);
+        }
     }
-    Ok(tasks)
+    Ok(Json(out))
 }
-
-/// A task, with its report and its log.
-pub async fn page(state: &AppState, group_id: i64, number: u32) -> ApiResult<TaskPage> {
-    let row = find(state, group_id, number).await?;
-    let (report, log): (Option<String>, Option<String>) =
-        sqlx::query_as("SELECT report, log FROM tasks WHERE id = ?")
-            .bind(row.id)
-            .fetch_one(&state.db)
-            .await?;
-    Ok(TaskPage {
-        task: row.to_api_noted(state).await?,
-        report,
-        log: log.unwrap_or_default(),
+pub async fn read(
+    State(state): State<AppState>,
+    viewer: Viewer,
+    Path((slug, number)): Path<(String, u32)>,
+) -> ApiResult<Json<Request>> {
+    let group = Membership::of(&state, &viewer, &slug).await?;
+    Ok(Json(
+        to_api(&state, find(&state, group.group_id, number).await?).await?,
+    ))
+}
+pub(crate) async fn to_api(state: &AppState, mut row: Row) -> ApiResult<Request> {
+    let thread: Thread = forum::find_thread_by_id(state, row.thread_id).await?.into();
+    let ask: Ask = decode(&row.ask)?;
+    let mut processes = Vec::new();
+    #[derive(sqlx::FromRow)]
+    struct P {
+        recipe: Option<String>,
+        ask: Option<String>,
+        id: i64,
+        retry_of: Option<i64>,
+        slot: i64,
+        state: String,
+        machine: Option<String>,
+        owner_id: Option<i64>,
+        started_at: Option<i64>,
+        finished_at: Option<i64>,
+        branches: String,
+        usage: String,
+        error: Option<String>,
+    }
+    let rows: Vec<P> = sqlx::query_as(
+        "SELECT p.recipe, p.ask, p.id, p.retry_of, p.slot, w.state, w.machine, p.owner_id, p.started_at,
+         p.finished_at, p.branches, p.usage, w.error
+         FROM workshop_processes p
+         JOIN work_leases w ON w.id = p.work_id
+         WHERE p.thread_id = ?
+         ORDER BY p.id DESC",
+    )
+    .bind(row.thread_id)
+    .fetch_all(&state.db)
+    .await?;
+    for p in rows {
+        let process_ask: Ask = decode(p.ask.as_deref().unwrap_or(&row.ask))?;
+        processes.push(Process {
+            recipe: decode(p.recipe.as_deref().unwrap_or(&row.recipe))?,
+            inputs: process_ask.inputs,
+            runner: process_ask.runner,
+            model: process_ask.model,
+            number: p.id,
+            retry_of: p.retry_of,
+            slot: p.slot,
+            state: if p.state == "failed"
+                && p.error
+                    .as_ref()
+                    .is_some_and(|e| e.contains("expired while waiting"))
+            {
+                "expired".into()
+            } else if p.state == "passed" {
+                "done".into()
+            } else if p.state == "queued" {
+                "waiting".into()
+            } else {
+                p.state
+            },
+            machine: p.machine,
+            owner: match p.owner_id {
+                Some(id) => Some(user(state, id).await?),
+                None => None,
+            },
+            started_at: p.started_at,
+            finished_at: p.finished_at,
+            branches: decode(&p.branches)?,
+            usage: decode(&p.usage)?,
+            error: p.error,
+        });
+    }
+    if row.state == "running"
+        && !processes.iter().any(|p| p.state == "running")
+        && (row.next_at.is_some() || processes.iter().any(|p| p.state == "waiting"))
+    {
+        row.state = "waiting".into();
+    }
+    let pending: Vec<String> = sqlx::query_scalar(
+        "SELECT DISTINCT u.display_name
+         FROM workshop_offers o
+         JOIN api_tokens t ON t.id = o.machine_id
+         JOIN users u ON u.id = t.user_id
+         JOIN workshop_processes p ON p.id = o.process_id
+         JOIN work_leases w ON w.id = p.work_id
+         WHERE p.thread_id = ? AND o.decision = 'pending' AND w.state = 'queued'",
+    )
+    .bind(row.thread_id)
+    .fetch_all(&state.db)
+    .await?;
+    let waiting = if row.state == "waiting" {
+        Some(if row.paused {
+            "Paused".into()
+        } else if row.next_at.is_some_and(|a| a > db::now()) {
+            "Waiting for its time".into()
+        } else if !pending.is_empty() {
+            format!("Waiting for approval on {}'s machines", pending.join(", "))
+        } else {
+            match ask.assignment {
+                Assignment::Mine => format!(
+                    "Waiting for one of {}'s machines",
+                    thread.created_by.display_name
+                ),
+                Assignment::Member { user: id } => format!(
+                    "Waiting for one of {}'s machines",
+                    user(state, id).await?.display_name
+                ),
+                Assignment::Anyone => {
+                    format!("Waiting for a machine with {}", runner_name(&ask.runner))
+                }
+            }
+        })
+    } else {
+        None
+    };
+    let orchestrator_waiting: Option<String> = sqlx::query_scalar(
+        "SELECT waiting
+         FROM workshop_requests
+         WHERE thread_id = ?",
+    )
+    .bind(row.thread_id)
+    .fetch_one(&state.db)
+    .await?;
+    Ok(Request {
+        requester: thread.created_by.clone(),
+        thread,
+        recipe: decode(&row.recipe)?,
+        ask,
+        state: row.state,
+        paused: row.paused,
+        next_at: row.next_at,
+        waiting: orchestrator_waiting.or(waiting),
+        processes,
     })
 }
-
-/// What a task's address resolves to: whether it exists, and its title.
-pub async fn resolve(
-    state: &AppState,
-    group_id: i64,
-    number: u32,
-) -> ApiResult<(bool, Option<String>)> {
-    match find(state, group_id, number).await {
-        Ok(row) => Ok((true, Some(format!("w{}: {}", row.number, row.title)))),
-        Err(error) if error.status == axum::http::StatusCode::NOT_FOUND => Ok((false, None)),
-        Err(error) => Err(error),
+/// People, their sessions and their answers ask; a process never asks for
+/// more processes.
+fn may_ask(viewer: &Viewer) -> ApiResult<()> {
+    if matches!(viewer.scope, crate::auth::Scope::Process { .. }) {
+        return Err(ApiError::forbidden("A process cannot ask the workshop"));
     }
+    Ok(())
 }
-
-/// The group's workshop agent: the agent whose role is the workshop,
-/// `@workshop` first.
-pub async fn profile(state: &AppState, group_id: i64) -> ApiResult<Option<AgentProfile>> {
-    profile_with_role(state, group_id, AgentRole::Workshop, "workshop").await
+/// People and their sessions cancel, pause and resume; answers and
+/// processes do not.
+fn may_act(viewer: &Viewer) -> ApiResult<()> {
+    if viewer.agent().is_some_and(|a| !a.session) {
+        return Err(ApiError::forbidden(
+            "An answer asks the workshop, but cannot change a request",
+        ));
+    }
+    Ok(())
 }
-
-/// The group's editor: the agent whose role it is, `@editor` first.
-async fn editor(state: &AppState, group_id: i64) -> ApiResult<Option<AgentProfile>> {
-    profile_with_role(state, group_id, AgentRole::Editor, "editor").await
-}
-
-async fn profile_with_role(
+/// Opens a request an agent asked for with a line saying who asked, for
+/// whom and from where.
+async fn asked_by_agent(
     state: &AppState,
-    group_id: i64,
-    role: AgentRole,
-    first: &str,
-) -> ApiResult<Option<AgentProfile>> {
-    let handle: Option<String> = sqlx::query_scalar(
-        "SELECT handle FROM agent_profiles WHERE group_id = ? AND role = ?
-         ORDER BY handle = ? DESC, handle LIMIT 1",
+    group: &Membership,
+    viewer: &Viewer,
+    thread: i64,
+) -> ApiResult<()> {
+    let Some(agent) = viewer.agent() else {
+        return Ok(());
+    };
+    let from: Option<i64> = match agent.thread_id {
+        Some(id) => {
+            sqlx::query_scalar(
+                "SELECT number
+             FROM threads
+             WHERE id = ?",
+            )
+            .bind(id)
+            .fetch_optional(&state.db)
+            .await?
+        }
+        None => None,
+    };
+    let mut text = format!("Asked by {}, for {}", agent.agent, viewer.display_name);
+    if let Some(number) = from {
+        text.push_str(&format!(", from [[t{number}]]"));
+    }
+    text.push('.');
+    let mut tx = state.db.begin().await?;
+    let (number, stored) = forum::insert_message(
+        &mut tx,
+        group,
+        thread,
+        viewer.id,
+        Some(&agent.agent),
+        None,
+        &text,
+        None,
+        &[],
+        true,
     )
-    .bind(group_id)
-    .bind(role.as_str())
-    .bind(first)
-    .fetch_optional(&state.db)
     .await?;
-    match handle {
-        Some(handle) => jobs::find_profile(state, group_id, &handle).await,
-        None => Ok(None),
+    tx.commit().await?;
+    forum::publish_post(state, group, thread, number, &stored).await?;
+    Ok(())
+}
+pub async fn ask(
+    State(state): State<AppState>,
+    viewer: Viewer,
+    Path(slug): Path<String>,
+    Json(mut ask): Json<Ask>,
+) -> ApiResult<Json<Request>> {
+    may_ask(&viewer)?;
+    let group = Membership::of(&state, &viewer, &slug).await?;
+    if !group.role.can_write() {
+        return Err(ApiError::forbidden("Guests read the board"));
     }
-}
+    ask.title = required_text(&ask.title, "The request's title", 200)?;
+    ask.schedule.validate().map_err(ApiError::invalid)?;
+    if ![1, 24, 168].contains(&ask.wait_hours) {
+        return Err(ApiError::invalid("Wait for an hour, a day or a week"));
+    }
+    if !["claude", "codex", "opencode"].contains(&ask.runner.as_str()) {
+        return Err(ApiError::invalid("Unknown runner"));
+    }
+    if let Some(model) = &ask.model {
+        required_text(model, "The model", 200)?;
+    }
+    if let Assignment::Member { user } = ask.assignment {
+        let valid: bool = sqlx::query_scalar(
+            "SELECT EXISTS(SELECT 1
+             FROM memberships
+             WHERE group_id = ?
+             AND user_id = ?
+             AND role IN ('admin', 'member'))",
+        )
+        .bind(group.group_id)
+        .bind(user)
+        .fetch_one(&state.db)
+        .await?;
+        if !valid {
+            return Err(ApiError::invalid("Choose a group member"));
+        }
+    }
+    let free = ask.recipe.is_empty();
+    if free && (ask.schedule.at.is_some() || ask.schedule.every.is_some()) {
+        return Err(ApiError::invalid("Free requests run now"));
+    }
+    if free
+        && ask
+            .inputs
+            .iter()
+            .any(|(name, value)| name != "details" || value.len() > 100_000)
+    {
+        return Err(ApiError::invalid(
+            "A request in plain words takes only its details, up to 100,000 characters",
+        ));
+    }
+    let file = if free {
+        RecipeFile {
+            name: "In plain words".into(),
+            version: String::new(),
+            commit: String::new(),
+            url: String::new(),
+            recipe: None,
+            error: None,
+        }
+    } else {
+        let file = recipes::read(&state, &group.slug, &ask.recipe).await?;
 
-/// A task as it is handed over.
-pub struct NewTask {
-    pub title: String,
-    pub instructions: String,
-    /// The thread and the number of the message that asks.
-    pub thread_id: i64,
-    pub origin_message: u32,
-    pub requester_id: i64,
-    /// The agent handing it over for its requester, if one does.
-    pub agent: Option<String>,
-    pub schedule: TaskSchedule,
-}
-
-/// Hands a task to the workshop, and queues its run; the caller then
-/// dispatches. Returns the task.
-pub async fn create(state: &AppState, group: &Membership, new: NewTask) -> ApiResult<Task> {
-    let profile = profile(state, group.group_id).await?.ok_or_else(|| {
-        ApiError::invalid("This group has no workshop: add an agent whose role is the workshop")
-    })?;
-    let title = crate::api::required_text(&new.title, "The title", 200)?;
-    let instructions = crate::api::required_text(&new.instructions, "The instructions", 20_000)?;
-    let agent = new
-        .agent
-        .as_deref()
-        .map(str::trim)
-        .filter(|a| !a.is_empty());
+        let recipe = file.recipe.as_ref().ok_or_else(|| {
+            ApiError::invalid(
+                file.error
+                    .as_ref()
+                    .map(ToString::to_string)
+                    .unwrap_or_default(),
+            )
+        })?;
+        recipe
+            .render(&format!("{}.md", file.name), &ask.inputs)
+            .map_err(|e| ApiError::invalid(e.to_string()))?;
+        if !recipe.front.runners.is_empty() && !recipe.front.runners.contains(&ask.runner) {
+            return Err(ApiError::invalid("The recipe does not accept this runner"));
+        }
+        for (name, input) in &recipe.front.inputs {
+            let Some(value) = ask.inputs.get(name).filter(|v| !v.trim().is_empty()) else {
+                continue;
+            };
+            if value.len() > 100_000 {
+                return Err(ApiError::invalid("An input is too long"));
+            }
+            match input.kind {
+                InputKind::Paper => {
+                    crate::papers::find(&state, group.group_id, value).await?;
+                }
+                InputKind::Thread => {
+                    let number = value
+                        .trim_start_matches('t')
+                        .parse()
+                        .map_err(|_| ApiError::invalid("Expected a thread number"))?;
+                    forum::find_thread(&state, group.group_id, number).await?;
+                }
+                InputKind::Declaration => {
+                    if !crate::library::resolve(&state, group.group_id, value)
+                        .await?
+                        .exists
+                    {
+                        return Err(ApiError::not_found("Declaration"));
+                    }
+                }
+                InputKind::Text => {}
+            }
+        }
+        file
+    };
     let now = db::now();
+    let at = ask.schedule.at.unwrap_or(now);
+    if ask.schedule.until.is_some_and(|u| u < at) {
+        return Err(ApiError::invalid("The series ends before its first slot"));
+    }
+    let has_key = crate::model::has_key(&state, group.group_id).await?;
     let mut tx = state.db.begin().await?;
     let number: i64 = sqlx::query_scalar(
-        "UPDATE groups SET last_task = last_task + 1 WHERE id = ? RETURNING last_task",
+        "UPDATE groups
+         SET last_thread = last_thread+1
+         WHERE id = ?
+         RETURNING last_thread",
     )
     .bind(group.group_id)
     .fetch_one(&mut *tx)
     .await?;
-    let job_id = sqlx::query(
-        "INSERT INTO jobs (group_id, thread_id, kind, trigger_message, requester_id, agent_handle,
-                           agent, runner, scope, state, created_at, updated_at)
-         VALUES (?, ?, 'task_run', ?, ?, ?, ?, ?, 'group', 'queued', ?, ?)",
-    )
-    .bind(group.group_id)
-    .bind(new.thread_id)
-    .bind(new.origin_message)
-    .bind(new.requester_id)
-    .bind(&profile.handle)
-    .bind(serde_json::to_string(&profile).map_err(ApiError::internal)?)
-    .bind(&profile.runner)
-    .bind(now)
-    .bind(now)
-    .execute(&mut *tx)
-    .await?
-    .last_insert_rowid();
-    let task_id = sqlx::query(
-        "INSERT INTO tasks (group_id, number, title, instructions, thread_id, origin_message,
-                            requester_id, agent, state, schedule, job_id, created_at, updated_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'open', ?, ?, ?, ?)",
+    let ids = crate::text::encode(&mut tx, group.group_id, &ask.title).await?;
+    let thread = sqlx::query(
+        "INSERT INTO threads (group_id, number, title, title_ids, kind, created_by,
+         created_at, last_activity_at)
+         VALUES (?, ?, ?, ?, 'request', ?, ?, ?)",
     )
     .bind(group.group_id)
     .bind(number)
-    .bind(&title)
-    .bind(&instructions)
-    .bind(new.thread_id)
-    .bind(new.origin_message)
-    .bind(new.requester_id)
-    .bind(agent)
-    .bind(new.schedule.as_str())
-    .bind(job_id)
+    .bind(&ask.title)
+    .bind(ids)
+    .bind(viewer.id)
     .bind(now)
     .bind(now)
     .execute(&mut *tx)
     .await?
     .last_insert_rowid();
+    sqlx::query(
+        "INSERT INTO workshop_requests (thread_id, recipe, ask, recurring, next_at,
+         created_at)
+         VALUES (?, ?, ?, ?, ?, ?)",
+    )
+    .bind(thread)
+    .bind(encode(&file)?)
+    .bind(encode(&ask)?)
+    .bind(ask.schedule.every.is_some())
+    .bind(if free { None } else { Some(at) })
+    .bind(now)
+    .execute(&mut *tx)
+    .await?;
+    sqlx::query(
+        "UPDATE workshop_requests
+         SET orchestrated = ?, wake = ?, expires_at = ?
+         WHERE thread_id = ?",
+    )
+    .bind(free || has_key)
+    .bind(free || has_key)
+    .bind(free.then_some(now + i64::from(ask.wait_hours) * 3_600_000))
+    .bind(thread)
+    .execute(&mut *tx)
+    .await?;
     tx.commit().await?;
-    publish(state, task_id).await?;
-    find(state, group.group_id, number as u32)
+    let thread_api: Thread = forum::find_thread_by_id(&state, thread).await?.into();
+    state.publish(
+        group.group_id,
+        stemma_core::api::Event::ThreadCreated { thread: thread_api },
+    );
+    asked_by_agent(&state, &group, &viewer, thread).await?;
+    tick(&state).await?;
+    crate::orchestrator::dispatch(&state).await?;
+    Ok(Json(
+        to_api(&state, find(&state, group.group_id, number as u32).await?).await?,
+    ))
+}
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Action {
+    action: String,
+}
+pub async fn action(
+    State(state): State<AppState>,
+    viewer: Viewer,
+    Path((slug, number)): Path<(String, u32)>,
+    Json(action): Json<Action>,
+) -> ApiResult<Json<Request>> {
+    may_act(&viewer)?;
+    let group = Membership::of(&state, &viewer, &slug).await?;
+    let row = find(&state, group.group_id, number).await?;
+    if !group.role.can_write() {
+        return Err(ApiError::forbidden("Guests read workshop requests"));
+    }
+    if !["waiting", "running"].contains(&row.state.as_str()) {
+        return Err(ApiError::conflict("This request has already finished"));
+    }
+    let thread: Thread = forum::find_thread_by_id(&state, row.thread_id)
         .await?
-        .to_api_noted(state)
-        .await
-}
-
-/// The title and schedule of a task asked for in a message to the
-/// workshop: its first sentence, without the mention; at night if it says
-/// "tonight" or "overnight".
-pub fn from_message(body: &str, handle: &str) -> (String, TaskSchedule) {
-    let mention = format!("@{handle}");
-    let text: String = body
-        .lines()
-        .map(str::trim)
-        .find(|line| !line.is_empty() && line.trim() != mention)
-        .unwrap_or_default()
-        .split_whitespace()
-        .filter(|word| {
-            !word
-                .trim_end_matches([',', ':', '.'])
-                .eq_ignore_ascii_case(&mention)
-        })
-        .collect::<Vec<_>>()
-        .join(" ");
-    // The first sentence: up to a stop followed by a space, or the end.
-    let end = text
-        .char_indices()
-        .find(|&(i, c)| {
-            matches!(c, '.' | '?' | '!')
-                && i > 10
-                && text[i + c.len_utf8()..]
-                    .chars()
-                    .next()
-                    .is_none_or(char::is_whitespace)
-        })
-        .map(|(i, _)| i);
-    let sentence = match end {
-        Some(end) => &text[..end],
-        None => text.as_str(),
-    };
-    let mut title: String = sentence.trim().chars().take(80).collect();
-    if sentence.trim().chars().count() > 80 {
-        title.push('…');
-    }
-    if let Some(first) = title.chars().next() {
-        title = first.to_uppercase().chain(title.chars().skip(1)).collect();
-    }
-    if title.is_empty() {
-        title = "A task from the thread".into();
-    }
-    let lower = body.to_lowercase();
-    let night = ["tonight", "overnight", "at night", "this night"]
-        .iter()
-        .any(|word| lower.contains(word));
-    let schedule = if night {
-        TaskSchedule::Night
-    } else {
-        TaskSchedule::Now
-    };
-    (title, schedule)
-}
-
-/// Cancels a task that is open or running: its requester, or an admin.
-pub async fn cancel(
-    state: &AppState,
-    group: &Membership,
-    user_id: i64,
-    number: u32,
-) -> ApiResult<()> {
-    let row = find(state, group.group_id, number).await?;
-    if row.user_id != user_id {
+        .into();
+    if viewer.id != thread.created_by.id {
         group.require_admin()?;
     }
-    if row.state().is_final() {
-        return Err(ApiError::conflict("This task is over"));
-    }
-    match row.job_id {
-        // Stopping the job cancels the task.
-        Some(job) => jobs::stop(state, job).await,
-        None => {
-            set_state(state, row.id, TaskState::Cancelled, None).await?;
-            publish(state, row.id).await
+    match action.action.as_str() {
+        "pause" | "resume"
+            if row.recurring && ["waiting", "running"].contains(&row.state.as_str()) =>
+        {
+            sqlx::query(
+                "UPDATE workshop_requests
+                 SET paused = ?
+                 WHERE thread_id = ?",
+            )
+            .bind(action.action == "pause")
+            .bind(row.thread_id)
+            .execute(&state.db)
+            .await?;
+        }
+        "cancel" | "stop" => {
+            let mut tx = state.db.begin().await?;
+            sqlx::query(
+                "UPDATE workshop_requests
+                 SET state='cancelled', next_at=NULL
+                 WHERE thread_id=?",
+            )
+            .bind(row.thread_id)
+            .execute(&mut *tx)
+            .await?;
+            sqlx::query(
+                "UPDATE workshop_reviews
+                 SET state = 'refused', message = 'Request cancelled'
+                 WHERE process_id IN (SELECT id
+                 FROM workshop_processes
+                 WHERE thread_id = ?)
+                 AND state NOT IN ('merged', 'refused')",
+            )
+            .bind(row.thread_id)
+            .execute(&mut *tx)
+            .await?;
+            sqlx::query(
+                "UPDATE api_tokens
+                 SET revoked_at = ?
+                 WHERE id IN (SELECT token_id
+                 FROM work_leases
+                 WHERE id IN (SELECT work_id
+                 FROM workshop_processes
+                 WHERE thread_id = ?)
+                 AND state IN ('queued', 'running'))",
+            )
+            .bind(db::now())
+            .bind(row.thread_id)
+            .execute(&mut *tx)
+            .await?;
+            sqlx::query(
+                "UPDATE work_leases
+                 SET state = 'cancelled'
+                 WHERE id IN (SELECT work_id
+                 FROM workshop_processes
+                 WHERE thread_id = ?)
+                 AND state IN ('queued', 'running')",
+            )
+            .bind(row.thread_id)
+            .execute(&mut *tx)
+            .await?;
+            tx.commit().await?;
+            cancel_machines(&state, row.thread_id).await?;
+        }
+        _ => {
+            return Err(ApiError::invalid(
+                "Use cancel, pause, resume or stop on an open recurring request",
+            ));
         }
     }
+    Ok(Json(
+        to_api(&state, find(&state, group.group_id, number).await?).await?,
+    ))
 }
-
-async fn set_state(
-    state: &AppState,
-    task_id: i64,
-    to: TaskState,
-    reason: Option<&str>,
-) -> ApiResult<()> {
-    let now = db::now();
-    sqlx::query(
-        "UPDATE tasks SET state = ?, reason = coalesce(?, reason), updated_at = ?,
-                          finished_at = CASE WHEN ? THEN ? ELSE finished_at END
-         WHERE id = ?",
+async fn cancel_machines(state: &AppState, thread: i64) -> ApiResult<()> {
+    let leases: Vec<(i64, i64, Option<i64>)> = sqlx::query_as(
+        "SELECT w.id, w.attempts, w.holder
+         FROM work_leases w
+         JOIN workshop_processes p ON p.work_id = w.id
+         WHERE p.thread_id = ? AND w.state = 'cancelled'",
     )
-    .bind(to.as_str())
-    .bind(reason)
-    .bind(now)
-    .bind(to.is_final())
-    .bind(now)
-    .bind(task_id)
-    .execute(&state.db)
+    .bind(thread)
+    .fetch_all(&state.db)
     .await?;
-    Ok(())
-}
-
-// ── Runs ──────────────────────────────────────────────────────────────
-
-/// What a worker needs to run a task: the task, the conversation it came
-/// from (with the workshop's agent, as the worker is to run it), the papers
-/// the conversation is about, and the library.
-pub async fn work_for(
-    state: &AppState,
-    group: &Membership,
-    job_id: i64,
-    conversation: Conversation,
-) -> ApiResult<TaskRun> {
-    let row = of_job(state, job_id)
-        .await?
-        .ok_or_else(|| ApiError::internal("a task's job without its task"))?;
-    let thread: stemma_core::api::Thread =
-        forum::find_thread_by_id(state, row.thread_id).await?.into();
-
-    // The papers: the one the thread is about, then those it references.
-    let mut slugs: Vec<String> = Vec::new();
-    if let Some(Address::Paper { slug, .. }) = &thread.anchor {
-        slugs.push(slug.clone());
-    }
-    let mut texts: Vec<&str> = vec![&row.instructions];
-    for item in &conversation.context {
-        if let stemma_core::protocol::ContextItem::Message { message } = item {
-            texts.push(&message.body);
+    let offers: Vec<(i64, i64)> = sqlx::query_as(
+        "SELECT o.machine_id, o.process_id
+         FROM workshop_offers o
+         JOIN workshop_processes p ON p.id = o.process_id
+         WHERE p.thread_id = ? AND o.decision IN ('offered', 'pending')",
+    )
+    .bind(thread)
+    .fetch_all(&state.db)
+    .await?;
+    let machines = state.build_machines.lock().await;
+    for (machine, process) in offers {
+        if let Some(m) = machines.0.get(&machine) {
+            let _ = m.sender.send(HubMessage::ProcessTaken { process });
         }
     }
-    for text in texts {
-        for reference in stemma_core::references(text) {
-            if let Ok(Address::Paper { slug, .. }) = reference.address
-                && !slugs.contains(&slug)
-            {
-                slugs.push(slug);
-            }
-        }
-    }
-    let mut papers = Vec::new();
-    for slug in slugs.into_iter().take(MAX_PAPERS) {
-        if let Some(current) = papers::current(state, group.group_id, &slug).await? {
-            papers.push(PaperSpec {
-                slug,
-                title: Some(current.title),
-                revision: current.revision,
-                body: current.body,
+    for (id, attempt, holder) in leases {
+        if let Some(m) = holder.and_then(|id| machines.0.get(&id)) {
+            let _ = m.sender.send(HubMessage::CancelProcess {
+                lease: LeaseRef {
+                    id,
+                    attempt: attempt as u32,
+                },
             });
         }
     }
-
-    let data_sorry = match library::current_build_id(state, group.group_id).await? {
-        Some(build) => {
-            sqlx::query_scalar(
-                "SELECT name FROM library_declarations WHERE build_id = ? AND data_sorry = 1
-                 ORDER BY name",
-            )
-            .bind(build)
-            .fetch_all(&state.db)
-            .await?
-        }
-        None => Vec::new(),
-    };
-    Ok(TaskRun {
-        task: row.number as u32,
-        title: row.title.clone(),
-        instructions: row.instructions.clone(),
-        conversation,
-        papers,
-        repository: format!("/git/{}.git", group.slug),
-        data_sorry,
-    })
-}
-
-/// A task's run started, on a worker, with `runner`.
-pub async fn started(
-    state: &AppState,
-    job_id: i64,
-    runner: &str,
-    model: Option<&str>,
-) -> ApiResult<()> {
-    let now = db::now();
-    sqlx::query(
-        "UPDATE tasks SET state = 'running', runner = ?, model = ?, reason = NULL,
-                          started_at = ?, updated_at = ?
-         WHERE job_id = ? AND state IN ('open', 'running')",
-    )
-    .bind(runner)
-    .bind(model)
-    .bind(now)
-    .bind(now)
-    .bind(job_id)
-    .execute(&state.db)
-    .await?;
     Ok(())
 }
-
-/// A task's run will start again: its worker went away. It may have
-/// pushed before it did, so the hub looks at the library.
-pub async fn requeued(state: &AppState, job_id: i64) -> ApiResult<()> {
-    let Some(row) = of_job(state, job_id).await? else {
-        return Ok(());
-    };
+/// The scheduler coalesces missed slots and atomically advances next_at together
+/// with insertion. A second hub task observes the advanced slot and does nothing.
+pub async fn tick(state: &AppState) -> ApiResult<()> {
+    let now = db::now();
+    let rows: Vec<Row> = sqlx::query_as(sqlx::AssertSqlSafe(format!(
+        "{ROW}
+         WHERE paused=0 AND next_at<=? AND state IN ('waiting','running')"
+    )))
+    .bind(now)
+    .fetch_all(&state.db)
+    .await?;
+    for row in rows {
+        let ask: Ask = decode(&row.ask)?;
+        let slot = row.next_at.unwrap();
+        let next = ask.schedule.next_after(slot, now);
+        let mut tx = state.db.begin().await?;
+        let changed = sqlx::query(
+            "UPDATE workshop_requests
+             SET next_at = ?
+             WHERE thread_id = ?
+             AND next_at = ?
+             AND paused = 0
+             AND state IN ('waiting', 'running')",
+        )
+        .bind(next)
+        .bind(row.thread_id)
+        .bind(slot)
+        .execute(&mut *tx)
+        .await?
+        .rows_affected();
+        if changed == 0 {
+            tx.rollback().await?;
+            continue;
+        }
+        let group: i64 = sqlx::query_scalar(
+            "SELECT group_id
+             FROM threads
+             WHERE id=?",
+        )
+        .bind(row.thread_id)
+        .fetch_one(&mut *tx)
+        .await?;
+        let work =
+            sqlx::query("INSERT INTO work_leases(group_id,kind,created_at) VALUES (?,'process',?)")
+                .bind(group)
+                .bind(now)
+                .execute(&mut *tx)
+                .await?
+                .last_insert_rowid();
+        // A missed slot fires once now, with a full machine-wait interval.
+        sqlx::query(
+            "INSERT INTO workshop_processes(thread_id,work_id,slot,expires_at) VALUES (?,?,?,?)",
+        )
+        .bind(row.thread_id)
+        .bind(work)
+        .bind(slot)
+        .bind(now + i64::from(ask.wait_hours) * 3_600_000)
+        .execute(&mut *tx)
+        .await?;
+        tx.commit().await?;
+    }
     sqlx::query(
-        "UPDATE tasks SET state = 'open', updated_at = ? WHERE id = ? AND state = 'running'",
+        "UPDATE work_leases
+         SET state = 'failed', error = 'The process exceeded its deadline'
+         WHERE kind = 'process'
+         AND state = 'running'
+         AND id IN (SELECT work_id
+         FROM workshop_processes
+         WHERE deadline <= ?)",
+    )
+    .bind(now)
+    .execute(&state.db)
+    .await?;
+    sqlx::query(
+        "UPDATE work_leases
+         SET state = 'failed', error = 'The request expired while waiting for a machine'
+         WHERE kind = 'process'
+         AND state = 'queued'
+         AND id IN (SELECT work_id
+         FROM workshop_processes
+         WHERE expires_at <= ?)",
+    )
+    .bind(now)
+    .execute(&state.db)
+    .await?;
+    if let Err(error) = finish_pending(state).await {
+        tracing::error!(error = error.message, "finalizing workshop processes");
+    }
+    dispatch(state).await
+}
+async fn offer(state: &AppState, process: i64) -> ApiResult<ProcessOffer> {
+    let (thread, expires, process_recipe, process_ask): (i64, i64, Option<String>, Option<String>) =
+        sqlx::query_as(
+            "SELECT thread_id, expires_at, recipe, ask
+             FROM workshop_processes
+             WHERE id = ?",
+        )
+        .bind(process)
+        .fetch_one(&state.db)
+        .await?;
+    let row: Row = sqlx::query_as(sqlx::AssertSqlSafe(format!(
+        "{ROW}
+         WHERE thread_id=?"
+    )))
+    .bind(thread)
+    .fetch_one(&state.db)
+    .await?;
+    let ask: Ask = decode(process_ask.as_deref().unwrap_or(&row.ask))?;
+    let recipe: RecipeFile = decode(process_recipe.as_deref().unwrap_or(&row.recipe))?;
+    let t: Thread = forum::find_thread_by_id(state, thread).await?.into();
+    let group_id: i64 = sqlx::query_scalar(
+        "SELECT group_id
+         FROM threads
+         WHERE id=?",
+    )
+    .bind(thread)
+    .fetch_one(&state.db)
+    .await?;
+    let g = Membership::of_group(state, group_id).await?;
+    let prompt = recipe
+        .recipe
+        .as_ref()
+        .ok_or_else(|| ApiError::internal("invalid stored recipe"))?
+        .render(&format!("{}.md", recipe.name), &ask.inputs)
+        .map_err(ApiError::internal)?;
+    let raw: Option<String> = sqlx::query_scalar(
+        "SELECT repositories
+         FROM workshop_processes
+         WHERE id = ?",
+    )
+    .bind(process)
+    .fetch_one(&state.db)
+    .await?;
+    let rebase = raw
+        .map(|r| decode::<Vec<ProcessRepository>>(&r))
+        .transpose()?
+        .and_then(|mut r| r.pop());
+    Ok(ProcessOffer {
+        rebase,
+        process,
+        group: GroupRef {
+            id: group_id,
+            slug: g.slug,
+            name: g.name,
+        },
+        request: ThreadRef {
+            number: t.number,
+            title: t.title,
+            kind: ThreadKind::Request,
+        },
+        requester: t.created_by.clone(),
+        assigned_by: if process_recipe.is_some() {
+            User {
+                id: 0,
+                username: "workshop".into(),
+                display_name: "Workshop".into(),
+            }
+        } else {
+            t.created_by
+        },
+        recipe,
+        inputs: ask.inputs,
+        prompt,
+        runner: ask.runner,
+        model: ask.model,
+        recurring: row.recurring,
+        expires_at: expires,
+    })
+}
+pub(crate) fn eligible(machine: &crate::builds::Machine, offer: &ProcessOffer, ask: &Ask) -> bool {
+    let scope = machine.scope(&offer.group.slug);
+    scope.enabled
+        && scope.concurrency > 0
+        && scope.runners.contains_key(&offer.runner)
+        && offer
+            .model
+            .as_ref()
+            .is_none_or(|model| scope.runners.get(&offer.runner) == Some(model))
+        && offer
+            .recipe
+            .recipe
+            .as_ref()
+            .is_some_and(|r| r.accepts_version(&machine.version))
+        && (machine.owner == offer.requester.id || scope.others == Others::Ask)
+        && match ask.assignment {
+            Assignment::Mine => machine.owner == offer.requester.id,
+            Assignment::Member { user } => machine.owner == user,
+            Assignment::Anyone => true,
+        }
+}
+pub async fn dispatch(state: &AppState) -> ApiResult<()> {
+    let _turn = state.process_changes.lock().await;
+    let waiting: Vec<(i64, String)> = sqlx::query_as(
+        "SELECT p.id, coalesce(p.ask, r.ask)
+         FROM workshop_processes p
+         JOIN work_leases w ON w.id = p.work_id
+         JOIN workshop_requests r ON r.thread_id = p.thread_id
+         WHERE w.state = 'queued'
+         AND p.expires_at > ?
+         AND r.state IN ('waiting', 'running')
+         ORDER BY p.id",
     )
     .bind(db::now())
-    .bind(row.id)
-    .execute(&state.db)
+    .fetch_all(&state.db)
     .await?;
-    refresh_soon(state, row.group_id, row.user_id);
-    Ok(())
-}
-
-/// A task's job ended without the run's outcome: it failed, with `error`,
-/// or was cancelled. A task that fails says so in its thread. Callers may
-/// hold the workers' lock.
-pub async fn job_ended(
-    state: &AppState,
-    job_id: i64,
-    cancelled: bool,
-    error: Option<&str>,
-) -> ApiResult<()> {
-    let Some(row) = of_job(state, job_id).await? else {
-        return Ok(());
-    };
-    if row.state().is_final() {
-        return Ok(());
-    }
-    if cancelled {
-        set_state(state, row.id, TaskState::Cancelled, None).await?;
-    } else {
-        let reason = error.unwrap_or("The run failed");
-        set_state(state, row.id, TaskState::Failed, Some(reason)).await?;
-        let text = format!(
-            "**Failed:** [[w{}]], “{}”. {}.\n\nNothing was put in the library.",
-            row.number,
-            row.title,
-            one_line(reason).trim_end_matches('.')
-        );
-        let number = say(state, &row, &text).await?;
-        sqlx::query("UPDATE tasks SET report_message = ? WHERE id = ?")
-            .bind(number)
-            .bind(row.id)
-            .execute(&state.db)
+    let machines = state.build_machines.lock().await;
+    for (id, raw) in waiting {
+        let ask: Ask = decode(&raw)?;
+        let offer = offer(state, id).await?;
+        for (holder, machine) in &machines.0 {
+            let pinned: Option<i64> = sqlx::query_scalar(
+                "SELECT machine_id
+                 FROM workshop_processes
+                 WHERE id = ?",
+            )
+            .bind(id)
+            .fetch_one(&state.db)
             .await?;
-    }
-    // It may have pushed before it ended.
-    refresh_soon(state, row.group_id, row.user_id);
-    publish(state, row.id).await
-}
-
-/// Posts a message in a task's thread, by the workshop for its requester,
-/// in reply to the message that asked. Returns its number.
-async fn say(state: &AppState, row: &TaskRow, text: &str) -> ApiResult<u32> {
-    let group = Membership::of_group(state, row.group_id).await?;
-    let agent = match row.job_id {
-        Some(job) => {
-            let profile: Option<Option<String>> =
-                sqlx::query_scalar("SELECT agent FROM jobs WHERE id = ?")
-                    .bind(job)
-                    .fetch_optional(&state.db)
-                    .await?;
-            profile
-                .flatten()
-                .and_then(|json| serde_json::from_str::<AgentProfile>(&json).ok())
-                .map(|p| p.display_name)
-        }
-        None => None,
-    }
-    .unwrap_or_else(|| "Workshop".into());
-    let message = forum::post(
-        state,
-        &group,
-        row.thread_id,
-        row.user_id,
-        Some(&agent),
-        text,
-        Some(row.origin_message as u32),
-        &[],
-    )
-    .await?;
-    Ok(message.number)
-}
-
-fn one_line(text: &str) -> String {
-    text.split_whitespace().collect::<Vec<_>>().join(" ")
-}
-
-/// The end of a log, when it is too long.
-fn tail(log: &str) -> String {
-    if log.len() <= MAX_LOG {
-        return log.to_owned();
-    }
-    let mut start = log.len() - MAX_LOG;
-    while !log.is_char_boundary(start) {
-        start += 1;
-    }
-    format!("[… the beginning is cut]\n{}", &log[start..])
-}
-
-/// Keeps how a task's run ended: the library's new state from its build,
-/// one message in its thread, and updates of the papers it concerns.
-/// Returns the number of the message. Callers may hold the workers' lock.
-pub async fn finished(state: &AppState, job_id: i64, outcome: TaskOutcome) -> ApiResult<u32> {
-    let row = of_job(state, job_id)
-        .await?
-        .ok_or_else(|| ApiError::internal("a task's job without its task"))?;
-
-    // What it pushed becomes the library's state.
-    let mut changed: Vec<String> = Vec::new();
-    if let (Some(built), Some(commit)) = (&outcome.built, outcome.commits.last())
-        && built.succeeded
-        && let Some(report) = &built.report
-    {
-        changed = library::changed_declarations(state, row.group_id, report).await?;
-        library::record_build(state, row.group_id, commit, built.clone()).await?;
-    }
-    refresh_soon(state, row.group_id, row.user_id);
-
-    let end = match outcome.end {
-        TaskEnd::Done => TaskState::Done,
-        TaskEnd::Failed => TaskState::Failed,
-        TaskEnd::Blocked => TaskState::Blocked,
-    };
-
-    // The papers to update: those that reference what changed, and the
-    // one the thread is about.
-    let mut slugs: Vec<String> = Vec::new();
-    if end == TaskState::Done && !outcome.commits.is_empty() {
-        let thread: stemma_core::api::Thread =
-            forum::find_thread_by_id(state, row.thread_id).await?.into();
-        if let Some(Address::Paper { slug, .. }) = &thread.anchor {
-            slugs.push(slug.clone());
-        }
-        for slug in papers_referencing(state, row.group_id, &changed).await? {
-            if !slugs.contains(&slug) {
-                slugs.push(slug);
+            if pinned.is_some_and(|id| id != *holder)
+                || !eligible(machine, &offer, &ask)
+                || machine.sender.is_closed()
+            {
+                continue;
+            }
+            let member: bool = sqlx::query_scalar(
+                "SELECT EXISTS(SELECT 1
+                 FROM memberships m
+                 JOIN api_tokens t ON t.user_id = m.user_id
+                 WHERE m.group_id = ?
+                 AND m.user_id = ?
+                 AND m.role IN ('admin', 'member')
+                 AND t.id = ?
+                 AND t.revoked_at IS NULL
+                 AND (t.expires_at IS NULL OR t.expires_at > ?))",
+            )
+            .bind(offer.group.id)
+            .bind(machine.owner)
+            .bind(holder)
+            .bind(db::now())
+            .fetch_one(&state.db)
+            .await?;
+            if !member {
+                continue;
+            }
+            let room: i64 = sqlx::query_scalar(
+                "SELECT count(*)
+                 FROM work_leases
+                 WHERE kind = 'process' AND state = 'running' AND holder = ?",
+            )
+            .bind(holder)
+            .fetch_one(&state.db)
+            .await?;
+            if room >= machine.scope(&offer.group.slug).concurrency as i64 {
+                continue;
+            }
+            let sent = sqlx::query(
+                "INSERT INTO workshop_offers(process_id, machine_id, connection)
+                 VALUES (?, ?, ?)
+                 ON CONFLICT(process_id, machine_id) DO UPDATE
+                 SET connection = excluded.connection, decision = 'offered'
+                 WHERE workshop_offers.connection != excluded.connection
+                 AND workshop_offers.decision NOT IN ('declined', 'ran')",
+            )
+            .bind(id)
+            .bind(holder)
+            .bind(machine.connection as i64)
+            .execute(&state.db)
+            .await?
+            .rows_affected();
+            if sent > 0 {
+                let _ = machine
+                    .sender
+                    .send(HubMessage::ProcessOffer(Box::new(offer.clone())));
             }
         }
     }
-    let editor = if slugs.is_empty() {
-        None
-    } else {
-        editor(state, row.group_id).await?
+    Ok(())
+}
+/// Accept is a machine's assertion that local approval covers this immutable
+/// offer. The conditional lease update chooses exactly one winner.
+pub async fn decision(
+    state: &AppState,
+    holder: i64,
+    connection: u64,
+    process: i64,
+    accept: bool,
+    pending: bool,
+) -> ApiResult<()> {
+    let _turn = state.process_changes.lock().await;
+    let machines = state.build_machines.lock().await;
+    let Some(machine) = machines
+        .0
+        .get(&holder)
+        .filter(|m| m.connection == connection)
+        .cloned()
+    else {
+        return Ok(());
     };
-
-    let text = report_message(&row, end, &outcome, &changed, &slugs, editor.as_ref());
-    let number = say(state, &row, &text).await?;
-
-    let now = db::now();
-    sqlx::query(
-        "UPDATE tasks SET state = ?, reason = ?, report = ?, log = ?, commits = ?, runner = ?,
-                          model = ?, report_message = ?, finished_at = ?, updated_at = ?
+    drop(machines);
+    let delivered: bool = sqlx::query_scalar(
+        "SELECT EXISTS(SELECT 1
+         FROM workshop_offers
+         WHERE process_id = ?
+         AND machine_id = ?
+         AND connection = ?
+         AND decision IN ('offered', 'pending'))",
+    )
+    .bind(process)
+    .bind(holder)
+    .bind(connection as i64)
+    .fetch_one(&state.db)
+    .await?;
+    if !delivered {
+        if accept {
+            let _ = machine.sender.send(HubMessage::ProcessTaken { process });
+        }
+        return Ok(());
+    }
+    let offer = offer(state, process).await?;
+    if !accept {
+        let changed = sqlx::query(
+            "UPDATE workshop_offers
+             SET decision = ?
+             WHERE process_id = ? AND machine_id = ? AND decision = 'offered'",
+        )
+        .bind(if pending { "pending" } else { "declined" })
+        .bind(process)
+        .bind(holder)
+        .execute(&state.db)
+        .await?
+        .rows_affected();
+        if pending && changed > 0 {
+            notifications::notify(
+                state,
+                &[machine.owner],
+                &Notice::new(NotificationKind::ProcessApproval)
+                    .at(offer.group.id, thread_id(state, process).await?, None)
+                    .by(offer.requester.id, None)
+                    .text(&format!(
+                        "{} asks your workshop to {}",
+                        offer.requester.display_name,
+                        offer
+                            .recipe
+                            .recipe
+                            .as_ref()
+                            .unwrap()
+                            .front
+                            .title
+                            .to_lowercase()
+                    )),
+            )
+            .await?;
+        }
+        return Ok(());
+    }
+    let (work, attempts, state_name, raw): (i64, i64, String, String) = sqlx::query_as(
+        "SELECT w.id, w.attempts, w.state, coalesce(p.ask, r.ask)
+         FROM workshop_processes p
+         JOIN work_leases w ON w.id = p.work_id
+         JOIN workshop_requests r ON r.thread_id = p.thread_id
+         WHERE p.id = ?",
+    )
+    .bind(process)
+    .fetch_one(&state.db)
+    .await?;
+    let ask: Ask = decode(&raw)?;
+    let valid: bool = sqlx::query_scalar(
+        "SELECT EXISTS(SELECT 1
+         FROM memberships m
+         JOIN api_tokens t ON t.user_id = m.user_id
+         WHERE m.group_id = ?
+         AND m.user_id = ?
+         AND m.role IN ('admin', 'member')
+         AND t.id = ?
+         AND t.revoked_at IS NULL
+         AND (t.expires_at IS NULL OR t.expires_at > ?))",
+    )
+    .bind(offer.group.id)
+    .bind(machine.owner)
+    .bind(holder)
+    .bind(db::now())
+    .fetch_one(&state.db)
+    .await?;
+    let running: i64 = sqlx::query_scalar(
+        "SELECT count(*)
+         FROM work_leases
+         WHERE holder=? AND kind='process' AND state='running'",
+    )
+    .bind(holder)
+    .fetch_one(&state.db)
+    .await?;
+    let pinned: Option<i64> = sqlx::query_scalar(
+        "SELECT machine_id
+         FROM workshop_processes
          WHERE id = ?",
     )
-    .bind(end.as_str())
-    .bind(outcome.reason.as_deref().map(one_line))
-    .bind(outcome.report.trim())
-    .bind(tail(&outcome.log))
-    .bind(serde_json::to_string(&outcome.commits).map_err(ApiError::internal)?)
-    .bind(&outcome.runner)
-    .bind(&outcome.model)
-    .bind(number)
-    .bind(now)
-    .bind(now)
-    .bind(row.id)
-    .execute(&state.db)
+    .bind(process)
+    .fetch_one(&state.db)
     .await?;
-
-    if let Some(editor) = editor {
-        for slug in &slugs {
-            jobs::queue_agent_job(
+    if state_name != "queued"
+        || pinned.is_some_and(|id| id != holder)
+        || !valid
+        || !eligible(&machine, &offer, &ask)
+        || offer.expires_at <= db::now()
+    {
+        if state_name == "queued" {
+            sqlx::query(
+                "DELETE
+                 FROM workshop_offers
+                 WHERE process_id = ? AND machine_id = ? AND decision != 'ran'",
+            )
+            .bind(process)
+            .bind(holder)
+            .execute(&state.db)
+            .await?;
+        }
+        let _ = machine.sender.send(HubMessage::ProcessTaken { process });
+        return Ok(());
+    }
+    // Capacity can fill between offering and accepting. Keep this machine's
+    // approved offer: it retries acceptance when it has room again.
+    if running >= machine.scope(&offer.group.slug).concurrency as i64 {
+        return Ok(());
+    }
+    let recipe = offer.recipe.recipe.as_ref().unwrap();
+    let mut repositories = Vec::new();
+    let forge = state
+        .forge
+        .as_ref()
+        .ok_or_else(|| ApiError::not_found("Forge"))?;
+    for writes in &recipe.front.writes {
+        let name = match writes {
+            Repository::Library => "library".to_owned(),
+            Repository::Paper => {
+                let input = recipe
+                    .front
+                    .inputs
+                    .iter()
+                    .find(|(_, i)| i.kind == InputKind::Paper)
+                    .unwrap()
+                    .0;
+                // An optional paper left empty: the process writes no paper.
+                let Some(slug) = offer.inputs.get(input).filter(|s| !s.trim().is_empty()) else {
+                    continue;
+                };
+                format!("paper-{slug}")
+            }
+        };
+        let base = forge
+            .branch_commit(&offer.group.slug, &name, "main")
+            .await
+            .map_err(forge::api_error)?
+            .ok_or_else(|| ApiError::not_found("Repository main"))?;
+        repositories.push(ProcessRepository {
+            path: format!("/git/{}/{}.git", offer.group.slug, name),
+            base,
+            branch: format!("workshop/{}-{process}", offer.request.number),
+            force_push: false,
+        });
+    }
+    let overrides: Option<String> = sqlx::query_scalar(
+        "SELECT repositories
+         FROM workshop_processes
+         WHERE id = ?",
+    )
+    .bind(process)
+    .fetch_one(&state.db)
+    .await?;
+    if let Some(raw) = overrides {
+        repositories = decode(&raw)?;
+    }
+    let deadline = db::now() + i64::from(recipe.front.timeout_minutes) * 60_000;
+    let token = crate::secret::token("stp_");
+    let lease = LeaseRef {
+        id: work,
+        attempt: attempts as u32 + 1,
+    };
+    let thread = thread_id(state, process).await?;
+    let runner_name = runner_name(&offer.runner);
+    let mut tx = state.db.begin().await?;
+    let token_id = sqlx::query(
+        "INSERT INTO api_tokens(user_id, name, token_hash, prefix, created_at, kind,
+         group_id, build_work, lease_attempt, thread_id, agent, can_post, attachments,
+         expires_at)
+         VALUES (?, 'Process', ?, ?, ?, 'process', ?, ?, ?, ?, ?, 1, 'group', ?)",
+    )
+    .bind(machine.owner)
+    .bind(crate::secret::token_hash(&token))
+    .bind(&token[..10])
+    .bind(db::now())
+    .bind(offer.group.id)
+    .bind(work)
+    .bind(lease.attempt)
+    .bind(thread)
+    .bind(runner_name)
+    .bind(db::now() + lease::EXPIRY_MILLIS)
+    .execute(&mut *tx)
+    .await?
+    .last_insert_rowid();
+    if !lease::acquire(&mut tx, lease, holder, connection, token_id, &machine.name).await? {
+        tx.rollback().await?;
+        let _ = machine.sender.send(HubMessage::ProcessTaken { process });
+        return Ok(());
+    }
+    let branches: Vec<ProcessBranch> = repositories
+        .iter()
+        .map(|r| ProcessBranch {
+            repository: r
+                .path
+                .rsplit('/')
+                .next()
+                .unwrap()
+                .trim_end_matches(".git")
+                .into(),
+            branch: r.branch.clone(),
+            commit: None,
+            pull_request: None,
+        })
+        .collect();
+    sqlx::query(
+        "UPDATE workshop_processes
+         SET owner_id=?,machine_id=?,started_at=?,deadline=?,branches=?
+         WHERE id=?",
+    )
+    .bind(machine.owner)
+    .bind(holder)
+    .bind(db::now())
+    .bind(deadline)
+    .bind(encode(&branches)?)
+    .bind(process)
+    .execute(&mut *tx)
+    .await?;
+    sqlx::query(
+        "UPDATE workshop_requests
+         SET state='running', waiting = NULL
+         WHERE thread_id=?",
+    )
+    .bind(thread)
+    .execute(&mut *tx)
+    .await?;
+    sqlx::query(
+        "UPDATE workshop_offers
+         SET decision='ran'
+         WHERE process_id=? AND machine_id=?",
+    )
+    .bind(process)
+    .bind(holder)
+    .execute(&mut *tx)
+    .await?;
+    let others: Vec<i64> = sqlx::query_scalar(
+        "UPDATE workshop_offers
+         SET decision = 'taken'
+         WHERE process_id = ? AND machine_id != ? AND decision IN ('offered', 'pending')
+         RETURNING machine_id",
+    )
+    .bind(process)
+    .bind(holder)
+    .fetch_all(&mut *tx)
+    .await?;
+    tx.commit().await?;
+    let machines = state.build_machines.lock().await;
+    for id in others {
+        if let Some(m) = machines.0.get(&id) {
+            let _ = m.sender.send(HubMessage::ProcessTaken { process });
+        }
+    }
+    drop(machines);
+    let _ = machine
+        .sender
+        .send(HubMessage::Process(Box::new(ProcessSpec {
+            lease,
+            offer,
+            owner: user(state, machine.owner).await?,
+            token,
+            repositories,
+            deadline,
+        })));
+    Ok(())
+}
+pub fn runner_name(handle: &str) -> &str {
+    match handle {
+        "claude" => "Claude",
+        "codex" => "Codex",
+        "opencode" => "OpenCode",
+        _ => handle,
+    }
+}
+async fn thread_id(state: &AppState, process: i64) -> ApiResult<i64> {
+    Ok(sqlx::query_scalar(
+        "SELECT thread_id
+         FROM workshop_processes
+         WHERE id=?",
+    )
+    .bind(process)
+    .fetch_one(&state.db)
+    .await?)
+}
+pub async fn finished(
+    state: &AppState,
+    holder: i64,
+    connection: u64,
+    lease: LeaseRef,
+    result: ProcessResult,
+) -> ApiResult<()> {
+    let _turn = state.process_changes.lock().await;
+    let id: Option<i64> = sqlx::query_scalar(
+        "SELECT p.id
+         FROM workshop_processes p
+         JOIN work_leases w ON w.id = p.work_id
+         WHERE w.id = ?
+         AND w.holder = ?
+         AND w.connection = ?
+         AND w.attempts = ?
+         AND w.state = 'running'
+         AND w.heartbeat > ?
+         AND p.deadline > ?",
+    )
+    .bind(lease.id)
+    .bind(holder)
+    .bind(connection as i64)
+    .bind(lease.attempt)
+    .bind(db::now() - lease::EXPIRY_MILLIS)
+    .bind(db::now())
+    .fetch_optional(&state.db)
+    .await?;
+    let Some(id) = id else {
+        return Ok(());
+    };
+    let mut tx = state.db.begin().await?;
+    let changed = sqlx::query(
+        "UPDATE work_leases
+         SET state=?,error=?
+         WHERE id=? AND state='running' AND attempts=?",
+    )
+    .bind(if result.error.is_none() {
+        "passed"
+    } else {
+        "failed"
+    })
+    .bind(result.error.as_deref().map(stemma_core::secrets::hide))
+    .bind(lease.id)
+    .bind(lease.attempt)
+    .execute(&mut *tx)
+    .await?
+    .rows_affected();
+    if changed == 0 {
+        tx.rollback().await?;
+        return Ok(());
+    }
+    sqlx::query(
+        "UPDATE workshop_processes
+         SET summary=?,usage=?
+         WHERE id=?",
+    )
+    .bind(stemma_core::secrets::hide(&result.summary))
+    .bind(encode(&result.usage)?)
+    .bind(id)
+    .execute(&mut *tx)
+    .await?;
+    if result.error.is_some() {
+        retry(&mut tx, lease.id).await?;
+    }
+    sqlx::query(
+        "UPDATE api_tokens
+         SET revoked_at=?
+         WHERE id=(SELECT token_id
+         FROM work_leases
+         WHERE id=?)",
+    )
+    .bind(db::now())
+    .bind(lease.id)
+    .execute(&mut *tx)
+    .await?;
+    tx.commit().await?;
+    drop(_turn);
+    finish_pending(state).await?;
+    dispatch(state).await
+}
+/// Durable finalization also recovers after a machine or hub disappears. Pushes
+/// are discovered from the forge, never trusted from an agent's result.
+pub async fn finish_pending(state: &AppState) -> ApiResult<()> {
+    let _turn = state.process_changes.lock().await;
+    #[derive(sqlx::FromRow)]
+    struct Finished {
+        id: i64,
+        work_id: i64,
+        state: String,
+        error: Option<String>,
+        summary: Option<String>,
+        branches: String,
+    }
+    let rows: Vec<Finished> = sqlx::query_as(
+        "SELECT p.id, p.work_id, w.state, w.error, p.summary, p.branches
+         FROM workshop_processes p
+         JOIN work_leases w ON w.id = p.work_id
+         WHERE w.state IN ('passed', 'failed', 'cancelled') AND p.finished_at IS NULL
+         ORDER BY p.id",
+    )
+    .fetch_all(&state.db)
+    .await?;
+    for Finished {
+        id,
+        work_id: work,
+        state: status,
+        error,
+        summary,
+        branches: raw,
+    } in rows
+    {
+        let offer = offer(state, id).await?;
+        let thread = thread_id(state, id).await?;
+        let rebase: Option<i64> = sqlx::query_scalar(
+            "SELECT rebase_review
+             FROM workshop_processes
+             WHERE id = ?",
+        )
+        .bind(id)
+        .fetch_one(&state.db)
+        .await?;
+        let mut branches: Vec<ProcessBranch> = decode(&raw)?;
+        if let Some(forge) = &state.forge {
+            for branch in &mut branches {
+                if let Some(head) = forge
+                    .branch_commit(&offer.group.slug, &branch.repository, &branch.branch)
+                    .await
+                    .map_err(forge::api_error)?
+                {
+                    branch.commit = Some(head);
+                    if rebase.is_none() && branch.pull_request.is_none() {
+                        branch.pull_request = Some(
+                            forge
+                                .open_process_pull_request(
+                                    &offer.group.slug,
+                                    &branch.repository,
+                                    &branch.branch,
+                                    &offer.request.title,
+                                    &format!(
+                                        "For [{}]({}/g/{}/t/{}).",
+                                        offer.request.title,
+                                        state.config.base_url(),
+                                        offer.group.slug,
+                                        offer.request.number
+                                    ),
+                                )
+                                .await
+                                .map_err(forge::api_error)?,
+                        );
+                    }
+                }
+            }
+        }
+        let reviewed = if rebase.is_none() {
+            crate::review::enqueue(state, id, &branches, &offer.recipe).await?
+        } else {
+            false
+        };
+        if reviewed {
+            sqlx::query(
+                "UPDATE workshop_requests
+                 SET orchestrated = 1
+                 WHERE thread_id = ?",
+            )
+            .bind(thread)
+            .execute(&state.db)
+            .await?;
+        }
+        let orchestrated: bool = sqlx::query_scalar(
+            "SELECT orchestrated
+             FROM workshop_requests
+             WHERE thread_id = ?",
+        )
+        .bind(thread)
+        .fetch_one(&state.db)
+        .await?;
+        let pushed = branches.iter().any(|b| b.commit.is_some());
+        let expired = error
+            .as_ref()
+            .is_some_and(|e| e.contains("expired while waiting"));
+        let mut text = summary.filter(|s| !s.trim().is_empty()).unwrap_or_else(|| {
+            format!(
+                "Process {id}: {}.",
+                if expired { "expired" } else { &status }
+            )
+        });
+        if let Some(error) = &error {
+            text.push_str(&format!("\n\n{error}"));
+        }
+        for b in branches.iter().filter(|b| b.pull_request.is_some()) {
+            text.push_str(&format!(
+                "\n\n[Pull request for {}]({})",
+                b.repository,
+                b.pull_request.as_ref().unwrap()
+            ));
+        }
+        let successor: Option<i64> = sqlx::query_scalar(
+            "SELECT id
+             FROM workshop_processes
+             WHERE retry_of=?",
+        )
+        .bind(id)
+        .fetch_optional(&state.db)
+        .await?;
+        if let Some(next) = successor {
+            text.push_str(&format!(
+                "\n\nRetrying as process {next}, waiting for another eligible machine."
+            ));
+        }
+        let group = Membership::of_group(state, offer.group.id).await?;
+        let owner: Option<i64> = sqlx::query_scalar(
+            "SELECT owner_id
+             FROM workshop_processes
+             WHERE id=?",
+        )
+        .bind(id)
+        .fetch_one(&state.db)
+        .await?;
+        let mut tx = state.db.begin().await?;
+        sqlx::query(
+            "UPDATE workshop_processes
+             SET finished_at=?,branches=?,pushed=?
+             WHERE id=?",
+        )
+        .bind(db::now())
+        .bind(encode(&branches)?)
+        .bind(pushed)
+        .bind(id)
+        .execute(&mut *tx)
+        .await?;
+        sqlx::query(
+            "UPDATE api_tokens
+             SET revoked_at = ?
+             WHERE id = (SELECT token_id
+             FROM work_leases
+             WHERE id = ?)",
+        )
+        .bind(db::now())
+        .bind(work)
+        .execute(&mut *tx)
+        .await?;
+        let remaining: i64 = sqlx::query_scalar(
+            "SELECT count(*)
+             FROM workshop_processes p
+             JOIN work_leases w ON w.id = p.work_id
+             WHERE p.thread_id = ? AND w.state IN ('queued', 'running')",
+        )
+        .bind(thread)
+        .fetch_one(&mut *tx)
+        .await?;
+        sqlx::query(
+            "UPDATE workshop_requests
+             SET state = CASE WHEN ? > 0 THEN 'running' WHEN orchestrated = 1 THEN 'waiting' WHEN recurring = 1
+             AND next_at IS NOT NULL THEN 'waiting' ELSE ? END
+             WHERE thread_id = ? AND state IN ('waiting', 'running')",
+        )
+        .bind(remaining)
+        .bind(if status == "passed" {
+            "done"
+        } else if expired {
+            "expired"
+        } else if status == "cancelled" {
+            "cancelled"
+        } else {
+            "failed"
+        })
+        .bind(thread)
+        .execute(&mut *tx)
+        .await?;
+        let (number, stored) = forum::insert_message(
+            &mut tx,
+            &group,
+            thread,
+            owner.unwrap_or(offer.requester.id),
+            Some(runner_name(&offer.runner)),
+            Some(if offer.runner == "claude" {
+                "claude-code"
+            } else {
+                &offer.runner
+            }),
+            &stemma_core::secrets::hide(&text),
+            None,
+            &[],
+            true,
+        )
+        .await?;
+        tx.commit().await?;
+        let m = forum::publish_post(state, &group, thread, number, &stored).await?;
+        let pending: Vec<i64> = sqlx::query_scalar(
+            "UPDATE workshop_offers
+             SET decision = 'taken'
+             WHERE process_id = ? AND decision IN ('offered', 'pending')
+             RETURNING machine_id",
+        )
+        .bind(id)
+        .fetch_all(&state.db)
+        .await?;
+        let machines = state.build_machines.lock().await;
+        for id_machine in pending {
+            if let Some(machine) = machines.0.get(&id_machine) {
+                let _ = machine
+                    .sender
+                    .send(HubMessage::ProcessTaken { process: id });
+            }
+        }
+        drop(machines);
+        let kind = if expired {
+            NotificationKind::RequestExpired
+        } else if status == "passed" {
+            NotificationKind::RequestDone
+        } else {
+            NotificationKind::RequestFailed
+        };
+        if !orchestrated && successor.is_none() && status != "cancelled" {
+            notifications::notify(
                 state,
-                row.group_id,
-                row.thread_id,
-                number,
-                row.user_id,
-                &editor,
-                JobKind::PaperUpdate,
-                Some(slug),
-                false,
+                &[offer.requester.id],
+                &Notice::new(kind)
+                    .at(offer.group.id, thread, Some(m.number))
+                    .text(&text),
+            )
+            .await?;
+        }
+        if orchestrated {
+            crate::orchestrator::wake(state, thread).await?;
+        }
+        if pushed && rebase.is_none() {
+            notifications::notify(
+                state,
+                &[offer.requester.id],
+                &Notice::new(NotificationKind::ProcessPullRequest)
+                    .at(offer.group.id, thread, Some(m.number))
+                    .text("A pull request was opened for your request"),
             )
             .await?;
         }
     }
-    Ok(number)
+    Ok(())
 }
 
-/// The one message that reports on a task's run.
-fn report_message(
-    row: &TaskRow,
-    end: TaskState,
-    outcome: &TaskOutcome,
-    changed: &[String],
-    papers: &[String],
-    editor: Option<&AgentProfile>,
-) -> String {
-    let task = format!("[[w{}]], “{}”", row.number, row.title);
-    let reason = |default: &str| {
-        one_line(outcome.reason.as_deref().unwrap_or(default))
-            .trim_end_matches('.')
-            .to_owned()
-    };
-    let mut text = match end {
-        TaskState::Done if outcome.commits.is_empty() => {
-            format!("**Done:** {task}. Nothing in the library changed.")
-        }
-        TaskState::Done => format!("**Done:** {task}."),
-        TaskState::Blocked => format!("**Blocked:** {task}. {}.", reason("It could not be pushed")),
-        _ => format!("**Failed:** {task}. {}.", reason("The run failed")),
-    };
-    let report = outcome.report.trim();
-    if !report.is_empty() {
-        text.push_str("\n\n");
-        if report.chars().count() > MAX_REPORT_CHARS {
-            text.extend(report.chars().take(MAX_REPORT_CHARS));
-            text.push_str("\n\n[The report was cut here.]");
-        } else {
-            text.push_str(report);
-        }
-    }
-    if !outcome.commits.is_empty() {
-        let commits: Vec<String> = outcome
-            .commits
-            .iter()
-            .map(|c| format!("`{}`", &c[..c.len().min(10)]))
-            .collect();
-        text.push_str(&format!("\n\nIn the library: {}", commits.join(", ")));
-        if !changed.is_empty() {
-            let shown: Vec<String> = changed
-                .iter()
-                .take(MAX_CHANGED)
-                .map(|name| format!("[[lean:{name}]]"))
-                .collect();
-            text.push_str(&format!(", which changed {}", shown.join(", ")));
-            if changed.len() > MAX_CHANGED {
-                text.push_str(&format!(" and {} more", changed.len() - MAX_CHANGED));
-            }
-        }
-        text.push('.');
-    } else if end != TaskState::Done {
-        text.push_str("\n\nNothing was put in the library.");
-    }
-    if let Some(editor) = editor {
-        let papers: Vec<String> = papers.iter().map(|slug| format!("[[p/{slug}]]")).collect();
-        text.push_str(&format!(
-            "\n\n{} will update {}.",
-            editor.display_name,
-            papers.join(", ")
-        ));
-    }
-    text
-}
-
-/// The papers whose text references any of `names`, as `[[lean:Name]]`.
-async fn papers_referencing(
-    state: &AppState,
-    group_id: i64,
-    names: &[String],
-) -> ApiResult<Vec<String>> {
-    if names.is_empty() {
-        return Ok(Vec::new());
-    }
-    let papers: Vec<(String, String)> = sqlx::query_as(
-        "SELECT p.slug, r.body FROM papers p
-         JOIN paper_revisions r ON r.paper_id = p.id AND r.number = p.revision
-         WHERE p.group_id = ? ORDER BY p.updated_at DESC",
-    )
-    .bind(group_id)
-    .fetch_all(&state.db)
-    .await?;
-    let wanted: HashSet<&str> = names.iter().map(String::as_str).collect();
-    Ok(papers
-        .into_iter()
-        .filter(|(_, body)| {
-            stemma_core::references(body).iter().any(|reference| {
-                matches!(&reference.address, Ok(Address::Declaration(name)) if wanted.contains(name.as_str()))
-            })
-        })
-        .map(|(slug, _)| slug)
-        .collect())
-}
-
-// ── Settings ──────────────────────────────────────────────────────────
-
-/// How the group's workshop works, for `viewer_id`.
-pub async fn settings(
-    state: &AppState,
-    group_id: i64,
-    viewer_id: i64,
-) -> ApiResult<WorkshopSettings> {
-    let (from, to, time_zone): (i64, i64, String) =
-        sqlx::query_as("SELECT night_from, night_to, time_zone FROM groups WHERE id = ?")
-            .bind(group_id)
-            .fetch_one(&state.db)
-            .await?;
-    let lenders: Vec<crate::api::UserColumns> = sqlx::query_as(
-        "SELECT u.id AS user_id, u.username, u.display_name
-         FROM memberships m JOIN users u ON u.id = m.user_id
-         WHERE m.group_id = ? AND m.lends_worker = 1 ORDER BY u.display_name",
-    )
-    .bind(group_id)
-    .fetch_all(&state.db)
-    .await?;
-    let lenders: Vec<User> = lenders.into_iter().map(User::from).collect();
-    Ok(WorkshopSettings {
-        night_from: clock(from),
-        night_to: clock(to),
-        night_now: is_night(jiff::Timestamp::now(), &time_zone, from, to),
-        time_zone,
-        lend: lenders.iter().any(|u| u.id == viewer_id),
-        lenders,
-    })
-}
-
-/// Changes the night window and time zone.
-pub async fn set_night(
-    state: &AppState,
-    group_id: i64,
-    from: Option<&str>,
-    to: Option<&str>,
-    time_zone: Option<&str>,
-) -> ApiResult<()> {
-    let minutes = |text: Option<&str>, what: &str| -> ApiResult<Option<i64>> {
-        text.map(|t| {
-            parse_clock(t)
-                .ok_or_else(|| ApiError::invalid(format!("The night {what} is a time, as 01:00")))
-        })
-        .transpose()
-    };
-    let from = minutes(from, "starts at")?;
-    let to = minutes(to, "ends at")?;
-    let time_zone = time_zone.map(str::trim);
-    if let Some(name) = time_zone
-        && jiff::tz::TimeZone::get(name).is_err()
-    {
-        return Err(ApiError::invalid(format!(
-            "{name} is not a time zone: write one as Europe/Madrid, or UTC"
-        )));
-    }
+/// Stop model work before a request or group is removed.
+pub async fn forget_thread(state: &AppState, thread: i64) -> ApiResult<()> {
+    let _turn = state.process_changes.lock().await;
     sqlx::query(
-        "UPDATE groups SET night_from = coalesce(?, night_from), night_to = coalesce(?, night_to),
-                           time_zone = coalesce(?, time_zone)
-         WHERE id = ?",
+        "UPDATE api_tokens
+         SET revoked_at = ?
+         WHERE id IN (SELECT token_id
+         FROM work_leases
+         WHERE id IN (SELECT work_id
+         FROM workshop_processes
+         WHERE thread_id = ?))",
     )
-    .bind(from)
-    .bind(to)
-    .bind(time_zone)
-    .bind(group_id)
+    .bind(db::now())
+    .bind(thread)
     .execute(&state.db)
     .await?;
-    Ok(())
+    sqlx::query(
+        "UPDATE work_leases
+         SET state = 'cancelled'
+         WHERE kind = 'process'
+         AND id IN (SELECT work_id
+         FROM workshop_processes
+         WHERE thread_id = ?)
+         AND state IN ('queued', 'running')",
+    )
+    .bind(thread)
+    .execute(&state.db)
+    .await?;
+    cancel_machines(state, thread).await
 }
 
-/// Whether a member lends their worker to the workshop at night.
-pub async fn set_lend(state: &AppState, group_id: i64, user_id: i64, lend: bool) -> ApiResult<()> {
-    sqlx::query("UPDATE memberships SET lends_worker = ? WHERE group_id = ? AND user_id = ?")
-        .bind(lend)
-        .bind(group_id)
-        .bind(user_id)
-        .execute(&state.db)
-        .await?;
-    Ok(())
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn reads_and_writes_clocks() {
-        assert_eq!(parse_clock("01:00"), Some(60));
-        assert_eq!(parse_clock("7:30"), Some(450));
-        assert_eq!(parse_clock("24:00"), None);
-        assert_eq!(parse_clock("1:5"), None);
-        assert_eq!(clock(420), "07:00");
+/// A retry is another process, rather than another machine overwriting a run's
+/// history. The unique parent allows one successor, in this same transaction.
+pub(crate) async fn retry(
+    tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>,
+    work: i64,
+) -> ApiResult<Option<i64>> {
+    #[derive(sqlx::FromRow)]
+    struct Previous {
+        id: i64,
+        thread_id: i64,
+        group_id: i64,
+        slot: i64,
+        expires_at: i64,
+        retry_of: Option<i64>,
+        pushed: bool,
+        state: String,
     }
-
-    #[test]
-    fn nights_span_midnight() {
-        let at = |text: &str| text.parse::<jiff::Timestamp>().unwrap();
-        // 01:00–07:00 in Madrid, which is UTC+2 in summer.
-        assert!(is_night(
-            at("2026-07-01T00:30:00Z"),
-            "Europe/Madrid",
-            60,
-            420
-        ));
-        assert!(!is_night(
-            at("2026-07-01T05:30:00Z"),
-            "Europe/Madrid",
-            60,
-            420
-        ));
-        // 22:00–06:00 in UTC.
-        assert!(is_night(at("2026-07-01T23:00:00Z"), "UTC", 1320, 360));
-        assert!(is_night(at("2026-07-01T05:00:00Z"), "UTC", 1320, 360));
-        assert!(!is_night(at("2026-07-01T12:00:00Z"), "UTC", 1320, 360));
-        // An empty window.
-        assert!(!is_night(at("2026-07-01T12:00:00Z"), "UTC", 600, 600));
+    let p: Previous = sqlx::query_as(
+        "SELECT p.id, p.thread_id, w.group_id, p.slot, p.expires_at, p.retry_of, p.pushed,
+         r.state
+         FROM workshop_processes p
+         JOIN work_leases w ON w.id = p.work_id
+         JOIN workshop_requests r ON r.thread_id = p.thread_id
+         WHERE w.id = ?",
+    )
+    .bind(work)
+    .fetch_one(&mut **tx)
+    .await?;
+    let controlled: bool = sqlx::query_scalar(
+        "SELECT r.orchestrated OR p.rebase_review IS NOT NULL
+         FROM workshop_processes p
+         JOIN workshop_requests r ON r.thread_id = p.thread_id
+         WHERE p.id = ?",
+    )
+    .bind(p.id)
+    .fetch_one(&mut **tx)
+    .await?;
+    if controlled
+        || p.retry_of.is_some()
+        || p.pushed
+        || !["waiting", "running"].contains(&p.state.as_str())
+        || p.expires_at <= db::now()
+    {
+        return Ok(None);
     }
-
-    #[test]
-    fn tasks_from_messages() {
-        let (title, schedule) = from_message(
-            "@workshop formalize the lemma in t12#48 tonight. It is the gluing one.",
-            "workshop",
-        );
-        assert_eq!(title, "Formalize the lemma in t12#48 tonight");
-        assert_eq!(schedule, TaskSchedule::Night);
-        let (title, schedule) = from_message("@workshop: prove [[lean:Foo.bar]]", "workshop");
-        assert_eq!(title, "Prove [[lean:Foo.bar]]");
-        assert_eq!(schedule, TaskSchedule::Now);
+    let exists: bool = sqlx::query_scalar(
+        "SELECT EXISTS(SELECT 1
+         FROM workshop_processes
+         WHERE retry_of=?)",
+    )
+    .bind(p.id)
+    .fetch_one(&mut **tx)
+    .await?;
+    if exists {
+        return Ok(None);
     }
+    let new_work =
+        sqlx::query("INSERT INTO work_leases(group_id,kind,created_at) VALUES (?,'process',?)")
+            .bind(p.group_id)
+            .bind(db::now())
+            .execute(&mut **tx)
+            .await?
+            .last_insert_rowid();
+    let next = sqlx::query(
+        "INSERT INTO workshop_processes(thread_id, work_id, slot, expires_at, retry_of)
+         VALUES (?, ?, ?, ?, ?)",
+    )
+    .bind(p.thread_id)
+    .bind(new_work)
+    .bind(p.slot)
+    .bind(p.expires_at)
+    .bind(p.id)
+    .execute(&mut **tx)
+    .await?
+    .last_insert_rowid();
+    sqlx::query(
+        "UPDATE workshop_processes
+         SET recipe = (SELECT recipe
+         FROM workshop_processes
+         WHERE id = ?1),
+         ask = (SELECT ask
+         FROM workshop_processes
+         WHERE id = ?1)
+         WHERE id = ?2",
+    )
+    .bind(p.id)
+    .bind(next)
+    .execute(&mut **tx)
+    .await?;
+    // A different connection on the same personal token is still the same machine.
+    sqlx::query(
+        "INSERT INTO workshop_offers(process_id, machine_id, connection, decision)
+         SELECT ?, machine_id, connection, 'ran'
+         FROM workshop_offers
+         WHERE process_id = ? AND decision = 'ran'",
+    )
+    .bind(next)
+    .bind(p.id)
+    .execute(&mut **tx)
+    .await?;
+    sqlx::query(
+        "UPDATE workshop_requests
+         SET state = CASE WHEN EXISTS(SELECT 1
+         FROM workshop_processes p
+         JOIN work_leases w ON w.id = p.work_id
+         WHERE p.thread_id = ?1
+         AND w.state = 'running') THEN 'running' ELSE 'waiting' END
+         WHERE thread_id = ?1",
+    )
+    .bind(p.thread_id)
+    .execute(&mut **tx)
+    .await?;
+    Ok(Some(next))
 }

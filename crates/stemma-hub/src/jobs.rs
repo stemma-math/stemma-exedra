@@ -1,302 +1,113 @@
-//! Jobs: what agents and workers are asked to do, queued in the database
-//! and handed to the workers connected to the hub.
-//!
-//! A message that mentions an agent (`@claude`), or any message in a chat
-//! with a resident agent, creates a job per agent: an answer, or for an
-//! editor, an update of the paper the message names; for the workshop, a
-//! task (see [`crate::workshop`]). A new commit of a group's library
-//! creates a build. A job waits until a worker that can run it is connected
-//! and free:
-//!
-//! - an agent of personal scope runs on a worker of the person who asked;
-//! - an agent of group scope, on a worker of the group with its runner;
-//! - a build, on a worker of the group with Lean, one at a time per group;
-//! - a task, on a worker of the group that offers the workshop, with Lean
-//!   and the workshop agent's runner, or during the group's night window on
-//!   a member's worker its owner lends; one at a time per group, and those
-//!   asked for the night only in the night window.
-//!
-//! An answer is posted in the thread as a message by the agent, for the
-//! person who asked; an editor's revision is stored as the paper's next,
-//! and a message in the thread says so (the editor also updates papers at
-//! night, see [`crate::workshop::update_papers`]); a build's report becomes
-//! the library's state; a task's run is reported in its thread.
-//!
-//! Jobs live in the database, so they survive the hub's restarts; a job
-//! whose worker goes away is queued again, up to [`MAX_ATTEMPTS`] times.
+//! Personal reply jobs, queued until a suitable live computer can run them.
 
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 
 use sqlx::FromRow;
 use stemma_core::api::{
-    AgentProfile, AgentRole, AgentScope, Event, Job, JobKind, JobState, Message, Thread,
-    ThreadKind, User, runners,
+    AgentProfile, Event, Job, JobKind, JobState, Message, NotificationKind, Thread, ThreadKind,
+    User,
 };
 use stemma_core::protocol::{
-    Conversation, GroupRef, HubMessage, JobSpec, Outcome, PaperSpec, PaperUpdate, RelatedThread,
-    ThreadRef, Work,
+    Conversation, GroupRef, HubMessage, JobSpec, Outcome, ThreadRef, Usage, Work,
 };
-use stemma_core::{Address, locate};
 use tokio::sync::mpsc;
 
+use crate::api::Membership;
 use crate::api::forum;
-use crate::api::papers::{self, Written};
-use crate::api::{Membership, papers::Stored};
 use crate::auth;
 use crate::db;
 use crate::error::{ApiError, ApiResult};
-use crate::library;
+use crate::notifications::{self, Notice};
 use crate::state::AppState;
-use crate::workshop::{self, Night};
-
-/// How many times a job is handed to a worker before it fails.
-pub const MAX_ATTEMPTS: i64 = 3;
+use stemma_core::secrets;
 
 /// How long a job's token lasts, in milliseconds.
 const JOB_TOKEN_MILLIS: i64 = 2 * 60 * 60 * 1000;
 
-/// How long a build's or a task's token lasts: they can be long.
-const BUILD_TOKEN_MILLIS: i64 = 12 * 60 * 60 * 1000;
-
 /// About how many characters of a thread an agent is given.
 const CONTEXT_BUDGET: usize = 60_000;
-
-/// About how many characters of each thread about a paper an editor is
-/// given, and how many such threads.
-const RELATED_BUDGET: usize = 15_000;
-const MAX_RELATED: usize = 6;
 
 /// The most an answer may be, as a message.
 const MAX_ANSWER_CHARS: usize = 100_000;
 
-/// The runner of builds, as jobs record it.
-pub const LEAN: &str = "lean";
-
-/// The workers connected now.
+/// Live connections, keyed only by personal token id.
 #[derive(Default)]
 pub struct Workers {
     connected: HashMap<i64, Connected>,
-    /// Each group's night, as the last dispatch saw it.
-    pub nights: HashMap<i64, Night>,
 }
-
-/// A connected worker.
 pub struct Connected {
-    /// Which connection this is, so that a stale one does not remove a
-    /// newer one of the same worker.
     pub connection: u64,
-    pub group_id: Option<i64>,
-    pub owner_id: Option<i64>,
+    pub owner_id: i64,
     pub runners: Vec<String>,
-    pub lean: bool,
-    /// Whether it works on the workshop's tasks.
-    pub workshop: bool,
+    pub groups: std::collections::BTreeMap<String, stemma_core::protocol::GroupAgents>,
+    pub agents: stemma_core::protocol::GroupAgents,
     pub concurrency: u32,
-    pub running: HashSet<i64>,
+    pub running: HashMap<i64, JobKind>,
     pub sender: mpsc::UnboundedSender<HubMessage>,
 }
-
+impl Connected {
+    fn scope(&self, group: &str) -> &stemma_core::protocol::GroupAgents {
+        self.groups.get(group).unwrap_or(&self.agents)
+    }
+}
 impl Workers {
-    pub fn is_online(&self, worker_id: i64) -> bool {
-        self.connected.contains_key(&worker_id)
-    }
-
-    fn can_run(&self, worker: &Connected, job: &JobRow) -> bool {
-        match job.kind() {
-            JobKind::LibraryBuild => return worker.lean && worker.group_id == Some(job.group_id),
-            JobKind::TaskRun => return self.task_runner(worker, job).is_some(),
-            _ => {}
-        }
-        worker.runners.contains(&job.runner)
-            && match AgentScope::parse(&job.scope) {
-                Some(AgentScope::Personal) => worker.owner_id == Some(job.requester_id),
-                Some(AgentScope::Group) => worker.group_id == Some(job.group_id),
-                None => false,
+    pub fn rename_group(&mut self, old: &str, new: &str) {
+        for worker in self.connected.values_mut() {
+            if let Some(scope) = worker.groups.remove(old) {
+                worker.groups.insert(new.into(), scope);
             }
+        }
     }
-
-    /// The runner a worker would work on a task with, if it can now: a
-    /// group worker, with the workshop agent's runner; a member's worker
-    /// lent to the group, at night, with that runner or another of the
-    /// workshop's it has. Tasks asked for the night wait for it.
-    fn task_runner(&self, worker: &Connected, job: &JobRow) -> Option<String> {
-        if !(worker.lean && worker.workshop) {
-            return None;
-        }
-        let night = self.nights.get(&job.group_id);
-        let night_now = night.is_some_and(|n| n.now);
-        if job.task_schedule.as_deref() == Some("night") && !night_now {
-            return None;
-        }
-        let offers = |runner: &str| worker.runners.iter().any(|r| r == runner);
-        if worker.group_id == Some(job.group_id) {
-            return offers(&job.runner).then(|| job.runner.clone());
-        }
-        let lent = worker
-            .owner_id
-            .is_some_and(|owner| night.is_some_and(|n| n.now && n.lenders.contains(&owner)));
-        if !lent {
-            return None;
-        }
-        if offers(&job.runner) {
-            return Some(job.runner.clone());
-        }
-        runners::WORKSHOP
-            .iter()
-            .find(|runner| offers(runner))
-            .map(|runner| (*runner).to_owned())
-    }
-
-    /// A connected worker that can run `job` and has room for it.
-    fn free_for(&self, job: &JobRow) -> Option<i64> {
+    pub fn runners(&self, token: i64) -> Vec<String> {
         self.connected
+            .get(&token)
+            .map(|w| {
+                let mut runners = w.runners.clone();
+                for group in w.groups.values() {
+                    if let Some(found) = &group.runners {
+                        for runner in found {
+                            if !runners.contains(runner) {
+                                runners.push(runner.clone());
+                            }
+                        }
+                    }
+                }
+                runners
+            })
+            .unwrap_or_default()
+    }
+    pub fn is_online(&self, token: i64) -> bool {
+        self.connected.contains_key(&token)
+    }
+    fn free_for(&self, job: &JobRow) -> Vec<i64> {
+        let mut free: Vec<_> = self
+            .connected
             .iter()
-            .filter(|(_, w)| self.can_run(w, job) && (w.running.len() as u32) < w.concurrency)
-            .min_by_key(|(_, w)| w.running.len())
-            .map(|(id, _)| *id)
+            .filter(|(_, w)| {
+                w.owner_id == job.requester_id
+                    && w.scope(&job.group_slug).enabled
+                    && w.scope(&job.group_slug)
+                        .runners
+                        .as_ref()
+                        .unwrap_or(&w.runners)
+                        .contains(&job.runner)
+                    && w.running.len()
+                        < w.scope(&job.group_slug)
+                            .concurrency
+                            .unwrap_or(w.concurrency) as usize
+            })
+            .collect();
+        free.sort_by(|(_, a), (_, b)| {
+            b.scope(&job.group_slug)
+                .priority
+                .cmp(&a.scope(&job.group_slug).priority)
+                .then(b.connection.cmp(&a.connection))
+        });
+        free.into_iter().map(|(id, _)| *id).collect()
     }
-
-    /// Why a queued job waits.
     fn note(&self, job: &JobRow) -> String {
-        let any = self.connected.values().any(|w| self.can_run(w, job));
-        if job.kind() == JobKind::TaskRun {
-            let night = self.nights.get(&job.group_id);
-            if job.task_schedule.as_deref() == Some("night") && !night.is_some_and(|n| n.now) {
-                return match night {
-                    Some(night) => format!("Waiting for the night, {}", night.window),
-                    None => "Waiting for the night".into(),
-                };
-            }
-            return if any {
-                "Waiting for the workshop to be free".into()
-            } else {
-                format!(
-                    "Waiting for a group worker with Lean and {} to come online",
-                    runner_name(&job.runner)
-                )
-            };
-        }
-        if job.kind() == JobKind::LibraryBuild {
-            return if any {
-                "Waiting for a free worker with Lean".into()
-            } else {
-                "Waiting for a group worker with Lean to come online".into()
-            };
-        }
-        let runner = runner_name(&job.runner);
-        match (any, AgentScope::parse(&job.scope)) {
-            (true, _) => "Waiting for a free worker".into(),
-            (false, Some(AgentScope::Personal)) => format!(
-                "Waiting for {}'s worker, with {runner}, to come online",
-                job.display_name
-            ),
-            _ => format!("Waiting for a group worker with {runner} to come online"),
-        }
+        format!("Waiting for one of {}'s machines", job.display_name)
     }
-}
-
-/// How a runner is called in what people read.
-pub fn runner_name(runner: &str) -> &str {
-    match runner {
-        "claude-code" => "Claude Code",
-        "codex" => "Codex",
-        "api" => "an API model",
-        "opencode" => "OpenCode",
-        other => other,
-    }
-}
-
-// ── Agent profiles ────────────────────────────────────────────────────
-
-#[derive(FromRow)]
-struct ProfileRow {
-    handle: String,
-    display_name: String,
-    runner: String,
-    model: Option<String>,
-    endpoint: Option<String>,
-    instructions: Option<String>,
-    scope: String,
-    role: String,
-}
-
-impl From<ProfileRow> for AgentProfile {
-    fn from(row: ProfileRow) -> Self {
-        AgentProfile {
-            handle: row.handle,
-            display_name: row.display_name,
-            runner: row.runner,
-            model: row.model,
-            endpoint: row.endpoint,
-            instructions: row.instructions,
-            scope: AgentScope::parse(&row.scope).unwrap_or(AgentScope::Group),
-            role: AgentRole::parse(&row.role).unwrap_or_default(),
-        }
-    }
-}
-
-macro_rules! profile_query {
-    () => {
-        "SELECT handle, display_name, runner, model, endpoint, instructions, scope, role
-         FROM agent_profiles"
-    };
-}
-
-pub async fn profiles(state: &AppState, group_id: i64) -> ApiResult<Vec<AgentProfile>> {
-    let rows: Vec<ProfileRow> = sqlx::query_as(concat!(
-        profile_query!(),
-        " WHERE group_id = ? ORDER BY handle"
-    ))
-    .bind(group_id)
-    .fetch_all(&state.db)
-    .await?;
-    Ok(rows.into_iter().map(AgentProfile::from).collect())
-}
-
-pub async fn find_profile(
-    state: &AppState,
-    group_id: i64,
-    handle: &str,
-) -> ApiResult<Option<AgentProfile>> {
-    let row: Option<ProfileRow> = sqlx::query_as(concat!(
-        profile_query!(),
-        " WHERE group_id = ? AND handle = ?"
-    ))
-    .bind(group_id)
-    .bind(handle)
-    .fetch_optional(&state.db)
-    .await?;
-    Ok(row.map(AgentProfile::from))
-}
-
-/// The agents every group starts with: each person's own Claude and
-/// Codex, an editor of papers, with each person's own Claude, and the
-/// workshop, on the group's workers, with OpenCode.
-pub fn default_profiles() -> Vec<AgentProfile> {
-    let personal = |handle: &str, name: &str, runner: &str, role: AgentRole| AgentProfile {
-        handle: handle.into(),
-        display_name: name.into(),
-        runner: runner.into(),
-        model: None,
-        endpoint: None,
-        instructions: None,
-        scope: AgentScope::Personal,
-        role,
-    };
-    vec![
-        personal("claude", "Claude", "claude-code", AgentRole::Answer),
-        personal("codex", "Codex", "codex", AgentRole::Answer),
-        personal("editor", "Editor", "claude-code", AgentRole::Editor),
-        AgentProfile {
-            scope: AgentScope::Group,
-            ..personal(
-                "workshop",
-                "Workshop",
-                runners::OPENCODE,
-                AgentRole::Workshop,
-            )
-        },
-    ]
 }
 
 // ── Jobs ──────────────────────────────────────────────────────────────
@@ -313,37 +124,30 @@ struct JobRow {
     username: String,
     display_name: String,
     agent_handle: Option<String>,
-    agent: Option<String>,
     runner: String,
-    scope: String,
     state: String,
     worker_id: Option<i64>,
+    machine_name: Option<String>,
     token_id: Option<i64>,
-    attempts: i64,
     progress: Option<String>,
     error: Option<String>,
     answer: Option<i64>,
-    paper_slug: Option<String>,
-    base_revision: Option<i64>,
+    held_answer: Option<String>,
     created_at: i64,
     updated_at: i64,
-    /// For a task's run, the task's number and schedule.
-    task_number: Option<i64>,
-    task_schedule: Option<String>,
-    /// For an editor's job, whether it is a paper's nightly update.
-    nightly: bool,
+    group_slug: String,
 }
 
 macro_rules! job_query {
     () => {
         "SELECT j.id, j.group_id, j.kind, j.thread_id, t.number AS thread_number,
-        j.trigger_message, j.requester_id, u.username, u.display_name, j.agent_handle, j.agent,
-        j.runner, j.scope, j.state, j.worker_id, j.token_id, j.attempts, j.progress, j.error,
-        j.answer, j.paper_slug, j.base_revision, j.created_at, j.updated_at,
-        k.number AS task_number, k.schedule AS task_schedule, j.nightly
+        j.trigger_message, j.requester_id, u.username, u.display_name, j.agent_handle,
+        j.runner, j.state, j.worker_id, w.name AS machine_name, j.token_id, j.progress, j.error,
+        j.answer, j.held_answer, j.created_at, j.updated_at, g.slug AS group_slug
          FROM jobs j LEFT JOIN threads t ON t.id = j.thread_id
               JOIN users u ON u.id = j.requester_id
-              LEFT JOIN tasks k ON k.job_id = j.id"
+              JOIN groups g ON g.id = j.group_id
+              LEFT JOIN api_tokens w ON w.id = j.worker_id"
     };
 }
 
@@ -357,11 +161,11 @@ impl JobRow {
     }
 
     fn profile(&self) -> ApiResult<AgentProfile> {
-        let agent = self
-            .agent
-            .as_deref()
-            .ok_or_else(|| ApiError::internal("an agent's job without its agent"))?;
-        serde_json::from_str(agent).map_err(ApiError::internal)
+        stemma_core::api::AgentProfile::default_for(
+            self.agent_handle.as_deref().unwrap_or_default(),
+        )
+        .map(|a| a.profile())
+        .ok_or_else(|| ApiError::internal("unknown agent"))
     }
 
     fn requester(&self) -> User {
@@ -374,32 +178,31 @@ impl JobRow {
 
     fn to_api(&self, workers: &Workers) -> Job {
         let state = self.state();
-        let (agent, agent_name) = match self.kind() {
-            JobKind::LibraryBuild => (LEAN.to_owned(), "Lean".to_owned()),
-            _ => {
-                let handle = self.agent_handle.clone().unwrap_or_default();
-                let name = self
-                    .profile()
-                    .map(|p| p.display_name)
-                    .unwrap_or_else(|_| handle.clone());
-                (handle, name)
-            }
-        };
+        let profile = self.profile().expect("fixed agent");
+        let (agent, agent_name) = (profile.handle, profile.display_name);
         Job {
             id: self.id,
+            machine: self.machine_name.clone(),
             kind: self.kind(),
             thread: self.thread_number.map(|n| n as u32),
             trigger: self.trigger_message.map(|n| n as u32),
-            paper: self.paper_slug.clone(),
-            task: self.task_number.map(|n| n as u32),
             agent,
-            agent_name,
+            agent_name: agent_name.clone(),
             requester: self.requester(),
             state,
             progress: self.progress.clone().filter(|_| state == JobState::Running),
-            note: (state == JobState::Queued).then(|| workers.note(self)),
+            note: match state {
+                JobState::Queued => Some(workers.note(self)),
+                JobState::Held => Some(format!(
+                    "{}'s answer is waiting for {}",
+                    agent_name, self.display_name
+                )),
+                _ => None,
+            },
             error: self.error.clone(),
             answer: self.answer.map(|n| n as u32),
+            // Only ever given to its requester: see [`of_thread`].
+            held: None,
             created_at: db::from_millis(self.created_at),
             updated_at: db::from_millis(self.updated_at),
         }
@@ -413,31 +216,25 @@ async fn load_job(state: &AppState, job_id: i64) -> ApiResult<Option<JobRow>> {
         .await?)
 }
 
-/// Tells the job's group how it is now: and for a build, how the build is.
+/// Tells the job's group how it is now. Never with a held answer's text.
 async fn publish(state: &AppState, workers: &Workers, job_id: i64) -> ApiResult<()> {
     let Some(row) = load_job(state, job_id).await? else {
         return Ok(());
     };
     let job = row.to_api(workers);
-    if row.kind() == JobKind::LibraryBuild
-        && let Some(build) = library::build_of_job(state, job_id, job.note.clone()).await?
-    {
-        state.publish(row.group_id, Event::BuildUpdated { build });
-    }
-    if row.kind() == JobKind::TaskRun {
-        workshop::publish_of_job(state, job_id, job.note.clone()).await?;
-    }
     state.publish(row.group_id, Event::JobUpdated { job });
     Ok(())
 }
 
-/// The jobs of a thread worth showing: those on their way, and those that
-/// failed in the last day and nobody dismissed.
-pub async fn of_thread(state: &AppState, thread_id: i64) -> ApiResult<Vec<Job>> {
+/// The thread's jobs on their way, held, or failed lately, as `viewer_id`
+/// sees them, failed ones for a day: a held answer's text only for its
+/// requester.
+pub async fn of_thread(state: &AppState, thread_id: i64, viewer_id: i64) -> ApiResult<Vec<Job>> {
     let rows: Vec<JobRow> = sqlx::query_as(concat!(
         job_query!(),
         " WHERE j.thread_id = ?
-           AND (j.state IN ('queued', 'running') OR (j.state = 'failed' AND j.updated_at > ?))
+           AND (j.state IN ('queued', 'running', 'held')
+                OR (j.state = 'failed' AND j.updated_at > ?))
          ORDER BY j.id"
     ))
     .bind(thread_id)
@@ -445,48 +242,20 @@ pub async fn of_thread(state: &AppState, thread_id: i64) -> ApiResult<Vec<Job>> 
     .fetch_all(&state.db)
     .await?;
     let workers = state.workers.lock().await;
-    Ok(rows.iter().map(|row| row.to_api(&workers)).collect())
-}
-
-/// Why a job waits, if it does: for a build's page.
-pub async fn note_of(state: &AppState, job_id: i64) -> ApiResult<Option<String>> {
-    let Some(row) = load_job(state, job_id).await? else {
-        return Ok(None);
-    };
-    let workers = state.workers.lock().await;
-    Ok(row.to_api(&workers).note)
-}
-
-/// The paper a message asks an editor to update: the first it references
-/// or names (`p/compactification`), or else the one the thread is
-/// anchored to.
-pub fn paper_named(body: &str, anchor: Option<&Address>) -> Option<String> {
-    for reference in stemma_core::references(body) {
-        if let Ok(Address::Paper { slug, .. }) = reference.address {
-            return Some(slug);
-        }
-    }
-    let punctuation: &[char] = &['.', ',', ';', ':', '!', '?', '(', ')', '`', '*', '"', '\''];
-    for word in body.split_whitespace() {
-        let word = word.trim_matches(punctuation);
-        if !word.starts_with("p/") && !word.contains("/p/") {
-            continue;
-        }
-        if let Ok(located) = locate(word)
-            && let Address::Paper { slug, .. } = located.address
+    let mut jobs = Vec::new();
+    for row in &rows {
+        let mut job = row.to_api(&workers);
+        if row.requester_id == viewer_id
+            && let Some(ids) = row.held_answer.as_deref()
         {
-            return Some(slug);
+            let (text, _) = crate::text::render(state, ids).await?;
+            job.held = Some(secrets::parts(&text));
         }
+        jobs.push(job);
     }
-    match anchor {
-        Some(Address::Paper { slug, .. }) => Some(slug.clone()),
-        _ => None,
-    }
+    Ok(jobs)
 }
 
-/// Asks the agents a message summons for what they do: those it mentions,
-/// and in a chat, its resident agent. Messages written by agents summon
-/// none.
 pub async fn summon(
     state: &AppState,
     group: &Membership,
@@ -497,71 +266,50 @@ pub async fn summon(
     if message.agent.is_some() || message.deleted {
         return Ok(());
     }
-    let mut handles = stemma_core::mentions(&message.body);
+    let ids: Option<String> =
+        sqlx::query_scalar("SELECT body_ids FROM messages WHERE thread_id = ? AND number = ?")
+            .bind(thread_id)
+            .bind(message.number)
+            .fetch_optional(&state.db)
+            .await?
+            .flatten();
+    let mut handles: Vec<String> = ids
+        .and_then(|s| serde_json::from_str::<stemma_core::text::StoredText>(&s).ok())
+        .map(|s| {
+            s.targets()
+                .filter_map(|t| match t {
+                    stemma_core::text::Target::Agent(kind) => Some(kind.clone()),
+                    _ => None,
+                })
+                .collect()
+        })
+        .unwrap_or_default();
+    let mut seen = std::collections::HashSet::new();
+    handles.retain(|handle| seen.insert(handle.clone()));
     if thread.kind == ThreadKind::Chat
         && let Some(resident) = &thread.resident_agent
         && !handles.contains(resident)
     {
         handles.insert(0, resident.clone());
     }
+    let author = &message.author;
     let mut created = false;
     for handle in handles {
-        let Some(profile) = find_profile(state, group.group_id, &handle).await? else {
+        let Some(agent) = AgentProfile::default_for(&handle) else {
             continue;
         };
-        if profile.role == AgentRole::Workshop {
-            let (title, schedule) = workshop::from_message(&message.body, &profile.handle);
-            let task = workshop::NewTask {
-                title,
-                instructions: message.body.clone(),
-                thread_id,
-                origin_message: message.number,
-                requester_id: message.author.id,
-                agent: None,
-                schedule,
-            };
-            match workshop::create(state, group, task).await {
-                Ok(_) => created = true,
-                Err(error) if error.status.is_client_error() => {
-                    tracing::warn!(error = error.message, "could not hand a task over");
-                }
-                Err(error) => return Err(error),
-            }
-            continue;
-        }
-        let (kind, paper, error) = match profile.role {
-            AgentRole::Answer | AgentRole::Workshop => (JobKind::Reply, None, None),
-            AgentRole::Editor => match paper_named(&message.body, thread.anchor.as_ref()) {
-                Some(slug) => (JobKind::PaperUpdate, Some(slug), None),
-                None => (
-                    JobKind::PaperUpdate,
-                    None,
-                    Some(format!(
-                        "Say which paper @{} should update, as p/its-name",
-                        profile.handle
-                    )),
-                ),
-            },
-        };
-        let job_id = insert_agent_job(
+        let profile = agent.profile();
+        insert_agent_job(
             state,
             group.group_id,
             thread_id,
             message.number,
-            message.author.id,
+            author.id,
             &profile,
-            kind,
-            paper.as_deref(),
-            false,
-            error.as_deref(),
+            None,
         )
         .await?;
-        if error.is_some() {
-            let workers = state.workers.lock().await;
-            publish(state, &workers, job_id).await?;
-        } else {
-            created = true;
-        }
+        created = true;
     }
     if created {
         dispatch(state).await?;
@@ -569,8 +317,7 @@ pub async fn summon(
     Ok(())
 }
 
-/// Records an agent's job for a message: queued, or failed with `error`.
-#[allow(clippy::too_many_arguments)]
+/// Records an agent's answer to a message: queued, or failed with `error`.
 async fn insert_agent_job(
     state: &AppState,
     group_id: i64,
@@ -578,31 +325,22 @@ async fn insert_agent_job(
     trigger: u32,
     requester_id: i64,
     profile: &AgentProfile,
-    kind: JobKind,
-    paper: Option<&str>,
-    nightly: bool,
     error: Option<&str>,
 ) -> ApiResult<i64> {
     let now = db::now();
     Ok(sqlx::query(
         "INSERT INTO jobs (group_id, thread_id, kind, trigger_message, requester_id,
-                           agent_handle, agent, runner, scope, state, error, paper_slug,
-                           nightly, created_at, updated_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                           agent_handle, runner, state, error, created_at, updated_at)
+         VALUES (?, ?, 'reply', ?, ?, ?, ?, ?, ?, ?, ?)",
     )
     .bind(group_id)
     .bind(thread_id)
-    .bind(kind.as_str())
     .bind(trigger)
     .bind(requester_id)
     .bind(&profile.handle)
-    .bind(serde_json::to_string(profile).map_err(ApiError::internal)?)
     .bind(&profile.runner)
-    .bind(profile.scope.as_str())
     .bind(if error.is_some() { "failed" } else { "queued" })
     .bind(error)
-    .bind(paper)
-    .bind(nightly)
     .bind(now)
     .bind(now)
     .execute(&state.db)
@@ -610,201 +348,92 @@ async fn insert_agent_job(
     .last_insert_rowid())
 }
 
-/// Queues an agent's job for a message, as when the workshop asks the
-/// editor to update a paper, `nightly` if it is a paper's nightly update;
-/// the caller then dispatches.
-#[allow(clippy::too_many_arguments)]
-pub async fn queue_agent_job(
-    state: &AppState,
-    group_id: i64,
-    thread_id: i64,
-    trigger: u32,
-    requester_id: i64,
-    profile: &AgentProfile,
-    kind: JobKind,
-    paper: Option<&str>,
-    nightly: bool,
-) -> ApiResult<i64> {
-    insert_agent_job(
-        state,
-        group_id,
-        thread_id,
-        trigger,
-        requester_id,
-        profile,
-        kind,
-        paper,
-        nightly,
-        None,
-    )
-    .await
-}
-
-/// Queues a build of a group's library, for `requester_id`: whoever made
-/// the commit happen. Returns the job.
-pub async fn queue_build(state: &AppState, group_id: i64, requester_id: i64) -> ApiResult<i64> {
-    let now = db::now();
-    let id = sqlx::query(
-        "INSERT INTO jobs (group_id, kind, requester_id, runner, scope, state, created_at,
-                           updated_at)
-         VALUES (?, 'library_build', ?, ?, 'group', 'queued', ?, ?)",
-    )
-    .bind(group_id)
-    .bind(requester_id)
-    .bind(LEAN)
-    .bind(now)
-    .bind(now)
-    .execute(&state.db)
-    .await?
-    .last_insert_rowid();
-    Ok(id)
-}
-
-/// Hands the queued jobs to the workers that can run them, oldest first,
+/// Hands the queued jobs to the machines that can run them, oldest first,
 /// and tells everyone how the queued ones are.
 pub async fn dispatch(state: &AppState) -> ApiResult<()> {
+    if state.shutdown.is_cancelled() {
+        return Ok(());
+    }
     let mut workers = state.workers.lock().await;
-    workers.nights = workshop::nights(state).await?;
     let queued: Vec<JobRow> = sqlx::query_as(concat!(
         job_query!(),
-        " WHERE j.state = 'queued' ORDER BY j.id LIMIT 500"
+        " WHERE j.state = 'queued' ORDER BY j.id"
     ))
     .fetch_all(&state.db)
     .await?;
-    // A group's library is built by one worker at a time.
-    let mut building: HashSet<i64> = sqlx::query_scalar(
-        "SELECT group_id FROM jobs WHERE kind = 'library_build' AND state = 'running'",
-    )
-    .fetch_all(&state.db)
-    .await?
-    .into_iter()
-    .collect();
-    // And a group's tasks, one at a time.
-    let mut tasking: HashSet<i64> = sqlx::query_scalar(
-        "SELECT group_id FROM jobs WHERE kind = 'task_run' AND state = 'running'",
-    )
-    .fetch_all(&state.db)
-    .await?
-    .into_iter()
-    .collect();
     for job in queued {
-        let is_build = job.kind() == JobKind::LibraryBuild;
-        let is_task = job.kind() == JobKind::TaskRun;
-        let busy = (is_build && building.contains(&job.group_id))
-            || (is_task && tasking.contains(&job.group_id));
-        let worker_id = if busy { None } else { workers.free_for(&job) };
-        let Some(worker_id) = worker_id else {
+        let Some(worker_id) = workers.free_for(&job).first().copied() else {
             publish(state, &workers, job.id).await?;
             continue;
         };
-        let runner = if is_task {
-            workers
-                .connected
-                .get(&worker_id)
-                .and_then(|worker| workers.task_runner(worker, &job))
-        } else {
-            None
-        };
-        match start(state, &job, worker_id, runner).await {
+        match start(
+            state,
+            &job,
+            worker_id,
+            workers.connected[&worker_id]
+                .scope(&job.group_slug)
+                .attachments,
+        )
+        .await
+        {
             Ok(spec) => {
                 let worker = workers
                     .connected
                     .get_mut(&worker_id)
                     .expect("found just now");
-                worker.running.insert(job.id);
+                worker.running.insert(job.id, job.kind());
                 let _ = worker.sender.send(HubMessage::Job(Box::new(spec)));
-                if is_build {
-                    building.insert(job.group_id);
-                }
-                if is_task {
-                    tasking.insert(job.group_id);
-                }
             }
             Err(error) => {
                 tracing::error!(job = job.id, error = error.message, "could not start a job");
-                fail(state, job.id, "The hub could not prepare this job").await?;
+                let why = if error.status.is_client_error() {
+                    error.message
+                } else {
+                    "The hub could not prepare this job".into()
+                };
+                fail(state, job.id, &why).await?;
             }
         }
         publish(state, &workers, job.id).await?;
     }
     Ok(())
 }
-
-/// Marks a job as running on a worker, with a new token, and returns what
-/// the worker needs; a task's run, with `runner`.
 async fn start(
     state: &AppState,
     job: &JobRow,
     worker_id: i64,
-    runner: Option<String>,
+    attachments: stemma_core::api::AttachmentRule,
 ) -> ApiResult<JobSpec> {
     let group = Membership::of_group(state, job.group_id).await?;
-    let now = db::now();
-    let mut task_profile = None;
-    let (work, base_revision) = match job.kind() {
-        JobKind::Reply => (Work::Reply(conversation(state, &group, job).await?), None),
-        JobKind::PaperUpdate => {
-            let update = paper_update(state, &group, job).await?;
-            let base = update.paper.revision;
-            (Work::PaperUpdate(update), Some(base))
-        }
-        JobKind::LibraryBuild => (
-            Work::LibraryBuild(library::work_for(state, &group, job.id).await?),
-            None,
-        ),
-        JobKind::TaskRun => {
-            // The worker's runner, if it is not the agent's: then the
-            // agent's model is not for it.
-            let mut profile = job.profile()?;
-            let runner = runner.unwrap_or_else(|| profile.runner.clone());
-            if runner != profile.runner {
-                profile.runner = runner;
-                profile.model = None;
-            }
-            let mut conversation = conversation(state, &group, job).await?;
-            conversation.agent = profile.clone();
-            let run = workshop::work_for(state, &group, job.id, conversation).await?;
-            task_profile = Some(profile);
-            (Work::TaskRun(Box::new(run)), None)
-        }
-    };
-    let (agent, lasts) = match job.kind() {
-        JobKind::LibraryBuild => ("Lean".to_owned(), BUILD_TOKEN_MILLIS),
-        JobKind::TaskRun => (job.profile()?.display_name, BUILD_TOKEN_MILLIS),
-        _ => (job.profile()?.display_name, JOB_TOKEN_MILLIS),
-    };
+    let work = Work::Reply(Box::new(conversation(state, &group, job).await?));
     let (token_id, token) = auth::create_job_token(
         &state.db,
         job.requester_id,
         job.group_id,
-        None,
-        &agent,
-        now + lasts,
+        &job.profile()?.display_name,
+        db::now() + JOB_TOKEN_MILLIS,
+        attachments,
     )
     .await?;
-    if task_profile.is_some() {
-        auth::grant_push(&state.db, token_id).await?;
-    }
     sqlx::query(
-        "UPDATE jobs SET state = 'running', worker_id = ?, token_id = ?, attempts = attempts + 1,
-                         progress = NULL, base_revision = ?, updated_at = ?
+        "UPDATE jobs
+         SET state = 'running', worker_id = ?, token_id = ?, attempts = attempts + 1,
+         progress = NULL, updated_at = ?
          WHERE id = ? AND state = 'queued'",
     )
     .bind(worker_id)
     .bind(token_id)
-    .bind(base_revision)
-    .bind(now)
+    .bind(db::now())
     .bind(job.id)
     .execute(&state.db)
     .await?;
-    if let Some(profile) = &task_profile {
-        workshop::started(state, job.id, &profile.runner, profile.model.as_deref()).await?;
-    }
     Ok(JobSpec {
+        process: false,
         id: job.id,
         group: GroupRef {
-            slug: group.slug.clone(),
-            name: group.name.clone(),
+            id: group.group_id,
+            slug: group.slug,
+            name: group.name,
         },
         token,
         work,
@@ -836,62 +465,6 @@ async fn conversation(
     })
 }
 
-/// An editor's job: the paper as it is, the conversation that asked, and
-/// the other threads about the paper.
-async fn paper_update(
-    state: &AppState,
-    group: &Membership,
-    job: &JobRow,
-) -> ApiResult<PaperUpdate> {
-    let slug = job
-        .paper_slug
-        .clone()
-        .ok_or_else(|| ApiError::internal("an editor's job without its paper"))?;
-    let conversation = conversation(state, group, job).await?;
-    let paper = match papers::current(state, group.group_id, &slug).await? {
-        Some(current) => PaperSpec {
-            slug: slug.clone(),
-            title: Some(current.title),
-            revision: current.revision,
-            body: current.body,
-        },
-        None => PaperSpec {
-            slug: slug.clone(),
-            title: None,
-            revision: 0,
-            body: String::new(),
-        },
-    };
-    let mut related = Vec::new();
-    for (thread_id, anchor) in papers::threads_about(state, group.group_id, &slug).await? {
-        if Some(thread_id) == job.thread_id || related.len() >= MAX_RELATED {
-            continue;
-        }
-        let thread: Thread = forum::find_thread_by_id(state, thread_id).await?.into();
-        let messages = forum::load_messages(state, group, thread_id, 1, u32::MAX).await?;
-        related.push(RelatedThread {
-            context: stemma_core::context::trim(
-                &messages,
-                thread.number,
-                thread.last_message,
-                RELATED_BUDGET,
-            ),
-            thread: ThreadRef {
-                number: thread.number,
-                title: thread.title,
-                kind: thread.kind,
-            },
-            anchor,
-        });
-    }
-    Ok(PaperUpdate {
-        conversation,
-        paper,
-        related,
-        nightly: job.nightly,
-    })
-}
-
 async fn revoke_token(state: &AppState, token_id: Option<i64>) -> ApiResult<()> {
     if let Some(id) = token_id {
         sqlx::query("UPDATE api_tokens SET revoked_at = ? WHERE id = ? AND revoked_at IS NULL")
@@ -904,17 +477,41 @@ async fn revoke_token(state: &AppState, token_id: Option<i64>) -> ApiResult<()> 
 }
 
 async fn fail(state: &AppState, job_id: i64, error: &str) -> ApiResult<()> {
-    let token: Option<Option<i64>> = sqlx::query_scalar(
+    // An error may end with what a runner printed: never a secret of it.
+    sqlx::query(
         "UPDATE jobs SET state = 'failed', error = ?, progress = NULL, updated_at = ?
-         WHERE id = ? RETURNING token_id",
+         WHERE id = ?",
     )
-    .bind(error)
+    .bind(secrets::hide(error))
     .bind(db::now())
     .bind(job_id)
-    .fetch_optional(&state.db)
+    .execute(&state.db)
     .await?;
-    revoke_token(state, token.flatten()).await?;
-    workshop::job_ended(state, job_id, false, Some(error)).await
+    if let Some(job) = load_job(state, job_id).await? {
+        revoke_token(state, job.token_id).await?;
+        tell(state, &job, NotificationKind::Failed, None).await?;
+    }
+    Ok(())
+}
+
+/// Tells a job's requester how it went, in its thread.
+async fn tell(
+    state: &AppState,
+    job: &JobRow,
+    kind: NotificationKind,
+    message: Option<u32>,
+) -> ApiResult<()> {
+    let (Some(thread_id), Ok(profile)) = (job.thread_id, job.profile()) else {
+        return Ok(());
+    };
+    let notice = Notice::new(kind)
+        .at(
+            job.group_id,
+            thread_id,
+            message.or(job.trigger_message.map(|n| n as u32)),
+        )
+        .by(job.requester_id, Some(&profile.display_name));
+    notifications::notify(state, &[job.requester_id], &notice).await
 }
 
 /// Marks a job done, with the message that tells of it, if any.
@@ -931,17 +528,28 @@ async fn done(state: &AppState, job: &JobRow, answer: Option<u32>) -> ApiResult<
     revoke_token(state, job.token_id).await
 }
 
-/// A job a worker runs, if it is running on that worker.
+/// A job a machine runs, if it is running on that machine.
 async fn running_on(state: &AppState, worker_id: i64, job_id: i64) -> ApiResult<Option<JobRow>> {
     Ok(load_job(state, job_id)
         .await?
         .filter(|job| job.state() == JobState::Running && job.worker_id == Some(worker_id)))
 }
 
-/// What a worker says a job is doing.
-pub async fn progress(state: &AppState, worker_id: i64, job_id: i64, text: &str) -> ApiResult<()> {
+/// What a machine says a job is doing.
+pub async fn progress(
+    state: &AppState,
+    worker_id: i64,
+    connection: u64,
+    job_id: i64,
+    text: &str,
+) -> ApiResult<()> {
     let workers = state.workers.lock().await;
-    if running_on(state, worker_id, job_id).await?.is_none() {
+    if !workers
+        .connected
+        .get(&worker_id)
+        .is_some_and(|w| w.connection == connection)
+        || running_on(state, worker_id, job_id).await?.is_none()
+    {
         return Ok(());
     }
     let text: String = text.trim().chars().take(200).collect();
@@ -953,45 +561,33 @@ pub async fn progress(state: &AppState, worker_id: i64, job_id: i64, text: &str)
         .await?;
     publish(state, &workers, job_id).await
 }
-
-/// How a worker says a job ended: an answer is posted in the thread, a
-/// paper's revision is stored, a build's report is kept.
 pub async fn finished(
     state: &AppState,
     worker_id: i64,
+    connection: u64,
     job_id: i64,
     outcome: Outcome,
+    usage: Usage,
 ) -> ApiResult<()> {
     {
         let mut workers = state.workers.lock().await;
+        if !workers
+            .connected
+            .get(&worker_id)
+            .is_some_and(|w| w.connection == connection)
+        {
+            return Ok(());
+        }
         if let Some(worker) = workers.connected.get_mut(&worker_id) {
             worker.running.remove(&job_id);
         }
         let Some(job) = running_on(state, worker_id, job_id).await? else {
             return Ok(());
         };
-        let failure = match (job.kind(), outcome) {
-            (_, Outcome::Failed { error }) => Some(error.trim().chars().take(2_000).collect()),
-            (JobKind::Reply, Outcome::Answer { body }) => answered(state, &job, &body).await?,
-            (
-                JobKind::PaperUpdate,
-                Outcome::Paper {
-                    title,
-                    body,
-                    reason,
-                },
-            ) => revised(state, &job, &title, &body, &reason).await?,
-            (JobKind::LibraryBuild, Outcome::Built(built)) => {
-                library::build_finished(state, job.group_id, job_id, *built).await?;
-                done(state, &job, None).await?;
-                None
-            }
-            (JobKind::TaskRun, Outcome::Task(outcome)) => {
-                let number = workshop::finished(state, job_id, *outcome).await?;
-                done(state, &job, Some(number)).await?;
-                None
-            }
-            _ => Some("The worker answered with something else than was asked".into()),
+        let _ = usage;
+        let failure = match outcome {
+            Outcome::Failed { error } => Some(error.trim().chars().take(2_000).collect()),
+            Outcome::Answer { body } => answered(state, &job, &body).await?,
         };
         if let Some(error) = failure {
             fail(state, job_id, &error).await?;
@@ -1011,9 +607,92 @@ async fn answered(state: &AppState, job: &JobRow, answer: &str) -> ApiResult<Opt
         text = text.chars().take(MAX_ANSWER_CHARS - 40).collect();
         text.push_str("\n\n[The answer was cut here.]");
     }
+    if !secrets::find(&text).is_empty() {
+        hold(state, job, &text).await?;
+        return Ok(None);
+    }
     let number = say(state, job, &text).await?;
     done(state, job, Some(number)).await?;
+    tell(state, job, NotificationKind::Answer, Some(number)).await?;
     Ok(None)
+}
+
+/// Keeps an answer that seems to hold a secret, unposted, for its
+/// requester to decide.
+async fn hold(state: &AppState, job: &JobRow, text: &str) -> ApiResult<()> {
+    let text = crate::text::encode(&mut *state.db.acquire().await?, job.group_id, text).await?;
+    sqlx::query(
+        "UPDATE jobs SET state = 'held', held_answer = ?, progress = NULL, updated_at = ?
+         WHERE id = ?",
+    )
+    .bind(text)
+    .bind(db::now())
+    .bind(job.id)
+    .execute(&state.db)
+    .await?;
+    revoke_token(state, job.token_id).await?;
+    tell(state, job, NotificationKind::Held, None).await
+}
+
+/// A held job of `group`'s, which only its requester decides on.
+async fn held_by(
+    state: &AppState,
+    group: &Membership,
+    user_id: i64,
+    job_id: i64,
+) -> ApiResult<(JobRow, String)> {
+    let job = load_job(state, job_id)
+        .await?
+        .filter(|job| job.group_id == group.group_id && job.requester_id == user_id)
+        .ok_or_else(|| ApiError::not_found("Job"))?;
+    match (job.state(), job.held_answer.clone()) {
+        (JobState::Held, Some(text)) => Ok((job, crate::text::render(state, &text).await?.0)),
+        _ => Err(ApiError::conflict("This answer is not held")),
+    }
+}
+
+/// Posts a held answer, as it is or with its secrets hidden: its
+/// requester only.
+pub async fn publish_held(
+    state: &AppState,
+    group: &Membership,
+    user_id: i64,
+    job_id: i64,
+    hidden: bool,
+) -> ApiResult<()> {
+    let (job, text) = held_by(state, group, user_id, job_id).await?;
+    let text = if hidden { secrets::hide(&text) } else { text };
+    let number = say(state, &job, &text).await?;
+    sqlx::query(
+        "UPDATE jobs SET state = 'done', answer = ?, held_answer = NULL, updated_at = ?
+         WHERE id = ?",
+    )
+    .bind(number)
+    .bind(db::now())
+    .bind(job.id)
+    .execute(&state.db)
+    .await?;
+    let workers = state.workers.lock().await;
+    publish(state, &workers, job.id).await
+}
+
+/// Discards a held answer: its requester only.
+pub async fn discard_held(
+    state: &AppState,
+    group: &Membership,
+    user_id: i64,
+    job_id: i64,
+) -> ApiResult<()> {
+    let (job, _) = held_by(state, group, user_id, job_id).await?;
+    sqlx::query(
+        "UPDATE jobs SET state = 'cancelled', held_answer = NULL, updated_at = ? WHERE id = ?",
+    )
+    .bind(db::now())
+    .bind(job.id)
+    .execute(&state.db)
+    .await?;
+    let workers = state.workers.lock().await;
+    publish(state, &workers, job.id).await
 }
 
 /// Posts a message in a job's thread, by its agent, in reply to the
@@ -1030,6 +709,7 @@ async fn say(state: &AppState, job: &JobRow, text: &str) -> ApiResult<u32> {
         thread_id,
         job.requester_id,
         Some(&profile.display_name),
+        Some(&profile.runner),
         text,
         job.trigger_message.map(|n| n as u32),
         &[],
@@ -1038,84 +718,38 @@ async fn say(state: &AppState, job: &JobRow, text: &str) -> ApiResult<u32> {
     Ok(message.number)
 }
 
-/// Stores an editor's revision of a paper, and says so in the thread; or
-/// says why it cannot be.
-async fn revised(
-    state: &AppState,
-    job: &JobRow,
-    title: &str,
-    body: &str,
-    reason: &str,
-) -> ApiResult<Option<String>> {
-    let Some(slug) = &job.paper_slug else {
-        return Ok(Some("This job had no paper".into()));
-    };
-    let profile = job.profile()?;
-    // At night, a paper with nothing to change stays as it is, quietly.
-    if job.nightly
-        && let Some(current) = papers::current(state, job.group_id, slug).await?
-        && current.body.trim_end() == body.trim_end()
-        && current.title == title.trim()
-    {
-        done(state, job, None).await?;
-        return Ok(None);
-    }
-    let group = Membership::of_group(state, job.group_id).await?;
-    let written = Written {
-        author_id: job.requester_id,
-        agent: Some(profile.display_name.clone()),
-        title: Some(title.to_owned()),
-        body: body.to_owned(),
-        reason: reason.to_owned(),
-    };
-    let base = job.base_revision.unwrap_or(0) as u32;
-    let paper = match papers::store(state, &group, slug, base, written).await {
-        Ok(Stored::Revised(paper)) => paper,
-        Ok(Stored::Moved { current }) => {
-            return Ok(Some(format!(
-                "p/{slug} changed while {} worked on it (it is at revision {current} now): ask \
-                 again",
-                profile.display_name
-            )));
-        }
-        Err(error) if error.status.is_client_error() => {
-            return Ok(Some(format!(
-                "The revision was not stored: {}",
-                error.message
-            )));
-        }
-        Err(error) => return Err(error),
-    };
-    let reason = reason.trim();
-    let news = if paper.revision == 1 {
-        format!("Started [[p/{slug}]]: {reason}")
-    } else {
-        format!(
-            "Updated [[p/{slug}]] to revision {}: {reason}",
-            paper.revision
-        )
-    };
-    let number = say(state, job, &news).await?;
-    done(state, job, Some(number)).await?;
-    Ok(None)
-}
-
-/// Registers a connected worker, replacing an older connection of it,
+/// Registers a connected machine, replacing an older connection of it,
 /// whose jobs are queued again.
-pub async fn connected(state: &AppState, worker_id: i64, worker: Connected) -> ApiResult<()> {
-    let old = state
-        .workers
-        .lock()
-        .await
-        .connected
-        .insert(worker_id, worker);
+pub async fn connected(state: &AppState, worker_id: i64, mut worker: Connected) -> ApiResult<()> {
+    let old = {
+        let mut workers = state.workers.lock().await;
+        let valid: bool = sqlx::query_scalar(
+            "SELECT EXISTS(SELECT 1
+             FROM api_tokens
+             WHERE id = ?
+             AND user_id = ?
+             AND kind = 'personal'
+             AND revoked_at IS NULL
+             AND (expires_at IS NULL OR expires_at > ?))",
+        )
+        .bind(worker_id)
+        .bind(worker.owner_id)
+        .bind(db::now())
+        .fetch_one(&state.db)
+        .await?;
+        if !valid {
+            return Err(ApiError::unauthenticated());
+        }
+        worker.groups = canonical_groups(state, worker.groups).await?;
+        workers.connected.insert(worker_id, worker)
+    };
     if let Some(old) = old {
         requeue(state, worker_id, old.running).await?;
     }
     dispatch(state).await
 }
 
-/// Forgets a worker's connection, if it is still the current one, and
+/// Forgets a machine's connection, if it is still the current one, and
 /// queues its jobs again.
 pub async fn disconnected(state: &AppState, worker_id: i64, connection: u64) -> ApiResult<()> {
     let gone = {
@@ -1131,8 +765,9 @@ pub async fn disconnected(state: &AppState, worker_id: i64, connection: u64) -> 
     dispatch(state).await
 }
 
-/// Disconnects a worker, as when its token is revoked.
+/// Disconnects a machine, as when its token is revoked.
 pub async fn disconnect(state: &AppState, worker_id: i64) -> ApiResult<()> {
+    crate::builds::disconnect_token(state, worker_id).await?;
     let gone = state.workers.lock().await.connected.remove(&worker_id);
     if let Some(gone) = gone {
         requeue(state, worker_id, gone.running).await?;
@@ -1140,54 +775,45 @@ pub async fn disconnect(state: &AppState, worker_id: i64) -> ApiResult<()> {
     dispatch(state).await
 }
 
-/// Queues again the jobs a worker was running, unless they ran too often.
-async fn requeue(state: &AppState, worker_id: i64, jobs: HashSet<i64>) -> ApiResult<()> {
-    for job_id in jobs {
+/// Queues again the jobs a machine was running, unless they ran too often.
+async fn requeue(state: &AppState, worker_id: i64, jobs: HashMap<i64, JobKind>) -> ApiResult<()> {
+    for job_id in jobs.into_keys() {
         let Some(job) = running_on(state, worker_id, job_id).await? else {
             continue;
         };
         revoke_token(state, job.token_id).await?;
-        if job.attempts >= MAX_ATTEMPTS {
-            fail(
-                state,
-                job_id,
-                "The workers that took this job went away before finishing it",
-            )
-            .await?;
-        } else {
-            sqlx::query(
-                "UPDATE jobs SET state = 'queued', worker_id = NULL, token_id = NULL,
-                                 progress = NULL, updated_at = ?
-                 WHERE id = ?",
-            )
-            .bind(db::now())
-            .bind(job_id)
-            .execute(&state.db)
-            .await?;
-            if job.kind() == JobKind::TaskRun {
-                workshop::requeued(state, job_id).await?;
-            }
-        }
+        sqlx::query(
+            "UPDATE jobs
+             SET state = 'queued', worker_id = NULL, token_id = NULL, progress = NULL,
+             updated_at = ?
+             WHERE id = ?",
+        )
+        .bind(db::now())
+        .bind(job_id)
+        .execute(&state.db)
+        .await?;
     }
     Ok(())
 }
 
-/// After a restart no worker is connected: queue again what was running.
+/// After a restart no machine is connected: queue again what was running.
 pub async fn recover(state: &AppState) -> anyhow::Result<()> {
-    let tokens: Vec<Option<i64>> = sqlx::query_scalar(
-        "UPDATE jobs SET state = 'queued', worker_id = NULL, token_id = NULL, progress = NULL
-         WHERE state = 'running' RETURNING token_id",
+    let tokens: Vec<Option<i64>> =
+        sqlx::query_scalar("SELECT token_id FROM jobs WHERE state = 'running'")
+            .fetch_all(&state.db)
+            .await?;
+    sqlx::query(
+        "UPDATE jobs
+         SET state = 'queued', worker_id = NULL, token_id = NULL, progress = NULL
+         WHERE state = 'running'",
     )
-    .fetch_all(&state.db)
+    .execute(&state.db)
     .await?;
     for token in tokens {
         revoke_token(state, token)
             .await
             .map_err(|e| anyhow::anyhow!(e.message))?;
     }
-    sqlx::query("UPDATE tasks SET state = 'open' WHERE state = 'running'")
-        .execute(&state.db)
-        .await?;
     Ok(())
 }
 
@@ -1225,44 +851,57 @@ pub async fn stop(state: &AppState, job_id: i64) -> ApiResult<()> {
         let _ = worker.sender.send(HubMessage::Cancel { job: job_id });
     }
     sqlx::query(
-        "UPDATE jobs SET state = 'cancelled', progress = NULL, updated_at = ? WHERE id = ?",
+        "UPDATE jobs SET state = 'cancelled', progress = NULL, held_answer = NULL, updated_at = ?
+         WHERE id = ?",
     )
     .bind(db::now())
     .bind(job_id)
     .execute(&state.db)
     .await?;
     revoke_token(state, job.token_id).await?;
-    workshop::job_ended(state, job_id, true, None).await?;
     publish(state, &workers, job_id).await?;
     drop(workers);
     dispatch(state).await
 }
 
-#[cfg(test)]
-mod tests {
-    use super::paper_named;
-
-    #[test]
-    fn finds_the_paper_a_message_names() {
-        let named = |body: &str| paper_named(body, None);
-        assert_eq!(
-            named("@editor update p/compactification with this."),
-            Some("compactification".into())
-        );
-        assert_eq!(
-            named("@editor see [[p/gluing#charts]], and p/other"),
-            Some("gluing".into())
-        );
-        assert_eq!(named("@editor (`p/notes`)"), Some("notes".into()));
-        assert_eq!(
-            named("@editor https://stemma.example.org/g/geometry/p/notes"),
-            Some("notes".into())
-        );
-        assert_eq!(named("@editor update the paper"), None);
-        let anchor: stemma_core::Address = "p/anchored#a".parse().unwrap();
-        assert_eq!(
-            paper_named("@editor update it", Some(&anchor)),
-            Some("anchored".into())
-        );
+/// Replace the capabilities of the current connection without reconnecting.
+pub async fn hello(
+    state: &AppState,
+    token: i64,
+    connection: u64,
+    hello: stemma_core::protocol::Hello,
+) -> ApiResult<()> {
+    if let Some(worker) = state.workers.lock().await.connected.get_mut(&token)
+        && worker.connection == connection
+    {
+        worker.runners = hello.runners;
+        worker.agents = hello.agents;
+        worker.groups = canonical_groups(state, hello.groups).await?;
+        worker.concurrency = hello.concurrency.max(1);
     }
+    dispatch(state).await
+}
+
+/// Machines may still be using a former name while a workspace is leased.
+async fn canonical_groups(
+    state: &AppState,
+    groups: std::collections::BTreeMap<String, stemma_core::protocol::GroupAgents>,
+) -> ApiResult<std::collections::BTreeMap<String, stemma_core::protocol::GroupAgents>> {
+    let mut canonical = std::collections::BTreeMap::new();
+    for (slug, scope) in groups {
+        let current: Option<String> = sqlx::query_scalar(
+            "SELECT slug
+             FROM groups
+             WHERE slug = ?1 UNION
+             SELECT g.slug
+             FROM group_names n
+             JOIN groups g ON g.id = n.group_id
+             WHERE n.name = ?1",
+        )
+        .bind(&slug)
+        .fetch_optional(&state.db)
+        .await?;
+        canonical.insert(current.unwrap_or(slug), scope);
+    }
+    Ok(canonical)
 }

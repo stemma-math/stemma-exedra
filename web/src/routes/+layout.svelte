@@ -6,33 +6,44 @@
   import favicon32 from "@stemma-math/design/icons/favicon-32.png?url";
   import favicon from "@stemma-math/design/icons/favicon.svg?url";
 
+  import Ask from "#lib/components/Ask.svelte";
+  import SettingsDialog from "#lib/components/settings/SettingsDialog.svelte";
+  import PublicFrame from "#lib/components/PublicFrame.svelte";
   import { goto } from "$app/navigation";
   import { page } from "$app/state";
-  import { api } from "#lib/api.ts";
-  import Avatar from "#lib/components/Avatar.svelte";
-  import { loadSession, session, setSession } from "#lib/session.svelte.ts";
+  import { followNotifications } from "#lib/notifications.svelte.ts";
+  import { loadSession, session } from "#lib/session.svelte.ts";
   import { onMount } from "svelte";
+  import type { Component, Snippet } from "svelte";
+  import { applyStoredTheme } from "@stemma-math/design-elements/theme-switch.js";
+  let Desktop = $state<Component<{children: Snippet}> | null>(null);
 
   let { children } = $props();
 
-  const PUBLIC = ["/signin", "/setup", "/invite/"];
-  const isPublic = $derived(PUBLIC.some((p) => page.url.pathname.startsWith(p)));
-  const currentGroup = $derived(page.params.group);
+  /** Pages for people not signed in: the front page, and the ways in. */
+  const PUBLIC = ["/login", "/signup", "/setup", "/invite/"];
+  const isPublic = $derived(page.url.pathname === "/" || PUBLIC.some((p) => page.url.pathname.startsWith(p)));
 
-  onMount(loadSession);
-
-  $effect(() => {
-    if (session.loaded && !session.me && !isPublic) {
-      const next = page.url.pathname + page.url.search + page.url.hash;
-      goto(`/signin?next=${encodeURIComponent(next)}`, { replaceState: true });
-    }
+  onMount(() => {
+    applyStoredTheme();
+    if (__STEMMA_DESKTOP__) {
+      document.documentElement.dataset.desktop = "";
+      void import("#lib/desktop/Desktop.svelte").then((module) => { Desktop = module.default; });
+    } else void loadSession();
   });
 
-  async function signOut() {
-    await api.signOut().catch(() => {});
-    setSession(null);
-    goto("/signin");
-  }
+  // Whoever is signed in hears of their notifications as they come.
+  const signedIn = $derived(session.me?.id);
+  $effect(() => {
+    if (signedIn !== undefined) return followNotifications();
+  });
+
+  $effect(() => {
+    if (!__STEMMA_DESKTOP__ && session.loaded && !session.me && !isPublic) {
+      const next = page.url.pathname + page.url.search + page.url.hash;
+      goto(`/login?next=${encodeURIComponent(next)}`, { replaceState: true });
+    }
+  });
 </script>
 
 <svelte:head>
@@ -42,50 +53,17 @@
 </svelte:head>
 
 <div class="app">
-  {#if session.me}
-    <header class="topbar">
-      <a class="topbar__home" href="/" aria-label="Stemma, home">
-        <stemma-mark></stemma-mark>
-        <span class="wordmark">Stemma</span>
-      </a>
-      <nav class="topbar__groups" aria-label="Groups">
-        {#each session.me.groups as group (group.slug)}
-          <a
-            class="button button--quiet"
-            href="/g/{group.slug}"
-            aria-current={group.slug === currentGroup ? "page" : undefined}
-          >
-            {group.name}
-          </a>
-        {/each}
-      </nav>
-      <div class="topbar__end">
-        <stemma-menu
-          onselect={(e: CustomEvent<{ value: string }>) => {
-            if (e.detail?.value === "sign-out") signOut();
-          }}
-        >
-          <button type="button" class="button button--quiet">
-            <Avatar user={session.me} />
-            <span class="topbar__name">{session.me.display_name}</span>
-          </button>
-          <div class="menu">
-            <a class="menu__item" href="/settings">Settings</a>
-            <hr class="menu__separator" />
-            <button type="button" class="menu__item" data-value="sign-out">Sign out</button>
-          </div>
-        </stemma-menu>
-      </div>
-    </header>
-  {/if}
-
-  {#if session.loaded && (session.me || isPublic)}
-    {@render children()}
+  {#if __STEMMA_DESKTOP__}
+    {#if Desktop}<Desktop>{@render children()}</Desktop>{:else}<main class="page page--centered" aria-busy="true"><stemma-mark class="startup-mark" role="status" aria-label="Loading Stemma"></stemma-mark></main>{/if}
+  {:else if session.loaded && (session.me || isPublic)}
+    {#if !session.me && isPublic}<PublicFrame>{@render children()}</PublicFrame>{:else}{@render children()}{/if}
   {:else}
     <div class="page page--centered" aria-busy="true">
-      <span class="spinner" role="status" aria-label="Loading"></span>
+      <stemma-mark class="startup-mark" role="status" aria-label="Loading Stemma"></stemma-mark>
     </div>
   {/if}
 
+  <Ask />
+  {#if !__STEMMA_DESKTOP__ && session.me}<SettingsDialog />{/if}
   <stemma-toast-region label="Notifications"></stemma-toast-region>
 </div>

@@ -6,9 +6,9 @@ use reqwest::{Method, StatusCode};
 use serde::Serialize;
 use serde::de::DeserializeOwned;
 use stemma_core::api::{
-    ApiToken, CreatePaper, CreateTask, CreateToken, CreatedToken, DeclarationPage,
-    DeclarationSummary, EditPaper, ErrorBody, LibraryState, Me, Message, PREFIX, Paper, PaperPage,
-    PostMessage, Revision, RevisionText, SearchHit, SignIn, Task, TaskPage, TaskState, Thread,
+    ApiToken, CreateAgentToken, CreatePaper, CreateThread, CreateToken, CreatedToken,
+    DeclarationPage, DeclarationSummary, ErrorBody, LibraryState, Me, Message, PREFIX, Paper,
+    PaperFileText, PaperPage, PaperSource, PostMessage, SearchHit, SendNote, SignIn, Thread,
     ThreadKind, ThreadPage,
 };
 
@@ -21,15 +21,15 @@ pub enum ApiError {
         code: String,
         message: String,
     },
-    #[error("could not reach the hub: {0}")]
-    Unreachable(#[from] reqwest::Error),
+    #[error("Could not reach {url}: {source}")]
+    Unreachable { url: String, source: reqwest::Error },
 }
 
 impl ApiError {
     pub fn status(&self) -> Option<StatusCode> {
         match self {
             ApiError::Hub { status, .. } => Some(*status),
-            ApiError::Unreachable(_) => None,
+            ApiError::Unreachable { .. } => None,
         }
     }
 }
@@ -44,6 +44,7 @@ pub struct Hub {
     /// A session cookie, while signing in to make a token.
     cookie: Option<String>,
     http: reqwest::Client,
+    local: Option<crate::config::Paths>,
 }
 
 /// Makes rustls use ring, once per process.
@@ -65,12 +66,55 @@ impl Hub {
             token,
             cookie: None,
             http,
+            local: None,
         })
+    }
+
+    /// Only a hub constructed from local credentials may update local files.
+    pub fn local(mut self, paths: crate::config::Paths) -> Self {
+        self.local = Some(paths);
+        self
+    }
+
+    /// Download an attachment by the id shown by the reading tools. The hub
+    /// checks both group membership and the token's attachment rule.
+    pub async fn download_attachment(&self, group: &str, id: i64) -> Result<reqwest::Response> {
+        let mut request = self.http.get(format!(
+            "{}{PREFIX}/groups/{group}/attachments/{id}/file",
+            self.base
+        ));
+        if let Some(token) = &self.token {
+            request = request.bearer_auth(token);
+        }
+        if let Some(cookie) = &self.cookie {
+            request = request.header(reqwest::header::COOKIE, cookie);
+        }
+        let response = request.send().await.map_err(|e| self.unreachable(e))?;
+        let status = response.status();
+        if !status.is_success() {
+            let body = response
+                .json::<ErrorBody>()
+                .await
+                .map_err(|e| self.unreachable(e))?;
+            return Err(ApiError::Hub {
+                status,
+                code: body.error.code,
+                message: body.error.message,
+            });
+        }
+        Ok(response)
     }
 
     /// The hub's address, without a trailing slash.
     pub fn base(&self) -> &str {
         &self.base
+    }
+
+    fn unreachable(&self, source: reqwest::Error) -> ApiError {
+        ApiError::Unreachable {
+            url: self.base.clone(),
+            source,
+        }
     }
 
     async fn send<T: DeserializeOwned>(
@@ -93,11 +137,26 @@ impl Hub {
         if let Some(body) = body {
             request = request.json(body);
         }
-        let response = request.send().await?;
+        let response = request
+            .send()
+            .await
+            .map_err(|source| self.unreachable(source))?;
         let status = response.status();
         let headers = response.headers().clone();
+        if let (Some(paths), Some(token), Some(username)) = (
+            &self.local,
+            &self.token,
+            headers.get("x-stemma-user").and_then(|v| v.to_str().ok()),
+        ) && let Err(error) = paths.update_username(&self.base, token, username)
+        {
+            tracing::warn!(%error, "could not update the saved username");
+        }
+
         if !status.is_success() {
-            let text = response.text().await.unwrap_or_default();
+            let text = response
+                .text()
+                .await
+                .map_err(|source| self.unreachable(source))?;
             return Err(match serde_json::from_str::<ErrorBody>(&text) {
                 Ok(body) => ApiError::Hub {
                     status,
@@ -107,11 +166,17 @@ impl Hub {
                 Err(_) => ApiError::Hub {
                     status,
                     code: "unknown".into(),
-                    message: format!("The hub answered {status}"),
+                    message: format!(
+                        "{} did not answer as a Stemma hub (HTTP {status}).",
+                        self.base
+                    ),
                 },
             });
         }
-        let text = response.text().await?;
+        let text = response
+            .text()
+            .await
+            .map_err(|source| self.unreachable(source))?;
         let text = if text.trim().is_empty() {
             "null"
         } else {
@@ -120,7 +185,7 @@ impl Hub {
         let value = serde_json::from_str(text).map_err(|e| ApiError::Hub {
             status,
             code: "unreadable".into(),
-            message: format!("Could not read the hub's answer: {e}"),
+            message: format!("{} did not answer as a Stemma hub: {e}", self.base),
         })?;
         Ok((value, headers))
     }
@@ -137,24 +202,103 @@ impl Hub {
         Ok(self.send(Method::POST, path, &[], Some(body)).await?.0)
     }
 
-    async fn put<T: DeserializeOwned>(
-        &self,
-        path: &str,
-        body: &(impl Serialize + ?Sized),
-    ) -> Result<T> {
-        Ok(self.send(Method::PUT, path, &[], Some(body)).await?.0)
-    }
-
     async fn delete(&self, path: &str) -> Result<()> {
         self.send::<serde_json::Value>(Method::DELETE, path, &[], None::<&()>)
             .await?;
         Ok(())
     }
 
+    /// Upload a local file; the hub still enforces the token's attachment policy.
+    pub async fn upload_attachment(
+        &self,
+        group: &str,
+        path: &std::path::Path,
+    ) -> Result<stemma_core::api::Attachment> {
+        let form = reqwest::multipart::Form::new()
+            .file("file", path)
+            .await
+            .map_err(|e| ApiError::Hub {
+                status: reqwest::StatusCode::BAD_REQUEST,
+                code: "file".into(),
+                message: e.to_string(),
+            })?;
+        let mut request = self
+            .http
+            .post(format!(
+                "{}{PREFIX}/groups/{}/attachments",
+                self.base,
+                encode(group)
+            ))
+            .multipart(form);
+        if let Some(token) = &self.token {
+            request = request.bearer_auth(token);
+        }
+        let response = request.send().await.map_err(|e| self.unreachable(e))?;
+        let status = response.status();
+        let value: serde_json::Value = response.json().await.map_err(|e| self.unreachable(e))?;
+        if !status.is_success() {
+            return Err(ApiError::Hub {
+                status,
+                code: value["error"]["code"].as_str().unwrap_or("upload").into(),
+                message: value["error"]["message"]
+                    .as_str()
+                    .unwrap_or("Upload refused")
+                    .into(),
+            });
+        }
+        serde_json::from_value(value).map_err(|e| ApiError::Hub {
+            status,
+            code: "unreadable".into(),
+            message: e.to_string(),
+        })
+    }
+
+    /// Workshop API, shared by the command catalog and MCP.
+    pub async fn workshop_read(
+        &self,
+        group: &str,
+        resource: &str,
+        query: &[(&str, String)],
+    ) -> Result<serde_json::Value> {
+        self.get(
+            &format!("/groups/{}/workshop/{resource}", encode(group)),
+            query,
+        )
+        .await
+    }
+    pub async fn workshop_ask(
+        &self,
+        group: &str,
+        ask: &stemma_core::workshop::Ask,
+    ) -> Result<stemma_core::workshop::Request> {
+        self.post(&format!("/groups/{}/workshop/requests", encode(group)), ask)
+            .await
+    }
+    pub async fn workshop_cancel(
+        &self,
+        group: &str,
+        request: u32,
+    ) -> Result<stemma_core::workshop::Request> {
+        self.post(
+            &format!("/groups/{}/workshop/requests/{request}", encode(group)),
+            &serde_json::json!({"action":"cancel"}),
+        )
+        .await
+    }
+
     // ── Accounts ──────────────────────────────────────────────────────
 
+    pub async fn group(&self, slug: &str) -> Result<stemma_core::api::Group> {
+        self.get(&format!("/groups/{}", encode(slug)), &[]).await
+    }
     pub async fn me(&self) -> Result<Me> {
-        self.get("/me", &[]).await
+        let me: Me = self.get("/me", &[]).await?;
+        if let Some(paths) = &self.local
+            && let Err(error) = paths.reconcile_groups(&self.base, &me.groups)
+        {
+            tracing::warn!(%error, "could not update group names; will retry");
+        }
+        Ok(me)
     }
 
     /// Signs in with a password, for what follows, until [`Hub::sign_out`].
@@ -165,7 +309,19 @@ impl Hub {
         };
         let (me, headers): (Me, _) = self
             .send(Method::POST, "/session", &[], Some(&body))
-            .await?;
+            .await
+            .map_err(|error| match error {
+                ApiError::Hub {
+                    status: StatusCode::UNAUTHORIZED,
+                    ref code,
+                    ..
+                } if code == "wrong_credentials" => ApiError::Hub {
+                    status: StatusCode::UNAUTHORIZED,
+                    code: "invalid_credentials".into(),
+                    message: "That username and password don't match.".into(),
+                },
+                other => other,
+            })?;
         self.cookie = headers
             .get_all(reqwest::header::SET_COOKIE)
             .iter()
@@ -183,8 +339,34 @@ impl Hub {
     }
 
     pub async fn create_token(&self, name: &str) -> Result<CreatedToken> {
-        self.post("/me/tokens", &CreateToken { name: name.into() })
-            .await
+        let body = CreateToken {
+            name: name.into(),
+            expires_in_minutes: None,
+        };
+        self.post("/me/tokens", &body).await
+    }
+
+    /// A token for a session with the person's agent of `runner`, in
+    /// `group`, on the computer `host`: it reads the group, and posts and
+    /// opens threads there as the agent, for a long day at most.
+    pub async fn create_agent_token(
+        &self,
+        group: &str,
+        runner: &str,
+        host: &str,
+        attachments: stemma_core::api::AttachmentRule,
+    ) -> Result<CreatedToken> {
+        let body = CreateAgentToken {
+            attachments,
+            group: group.into(),
+            runner: runner.into(),
+            host: host.into(),
+        };
+        self.post("/me/agent-tokens", &body).await
+    }
+
+    pub async fn token_identity(&self) -> Result<ApiToken> {
+        self.get("/me/token", &[]).await
     }
 
     pub async fn tokens(&self) -> Result<Vec<ApiToken>> {
@@ -194,6 +376,8 @@ impl Hub {
     pub async fn revoke_token(&self, id: i64) -> Result<()> {
         self.delete(&format!("/me/tokens/{id}")).await
     }
+
+    // ── Agents and machines ───────────────────────────────────────────
 
     // ── The forum ─────────────────────────────────────────────────────
 
@@ -208,6 +392,10 @@ impl Hub {
             query.push(("kind", kind.as_str().to_owned()));
         }
         self.get(&format!("{}/threads", g(group)), &query).await
+    }
+
+    pub async fn create_thread(&self, group: &str, thread: &CreateThread) -> Result<ThreadPage> {
+        self.post(&format!("{}/threads", g(group)), thread).await
     }
 
     pub async fn thread(&self, group: &str, number: u32) -> Result<ThreadPage> {
@@ -238,6 +426,13 @@ impl Hub {
             .await
     }
 
+    /// Leaves a note for some of the group's members.
+    pub async fn send_note(&self, group: &str, note: &SendNote) -> Result<()> {
+        self.post::<serde_json::Value>(&format!("{}/notes", g(group)), note)
+            .await?;
+        Ok(())
+    }
+
     pub async fn search(&self, group: &str, query: &str, limit: u32) -> Result<Vec<SearchHit>> {
         let query = [("q", query.to_owned()), ("limit", limit.to_string())];
         self.get(&format!("{}/search", g(group)), &query).await
@@ -245,39 +440,6 @@ impl Hub {
 }
 
 impl Hub {
-    // ── Working papers ────────────────────────────────────────────────
-
-    pub async fn papers(&self, group: &str) -> Result<Vec<Paper>> {
-        self.get(&format!("{}/papers", g(group)), &[]).await
-    }
-
-    pub async fn paper(&self, group: &str, slug: &str) -> Result<PaperPage> {
-        self.get(&format!("{}/papers/{}", g(group), encode(slug)), &[])
-            .await
-    }
-
-    pub async fn revisions(&self, group: &str, slug: &str) -> Result<Vec<Revision>> {
-        self.get(
-            &format!("{}/papers/{}/revisions", g(group), encode(slug)),
-            &[],
-        )
-        .await
-    }
-
-    pub async fn revision(&self, group: &str, slug: &str, number: u32) -> Result<RevisionText> {
-        let path = format!("{}/papers/{}/revisions/{number}", g(group), encode(slug));
-        self.get(&path, &[]).await
-    }
-
-    pub async fn create_paper(&self, group: &str, paper: &CreatePaper) -> Result<Paper> {
-        self.post(&format!("{}/papers", g(group)), paper).await
-    }
-
-    pub async fn edit_paper(&self, group: &str, slug: &str, edit: &EditPaper) -> Result<Paper> {
-        self.put(&format!("{}/papers/{}", g(group), encode(slug)), edit)
-            .await
-    }
-
     // ── The library ───────────────────────────────────────────────────
 
     pub async fn library(&self, group: &str) -> Result<LibraryState> {
@@ -302,29 +464,48 @@ impl Hub {
 }
 
 impl Hub {
-    // ── The workshop ──────────────────────────────────────────────────
+    // ── Papers ────────────────────────────────────────────────────────
 
-    pub async fn tasks(
-        &self,
-        group: &str,
-        state: Option<TaskState>,
-        limit: u32,
-    ) -> Result<Vec<Task>> {
-        let mut query = vec![("limit", limit.to_string())];
-        if let Some(state) = state {
-            query.push(("state", state.as_str().to_owned()));
-        }
-        self.get(&format!("{}/tasks", g(group)), &query).await
+    pub async fn papers(&self, group: &str) -> Result<Vec<Paper>> {
+        self.get(&format!("{}/papers", g(group)), &[]).await
     }
 
-    pub async fn task(&self, group: &str, number: u32) -> Result<TaskPage> {
-        self.get(&format!("{}/tasks/{number}", g(group)), &[]).await
+    pub async fn paper(&self, group: &str, slug: &str) -> Result<PaperPage> {
+        self.get(&format!("{}/papers/{}", g(group), encode(slug)), &[])
+            .await
     }
 
-    pub async fn create_task(&self, group: &str, task: &CreateTask) -> Result<Task> {
-        self.post(&format!("{}/tasks", g(group)), task).await
+    pub async fn create_paper(&self, group: &str, slug: &str, title: &str) -> Result<Paper> {
+        let body = CreatePaper {
+            slug: slug.into(),
+            title: title.into(),
+        };
+        self.post(&format!("{}/papers", g(group)), &body).await
+    }
+
+    /// A paper's source files, at its `main`.
+    pub async fn paper_files(&self, group: &str, slug: &str) -> Result<PaperSource> {
+        self.get(&format!("{}/papers/{}/files", g(group), encode(slug)), &[])
+            .await
+    }
+
+    /// One of a paper's source files, at its `main`.
+    pub async fn paper_file(&self, group: &str, slug: &str, path: &str) -> Result<PaperFileText> {
+        let path: Vec<String> = path.split('/').map(encode).collect();
+        self.get(
+            &format!(
+                "{}/papers/{}/files/{}",
+                g(group),
+                encode(slug),
+                path.join("/")
+            ),
+            &[],
+        )
+        .await
     }
 }
+
+impl Hub {}
 
 fn g(group: &str) -> String {
     format!("/groups/{}", encode(group))

@@ -7,11 +7,12 @@ use std::time::{Duration, Instant};
 
 use anyhow::Context as _;
 use futures_util::{SinkExt, StreamExt};
-use stemma_core::api::PREFIX;
+use stemma_core::api::{JobKind, PREFIX};
 use stemma_core::protocol::{
-    Hello, HubMessage, Outcome, PROTOCOL_VERSION, WORKER_PATH, WorkerMessage, WorkerOwner,
+    Hello, HubMessage, Others, Outcome, PROTOCOL_VERSION, ProcessResult, Usage, WORKER_PATH,
+    WorkerMessage,
 };
-use tokio::sync::{Semaphore, mpsc};
+use tokio::sync::mpsc;
 use tokio::task::JoinHandle;
 use tokio_tungstenite::tungstenite::client::IntoClientRequest;
 use tokio_tungstenite::tungstenite::http::{HeaderValue, StatusCode, header};
@@ -94,9 +95,7 @@ async fn connect(context: &Context, token: &str) -> Result<Socket, Ended> {
         Err(tungstenite::Error::Http(response))
             if response.status() == StatusCode::UNAUTHORIZED =>
         {
-            Err(Ended::Refused(anyhow::anyhow!(
-                "the hub does not accept this worker's token: it is not valid, or was revoked"
-            )))
+            Err(Ended::Refused(crate::machine::Stopped::SignedOut.into()))
         }
         Err(error) => Err(Ended::Dropped(
             anyhow::Error::new(error).context(format!("connecting to {url}")),
@@ -116,34 +115,45 @@ async fn session(context: &Arc<Context>, token: &str) -> Ended {
         Ok(socket) => socket,
         Err(ended) => return ended,
     };
-    let hello = WorkerMessage::Hello(Hello {
-        protocol: PROTOCOL_VERSION,
-        version: env!("CARGO_PKG_VERSION").into(),
-        runners: context.config.runner_names(),
-        lean: context.config.lean.is_some() && has_lean(),
-        workshop: context.config.workshop.is_some() && context.config.lean.is_some() && has_lean(),
-        concurrency: context.config.concurrency,
-    });
+    let hello = match hello().await {
+        Ok(hello) => WorkerMessage::Hello(hello),
+        Err(e) => return Ended::Refused(e),
+    };
     if let Err(error) = send(&mut socket, &hello).await {
         return Ended::Dropped(error);
     }
-    match welcome(&mut socket).await {
+    let owner = match welcome(&mut socket).await {
         Ok(Ok(welcome)) => {
-            let owner = match welcome.owner {
-                WorkerOwner::Group { name, .. } => format!("the group {name}"),
-                WorkerOwner::Member { user } => user.display_name,
-            };
+            if let Err(error) = context
+                .config
+                .paths
+                .reconcile_groups(&context.hub, &welcome.groups)
+                .and_then(|()| {
+                    context.config.paths.update_username(
+                        &context.hub,
+                        token,
+                        &welcome.owner.username,
+                    )
+                })
+            {
+                tracing::warn!(%error, "could not reconcile names; will retry");
+            }
+
             tracing::info!(
-                "connected to {} as {}, a worker of {owner}; runners: {}",
+                "connected to {} as {}, one of {}'s machines; runners: {}; Lean: {}; LaTeX: {}",
                 context.hub,
                 welcome.name,
-                context.config.runner_names().join(", ")
+                welcome.owner.display_name,
+                context.config.runner_names().join(", "),
+                "local tools",
+                "local tools"
             );
+            welcome.owner
         }
-        Ok(Err(reason)) => return Ended::Refused(anyhow::anyhow!("the hub refused: {reason}")),
+        Ok(Err(reason)) => return Ended::Refused(crate::machine::Stopped::Refused(reason).into()),
         Err(error) => return Ended::Dropped(error),
-    }
-    let ended = work(context, &mut socket).await;
+    };
+    let ended = work(context, &mut socket, RunningJobs::default(), owner).await;
     let _ = socket.close(None).await;
     Ended::Dropped(ended)
 }
@@ -166,17 +176,59 @@ async fn welcome(
     }
 }
 
+/// Aborting the service must also abort jobs; dropping a JoinHandle detaches it.
+#[derive(Default)]
+struct RunningJobs(HashMap<i64, (JobKind, JoinHandle<()>)>);
+
+impl RunningJobs {
+    fn accepts(&self, id: i64, kind: JobKind, concurrency: u32) -> bool {
+        let _ = kind;
+        !self.0.contains_key(&id) && self.0.len() < concurrency as usize
+    }
+}
+
+impl Drop for RunningJobs {
+    fn drop(&mut self) {
+        for (_, task) in self.0.values() {
+            task.abort();
+        }
+    }
+}
+
+#[derive(Default)]
+struct RunningBuilds(HashMap<i64, (stemma_core::protocol::LeaseRef, JoinHandle<()>)>);
+impl Drop for RunningBuilds {
+    fn drop(&mut self) {
+        for (_, task) in self.0.values() {
+            task.abort();
+        }
+    }
+}
+
 /// Runs the hub's jobs until the connection ends; then stops them, for the
 /// hub queues them again.
-async fn work(context: &Arc<Context>, socket: &mut Socket) -> anyhow::Error {
+async fn work(
+    context: &Arc<Context>,
+    socket: &mut Socket,
+    mut jobs: RunningJobs,
+    owner: stemma_core::api::User,
+) -> anyhow::Error {
     let (progress, mut progress_out) = mpsc::unbounded_channel::<(i64, String)>();
-    let (finished, mut finished_out) = mpsc::unbounded_channel::<(i64, Outcome)>();
-    let slots = Arc::new(Semaphore::new(context.config.concurrency as usize));
-    let mut jobs: HashMap<i64, JoinHandle<()>> = HashMap::new();
+    let (finished, mut finished_out) = mpsc::unbounded_channel::<(i64, Outcome, Usage)>();
+    let mut builds = RunningBuilds::default();
+    let mut processes = RunningBuilds::default();
+    let (process_results, mut process_results_out) = mpsc::unbounded_channel();
+    let mut decisions: HashMap<i64, String> = HashMap::new();
+    let (build_results, mut build_results_out) = mpsc::unbounded_channel();
+    let mut heartbeat = tokio::time::interval(Duration::from_secs(15));
     let mut heard = Instant::now();
-    let mut check = tokio::time::interval(Duration::from_secs(15));
+    let mut check = tokio::time::interval(Duration::from_secs(2));
+    let mut last_hello = String::new();
+    let mut settings =
+        stemma_client::config::Settings::load().unwrap_or_else(|_| context.config.settings.clone());
+    let mut modification = None;
 
-    let error = loop {
+    loop {
         tokio::select! {
             incoming = socket.next() => {
                 heard = Instant::now();
@@ -190,79 +242,308 @@ async fn work(context: &Arc<Context>, socket: &mut Socket) -> anyhow::Error {
                     Ok(HubMessage::Job(spec)) => {
                         let id = spec.id;
                         tracing::info!(job = id, kind = spec.kind().as_str(), "job received");
-                        let context = context.clone();
+                        let group = stemma_core::api::Group { id: spec.group.id, slug: spec.group.slug.clone(), name: spec.group.name.clone(), role: stemma_core::api::Role::Member, created_at: time::OffsetDateTime::UNIX_EPOCH };
+                        if let Err(error) = context.config.paths.reconcile_groups(&context.hub, &[group]) { tracing::warn!(%error, "could not reconcile a job's group name"); }
+                        if let Ok(updated) = stemma_client::config::Settings::load() { settings = updated; }
+                        let local = match context.config.paths.group_slug(&context.hub, spec.group.id, &spec.group.slug) { Ok(local) => local, Err(error) => break error };
+                        let credentials = stemma_client::config::Credentials { hub: Some(context.hub.clone()), ..Default::default() };
+                        let config = match crate::config::WorkerConfig::resolve(&settings, &context.config.paths, &credentials, Some(&local)) { Ok(c) => c, Err(error) => { break error; } };
+                        if !jobs.accepts(id, spec.kind(), config.concurrency) {
+                            let message = WorkerMessage::Finished {
+                                job: id,
+                                outcome: Outcome::Failed { error: "This machine is at its job limit".into() },
+                                usage: Usage::default(),
+                            };
+                            if let Err(error) = send(socket, &message).await { break error; }
+                            continue;
+                        }
+                        let kind = spec.kind();
+                        let context = match Context::start(config, context.stemma.clone()).await {
+                            Ok(c) => Arc::new(c),
+                            Err(error) => {
+                                let message = WorkerMessage::Finished { job: id, outcome: Outcome::Failed { error: format!("{error:#}") }, usage: Usage::default() };
+                                if let Err(error) = send(socket, &message).await { break error; }
+                                continue;
+                            }
+                        };
                         let progress = Progress::new(id, progress.clone());
                         let finished = finished.clone();
-                        let slots = slots.clone();
                         let task = tokio::spawn(async move {
-                            let _slot = slots.acquire_owned().await;
-                            let outcome = job::run(context, *spec, progress).await;
-                            let _ = finished.send((id, outcome));
+                            let (outcome, usage) = job::run(context, *spec, progress).await;
+                            let _ = finished.send((id, outcome, usage));
                         });
-                        jobs.insert(id, task);
+                        jobs.0.insert(id, (kind, task));
+                    }
+                    Ok(HubMessage::ProcessOffer(offer)) => {
+                        let state = &context.config.paths.state;
+                        if let Ok(true) = crate::processes::accepts(context, &offer) {
+                            // Kept for its owner to decide, here or in the app.
+                            if let Ok(scope) = crate::builds::capabilities(&settings, Some(&offer.group.slug))
+                                && let Err(error) = crate::approvals::receive(state, &context.hub, &owner, *offer, scope.others)
+                            {
+                                tracing::warn!(%error, "could not retain process offer");
+                            }
+                        } else {
+                            let declined = WorkerMessage::ProcessDecision {
+                                process: offer.process,
+                                accept: false,
+                                pending: false,
+                            };
+                            let _ = send(socket, &declined).await;
+                        }
+                    }
+                    Ok(HubMessage::ProcessTaken { process }) => {
+                        let _ = crate::approvals::taken(&context.config.paths.state, &context.hub, process);
+                        decisions.remove(&process);
+                    }
+                    Ok(HubMessage::Process(spec)) => {
+                        let lease = spec.lease;
+                        if processes.0.contains_key(&lease.id) { continue; }
+                        let running = processes.0.len();
+                        let check = crate::builds::capabilities(&settings, Some(&spec.offer.group.slug)).and_then(|scope| {
+                            anyhow::ensure!(
+                                scope.enabled && running < scope.concurrency as usize,
+                                "This machine is at its process limit"
+                            );
+                            anyhow::ensure!(spec.owner.id == owner.id, "Process owner changed");
+                            anyhow::ensure!(
+                                spec.offer.requester.id == owner.id || scope.others != Others::Never,
+                                "Other people's requests are disabled"
+                            );
+                            crate::approvals::start(&context.config.paths.state, &context.hub, &owner, &spec.offer)
+                        });
+                        if let Err(error) = check {
+                            let result = ProcessResult { error: Some(format!("{error:#}")), ..Default::default() };
+                            let message = WorkerMessage::ProcessFinished { lease, result: Box::new(result) };
+                            if let Err(error) = send(socket, &message).await { break error; }
+                            continue;
+                        }
+                        decisions.remove(&spec.offer.process);
+                        let context = context.clone();
+                        let results = process_results.clone();
+                        let task = tokio::spawn(async move {
+                            let result = crate::processes::run(context, *spec).await;
+                            let _ = results.send((lease, result));
+                        });
+                        processes.0.insert(lease.id, (lease, task));
+                    }
+                    Ok(HubMessage::CancelProcess { lease }) => {
+                        if processes.0.get(&lease.id).is_some_and(|(held, _)| *held == lease)
+                            && let Some((_, task)) = processes.0.remove(&lease.id) { task.abort(); }
+                    }
+                    Ok(HubMessage::Build(spec)) => {
+                        let lease = spec.lease;
+                        if builds.0.contains_key(&lease.id) { continue; }
+                        let accepting = stemma_client::config::Settings::load()
+                            .and_then(|settings| crate::builds::capabilities(&settings, Some(&spec.group.slug)))
+                            .is_ok_and(|scope| scope.enabled && scope.build && builds.0.len() < scope.build_concurrency as usize);
+                        if !accepting {
+                            let reason = "This machine is not accepting another build for this group".into();
+                            if let Err(error) = send(socket, &WorkerMessage::BuildDeclined { lease, reason }).await { break error; }
+                            continue;
+                        }
+                        let context = context.clone();
+                        let result = build_results.clone();
+                        let spec = *spec;
+                        let task = tokio::spawn(async move {
+                            let built = crate::builds::run(&context, &spec).await;
+                            let _ = result.send((lease, built));
+                        });
+                        builds.0.insert(lease.id, (lease, task));
+                    }
+                    Ok(HubMessage::CancelBuild { lease }) => {
+                        if builds.0.get(&lease.id).is_some_and(|(held, _)| *held == lease)
+                            && let Some((_, task)) = builds.0.remove(&lease.id) { task.abort(); }
                     }
                     Ok(HubMessage::Cancel { job }) => {
-                        if let Some(task) = jobs.remove(&job) {
+                        if let Some((_, task)) = jobs.0.remove(&job) {
                             tracing::info!(job, "job cancelled");
                             task.abort();
                         }
                     }
                     Ok(HubMessage::Refused { reason }) => break anyhow::anyhow!("the hub refused: {reason}"),
+                    Ok(HubMessage::Identity(me)) => {
+                        let token = stemma_client::config::Credentials::load().ok().and_then(|c| c.with_env().token).unwrap_or_default();
+                        if let Err(error) = context.config.paths.update_username(&context.hub, &token, &me.user.username) { tracing::warn!(%error, "could not update the saved username"); }
+                        if let Err(error) = context.config.paths.reconcile_groups(&context.hub, &me.groups) {
+                                tracing::warn!(%error, "could not reconcile names; will retry");
+                            }
+                        if let Ok(updated) = stemma_client::config::Settings::load() { settings = updated; }
+                    }
                     Ok(HubMessage::Welcome(_)) => {}
                     Err(error) => tracing::warn!(%error, "unreadable message from the hub"),
                 }
             }
+            _ = heartbeat.tick() => {
+                for (lease, _) in processes.0.values() {
+                    if let Err(error) = send(socket, &WorkerMessage::ProcessHeartbeat { lease: *lease }).await { return error; }
+                }
+                for (lease, _) in builds.0.values() {
+                    if let Err(error) = send(socket, &WorkerMessage::BuildHeartbeat { lease: *lease }).await { return error; }
+                }
+            }
+            Some((lease, result)) = process_results_out.recv() => {
+                let message = WorkerMessage::ProcessFinished { lease, result: Box::new(result) };
+                if processes.0.remove(&lease.id).is_some()
+                    && let Err(error) = send(socket, &message).await { break error; }
+            }
+            Some((lease, built)) = build_results_out.recv() => {
+                let message = match built {
+                    Ok(result) => WorkerMessage::BuildFinished { lease, result: Box::new(result) },
+                    Err(reason) => WorkerMessage::BuildDeclined { lease, reason },
+                };
+                if builds.0.remove(&lease.id).is_some()
+                    && let Err(error) = send(socket, &message).await { break error; }
+            }
             Some((job, text)) = progress_out.recv() => {
-                if jobs.contains_key(&job)
+                if jobs.0.contains_key(&job)
                     && let Err(error) = send(socket, &WorkerMessage::Progress { job, text }).await
                 {
                     break error;
                 }
             }
-            Some((job, outcome)) = finished_out.recv() => {
-                if jobs.remove(&job).is_none() {
+            Some((job, outcome, usage)) = finished_out.recv() => {
+                if jobs.0.remove(&job).is_none() {
                     continue;
                 }
                 tracing::info!(job, failed = matches!(outcome, Outcome::Failed { .. }), "job finished");
-                if let Err(error) = send(socket, &WorkerMessage::Finished { job, outcome }).await {
+                if let Err(error) = send(socket, &WorkerMessage::Finished { job, outcome, usage }).await {
                     break error;
                 }
             }
             _ = check.tick() => {
+                // Decisions taken on this machine, in the app or with `stemma workshop`.
+                if let Ok(store) = crate::approvals::read(&context.config.paths.state) {
+                    let mine = store.pending.iter().filter(|p| p.hub == context.hub && p.owner == owner.id);
+                    for pending in mine {
+                        let id = pending.offer.process;
+                        let decision = pending.decision.as_str();
+                        let approved = decision == "approved";
+                        if !approved && decisions.get(&id).is_some_and(|s| s == decision) { continue; }
+                        if approved {
+                            let scope = crate::builds::capabilities(&settings, Some(&pending.offer.group.slug));
+                            if !scope.is_ok_and(|s| processes.0.len() < s.concurrency as usize) { continue; }
+                        }
+                        let message = WorkerMessage::ProcessDecision {
+                            process: id,
+                            accept: approved,
+                            pending: decision == "pending",
+                        };
+                        if let Err(error) = send(socket, &message).await { return error; }
+                        decisions.insert(id, decision.into());
+                    }
+                }
+                let observed = std::fs::metadata(&settings.path).and_then(|m| m.modified()).ok();
+                if observed != modification {
+                    modification = observed;
+                    match stemma_client::config::Settings::load() {
+                        Ok(updated) => match hello_from(&updated).await {
+                            Ok(hello) => {
+                                let serialized = serde_json::to_string(&hello).unwrap();
+                                if serialized != last_hello {
+                                    if let Err(error) = send(socket, &WorkerMessage::Hello(hello)).await { break error; }
+                                    last_hello = serialized;
+                                }
+                                settings = updated;
+                            }
+                            Err(error) => tracing::warn!(%error, "could not reload capabilities"),
+                        },
+                        Err(error) => tracing::warn!(%error, "configuration is invalid; keeping the last valid settings"),
+                    }
+                }
                 if heard.elapsed() > SILENCE_LIMIT {
                     break anyhow::anyhow!("the hub went silent");
                 }
             }
         }
-    };
-    for (_, task) in jobs.drain() {
-        task.abort();
     }
-    error
 }
 
-/// Whether Lean is installed: `elan` or `lake` on the path.
-pub fn has_lean() -> bool {
-    let Some(path) = std::env::var_os("PATH") else {
-        return false;
+/// Current live capabilities; the same resolution supplies jobs and the app.
+pub async fn hello() -> anyhow::Result<Hello> {
+    let settings = stemma_client::config::Settings::load()?;
+    hello_from(&settings).await
+}
+
+async fn hello_from(settings: &stemma_client::config::Settings) -> anyhow::Result<Hello> {
+    let paths = stemma_client::config::Paths::discover()?;
+    let credentials = stemma_client::config::Credentials::load()?.with_env();
+    let resolve =
+        |group| crate::config::WorkerConfig::resolve(settings, &paths, &credentials, group);
+    let scope = |group| -> anyhow::Result<stemma_core::protocol::GroupAgents> {
+        Ok(stemma_core::protocol::GroupAgents {
+            attachments: settings.attachments(group)?,
+            enabled: settings
+                .get("agents.enabled", group)?
+                .value
+                .as_bool()
+                .unwrap(),
+            priority: settings.priority(group)?,
+            runners: None,
+            concurrency: Some(
+                settings
+                    .get("agents.concurrency", group)?
+                    .value
+                    .as_integer()
+                    .unwrap() as u32,
+            ),
+        })
     };
-    std::env::split_paths(&path).any(|dir| dir.join("elan").is_file() || dir.join("lake").is_file())
+    let agents = scope(None)?;
+    let config = resolve(None)?;
+    let found = available(&config).await;
+    let mut groups = std::collections::BTreeMap::new();
+    for slug in settings.groups() {
+        let mut group = scope(Some(slug))?;
+        let configured = resolve(Some(slug))?;
+        let available = available(&configured).await;
+        if available != found {
+            group.runners = Some(available);
+        }
+        if group.enabled != agents.enabled
+            || group.priority != agents.priority
+            || group.concurrency != agents.concurrency
+            || group.attachments != agents.attachments
+            || group.runners.is_some()
+        {
+            groups.insert(slug.clone(), group);
+        }
+    }
+    Ok(Hello {
+        protocol: PROTOCOL_VERSION,
+        version: env!("CARGO_PKG_VERSION").into(),
+        runners: found,
+        concurrency: config.concurrency,
+        agents,
+        groups,
+        workshop: crate::builds::capabilities(settings, None)?,
+        workshop_groups: settings
+            .groups()
+            .map(|slug| {
+                Ok((
+                    slug.clone(),
+                    crate::builds::capabilities(settings, Some(slug))?,
+                ))
+            })
+            .collect::<anyhow::Result<_>>()?,
+    })
 }
 
-#[cfg(test)]
-mod tests {
-    use super::socket_url;
-
-    #[test]
-    fn socket_urls() {
-        assert_eq!(
-            socket_url("https://stemma.example.org/").unwrap(),
-            "wss://stemma.example.org/api/v1/worker"
-        );
-        assert_eq!(
-            socket_url("http://127.0.0.1:8080").unwrap(),
-            "ws://127.0.0.1:8080/api/v1/worker"
-        );
-        assert!(socket_url("stemma.example.org").is_err());
+async fn available(config: &crate::config::WorkerConfig) -> Vec<String> {
+    match crate::isolation::resolve(
+        &config.isolation,
+        &config.hub,
+        std::env::var_os("PATH").as_deref(),
+    )
+    .await
+    {
+        Ok(crate::isolation::Isolator::Host) => {
+            crate::detect::installed(&config.runners, std::env::var_os("PATH").as_deref()).await
+        }
+        Ok(crate::isolation::Isolator::Containers(_)) => config.runner_names(),
+        Err(reason) => {
+            tracing::warn!(%reason, "agents cannot run with this isolation configuration");
+            Vec::new()
+        }
     }
 }

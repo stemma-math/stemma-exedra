@@ -1,89 +1,154 @@
 <script lang="ts">
-  import { api, type WorkshopSettings } from "#lib/api.ts";
+  import { api } from "#lib/api.ts";
+  import { exactly } from "#lib/format.ts";
+  import { scriptedSelect } from "#lib/scripted-select.ts";
   import { toastError } from "#lib/toast.ts";
+  import type { WorkshopModel } from "#lib/workshop.ts";
 
-  let { group, admin }: { group: string; admin: boolean } = $props();
+  let { group }: { group: string } = $props();
+  let settings = $state<WorkshopModel | null>(null);
+  let provider = $state<WorkshopModel["provider"]>("anthropic");
+  let model = $state("");
+  let key = $state("");
+  let cap = $state(1_000_000);
+  let steps = $state(20);
+  let saving = $state(false);
 
-  let settings = $state<WorkshopSettings | null>(null);
-  let from = $state("");
-  let to = $state("");
-  let zone = $state("");
-
-  function show(found: WorkshopSettings) {
-    settings = found;
-    from = found.night_from;
-    to = found.night_to;
-    zone = found.time_zone;
-  }
+  /** A few models per provider; any other identifier works too. */
+  const SUGGESTIONS: Record<WorkshopModel["provider"], string[]> = {
+    anthropic: ["claude-sonnet-5-5", "claude-opus-5-5", "claude-haiku-5-5"],
+    openai: ["gpt-6.1-sol", "gpt-5.6-sol"],
+    openrouter: ["anthropic/claude-sonnet-5.5", "openai/gpt-6.1-sol"],
+  };
 
   $effect(() => {
-    api.workshop(group).then(show).catch(toastError);
+    api.workshopModel(group).then(show).catch(toastError);
   });
 
-  async function save(event: Event) {
-    event.preventDefault();
-    try {
-      show(await api.updateWorkshop(group, { night_from: from, night_to: to, time_zone: zone }));
-    } catch (error) {
-      toastError(error);
-    }
+  function show(value: WorkshopModel) {
+    settings = value;
+    provider = value.provider;
+    model = value.model;
+    cap = value.monthly_cap;
+    steps = value.step_cap;
   }
 
-  async function lend(value: boolean) {
+  /** Saves the form; the key only when one is typed, or removes it. */
+  async function save(remove = false) {
+    saving = true;
     try {
-      show(await api.updateWorkshop(group, { lend: value }));
+      const body = {
+        provider,
+        model,
+        api_key: remove ? "" : key || null,
+        monthly_cap: cap,
+        step_cap: steps,
+      };
+      show(await api.updateWorkshopModel(group, body));
+      key = "";
     } catch (error) {
       toastError(error);
-      api.workshop(group).then(show).catch(() => {});
+    } finally {
+      saving = false;
     }
   }
-
-  /** The time zone this browser is in, to offer it. */
-  const here = Intl.DateTimeFormat().resolvedOptions().timeZone;
 </script>
 
-{#if settings}
-  {#if admin}
-    <form class="card card__body form" onsubmit={save}>
-      <div class="row night-window">
-        <div class="field grow">
-          <label class="field__label" for="night-from">Night from</label>
-          <input id="night-from" class="input" type="time" bind:value={from} required />
-        </div>
-        <div class="field grow">
-          <label class="field__label" for="night-to">Until</label>
-          <input id="night-to" class="input" type="time" bind:value={to} required />
-        </div>
-        <div class="field grow">
-          <label class="field__label" for="night-zone">Time zone</label>
-          <input id="night-zone" class="input input--mono" bind:value={zone} placeholder={here} required list="night-zones" />
-          <datalist id="night-zones"><option value={here}></option><option value="UTC"></option></datalist>
-        </div>
+<section class="stack" aria-label="Workshop">
+  <h2>Workshop</h2>
+  <p>
+    The workshop thinks with the group's model: it turns requests in plain words into processes, and reviews
+    and merges their pull requests. It needs an API key, never a subscription's sign-in. Use a key made for
+    this, with a spending limit at the provider: whoever runs the hub could read it.
+  </p>
+  {#if settings}
+    <dl class="request-facts">
+      <dt class="label">API key</dt>
+      <dd>
+        {#if settings.has_key}
+          Ending in <code>{settings.last_four}</code>, set by {settings.set_by?.display_name ?? "a deleted account"}{#if settings.set_at !== null},
+            {exactly(settings.set_at)}{/if}
+        {:else}
+          None yet. Members can still choose recipes themselves.
+        {/if}
+      </dd>
+      <dt class="label">This month</dt>
+      <dd>
+        {(settings.input_tokens + settings.output_tokens).toLocaleString("en")} of
+        {settings.monthly_cap.toLocaleString("en")} tokens{#if settings.cost_usd !== null}, ${settings.cost_usd.toFixed(2)}{/if}
+        <span class="quiet">({settings.month}, UTC)</span>
+      </dd>
+    </dl>
+    {#if settings.stopped}
+      <p class="message message--warning" role="status">
+        The workshop reached this month's cap. It stops thinking until next month or a higher cap.
+      </p>
+    {/if}
+    <form
+      class="form"
+      onsubmit={(event) => {
+        event.preventDefault();
+        void save();
+      }}
+    >
+      <div class="field">
+        <label class="field__label" for="workshop-provider">Provider</label>
+        <stemma-select>
+          <select id="workshop-provider" class="input" use:scriptedSelect={[provider]} bind:value={provider}>
+            <option value="anthropic">Anthropic</option>
+            <option value="openai">OpenAI</option>
+            <option value="openrouter">OpenRouter</option>
+          </select>
+        </stemma-select>
+      </div>
+      <div class="field">
+        <label class="field__label" for="workshop-model">Model</label>
+        <input
+          id="workshop-model"
+          class="input"
+          list="workshop-models"
+          maxlength="200"
+          autocomplete="off"
+          required
+          bind:value={model}
+        />
+        <datalist id="workshop-models">
+          {#each SUGGESTIONS[provider] as suggestion (suggestion)}
+            <option value={suggestion}></option>
+          {/each}
+        </datalist>
+        <p class="field__hint">Whoever provides the key chooses the model.</p>
+      </div>
+      <div class="field">
+        <label class="field__label" for="workshop-key">API key</label>
+        <input
+          id="workshop-key"
+          class="input"
+          type="password"
+          autocomplete="new-password"
+          placeholder={settings.has_key ? "Leave empty to keep the current key" : ""}
+          bind:value={key}
+        />
+        <p class="field__hint">Written, never read back. Changing the provider or model asks for it again.</p>
+      </div>
+      <div class="field">
+        <label class="field__label" for="workshop-cap">Tokens per month</label>
+        <input id="workshop-cap" class="input" type="number" min="0" step="1" required bind:value={cap} />
+        <p class="field__hint">Input and output together, as the provider reports them.</p>
+      </div>
+      <div class="field">
+        <label class="field__label" for="workshop-steps">Steps per turn</label>
+        <input id="workshop-steps" class="input" type="number" min="1" max="100" step="1" required bind:value={steps} />
+        <p class="field__hint">How many calls the workshop makes each time it wakes, at most.</p>
       </div>
       <div class="row">
-        <span class="quiet grow">{settings.night_now ? "It is night now." : "It is not night now."}</span>
-        <button type="submit" class="button button--primary">Save</button>
+        <button class="button button--primary" type="submit" disabled={saving}>Save</button>
+        {#if settings.has_key}
+          <button class="button button--danger" type="button" disabled={saving} onclick={() => save(true)}>
+            Remove key
+          </button>
+        {/if}
       </div>
     </form>
-  {:else}
-    <p>
-      The night is from {settings.night_from} to {settings.night_to} ({settings.time_zone}){settings.night_now
-        ? ", and it is night now"
-        : ""}.
-    </p>
   {/if}
-  <label class="choice">
-    <input type="checkbox" role="switch" aria-checked={settings.lend} checked={settings.lend} onchange={(e) => lend(e.currentTarget.checked)} />
-    <span>
-      Lend my own worker to the workshop at night: with Lean and <code>[workshop]</code> in its
-      configuration, it works on the group's tasks with my own runners and subscription.
-    </span>
-  </label>
-  {#if settings.lenders.length}
-    <p class="quiet">
-      Lent at night: {settings.lenders.map((u) => u.display_name).join(", ")}.
-    </p>
-  {/if}
-{:else}
-  <span class="spinner" role="status" aria-label="Loading"></span>
-{/if}
+</section>

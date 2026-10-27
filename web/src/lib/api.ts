@@ -1,3 +1,5 @@
+import { hubFetch, hubUrl } from "./transport.svelte.ts";
+
 // The hub's API, version 1. The types mirror `stemma-core`'s `api` module.
 
 export interface User {
@@ -6,9 +8,11 @@ export interface User {
   display_name: string;
 }
 
-export type Role = "admin" | "member";
+/** What someone may do in a group: see `roles.ts`. */
+export type Role = "admin" | "member" | "guest";
 
 export interface Group {
+  id: number;
   slug: string;
   name: string;
   role: Role;
@@ -18,6 +22,33 @@ export interface Group {
 export interface Me extends User {
   hub_admin: boolean;
   groups: Group[];
+  /** How many of their notifications are unread. */
+  unread: number;
+}
+
+export interface GroupRequest {
+  id: number;
+  slug: string;
+  name: string;
+  purpose: string;
+  requester: User;
+  status: "open" | "approved" | "declined";
+  created_at: string;
+}
+export interface HubGroup {
+  slug: string;
+  name: string;
+  members: number;
+  created_at: string;
+}
+export interface HubPerson extends User {
+  hub_admin: boolean;
+}
+
+/** A page of what the hub's page searched, and whether there is more. */
+export interface HubPage<T> {
+  items: T[];
+  more: boolean;
 }
 
 export interface Member extends User {
@@ -27,7 +58,8 @@ export interface Member extends User {
 
 export interface Invitation {
   id: number;
-  role: Role;
+  /** A group's link gives a role; the hub's makes an account. */
+  role: Role | null;
   created_by: User;
   created_at: string;
   expires_at: string | null;
@@ -45,25 +77,44 @@ export interface InvitationInfo {
   role: Role;
 }
 
+/** A new link's limits: when it stops working and how often it is used. */
+export interface LinkLimits {
+  role?: Role;
+  expires_at?: string;
+  max_uses?: number;
+}
+
+export interface SignUpInfo {
+  invited_by: User;
+}
+
 export interface ApiToken {
   id: number;
   name: string;
   prefix: string;
   created_at: string;
   last_used_at: string | null;
+  connected: boolean;
+  runners: string[];
+  /** When it stops working by itself, as a session's does. */
+  expires_at?: string | null;
 }
 
 export interface CreatedToken extends ApiToken {
   secret: string;
 }
 
-export type ThreadKind = "discussion" | "chat";
+export type ThreadKind = "discussion" | "chat" | "request";
+
+/** How hard a chat's resident agent thinks before it answers. */
 
 export interface Thread {
   number: number;
   title: string;
   kind: ThreadKind;
   resident_agent: string | null;
+  resident_runner: string | null;
+  /** The model a chat's resident agent answers with, if the chat chose one. */
   anchor: string | null;
   created_by: User;
   created_at: string;
@@ -72,6 +123,7 @@ export interface Thread {
 }
 
 export interface Attachment {
+  author: User;
   id: number;
   name: string;
   content_type: string;
@@ -80,9 +132,13 @@ export interface Attachment {
 }
 
 export interface Message {
+  orchestrator_model?: string | null;
+  workshop?: boolean;
+  missing_references: string[];
   number: number;
   author: User;
   agent: string | null;
+  agent_runner: string | null;
   body: string;
   reply_to: number | null;
   attachments: Attachment[];
@@ -110,63 +166,44 @@ export interface Resolved {
 export interface SearchHit {
   address: string;
   thread_title: string;
+  thread_kind: ThreadKind;
   author: User | null;
   agent: string | null;
   snippet: string;
   created_at: string;
 }
 
-/** The runners a worker can run an agent with. */
-export const RUNNERS = ["claude-code", "codex", "opencode", "api"] as const;
+/** The runners an agent runs with. */
+export const RUNNERS = ["claude-code", "codex", "opencode"] as const;
 export type Runner = (typeof RUNNERS)[number];
 
-export type AgentScope = "personal" | "group";
-export type AgentRole = "answer" | "editor" | "workshop";
+export const RUNNER_NAMES: Record<string, string> = {
+  "claude-code": "Claude Code",
+  codex: "Codex",
+  opencode: "OpenCode",
+};
 
-export interface AgentProfile {
-  handle: string;
-  display_name: string;
-  runner: string;
-  model: string | null;
-  endpoint: string | null;
-  instructions: string | null;
-  scope: AgentScope;
-  role: AgentRole;
+export const AGENTS = [
+  { handle: "claude", display_name: "Claude", runner: "claude-code" },
+  { handle: "codex", display_name: "Codex", runner: "codex" },
+  { handle: "opencode", display_name: "OpenCode", runner: "opencode" },
+];
+export type JobState = "queued" | "running" | "held" | "done" | "failed" | "cancelled";
+
+/** A part of a held answer: plain, or a secret, with what it seems to be. */
+export interface HeldPart {
+  text: string;
+  secret?: string;
 }
 
-export type WorkerScope = "group" | "member";
-
-export interface Worker {
-  id: number;
-  name: string;
-  scope: WorkerScope;
-  group: string | null;
-  owner: User | null;
-  prefix: string;
-  online: boolean;
-  runners: string[];
-  lean: boolean;
-  workshop: boolean;
-  version: string | null;
-  created_at: string;
-  last_seen_at: string | null;
-}
-
-export interface CreatedWorker extends Worker {
-  secret: string;
-}
-
-export type JobState = "queued" | "running" | "done" | "failed" | "cancelled";
-
-export type JobKind = "reply" | "paper_update" | "library_build" | "task_run";
+export type JobKind = "reply";
 
 export interface Job {
   id: number;
+  machine?: string | null;
   kind: JobKind;
   thread: number | null;
   trigger: number | null;
-  paper: string | null;
-  task?: number | null;
   agent: string;
   agent_name: string;
   requester: User;
@@ -175,58 +212,92 @@ export interface Job {
   note: string | null;
   error: string | null;
   answer: number | null;
+  /** A held answer, cut at its secrets: only ever for its requester. */
+  held?: HeldPart[];
   created_at: string;
   updated_at: string;
 }
 
 export type GroupEvent =
+  | { type: "names_changed" }
   | { type: "thread_created"; thread: Thread }
   | { type: "thread_updated"; thread: Thread }
   | { type: "message_created"; thread: number; message: Message }
   | { type: "message_updated"; thread: number; message: Message }
   | { type: "job_updated"; job: Job }
-  | { type: "paper_updated"; paper: Paper }
   | { type: "build_updated"; build: Build }
-  | { type: "task_updated"; task: Task };
+  | { type: "paper_updated"; paper: Paper }
+  | { type: "thread_deleted"; thread: number }
+  | { type: "paper_deleted"; paper: string };
 
-export interface Paper {
-  slug: string;
-  title: string;
-  revision: number;
-  created_by: User;
-  created_at: string;
-  updated_by: User;
-  updated_agent: string | null;
-  updated_at: string;
-  last_read: number | null;
-}
+export type NotificationKind =
+  | "review_merged"
+  | "review_refused"
+  | "request_done"
+  | "request_failed"
+  | "request_expired"
+  | "process_approval"
+  | "process_pull_request"
+  | "mention"
+  | "answer"
+  | "held"
+  | "failed"
+  | "note"
+  | "role"
+  | "removed"
+  | "approved"
+  | "declined"
+  | "requested";
 
-export interface Revision {
-  number: number;
-  title: string;
-  author: User;
+/** Something a person is told. */
+export interface Notification {
+  id: number;
+  kind: NotificationKind;
+  /** How many of the same, in the same thread, it gathers. */
+  count: number;
+  actor: User | null;
   agent: string | null;
-  reason: string;
-  created_at: string;
+  group: { slug: string; name: string } | null;
+  thread: {
+    number: number;
+    kind: ThreadKind;
+    title: string;
+    message: number | null;
+    excerpt: string | null;
+  } | null;
+  /** A note's Markdown, or what it is about: a role, a group's name. */
+  text: string | null;
+  /** Whether the thread or message it is about is gone. */
+  gone: boolean;
+  read: boolean;
+  updated_at: string;
 }
 
-export interface RevisionText extends Revision {
-  body: string;
+export interface NotificationPage {
+  items: Notification[];
+  unread: number;
+  more: boolean;
 }
 
-export interface SectionInfo {
-  slug: string;
-  title: string;
-  level: number;
+/** What to do with some of one's notifications. */
+export type NotificationChange = "read" | "unread" | "delete";
+
+/** What a person accepts as notes, and how long they keep what they read. */
+export interface NotificationSettings {
+  /** How many notes an hour; null for no limit. */
+  notes_per_hour: number | null;
+  notes_from_agents: boolean;
+  /** How many days read notifications are kept; null for always. */
+  keep_read_days: number | null;
 }
 
-export interface PaperPage {
-  paper: Paper;
-  body: string;
-  sections: SectionInfo[];
-  since_read: Revision[];
-  read_body: string | null;
-  threads: Thread[];
+export type PersonalEvent = { type: "notifications"; unread: number };
+
+/** What goes with a thread or a paper when it is deleted. */
+export interface Contents {
+  messages: number;
+  files: number;
+  threads: number;
 }
 
 export type DeclarationState = "proved" | "sorry" | "missing";
@@ -239,6 +310,10 @@ export interface Build {
   progress: string | null;
   error: string | null;
   lean: string | null;
+  /** The machine that built it, or builds it. */
+  machine: string | null;
+  /** Whether it may build again: it failed, and is of main's newest commit. */
+  again: boolean;
   created_at: string;
   finished_at: string | null;
 }
@@ -253,9 +328,15 @@ export interface ModuleSummary {
   sorry: number;
 }
 
+export interface ForgeLinks {
+  organization: string;
+  repository: string;
+}
+
 export interface LibraryState {
   available: boolean;
   clone_path: string;
+  forge: ForgeLinks | null;
   head: string | null;
   latest: Build | null;
   current: Build | null;
@@ -291,42 +372,35 @@ export interface DeclarationPage extends DeclarationSummary {
   references: { address: string; title: string }[];
 }
 
-export type TaskState = "open" | "running" | "done" | "failed" | "blocked" | "cancelled";
-export type TaskSchedule = "now" | "night";
-
-export interface Task {
-  number: number;
-  title: string;
-  instructions: string;
-  origin: string;
-  requester: User;
-  agent: string | null;
-  state: TaskState;
-  schedule: TaskSchedule;
-  runner: string | null;
-  model: string | null;
+/** A build of a commit of a paper, compiled with latexmk. */
+export interface PaperBuild {
+  id: number;
+  commit: string;
+  state: BuildState;
   progress: string | null;
-  reason: string | null;
-  commits: string[];
-  report_message: string | null;
+  error: string | null;
+  machine: string | null;
+  again: boolean;
   created_at: string;
-  updated_at: string;
-  started_at: string | null;
   finished_at: string | null;
 }
 
-export interface TaskPage extends Task {
-  report: string | null;
-  log: string;
+/** A working paper: a LaTeX repository of the group, and its PDF. */
+export interface Paper {
+  slug: string;
+  title: string;
+  repository: string;
+  clone_path: string;
+  forge_url: string | null;
+  authors: User[];
+  created_by: User;
+  created_at: string;
+  latest: PaperBuild | null;
+  pdf: { build: number; commit: string; size: number; url: string; built_at: string } | null;
 }
 
-export interface WorkshopSettings {
-  night_from: string;
-  night_to: string;
-  time_zone: string;
-  night_now: boolean;
-  lend: boolean;
-  lenders: User[];
+export interface PaperPage extends Paper {
+  log: string;
 }
 
 /** An error the hub returned, with its code and words. */
@@ -342,12 +416,19 @@ export class ApiError extends Error {
 
 const PREFIX = "/api/v1";
 
+let signedOut: (() => void) | null = null;
+
+/** Calls `then` when the hub says the browser is no longer signed in, as
+ * when its session ends. */
+export function onSignedOut(then: () => void) {
+  signedOut = then;
+}
+
 async function request<T>(method: string, path: string, body?: unknown): Promise<T> {
   let response: Response;
   try {
-    response = await fetch(PREFIX + path, {
+    response = await hubFetch(PREFIX + path, {
       method,
-      credentials: "same-origin",
       headers: body === undefined ? {} : { "content-type": "application/json" },
       body: body === undefined ? undefined : JSON.stringify(body),
     });
@@ -361,12 +442,15 @@ async function parse<T>(response: Response): Promise<T> {
   if (response.status === 204) return undefined as T;
   const data = await response.json().catch(() => null);
   if (!response.ok) {
+    if (data?.error?.code === "unauthenticated") signedOut?.();
     throw new ApiError(
       response.status,
       data?.error?.code ?? "unknown",
-      data?.error?.message ?? `The hub answered ${response.status}`,
+      data?.error?.message ?? "This address did not answer as a Stemma hub.",
     );
   }
+  if (data === null)
+    throw new ApiError(response.status, "not_hub", "This address did not answer as a Stemma hub.");
   return data as T;
 }
 
@@ -379,25 +463,92 @@ const del = <T>(path: string) => request<T>("DELETE", path);
 const g = (group: string) => `/groups/${encodeURIComponent(group)}`;
 
 export const api = {
+  workshopModel: (group: string) =>
+    get<import("./workshop.ts").WorkshopModel>(`${g(group)}/workshop/model`),
+  updateWorkshopModel: (
+    group: string,
+    body: {
+      provider: string;
+      model: string;
+      api_key: string | null;
+      monthly_cap: number;
+      step_cap: number;
+    },
+  ) => put<import("./workshop.ts").WorkshopModel>(`${g(group)}/workshop/model`, body),
+  workshopStatus: (group: string) =>
+    get<import("./workshop.ts").WorkshopStatus>(`${g(group)}/workshop/status`),
+  recipes: (group: string) =>
+    get<import("./workshop.ts").RecipeFile[]>(`${g(group)}/workshop/recipes`),
+  requests: (group: string, state = "open") =>
+    get<import("./workshop.ts").WorkshopRequest[]>(
+      `${g(group)}/workshop/requests?state=${encodeURIComponent(state)}`,
+    ),
+  workshopRequest: (group: string, number: number) =>
+    get<import("./workshop.ts").WorkshopRequest>(`${g(group)}/workshop/requests/${number}`),
+  askWorkshop: (group: string, ask: import("./workshop.ts").Ask) =>
+    post<import("./workshop.ts").WorkshopRequest>(`${g(group)}/workshop/requests`, ask),
+  requestAction: (group: string, number: number, action: string) =>
+    post<import("./workshop.ts").WorkshopRequest>(`${g(group)}/workshop/requests/${number}`, {
+      action,
+    }),
+  user: (username: string) => get<User>(`/users/${encodeURIComponent(username)}`),
   setupState: () => get<{ needed: boolean }>("/setup"),
   setup: (body: { token: string; username: string; display_name: string; password: string }) =>
     post<Me>("/setup", body),
   signIn: (username: string, password: string) => post<Me>("/session", { username, password }),
   signOut: () => del<void>("/session"),
   me: () => get<Me>("/me"),
-  updateMe: (display_name: string) => patch<Me>("/me", { display_name }),
+  updateMe: (display_name: string, username?: string) =>
+    patch<Me>("/me", { display_name, username }),
+  nameAvailability: (kind: "user" | "group", name: string, group?: string) =>
+    get<{ available: boolean; reason: string | null }>(
+      `/names/${kind}?${new URLSearchParams({ name, ...(group ? { group } : {}) })}`,
+    ),
+  updateGroup: (slug: string, name: string, next: string) =>
+    patch<Group>(`/groups/${slug}`, { name, slug: next }),
   changePassword: (current: string, next: string) =>
     post<void>("/me/password", { current, new: next }),
   tokens: () => get<ApiToken[]>("/me/tokens"),
   createToken: (name: string) => post<CreatedToken>("/me/tokens", { name }),
   revokeToken: (id: number) => del<void>(`/me/tokens/${id}`),
+  notifications: (before?: number, q?: string) => {
+    const query = new URLSearchParams();
+    if (before) query.set("before", String(before));
+    if (q) query.set("q", q);
+    const qs = query.toString();
+    return get<NotificationPage>(`/me/notifications${qs ? `?${qs}` : ""}`);
+  },
+  changeNotifications: (ids: number[], change: NotificationChange) =>
+    post<void>("/me/notifications/change", { ids, change }),
+  readAllNotifications: () => post<void>("/me/notifications/read", {}),
+  notificationSettings: () => get<NotificationSettings>("/me/notifications/settings"),
+  updateNotificationSettings: (settings: NotificationSettings) =>
+    put<NotificationSettings>("/me/notifications/settings", settings),
 
   invitation: (token: string) => get<InvitationInfo>(`/invitations/${encodeURIComponent(token)}`),
-  acceptInvitation: (
-    token: string,
-    account?: { username: string; display_name: string; password: string },
-  ) => post<Me>(`/invitations/${encodeURIComponent(token)}/accept`, { account }),
+  acceptInvitation: (token: string) =>
+    post<Me>(`/invitations/${encodeURIComponent(token)}/accept`, {}),
+  signUpInfo: (token: string) => get<SignUpInfo>(`/sign-up/${encodeURIComponent(token)}`),
+  signUp: (token: string, account: { username: string; display_name: string; password: string }) =>
+    post<Me>(`/sign-up/${encodeURIComponent(token)}`, account),
+  hubInvitations: () => get<Invitation[]>("/hub/invitations"),
+  createHubInvitation: (body: LinkLimits) => post<CreatedInvitation>("/hub/invitations", body),
+  revokeHubInvitation: (id: number) => del<void>(`/hub/invitations/${id}`),
 
+  groupRequests: () => get<GroupRequest[]>("/group-requests"),
+  myGroupRequests: () => get<GroupRequest[]>("/me/group-requests"),
+  requestGroup: (slug: string, name: string, purpose: string) =>
+    post<void>("/group-requests", { slug, name, purpose }),
+  approveGroup: (id: number) => post<Group>(`/group-requests/${id}/approve`, {}),
+  declineGroup: (id: number) => post<void>(`/group-requests/${id}/decline`, {}),
+  hubGroups: (q: string, offset: number) =>
+    get<HubPage<HubGroup>>(`/hub/groups?q=${encodeURIComponent(q)}&offset=${offset}`),
+  hubPeople: (q: string, offset: number) =>
+    get<HubPage<HubPerson>>(`/hub/people?q=${encodeURIComponent(q)}&offset=${offset}`),
+  deleteHubGroup: (slug: string) => del<void>(`/hub/groups/${encodeURIComponent(slug)}`),
+  deleteHubPerson: (id: number) => del<void>(`/hub/people/${id}`),
+  updateHubPerson: (id: number, hub_admin: boolean) =>
+    patch<void>(`/hub/people/${id}`, { hub_admin }),
   createGroup: (slug: string, name: string) => post<Group>("/groups", { slug, name }),
   group: (group: string) => get<Group>(g(group)),
   members: (group: string) => get<Member[]>(`${g(group)}/members`),
@@ -405,10 +556,8 @@ export const api = {
     patch<void>(`${g(group)}/members/${user}`, { role }),
   removeMember: (group: string, user: number) => del<void>(`${g(group)}/members/${user}`),
   invitations: (group: string) => get<Invitation[]>(`${g(group)}/invitations`),
-  createInvitation: (
-    group: string,
-    body: { role?: Role; expires_in_days?: number; max_uses?: number },
-  ) => post<CreatedInvitation>(`${g(group)}/invitations`, body),
+  createInvitation: (group: string, body: LinkLimits) =>
+    post<CreatedInvitation>(`${g(group)}/invitations`, body),
   revokeInvitation: (group: string, id: number) => del<void>(`${g(group)}/invitations/${id}`),
 
   threads: (
@@ -436,6 +585,9 @@ export const api = {
   thread: (group: string, n: number) => get<ThreadPage>(`${g(group)}/threads/${n}`),
   renameThread: (group: string, n: number, title: string) =>
     patch<Thread>(`${g(group)}/threads/${n}`, { title }),
+  threadContents: (group: string, n: number) => get<Contents>(`${g(group)}/threads/${n}/contents`),
+  deleteThread: (group: string, n: number) => del<void>(`${g(group)}/threads/${n}`),
+  readThread: (group: string, n: number) => post<void>(`${g(group)}/threads/${n}/read`, {}),
   postMessage: (
     group: string,
     n: number,
@@ -447,43 +599,8 @@ export const api = {
     del<Message>(`${g(group)}/threads/${n}/messages/${m}`),
   resolve: (group: string, addresses: string[]) =>
     post<Resolved[]>(`${g(group)}/resolve`, { addresses }),
-  search: (group: string, q: string) =>
-    get<SearchHit[]>(`${g(group)}/search?${new URLSearchParams({ q })}`),
-
-  agents: (group: string) => get<AgentProfile[]>(`${g(group)}/agents`),
-  createAgent: (group: string, agent: AgentProfile) =>
-    post<AgentProfile>(`${g(group)}/agents`, agent),
-  updateAgent: (group: string, agent: AgentProfile) =>
-    put<AgentProfile>(`${g(group)}/agents/${encodeURIComponent(agent.handle)}`, agent),
-  deleteAgent: (group: string, handle: string) =>
-    del<void>(`${g(group)}/agents/${encodeURIComponent(handle)}`),
-
-  groupWorkers: (group: string) => get<Worker[]>(`${g(group)}/workers`),
-  createGroupWorker: (group: string, name: string) =>
-    post<CreatedWorker>(`${g(group)}/workers`, { name }),
-  revokeGroupWorker: (group: string, id: number) => del<void>(`${g(group)}/workers/${id}`),
-  myWorkers: () => get<Worker[]>("/me/workers"),
-  createMyWorker: (name: string) => post<CreatedWorker>("/me/workers", { name }),
-  revokeMyWorker: (id: number) => del<void>(`/me/workers/${id}`),
-
-  papers: (group: string) => get<Paper[]>(`${g(group)}/papers`),
-  paper: (group: string, slug: string) =>
-    get<PaperPage>(`${g(group)}/papers/${encodeURIComponent(slug)}`),
-  createPaper: (
-    group: string,
-    body: { slug: string; title: string; body: string; reason?: string },
-  ) => post<Paper>(`${g(group)}/papers`, body),
-  editPaper: (
-    group: string,
-    slug: string,
-    body: { title?: string; body: string; reason: string; base_revision: number },
-  ) => put<Paper>(`${g(group)}/papers/${encodeURIComponent(slug)}`, body),
-  revisions: (group: string, slug: string) =>
-    get<Revision[]>(`${g(group)}/papers/${encodeURIComponent(slug)}/revisions`),
-  revision: (group: string, slug: string, n: number) =>
-    get<RevisionText>(`${g(group)}/papers/${encodeURIComponent(slug)}/revisions/${n}`),
-  markRead: (group: string, slug: string, revision: number) =>
-    post<void>(`${g(group)}/papers/${encodeURIComponent(slug)}/read`, { revision }),
+  search: (group: string, q: string, limit = 50) =>
+    get<SearchHit[]>(`${g(group)}/search?${new URLSearchParams({ q, limit: String(limit) })}`),
 
   library: (group: string) => get<LibraryState>(`${g(group)}/library`),
   declarations: (
@@ -500,29 +617,44 @@ export const api = {
     get<DeclarationPage>(`${g(group)}/library/declarations/${encodeURIComponent(name)}`),
   builds: (group: string) => get<Build[]>(`${g(group)}/library/builds`),
   build: (group: string, id: number) => get<BuildLog>(`${g(group)}/library/builds/${id}`),
-  rebuild: (group: string) => post<Build>(`${g(group)}/library/builds`, {}),
+  buildAgain: (group: string, id: number, builder: number | null) =>
+    post<Build>(`${g(group)}/library/builds/${id}/again`, { builder }),
+  paperBuildAgain: (group: string, paper: string, id: number, builder: number | null) =>
+    post<PaperPage>(`${g(group)}/papers/${encodeURIComponent(paper)}/builds/${id}/again`, {
+      builder,
+    }),
 
-  tasks: (group: string, state?: TaskState) =>
-    get<Task[]>(`${g(group)}/tasks${state ? `?state=${state}` : ""}`),
-  task: (group: string, n: number) => get<TaskPage>(`${g(group)}/tasks/${n}`),
-  cancelTask: (group: string, n: number) => del<void>(`${g(group)}/tasks/${n}`),
-  workshop: (group: string) => get<WorkshopSettings>(`${g(group)}/workshop`),
-  updateWorkshop: (
-    group: string,
-    body: { night_from?: string; night_to?: string; time_zone?: string; lend?: boolean },
-  ) => put<WorkshopSettings>(`${g(group)}/workshop`, body),
-
+  papers: (group: string) => get<Paper[]>(`${g(group)}/papers`),
+  paperContents: (group: string, slug: string) =>
+    get<Contents>(`${g(group)}/papers/${encodeURIComponent(slug)}/contents`),
+  deletePaper: (group: string, slug: string) =>
+    del<void>(`${g(group)}/papers/${encodeURIComponent(slug)}`),
+  paper: (group: string, slug: string) =>
+    get<PaperPage>(`${g(group)}/papers/${encodeURIComponent(slug)}`),
+  createPaper: (group: string, slug: string, title: string) =>
+    post<Paper>(`${g(group)}/papers`, { slug, title }),
+  addAuthor: (group: string, slug: string, username: string) =>
+    put<Paper>(
+      `${g(group)}/papers/${encodeURIComponent(slug)}/authors/${encodeURIComponent(username)}`,
+      undefined,
+    ),
+  removeAuthor: (group: string, slug: string, username: string) =>
+    del<Paper>(
+      `${g(group)}/papers/${encodeURIComponent(slug)}/authors/${encodeURIComponent(username)}`,
+    ),
   threadJobs: (group: string, n: number) => get<Job[]>(`${g(group)}/threads/${n}/jobs`),
   cancelJob: (group: string, id: number) => del<void>(`${g(group)}/jobs/${id}`),
+  publishHeld: (group: string, id: number, hidden: boolean) =>
+    post<void>(`${g(group)}/jobs/${id}/publish`, { hidden }),
+  discardHeld: (group: string, id: number) => post<void>(`${g(group)}/jobs/${id}/discard`, {}),
 
   async upload(group: string, file: File): Promise<Attachment> {
     const form = new FormData();
     form.append("file", file, file.name);
     let response: Response;
     try {
-      response = await fetch(`${PREFIX}${g(group)}/attachments`, {
+      response = await hubFetch(`${PREFIX}${g(group)}/attachments`, {
         method: "POST",
-        credentials: "same-origin",
         body: form,
       });
     } catch {
@@ -531,5 +663,6 @@ export const api = {
     return parse<Attachment>(response);
   },
 
-  eventsUrl: (group: string) => `${PREFIX}${g(group)}/events`,
+  eventsUrl: (group: string) => hubUrl(`${PREFIX}${g(group)}/events`),
+  personalEventsUrl: () => hubUrl(`${PREFIX}/me/events`),
 };

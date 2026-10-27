@@ -1,17 +1,7 @@
-//! The runners: how a worker gets an answer from an agent, or has one work
-//! on the library for the workshop.
-//!
-//! - `claude-code`, `codex` and `opencode` run those harnesses headless,
-//!   with the person's own login (or, for OpenCode, the keys of the
-//!   providers it is configured with), and give them Stemma's tools
-//!   through `stemma mcp` with the job's token, read-only: an agent
-//!   answering in a thread may also hand a task to the workshop. For a
-//!   task they work in a worktree of the library, where they edit files
-//!   and run commands, Lean's among them.
-//! - `api` is Stemma's own harness: a loop of tool calls over an
-//!   OpenAI-compatible chat API, with the same tools. It only answers.
+//! The runners: how a machine gets an answer from its person's agent
+//! (`claude-code`, `codex`, `opencode`), launched as [`crate::launch`] says,
+//! with Stemma's tools through `stemma mcp`, read-only, with the job's token.
 
-pub mod api;
 pub mod claude_code;
 pub mod codex;
 pub mod opencode;
@@ -20,65 +10,149 @@ use std::path::Path;
 use std::process::{ExitStatus, Stdio};
 
 use anyhow::Context as _;
-use stemma_core::api::{AgentProfile, JobKind};
-use stemma_core::protocol::JobSpec;
+use stemma_core::api::AgentProfile;
+use stemma_core::protocol::{JobSpec, Usage};
 use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader};
 use tokio::process::Command;
 
-use crate::job::{Context, JobDir};
+use crate::config::CliRunner;
+use crate::isolation::Sandbox;
+use crate::job::{Context, JobDir, Prompt};
+use crate::launch::{self, Launch, Mcp, Mode, Prepared};
 
 /// Where and how a runner works.
 pub struct Work<'a> {
-    /// The folder it works in: the job's own, or for a task, the worktree
-    /// of the library.
+    /// The folder it starts in, on the machine: the job's scratch folder.
     pub dir: &'a Path,
-    /// Whether it edits files and runs commands there, as for a task.
-    pub edits: bool,
-    /// The most steps it may take, for runners that count them.
-    pub max_turns: Option<u32>,
+    /// The group's workspace, on the machine.
+    pub root: &'a Path,
+    /// Where it runs: on the machine, or in the job's container.
+    pub sandbox: &'a dyn Sandbox,
+    /// Its program in the container, if not its usual name.
+    pub contained_program: Option<String>,
 }
 
-/// Whether a job's agent may hand tasks to the workshop: one answering in
-/// a thread.
-pub fn hands_over(job: &JobSpec) -> bool {
-    job.kind() == JobKind::Reply
+/// What an agent said, and what it consumed, as its runner reports it.
+pub struct Answer {
+    pub text: String,
+    pub usage: Usage,
 }
 
-/// The Stemma tools a job's agent may use, by name: those that read, and
-/// for an agent answering in a thread, what hands a task over.
+/// A count of tokens, from a runner's JSON.
+pub(crate) fn tokens(value: &serde_json::Value) -> Option<u64> {
+    value.as_u64()
+}
+
 pub fn allowed_tools(job: &JobSpec) -> Vec<&'static str> {
-    let mut names = stemma_client::tools::read_only_names();
-    if hands_over(job) {
-        names.extend(stemma_client::tools::HANDS_OVER);
+    if job.process {
+        stemma_client::tools::all_definitions()
+            .into_iter()
+            .filter(|t| !t.writes || ["post_message", "upload_attachment"].contains(&t.name))
+            .map(|t| t.name)
+            .collect()
+    } else {
+        // An answer reads, and may ask the workshop for work.
+        let mut names = stemma_client::tools::read_only_names();
+        names.push("ask_workshop");
+        names
     }
-    names
 }
 
 /// The arguments of `stemma mcp` for a job: its hub, its group, its token
 /// and its agent, offering only the tools that read, and what hands a
-/// task over if the job's agent may.
+/// task over if the job's agent may; as the job's commands see them, in
+/// `sandbox`.
 pub fn mcp_args(
-    context: &Context,
+    sandbox: &dyn Sandbox,
     job: &JobSpec,
     agent: &AgentProfile,
     dir: &JobDir,
+    work_dir: &std::path::Path,
 ) -> Vec<String> {
     let mut args: Vec<String> = vec![
         "mcp".into(),
         "--hub".into(),
-        context.hub.clone(),
+        sandbox.hub().to_owned(),
         "--group".into(),
         job.group.slug.clone(),
         "--token-file".into(),
-        dir.token_file.display().to_string(),
+        sandbox.path(&dir.token_file).display().to_string(),
+        "--attachment-dir".into(),
+        if sandbox.isolation().contained() {
+            sandbox
+                .path(work_dir)
+                .join("attachments")
+                .display()
+                .to_string()
+        } else {
+            dir.path.join("attachments").display().to_string()
+        },
         "--agent".into(),
         agent.display_name.clone(),
         "--read-only".into(),
+        // An answer may ask the workshop for work.
+        "--also".into(),
+        "ask_workshop".into(),
     ];
-    if hands_over(job) {
-        args.push("--hand-over".into());
+    if job.process {
+        args.truncate(args.len() - 3);
     }
     args
+}
+
+/// Prepares a runner's launch for a job: its own and the agent's
+/// arguments, the agent's model or else its own, Stemma's instructions,
+/// and Stemma's tools with the job's token; where it runs, as it sees its
+/// files there.
+pub fn prepared(
+    _context: &Context,
+    config: &CliRunner,
+    job: &JobSpec,
+    agent: &AgentProfile,
+    dir: &JobDir,
+    work: &Work<'_>,
+    prompt: &Prompt,
+) -> anyhow::Result<Prepared> {
+    let sandbox = work.sandbox;
+    let contained = sandbox.isolation().contained();
+    let mcp = Mcp {
+        command: sandbox.stemma(),
+        args: mcp_args(sandbox, job, agent, dir, work.dir),
+    };
+    let args = config.args.clone();
+    // The machine's own program for it is not the container's.
+    let program = if contained {
+        work.contained_program.as_deref()
+    } else {
+        config.command.as_deref()
+    };
+    let files_seen = sandbox.path(&dir.path);
+    let dir_seen = sandbox.path(work.dir);
+    let root_seen = sandbox.path(work.root);
+    let mut prepared = launch::prepare(&Launch {
+        runner: &agent.runner,
+        program,
+        model: config.model.as_deref(),
+        args: &args,
+        instructions: &prompt.system,
+        mcp: &mcp,
+        files: &dir.path,
+        files_seen: &files_seen,
+        mode: Mode::Job {
+            dir: &dir_seen,
+            root: &root_seen,
+            contained,
+            allowed: allowed_tools(job).into_iter().map(str::to_owned).collect(),
+        },
+    })?;
+    if prepared.answer.is_some() {
+        prepared.answer = Some(work.dir.join("answer.md"));
+    }
+    // The `stemma` command, run by the agent, finds no sign-in.
+    prepared
+        .env
+        .push(("STEMMA_CONFIG_DIR".into(), files_seen.display().to_string()));
+    Ok(prepared)
 }
 
 /// How a command ended.
@@ -86,6 +160,12 @@ pub struct Ran {
     pub status: ExitStatus,
     /// The end of what it wrote to standard error.
     pub stderr: String,
+}
+
+/// The command that runs a prepared launch, where `work` says.
+pub fn command(prepared: &Prepared, work: &Work<'_>) -> Command {
+    work.sandbox
+        .command(&prepared.program, &prepared.args, &prepared.env, work.dir)
 }
 
 /// Runs a command with `stdin` as its input, handing each line of its

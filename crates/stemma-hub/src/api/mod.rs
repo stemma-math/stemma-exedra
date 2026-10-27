@@ -1,16 +1,17 @@
 //! The JSON API, version 1, under `/api/v1`.
 
 mod account;
-pub use account::create_user;
-mod agents;
-mod attachments;
+pub use account::{create_user, valid_username};
+pub(crate) mod attachments;
 mod events;
 pub(crate) mod forum;
 mod groups;
+mod hub;
+mod invitations;
 mod jobs;
-mod library;
+pub(crate) mod library;
+mod notifications;
 pub(crate) mod papers;
-mod tasks;
 pub mod workers;
 
 use axum::Router;
@@ -36,19 +37,48 @@ pub fn router(state: AppState) -> Router {
         .route("/setup", get(account::setup_state).post(account::setup))
         .route("/session", post(account::sign_in).delete(account::sign_out))
         .route("/me", get(account::me).patch(account::update_me))
+        .route("/names/{kind}", get(crate::names::check))
+        .route("/users/{username}", get(crate::names::user))
+        .route("/me/token", get(account::token_identity))
         .route("/me/password", post(account::change_password))
         .route(
             "/me/tokens",
             get(account::list_tokens).post(account::create_token),
         )
         .route("/me/tokens/{id}", delete(account::revoke_token))
-        .route("/invitations/{token}", get(groups::invitation_info))
+        .route("/me/agent-tokens", post(account::create_agent_token))
+        .route("/me/notifications", get(notifications::list))
         .route(
-            "/invitations/{token}/accept",
-            post(groups::accept_invitation),
+            "/me/notifications/settings",
+            get(notifications::settings).put(notifications::update_settings),
+        )
+        .route("/me/notifications/read", post(notifications::read_all))
+        .route("/me/notifications/change", post(notifications::change))
+        .route("/me/events", get(notifications::stream))
+        .route("/invitations/{token}", get(invitations::info))
+        .route("/invitations/{token}/accept", post(invitations::accept))
+        .route(
+            "/sign-up/{token}",
+            get(invitations::sign_up_info).post(invitations::sign_up),
+        )
+        .route(
+            "/hub/invitations",
+            get(invitations::hub_list).post(invitations::hub_create),
+        )
+        .route("/hub/invitations/{id}", delete(invitations::hub_revoke))
+        .route("/group-requests", get(hub::list).post(hub::request))
+        .route("/me/group-requests", get(hub::mine))
+        .route("/group-requests/{id}/approve", post(hub::approve))
+        .route("/group-requests/{id}/decline", post(hub::decline))
+        .route("/hub/groups", get(hub::all_groups))
+        .route("/hub/groups/{group}", delete(hub::delete_group))
+        .route("/hub/people", get(hub::people))
+        .route(
+            "/hub/people/{id}",
+            patch(hub::update_person).delete(hub::delete_person),
         )
         .route("/groups", get(groups::list).post(groups::create))
-        .route("/groups/{group}", get(groups::get))
+        .route("/groups/{group}", get(groups::get).patch(groups::update))
         .route("/groups/{group}/members", get(groups::members))
         .route(
             "/groups/{group}/members/{user}",
@@ -56,11 +86,11 @@ pub fn router(state: AppState) -> Router {
         )
         .route(
             "/groups/{group}/invitations",
-            get(groups::invitations).post(groups::create_invitation),
+            get(invitations::group_list).post(invitations::group_create),
         )
         .route(
             "/groups/{group}/invitations/{id}",
-            delete(groups::revoke_invitation),
+            delete(invitations::group_revoke),
         )
         .route(
             "/groups/{group}/threads",
@@ -68,8 +98,19 @@ pub fn router(state: AppState) -> Router {
         )
         .route(
             "/groups/{group}/threads/{thread}",
-            get(forum::get_thread).patch(forum::update_thread),
+            get(forum::get_thread)
+                .patch(forum::update_thread)
+                .delete(forum::delete_thread),
         )
+        .route(
+            "/groups/{group}/threads/{thread}/contents",
+            get(forum::thread_contents),
+        )
+        .route(
+            "/groups/{group}/threads/{thread}/read",
+            post(notifications::read_thread),
+        )
+        .route("/groups/{group}/notes", post(notifications::send_note))
         .route(
             "/groups/{group}/threads/{thread}/messages",
             get(forum::list_messages).post(forum::post_message),
@@ -81,31 +122,36 @@ pub fn router(state: AppState) -> Router {
                 .delete(forum::delete_message),
         )
         .route(
-            "/groups/{group}/papers",
-            get(papers::list).post(papers::create),
+            "/groups/{group}/workshop/model",
+            get(crate::model::get).put(crate::model::update),
         )
         .route(
-            "/groups/{group}/papers/{paper}",
-            get(papers::get).put(papers::edit),
+            "/groups/{group}/workshop/status",
+            get(crate::orchestrator::board),
         )
         .route(
-            "/groups/{group}/papers/{paper}/revisions",
-            get(papers::revisions),
+            "/groups/{group}/workshop/recipes",
+            get(crate::workshop::list_recipes),
         )
         .route(
-            "/groups/{group}/papers/{paper}/revisions/{number}",
-            get(papers::revision),
+            "/groups/{group}/workshop/recipes/{name}",
+            get(crate::workshop::read_recipe),
         )
         .route(
-            "/groups/{group}/papers/{paper}/read",
-            post(papers::mark_read),
+            "/groups/{group}/workshop/requests",
+            get(crate::workshop::list).post(crate::workshop::ask),
+        )
+        .route(
+            "/groups/{group}/workshop/requests/{number}",
+            get(crate::workshop::read).post(crate::workshop::action),
         )
         .route("/groups/{group}/library", get(library::state))
-        .route(
-            "/groups/{group}/library/builds",
-            get(library::builds).post(library::rebuild),
-        )
+        .route("/groups/{group}/library/builds", get(library::builds))
         .route("/groups/{group}/library/builds/{id}", get(library::build))
+        .route(
+            "/groups/{group}/library/builds/{id}/again",
+            post(library::build_again),
+        )
         .route(
             "/groups/{group}/library/declarations",
             get(library::declarations),
@@ -114,45 +160,46 @@ pub fn router(state: AppState) -> Router {
             "/groups/{group}/library/declarations/{name}",
             get(library::declaration),
         )
+        .route(
+            "/groups/{group}/papers",
+            get(papers::list).post(papers::create),
+        )
+        .route(
+            "/groups/{group}/papers/{paper}",
+            get(papers::get).delete(papers::delete),
+        )
+        .route(
+            "/groups/{group}/papers/{paper}/contents",
+            get(papers::contents),
+        )
+        .route(
+            "/groups/{group}/papers/{paper}/authors/{username}",
+            put(papers::add_author).delete(papers::remove_author),
+        )
+        .route(
+            "/groups/{group}/papers/{paper}/builds/{id}/again",
+            post(papers::build_again),
+        )
+        .route("/groups/{group}/papers/{paper}/pdf", get(papers::pdf))
+        .route("/groups/{group}/papers/{paper}/files", get(papers::files))
+        .route(
+            "/groups/{group}/papers/{paper}/files/{*path}",
+            get(papers::file),
+        )
         .route("/groups/{group}/resolve", post(forum::resolve))
         .route("/groups/{group}/search", get(forum::search))
-        .route(
-            "/groups/{group}/agents",
-            get(agents::list).post(agents::create),
-        )
-        .route(
-            "/groups/{group}/agents/{handle}",
-            put(agents::update).delete(agents::remove),
-        )
-        .route(
-            "/groups/{group}/workers",
-            get(workers::list_group).post(workers::create_group),
-        )
-        .route(
-            "/groups/{group}/workers/{id}",
-            delete(workers::revoke_group),
-        )
-        .route(
-            "/me/workers",
-            get(workers::list_mine).post(workers::create_mine),
-        )
-        .route("/me/workers/{id}", delete(workers::revoke_mine))
         .route(
             "/groups/{group}/threads/{thread}/jobs",
             get(jobs::of_thread),
         )
         .route("/groups/{group}/jobs/{id}", delete(jobs::cancel))
         .route(
-            "/groups/{group}/tasks",
-            get(tasks::list).post(tasks::create),
+            "/groups/{group}/jobs/{id}/publish",
+            post(jobs::publish_held),
         )
         .route(
-            "/groups/{group}/tasks/{number}",
-            get(tasks::get).delete(tasks::cancel),
-        )
-        .route(
-            "/groups/{group}/workshop",
-            get(tasks::settings).put(tasks::update_settings),
+            "/groups/{group}/jobs/{id}/discard",
+            post(jobs::discard_held),
         )
         .route(stemma_core::protocol::WORKER_PATH, get(workers::connect))
         .route(
@@ -212,12 +259,13 @@ impl Membership {
     /// Finds the group `slug` among the viewer's. A group they are not in
     /// is not found, so its existence is not revealed.
     ///
-    /// A job's token sees only its job's group, as a member.
+    /// A job's token sees only its job's group, with its requester's role
+    /// there, but never as an admin.
     pub async fn of(state: &AppState, viewer: &Viewer, slug: &str) -> ApiResult<Membership> {
         let row: Option<(i64, String, String, i64, String)> = sqlx::query_as(
             "SELECT g.id, g.slug, g.name, g.created_at, m.role
              FROM groups g JOIN memberships m ON m.group_id = g.id
-             WHERE g.slug = ? AND m.user_id = ?",
+             WHERE g.id = (SELECT id FROM groups WHERE slug = ?1 UNION SELECT group_id FROM group_names WHERE name = ?1) AND m.user_id = ?2",
         )
         .bind(slug)
         .bind(viewer.id)
@@ -225,10 +273,11 @@ impl Membership {
         .await?;
         let (group_id, slug, name, created_at, role) =
             row.ok_or_else(|| ApiError::not_found("Group"))?;
-        let role = match viewer.job() {
+        let role = Role::parse(&role).unwrap_or(Role::Guest);
+        let role = match viewer.agent() {
             Some(job) if job.group_id != group_id => return Err(ApiError::not_found("Group")),
-            Some(_) => Role::Member,
-            None => Role::parse(&role).unwrap_or(Role::Member),
+            Some(_) if role == Role::Admin => Role::Member,
+            _ => role,
         };
         Ok(Membership {
             group_id,
@@ -257,14 +306,16 @@ impl Membership {
     }
 
     pub fn require_admin(&self) -> ApiResult<()> {
-        match self.role {
-            Role::Admin => Ok(()),
-            Role::Member => Err(ApiError::forbidden("Only the group's admins can do this")),
+        if self.role.is_admin() {
+            Ok(())
+        } else {
+            Err(ApiError::forbidden("Only the group's admins can do this"))
         }
     }
 
     pub fn group(&self) -> stemma_core::api::Group {
         stemma_core::api::Group {
+            id: self.group_id,
             slug: self.slug.clone(),
             name: self.name.clone(),
             role: self.role,

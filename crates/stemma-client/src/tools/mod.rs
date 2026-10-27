@@ -1,15 +1,16 @@
-//! Stemma's tools: the operations agents use, the same over MCP, in our
-//! own harness and at the command line.
+//! Stemma's tools: the operations agents use, the same over MCP and at the
+//! command line.
 //!
 //! Each space of Stemma has a module with its tools: what each is called,
 //! what it takes (a JSON Schema) and how it runs against the hub: the
-//! forum, the working papers, the library and the workshop. [`Toolbox`]
-//! offers them all.
+//! forum, the library, the papers. [`Toolbox`] offers
+//! them all.
 
+mod attachments;
 mod forum;
 mod library;
 mod papers;
-mod tasks;
+mod workshop;
 
 use serde::de::DeserializeOwned;
 use serde_json::Value;
@@ -20,17 +21,15 @@ use crate::hub::{ApiError, Hub};
 const GROUP: &str = "The group's short name; the default group if absent.";
 
 /// Every tool, whatever it does.
-fn all_definitions() -> Vec<ToolDef> {
+pub fn all_definitions() -> Vec<ToolDef> {
     let mut tools = forum::definitions();
-    tools.extend(papers::definitions());
     tools.extend(library::definitions());
-    tools.extend(tasks::definitions());
+    tools.extend(papers::definitions());
+    tools.extend(workshop::definitions());
+    tools.push(attachments::definition());
+    tools.push(attachments::upload_definition());
     tools
 }
-
-/// The tools that write which an agent answering in a thread may still
-/// use, when its toolbox hands over: handing a task to the workshop.
-pub const HANDS_OVER: &[&str] = &["create_task"];
 
 /// The names of the tools that only read: what agents' jobs may use.
 pub fn read_only_names() -> Vec<&'static str> {
@@ -41,15 +40,45 @@ pub fn read_only_names() -> Vec<&'static str> {
         .collect()
 }
 
+/// Both front ends invoke the handler carried by the catalog entry.
+pub type ToolHandler =
+    for<'a> fn(
+        &'a Toolbox,
+        Value,
+        Option<&'a str>,
+    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = ToolResult> + Send + 'a>>;
+
 /// A tool, as agents see it.
 #[derive(Clone, Debug)]
 pub struct ToolDef {
     pub name: &'static str,
+    /// Terminal command path and positional arguments, shared with MCP's schema.
+    pub terminal: &'static [&'static str],
+    pub positional: &'static [&'static str],
     pub description: &'static str,
     /// A JSON Schema for its arguments: an object.
     pub input_schema: Value,
     /// Whether it changes anything, so that a read-only toolbox leaves it out.
     pub writes: bool,
+    pub handler: ToolHandler,
+}
+
+impl ToolDef {
+    fn read(name: &'static str, handler: ToolHandler) -> Self {
+        let tool = stemma_core::catalog::read_tools()
+            .into_iter()
+            .find(|tool| tool.name == name)
+            .expect("a catalog read tool");
+        Self {
+            name,
+            handler,
+            terminal: tool.terminal,
+            positional: tool.positional,
+            description: tool.description,
+            input_schema: tool.input_schema,
+            writes: false,
+        }
+    }
 }
 
 /// Why a tool could not do what it was asked, in words for the agent.
@@ -78,8 +107,9 @@ pub struct Toolbox {
     /// The group to use when a call names none.
     default_group: Option<String>,
     read_only: bool,
-    /// With `read_only`, still offer [`HANDS_OVER`].
-    hands_over: bool,
+    /// Tools that change something, offered even when read-only.
+    also: Vec<String>,
+    attachment_dir: Option<std::path::PathBuf>,
 }
 
 impl Toolbox {
@@ -88,7 +118,8 @@ impl Toolbox {
             hub,
             default_group,
             read_only: false,
-            hands_over: false,
+            also: Vec::new(),
+            attachment_dir: None,
         }
     }
 
@@ -98,11 +129,30 @@ impl Toolbox {
         self
     }
 
-    /// With [`Toolbox::read_only`], still offers what hands work over:
-    /// [`HANDS_OVER`], for agents answering in a thread.
-    pub fn hands_over(mut self, hands_over: bool) -> Toolbox {
-        self.hands_over = hands_over;
+    /// Offers these tools too, even when read-only.
+    pub fn also(mut self, names: Vec<String>) -> Toolbox {
+        self.also = names;
         self
+    }
+
+    /// Where files too large or unsuitable for inline MCP content are saved.
+    pub fn attachment_dir(mut self, path: std::path::PathBuf) -> Self {
+        self.attachment_dir = Some(path);
+        self
+    }
+
+    pub async fn call_content(
+        &self,
+        name: &str,
+        args: Value,
+        agent: Option<&str>,
+    ) -> Result<Vec<rmcp::model::ContentBlock>, ToolError> {
+        if name == "download_attachment" {
+            return attachments::download(self, args, true).await;
+        }
+        Ok(vec![rmcp::model::ContentBlock::text(
+            self.call(name, args, agent).await?,
+        )])
     }
 
     pub fn hub(&self) -> &Hub {
@@ -114,9 +164,7 @@ impl Toolbox {
         all_definitions()
             .into_iter()
             .filter(|tool| {
-                !(self.read_only
-                    && tool.writes
-                    && !(self.hands_over && HANDS_OVER.contains(&tool.name)))
+                !self.read_only || !tool.writes || self.also.iter().any(|name| name == tool.name)
             })
             .collect()
     }
@@ -134,29 +182,17 @@ impl Toolbox {
         } else {
             args
         };
-        if let Some(result) = forum::call(self, tool.name, args.clone(), agent).await {
-            return result;
-        }
-        if let Some(result) = papers::call(self, tool.name, args.clone(), agent).await {
-            return result;
-        }
-        if let Some(result) = tasks::call(self, tool.name, args.clone(), agent).await {
-            return result;
-        }
-        match library::call(self, tool.name, args).await {
-            Some(result) => result,
-            None => Err(ToolError::Unknown(name.to_owned())),
-        }
+        (tool.handler)(self, args, agent).await
     }
 
     /// The group a call is about: the one it names, or the default, or the
     /// person's only group.
     pub async fn group(&self, named: Option<&str>) -> Result<String, ToolError> {
         if let Some(group) = named.map(str::trim).filter(|g| !g.is_empty()) {
-            return Ok(group.to_owned());
+            return Ok(self.hub.group(group).await?.slug);
         }
         if let Some(group) = &self.default_group {
-            return Ok(group.clone());
+            return Ok(self.hub.group(group).await?.slug);
         }
         let me = self.hub.me().await?;
         match me.groups.as_slice() {
@@ -190,4 +226,23 @@ async fn address_in(
         .map_err(|e| ToolError::invalid(format!("{written:?} is not an address: {e}")))?;
     let group = toolbox.group(group.or(located.group.as_deref())).await?;
     Ok((group, located.address))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_read_only_toolbox_offers_only_the_writes_it_is_given() {
+        let hub = crate::hub::Hub::new("http://127.0.0.1:1", None).unwrap();
+        let names = |toolbox: &Toolbox| -> Vec<&str> {
+            toolbox.definitions().into_iter().map(|t| t.name).collect()
+        };
+        let read_only = Toolbox::new(hub, None).read_only(true);
+        assert!(!names(&read_only).contains(&"ask_workshop"));
+        let answering = read_only.also(vec!["ask_workshop".into()]);
+        assert!(names(&answering).contains(&"ask_workshop"));
+        assert!(!names(&answering).contains(&"post_message"));
+        assert!(names(&answering).contains(&"read_thread"));
+    }
 }

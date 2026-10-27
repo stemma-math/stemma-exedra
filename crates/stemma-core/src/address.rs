@@ -6,9 +6,8 @@
 //! | Message                 | `t12#45`                              |
 //! | Messages                | `t12#45-50`                           |
 //! | Attachment              | `t12#45/photo.jpg`                    |
-//! | Working paper (section) | `p/compactification`, `p/…#gluing`    |
+//! | Working paper           | `p/compactification`                  |
 //! | Library declaration     | `lean:Foo.bar`                        |
-//! | Task                    | `w7`                                  |
 //!
 //! Every address has one canonical spelling, which [`Address`]'s `Display`
 //! writes and [`Address::from_str`](std::str::FromStr) reads back.
@@ -33,15 +32,10 @@ pub enum Address {
         message: u32,
         name: String,
     },
-    /// A working paper, or one of its sections: `p/slug`, `p/slug#section`.
-    Paper {
-        slug: String,
-        section: Option<String>,
-    },
+    /// A working paper: `p/compactification`.
+    Paper(String),
     /// A declaration of the library: `lean:Foo.bar`.
     Declaration(String),
-    /// A workshop task: `w7`.
-    Task(u32),
 }
 
 /// Why a string is not an address.
@@ -73,7 +67,6 @@ pub enum AddressKind {
     Attachment,
     Paper,
     Declaration,
-    Task,
 }
 
 impl Address {
@@ -84,9 +77,8 @@ impl Address {
             Address::Message { .. } => AddressKind::Message,
             Address::Messages { .. } => AddressKind::Messages,
             Address::Attachment { .. } => AddressKind::Attachment,
-            Address::Paper { .. } => AddressKind::Paper,
+            Address::Paper(_) => AddressKind::Paper,
             Address::Declaration(_) => AddressKind::Declaration,
-            Address::Task(_) => AddressKind::Task,
         }
     }
 
@@ -111,12 +103,8 @@ impl Address {
                 thread, message, ..
             } => format!("/g/{group}/t/{thread}#{message}"),
             Address::Messages { thread, from, .. } => format!("/g/{group}/t/{thread}#{from}"),
-            Address::Paper { slug, section } => match section {
-                Some(section) => format!("/g/{group}/p/{slug}#{section}"),
-                None => format!("/g/{group}/p/{slug}"),
-            },
+            Address::Paper(slug) => format!("/g/{group}/p/{slug}"),
             Address::Declaration(name) => format!("/g/{group}/lib/{name}"),
-            Address::Task(n) => format!("/g/{group}/w/{n}"),
         }
     }
 }
@@ -132,12 +120,8 @@ impl fmt::Display for Address {
                 message,
                 name,
             } => write!(f, "t{thread}#{message}/{name}"),
-            Address::Paper { slug, section } => match section {
-                Some(section) => write!(f, "p/{slug}#{section}"),
-                None => write!(f, "p/{slug}"),
-            },
+            Address::Paper(slug) => write!(f, "p/{slug}"),
             Address::Declaration(name) => write!(f, "lean:{name}"),
-            Address::Task(n) => write!(f, "w{n}"),
         }
     }
 }
@@ -152,18 +136,12 @@ impl FromStr for Address {
         if let Some(name) = s.strip_prefix("lean:") {
             return parse_lean_name(name).map(Address::Declaration);
         }
-        if let Some(rest) = s.strip_prefix("p/") {
-            let (slug, section) = match rest.split_once('#') {
-                Some((slug, section)) => (slug, Some(section)),
-                None => (rest, None),
+        if let Some(slug) = s.strip_prefix("p/") {
+            return if is_slug(slug) {
+                Ok(Address::Paper(slug.to_owned()))
+            } else {
+                Err(AddressError::InvalidSlug(slug.to_owned()))
             };
-            return Ok(Address::Paper {
-                slug: parse_slug(slug)?,
-                section: section.map(parse_slug).transpose()?,
-            });
-        }
-        if let Some(rest) = s.strip_prefix('w') {
-            return parse_number(rest).map(Address::Task);
         }
         if let Some(rest) = s.strip_prefix('t') {
             return parse_thread_address(rest);
@@ -224,14 +202,6 @@ pub fn is_slug(s: &str) -> bool {
         && !s.contains("--")
         && s.bytes()
             .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-')
-}
-
-fn parse_slug(s: &str) -> Result<String, AddressError> {
-    if is_slug(s) {
-        Ok(s.to_owned())
-    } else {
-        Err(AddressError::InvalidSlug(s.to_owned()))
-    }
 }
 
 /// A file name: anything but slashes, brackets and control characters,
@@ -314,20 +284,6 @@ mod tests {
             }
         );
         assert_eq!(
-            parse("p/compactification"),
-            Address::Paper {
-                slug: "compactification".into(),
-                section: None
-            }
-        );
-        assert_eq!(
-            parse("p/compactification#gluing-maps"),
-            Address::Paper {
-                slug: "compactification".into(),
-                section: Some("gluing-maps".into())
-            }
-        );
-        assert_eq!(
             parse("lean:Foo.bar"),
             Address::Declaration("Foo.bar".into())
         );
@@ -336,7 +292,10 @@ mod tests {
             Address::Declaration("CategoryTheory.Functor.map_id'".into())
         );
         assert_eq!(parse("lean:α.β₁"), Address::Declaration("α.β₁".into()));
-        assert_eq!(parse("w7"), Address::Task(7));
+        assert_eq!(
+            parse("p/compactification"),
+            Address::Paper("compactification".into())
+        );
     }
 
     #[test]
@@ -375,17 +334,14 @@ mod tests {
             ("t12#45/..", InvalidAttachmentName("..".into())),
             ("t12#45/a/b", InvalidAttachmentName("a/b".into())),
             ("p/", InvalidSlug("".into())),
-            ("p/Upper", InvalidSlug("Upper".into())),
+            ("p/Notes", InvalidSlug("Notes".into())),
             ("p/a--b", InvalidSlug("a--b".into())),
-            ("p/-a", InvalidSlug("-a".into())),
-            ("p/a#", InvalidSlug("".into())),
-            ("p/a#b#c", InvalidSlug("b#c".into())),
+            ("p/notes#gluing", InvalidSlug("notes#gluing".into())),
             ("lean:", InvalidLeanName("".into())),
             ("lean:Foo..bar", InvalidLeanName("Foo..bar".into())),
             ("lean:.Foo", InvalidLeanName(".Foo".into())),
             ("lean:Foo bar", InvalidLeanName("Foo bar".into())),
-            ("w", InvalidNumber("".into())),
-            ("w0", InvalidNumber("0".into())),
+            ("w0", UnknownKind),
         ];
         for (input, error) in cases {
             assert_eq!(
@@ -403,10 +359,8 @@ mod tests {
             "t12#45",
             "t12#45-50",
             "t12#45/notes.tex",
-            "p/a",
-            "p/a-b#c-1",
+            "p/a-b-1",
             "lean:Nat.add_comm",
-            "w4294967295",
         ] {
             assert_eq!(parse(s).to_string(), s);
         }
@@ -416,7 +370,7 @@ mod tests {
     fn knows_its_thread_and_kind() {
         assert_eq!(parse("t12#45-50").thread(), Some(12));
         assert_eq!(parse("t12#45/a.png").thread(), Some(12));
-        assert_eq!(parse("w12").thread(), None);
+        assert!("w12".parse::<Address>().is_err());
         assert_eq!(parse("t12#45-50").kind(), AddressKind::Messages);
         assert_eq!(parse("lean:A").kind(), AddressKind::Declaration);
     }
@@ -427,9 +381,8 @@ mod tests {
         assert_eq!(parse("t12#45").web_path("g"), "/g/g/t/12#45");
         assert_eq!(parse("t12#45-50").web_path("g"), "/g/g/t/12#45");
         assert_eq!(parse("t12#45/x.pdf").web_path("g"), "/g/g/t/12#45");
-        assert_eq!(parse("p/a#b").web_path("g"), "/g/g/p/a#b");
         assert_eq!(parse("lean:A.b").web_path("g"), "/g/g/lib/A.b");
-        assert_eq!(parse("w7").web_path("g"), "/g/g/w/7");
+        assert_eq!(parse("p/notes").web_path("g"), "/g/g/p/notes");
     }
 
     #[test]
