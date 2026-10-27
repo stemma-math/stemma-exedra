@@ -196,3 +196,12 @@ jobs:
     with:
       package: ${{ matrix.package }}
     secrets: inherit
+
+  # The documentation, on GitHub Pages, for the version just published.
+  docs:
+    needs: release
+    permissions:
+      contents: read
+      pages: write
+      id-token: write
+    uses: ./.github/workflows/docs.yml

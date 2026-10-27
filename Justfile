@@ -9,6 +9,7 @@ default:
 setup:
     pnpm --dir web install --frozen-lockfile
     pnpm --dir desktop install --frozen-lockfile
+    pnpm --dir docs install --frozen-lockfile
 
 # Run the hub, with the web app as last built.
 [group('development')]
@@ -20,6 +21,11 @@ hub *args:
 web:
     pnpm --dir web dev
 
+# Serve the documentation at 127.0.0.1:5180, as it is edited.
+[group('development')]
+docs:
+    pnpm --dir docs dev
+
 # Format every file in the repository.
 [group('development')]
 format:
@@ -27,9 +33,9 @@ format:
 
 alias fmt := format
 
-# Run every check: formatting, lints, types, tests and the web build.
+# Run every check: formatting, lints, types, tests, and the web and documentation builds.
 [group('checks')]
-check: check-format lint test build-web
+check: check-format lint test build-web build-docs
 
 # Check that every file is formatted.
 [group('checks')]
@@ -65,6 +71,11 @@ test:
 [group('build')]
 build-web:
     pnpm --dir web build
+
+# Build the documentation into docs/.vitepress/dist.
+[group('build')]
+build-docs:
+    pnpm --dir docs build
 
 # Build the release binary, with the web app embedded.
 [group('build')]

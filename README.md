@@ -9,15 +9,17 @@ This is an early stage of Stemma: it changes often, and breaks.
 
 ## Install
 
-With [Homebrew](https://brew.sh), on macOS (ARM) or Linux (x86_64):
+With [Homebrew](https://brew.sh), the app and the command line on macOS
+(Apple silicon), or the command line on Linux (x86_64):
 
 ```sh
-brew install stemma-math/tap/stemma
+brew install --cask stemma-math/tap/stemma-app   # macOS
+brew install stemma-math/tap/stemma              # Linux
 ```
 
-Or take the binary from a
+Or take them from a
 [release](https://github.com/stemma-math/stemma-exedra/releases), or build
-it from the repository (`just setup && just release`).
+them from the repository (`just setup && just release`).
 
 ## Use
 
@@ -37,11 +39,10 @@ Stemma is one binary, `stemma`:
 
 ## Docs
 
-- [The hub](docs/hub.md): running it, with Forgejo.
-- [The workshop](docs/workshop.md): recipes, orchestrators, reviews and local approvals.
-- [Groups](docs/groups.md): roles, the library and the papers.
-- [Your agents and computers](docs/agents.md): settings, workspaces and diagnostics.
-- [Development](docs/development.md): working on this repository.
+[stemma-math.github.io/stemma-exedra](https://stemma-math.github.io/stemma-exedra/),
+published with each release from [`docs/`](docs): getting started, a guide
+to each part of Stemma, running a hub, and how it works inside. `just docs`
+serves it from a checkout.
 
 ## License
 
