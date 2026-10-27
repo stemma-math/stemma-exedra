@@ -3,6 +3,7 @@
   import type { StemmaTabs } from "@stemma-math/design-elements/tabs.js";
   import { scriptedSelect } from "#lib/scripted-select.ts";
   import Glyph from "#lib/components/Glyph.svelte";
+  import { action } from "../api.ts";
   import type { MachineControls } from "../machine.svelte.ts";
   import Agents from "./Agents.svelte";
   import Isolation from "./Isolation.svelte";
@@ -54,7 +55,21 @@
   {/key}
 </label>
 {#if controls.error}
-  <p class="message message--danger" role="alert">{controls.error}</p>
+  <!-- A failed image build says its last lines: kept as written, and short. -->
+  <div class="message message--danger stack" role="alert">
+    <p class="message__text machine-error">{controls.error}</p>
+    {#if controls.error.includes("logs/image.log")}
+      <div class="row">
+        <button
+          type="button"
+          class="button button--small"
+          onclick={() => action({ kind: "show_image_log" }).catch(() => {})}
+        >
+          Show the whole log
+        </button>
+      </div>
+    {/if}
+  </div>
 {/if}
 {#if controls.notice}
   <p class="message message--success" role="status">{controls.notice}</p>

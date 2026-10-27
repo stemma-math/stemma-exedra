@@ -257,6 +257,8 @@ enum Action {
     ShowWorkspace {
         group: Option<String>,
     },
+    /// Shows the last failed image build's whole log, in the state's `logs/`.
+    ShowImageLog,
     /// Keeps, or forgets, the value of a variable a container is given.
     Secret {
         name: String,
@@ -388,6 +390,25 @@ async fn perform(action: Action) -> anyhow::Result<Option<PanelSetting>> {
                 None => credentials.secrets.remove(&name),
             };
             credentials.save_to(&path)?;
+        }
+        Action::ShowImageLog => {
+            let log = stemma_client::config::Paths::discover()?
+                .state
+                .join("logs/image.log");
+            anyhow::ensure!(log.is_file(), "No image build has failed here");
+            #[cfg(target_os = "macos")]
+            std::process::Command::new("open")
+                .arg("-R")
+                .arg(&log)
+                .spawn()?;
+            #[cfg(target_os = "linux")]
+            std::process::Command::new("xdg-open")
+                .arg(log.parent().unwrap())
+                .spawn()?;
+            #[cfg(target_os = "windows")]
+            std::process::Command::new("explorer")
+                .arg(format!("/select,{}", log.display()))
+                .spawn()?;
         }
         Action::ShowWorkspace { group } => {
             let settings = Settings::load()?;

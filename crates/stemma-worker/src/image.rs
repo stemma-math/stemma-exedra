@@ -249,7 +249,20 @@ async fn run_build(engine: &dyn Engine, build: &Build, dir: &Path) -> anyhow::Re
     run_command(command).await
 }
 
-/// Keep the runtime's errors verbatim for both the terminal and the app.
+/// The lines of a failed build worth reading: the last ones, as a terminal
+/// would show them (progress redrawn with carriage returns keeps its last
+/// state), without blank lines.
+fn last_lines(raw: &str, count: usize) -> String {
+    let lines: Vec<&str> = raw
+        .lines()
+        .map(|line| line.rsplit('\r').next().unwrap_or("").trim_end())
+        .filter(|line| !line.trim().is_empty())
+        .collect();
+    lines[lines.len().saturating_sub(count)..].join("\n")
+}
+
+/// The runtime's output goes to the terminal as it comes; a failure keeps
+/// its whole log in the state's `logs/image.log`, and says its last lines.
 async fn run_command(mut command: tokio::process::Command) -> anyhow::Result<()> {
     use std::io::Write;
     use tokio::io::AsyncReadExt;
@@ -272,7 +285,22 @@ async fn run_command(mut command: tokio::process::Command) -> anyhow::Result<()>
     }
     let status = child.wait().await?;
     if !status.success() {
-        anyhow::bail!("{}", String::from_utf8_lossy(&raw));
+        let text = String::from_utf8_lossy(&raw);
+        let saved = stemma_client::config::Paths::discover()
+            .ok()
+            .and_then(|paths| {
+                let path = paths.state.join("logs/image.log");
+                std::fs::create_dir_all(path.parent()?).ok()?;
+                std::fs::write(&path, text.as_bytes()).ok()?;
+                Some(path)
+            });
+        let whole = saved
+            .map(|path| format!("\n\nThe whole log is in {}.", path.display()))
+            .unwrap_or_default();
+        anyhow::bail!(
+            "The image did not build. Its last lines:\n\n{}{whole}",
+            last_lines(&text, 20)
+        );
     }
     Ok(())
 }
@@ -281,6 +309,16 @@ async fn run_command(mut command: tokio::process::Command) -> anyhow::Result<()>
 mod tests {
     use super::*;
 
+    #[test]
+    fn a_failed_build_says_its_last_lines() {
+        let raw = "#1 load\r\n#7 Updating files: 10%\rUpdating files: 100%, done.\n\n\
+                   #7 ERROR: process did not complete\n";
+        assert_eq!(
+            last_lines(raw, 2),
+            "Updating files: 100%, done.\n#7 ERROR: process did not complete"
+        );
+        assert_eq!(last_lines(raw, 9).lines().count(), 3);
+    }
     #[test]
     fn workshop_cache_matches_the_library_template() {
         let template: toml::Value =
