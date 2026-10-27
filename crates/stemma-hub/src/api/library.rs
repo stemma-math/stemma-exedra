@@ -91,6 +91,46 @@ pub async fn build(
     Ok(Json(BuildLog { build, log }))
 }
 
+/// Who builds again: anyone's machines, or one person's.
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Again {
+    pub builder: Option<i64>,
+}
+
+/// Builds a failed build's commit again; members and admins ask.
+pub async fn build_again(
+    State(state): State<AppState>,
+    viewer: Viewer,
+    Path((group, id)): Path<(String, i64)>,
+    Json(body): Json<Again>,
+) -> ApiResult<Json<Build>> {
+    let group = Membership::of(&state, &viewer, &group).await?;
+    let work: Option<i64> = sqlx::query_scalar(
+        "SELECT work_id
+         FROM library_builds
+         WHERE group_id = ? AND id = ?",
+    )
+    .bind(group.group_id)
+    .bind(id)
+    .fetch_optional(&state.db)
+    .await?
+    .ok_or_else(|| ApiError::not_found("Build"))?;
+    let work = work.ok_or_else(|| ApiError::conflict("This build was already built again"))?;
+    crate::builds::again_for(&state, &viewer, &group, work, body.builder).await?;
+    let current: i64 = sqlx::query_scalar(
+        "SELECT id
+         FROM library_builds
+         WHERE work_id = ?",
+    )
+    .bind(work)
+    .fetch_one(&state.db)
+    .await?;
+    Ok(Json(
+        library::build(&state, group.group_id, current).await?.0,
+    ))
+}
+
 #[derive(Deserialize)]
 pub struct DeclarationQuery {
     /// Words their name, type or docstring all contain.

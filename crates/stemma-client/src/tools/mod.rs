@@ -10,6 +10,7 @@ mod attachments;
 mod forum;
 mod library;
 mod papers;
+mod workshop;
 
 use serde::de::DeserializeOwned;
 use serde_json::Value;
@@ -24,7 +25,9 @@ pub fn all_definitions() -> Vec<ToolDef> {
     let mut tools = forum::definitions();
     tools.extend(library::definitions());
     tools.extend(papers::definitions());
+    tools.extend(workshop::definitions());
     tools.push(attachments::definition());
+    tools.push(attachments::upload_definition());
     tools
 }
 
@@ -60,6 +63,24 @@ pub struct ToolDef {
     pub handler: ToolHandler,
 }
 
+impl ToolDef {
+    fn read(name: &'static str, handler: ToolHandler) -> Self {
+        let tool = stemma_core::catalog::read_tools()
+            .into_iter()
+            .find(|tool| tool.name == name)
+            .expect("a catalog read tool");
+        Self {
+            name,
+            handler,
+            terminal: tool.terminal,
+            positional: tool.positional,
+            description: tool.description,
+            input_schema: tool.input_schema,
+            writes: false,
+        }
+    }
+}
+
 /// Why a tool could not do what it was asked, in words for the agent.
 #[derive(Debug, thiserror::Error)]
 pub enum ToolError {
@@ -86,6 +107,8 @@ pub struct Toolbox {
     /// The group to use when a call names none.
     default_group: Option<String>,
     read_only: bool,
+    /// Tools that change something, offered even when read-only.
+    also: Vec<String>,
     attachment_dir: Option<std::path::PathBuf>,
 }
 
@@ -95,6 +118,7 @@ impl Toolbox {
             hub,
             default_group,
             read_only: false,
+            also: Vec::new(),
             attachment_dir: None,
         }
     }
@@ -102,6 +126,12 @@ impl Toolbox {
     /// Leaves out the tools that change anything.
     pub fn read_only(mut self, read_only: bool) -> Toolbox {
         self.read_only = read_only;
+        self
+    }
+
+    /// Offers these tools too, even when read-only.
+    pub fn also(mut self, names: Vec<String>) -> Toolbox {
+        self.also = names;
         self
     }
 
@@ -133,7 +163,9 @@ impl Toolbox {
     pub fn definitions(&self) -> Vec<ToolDef> {
         all_definitions()
             .into_iter()
-            .filter(|tool| !self.read_only || !tool.writes)
+            .filter(|tool| {
+                !self.read_only || !tool.writes || self.also.iter().any(|name| name == tool.name)
+            })
             .collect()
     }
 
@@ -194,4 +226,23 @@ async fn address_in(
         .map_err(|e| ToolError::invalid(format!("{written:?} is not an address: {e}")))?;
     let group = toolbox.group(group.or(located.group.as_deref())).await?;
     Ok((group, located.address))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_read_only_toolbox_offers_only_the_writes_it_is_given() {
+        let hub = crate::hub::Hub::new("http://127.0.0.1:1", None).unwrap();
+        let names = |toolbox: &Toolbox| -> Vec<&str> {
+            toolbox.definitions().into_iter().map(|t| t.name).collect()
+        };
+        let read_only = Toolbox::new(hub, None).read_only(true);
+        assert!(!names(&read_only).contains(&"ask_workshop"));
+        let answering = read_only.also(vec!["ask_workshop".into()]);
+        assert!(names(&answering).contains(&"ask_workshop"));
+        assert!(!names(&answering).contains(&"post_message"));
+        assert!(names(&answering).contains(&"read_thread"));
+    }
 }

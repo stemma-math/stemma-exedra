@@ -2,7 +2,9 @@
   import Loading from "#lib/components/Loading.svelte";
   import { page } from "$app/state";
   import { api, type BuildLog } from "#lib/api.ts";
+  import BuildAgain from "#lib/components/BuildAgain.svelte";
   import BuildChip from "#lib/components/BuildChip.svelte";
+  import { goto } from "$app/navigation";
   import { listen } from "#lib/events.ts";
   import { exactly } from "#lib/format.ts";
   import { groupContext } from "#lib/group.svelte.ts";
@@ -46,11 +48,21 @@
     </div>
     <p class="quiet">
       Asked for <time datetime={build.created_at}>{exactly(build.created_at)}</time>{#if build.finished_at},
-        ended <time datetime={build.finished_at}>{exactly(build.finished_at)}</time>{/if}{#if build.lean},
+        ended <time datetime={build.finished_at}>{exactly(build.finished_at)}</time>{/if}{#if build.machine},
+        on {build.machine}{/if}{#if build.lean},
         with Lean {build.lean}{/if}.
     </p>
     {#if build.error}
       <div class="message message--danger"><span class="message__text">{build.error}</span></div>
+      {#if build.again && group.role !== "guest"}
+        <BuildAgain
+          group={group.slug}
+          again={async (builder) => {
+            const next = await api.buildAgain(group.slug, id, builder);
+            await goto(`/g/${group.slug}/lib/builds/${next.id}`);
+          }}
+        />
+      {/if}
     {:else if build.progress}
       <p class="row quiet">
         {build.progress}

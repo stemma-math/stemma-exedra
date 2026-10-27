@@ -22,6 +22,9 @@ pub struct Hub {
     /// Upgraded connections outlive their HTTP requests.
     pub sockets: tokio_util::task::TaskTracker,
     pub config: Config,
+    pub model_key: crate::model::Key,
+    pub model_client: crate::model::Client,
+    pub review_changes: tokio::sync::Mutex<()>,
     /// Every group's live updates; each listener keeps its group's.
     pub events: broadcast::Sender<GroupEvent>,
     /// Every person's own live updates; each listener keeps its person's.
@@ -30,6 +33,9 @@ pub struct Hub {
     pub setup_token: Mutex<Option<String>>,
     /// The workers connected now.
     pub workers: tokio::sync::Mutex<Workers>,
+    pub build_machines: tokio::sync::Mutex<crate::builds::Machines>,
+    pub process_changes: tokio::sync::Mutex<()>,
+    pub build_changes: tokio::sync::Mutex<()>,
     /// The number of the last worker connection.
     pub connections: AtomicU64,
     /// The forge that keeps the groups' repositories, if there is one.
@@ -72,11 +78,17 @@ impl Hub {
             db,
             shutdown: tokio_util::sync::CancellationToken::new(),
             sockets: tokio_util::task::TaskTracker::new(),
+            model_key: crate::model::Key::load_or_create(&config.data_dir.join("workshop.key"))?,
+            model_client: crate::model::Client::new()?,
+            review_changes: Default::default(),
             config,
             events,
             personal,
             setup_token: Mutex::new(None),
             workers: tokio::sync::Mutex::new(Workers::default()),
+            build_machines: Default::default(),
+            process_changes: Default::default(),
+            build_changes: Default::default(),
             connections: AtomicU64::new(0),
             forge,
             group_changes: tokio::sync::Mutex::new(()),

@@ -120,6 +120,7 @@ pub async fn paper_contents(state: &AppState, paper: &papers::PaperRow) -> ApiRe
 /// Removes the thread `id`, with its messages, their files and its jobs.
 /// Its number is never given again: the group counts its threads apart.
 pub async fn thread(state: &AppState, id: i64) -> ApiResult<()> {
+    crate::workshop::forget_thread(state, id).await?;
     let waiting: Vec<i64> = sqlx::query_scalar(
         "SELECT id FROM jobs WHERE thread_id = ? AND state IN ('queued', 'running', 'held')",
     )
@@ -146,6 +147,7 @@ pub async fn thread(state: &AppState, id: i64) -> ApiResult<()> {
 /// Removes a paper, with its own threads, its builds and PDFs, and its
 /// repository in the forge.
 pub async fn paper(state: &AppState, paper: &papers::PaperRow, org: &str) -> ApiResult<()> {
+    let _builds = state.build_changes.lock().await;
     for thread_id in paper_threads(state, paper.group_id, &paper.slug).await? {
         thread(state, thread_id).await?;
     }
@@ -159,11 +161,13 @@ pub async fn paper(state: &AppState, paper: &papers::PaperRow, org: &str) -> Api
         repositories: vec![paper.repository.clone()],
         ..Leftovers::default()
     };
+    crate::builds::forget_repository(state, paper.group_id, &paper.repository).await?;
     sqlx::query("DELETE FROM papers WHERE id = ?")
         .bind(paper.id)
         .execute(&state.db)
         .await?;
     crate::text::refresh(state, crate::text::Changed::Paper(paper.id)).await?;
+    drop(_builds);
     leftovers.remove(state, org).await;
     Ok(())
 }
@@ -172,6 +176,7 @@ pub async fn paper(state: &AppState, paper: &papers::PaperRow, org: &str) -> Api
 /// threads, messages, papers, jobs, links and memberships; its files; and
 /// its organization in the forge, with the library and the papers.
 pub async fn group(state: &AppState, group_id: i64, slug: &str) -> ApiResult<()> {
+    let _builds = state.build_changes.lock().await;
     let waiting: Vec<i64> = sqlx::query_scalar(
         "SELECT id FROM jobs WHERE group_id = ? AND state IN ('queued', 'running', 'held')",
     )
@@ -198,12 +203,31 @@ pub async fn group(state: &AppState, group_id: i64, slug: &str) -> ApiResult<()>
             .await?,
     };
     leftovers.repositories.push(forge::LIBRARY.into());
+    leftovers
+        .repositories
+        .push(crate::recipes::REPOSITORY.into());
+    let requests: Vec<i64> = sqlx::query_scalar(
+        "SELECT t.id
+         FROM threads t
+         JOIN workshop_requests r ON r.thread_id = t.id
+         WHERE t.group_id = ?",
+    )
+    .bind(group_id)
+    .fetch_all(&state.db)
+    .await?;
+    for id in requests {
+        crate::workshop::forget_thread(state, id).await?;
+    }
 
+    for repository in &leftovers.repositories {
+        crate::builds::forget_repository(state, group_id, repository).await?;
+    }
     sqlx::query("DELETE FROM groups WHERE id = ?")
         .bind(group_id)
         .execute(&state.db)
         .await?;
     crate::text::refresh(state, crate::text::Changed::Group(group_id)).await?;
+    drop(_builds);
     leftovers.remove(state, slug).await;
     if let Some(forge) = state.forge.as_ref()
         && let Err(error) = forge.delete_organization(slug).await

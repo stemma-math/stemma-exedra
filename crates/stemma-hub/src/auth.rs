@@ -46,6 +46,16 @@ pub enum Scope {
     Full,
     /// An agent's token: a job's or a session's.
     Agent(AgentScope),
+    Process {
+        agent: AgentScope,
+        work: i64,
+        attempt: u32,
+    },
+    Build {
+        work: i64,
+        attempt: u32,
+        group_id: i64,
+    },
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -83,8 +93,8 @@ impl Viewer {
 
     pub fn agent(&self) -> Option<&AgentScope> {
         match &self.scope {
-            Scope::Full => None,
-            Scope::Agent(agent) => Some(agent),
+            Scope::Full | Scope::Build { .. } => None,
+            Scope::Agent(agent) | Scope::Process { agent, .. } => Some(agent),
         }
     }
 
@@ -92,7 +102,9 @@ impl Viewer {
     pub fn require_full(&self) -> Result<(), ApiError> {
         match self.scope {
             Scope::Full => Ok(()),
-            Scope::Agent(_) => Err(ApiError::forbidden("An agent's token cannot do this")),
+            Scope::Agent(_) | Scope::Build { .. } | Scope::Process { .. } => {
+                Err(ApiError::forbidden("An agent's token cannot do this"))
+            }
         }
     }
 }
@@ -125,6 +137,8 @@ struct TokenRow {
     user: ViewerRow,
     token_id: i64,
     kind: String,
+    build_work: Option<i64>,
+    lease_attempt: Option<i64>,
     group_id: Option<i64>,
     thread_id: Option<i64>,
     agent: Option<String>,
@@ -136,9 +150,11 @@ impl FromRequestParts<AppState> for Viewer {
     type Rejection = ApiError;
 
     async fn from_request_parts(parts: &mut Parts, state: &AppState) -> Result<Self, ApiError> {
-        authenticate(&parts.headers, state)
+        let viewer = authenticate(&parts.headers, state)
             .await?
-            .ok_or_else(ApiError::unauthenticated)
+            .ok_or_else(ApiError::unauthenticated)?;
+        build_path(&viewer, parts)?;
+        Ok(viewer)
     }
 }
 
@@ -149,7 +165,11 @@ impl OptionalFromRequestParts<AppState> for Viewer {
         parts: &mut Parts,
         state: &AppState,
     ) -> Result<Option<Self>, ApiError> {
-        authenticate(&parts.headers, state).await
+        let viewer = authenticate(&parts.headers, state).await?;
+        if let Some(viewer) = &viewer {
+            build_path(viewer, parts)?;
+        }
+        Ok(viewer)
     }
 }
 
@@ -160,7 +180,7 @@ async fn authenticate(headers: &HeaderMap, state: &AppState) -> Result<Option<Vi
         let hash = secret::token_hash(&token);
         let row = sqlx::query_as::<_, TokenRow>(
             "SELECT u.id, u.username, u.display_name, u.hub_admin, t.id AS token_id,
-                    t.kind, t.group_id, t.thread_id, t.agent, t.can_post, t.attachments
+                    t.kind, t.build_work, t.lease_attempt, t.group_id, t.thread_id, t.agent, t.can_post, t.attachments
              FROM api_tokens t JOIN users u ON u.id = t.user_id
              WHERE t.token_hash = ? AND t.revoked_at IS NULL
                AND (t.expires_at IS NULL OR t.expires_at > ?)",
@@ -187,6 +207,28 @@ async fn authenticate(headers: &HeaderMap, state: &AppState) -> Result<Option<Vi
         .execute(&state.db)
         .await?;
         let scope = match (row.kind.as_str(), row.group_id) {
+            ("build", Some(group_id)) => Scope::Build {
+                work: row
+                    .build_work
+                    .ok_or_else(|| ApiError::internal("build token without work"))?,
+                attempt: row.lease_attempt.unwrap_or_default() as u32,
+                group_id,
+            },
+            ("process", Some(group_id)) => Scope::Process {
+                work: row
+                    .build_work
+                    .ok_or_else(|| ApiError::internal("process token without work"))?,
+                attempt: row.lease_attempt.unwrap_or_default() as u32,
+                agent: AgentScope {
+                    token_id: row.token_id,
+                    attachments: row.attachments.parse().map_err(ApiError::internal)?,
+                    group_id,
+                    thread_id: row.thread_id,
+                    agent: row.agent.clone().unwrap_or_else(|| "Agent".into()),
+                    can_post: true,
+                    session: false,
+                },
+            },
             (kind @ ("job" | "agent"), Some(group_id)) => Scope::Agent(AgentScope {
                 token_id: row.token_id,
                 attachments: row.attachments.parse().map_err(ApiError::internal)?,
@@ -196,11 +238,32 @@ async fn authenticate(headers: &HeaderMap, state: &AppState) -> Result<Option<Vi
                 can_post: row.can_post,
                 session: kind == "agent",
             }),
-            ("job" | "agent", None) => {
-                return Err(ApiError::internal("an agent's token without a group"));
+            ("job" | "agent" | "build" | "process", None) => {
+                return Err(ApiError::internal("a scoped token without a group"));
             }
             _ => Scope::Full,
         };
+        if let Scope::Process { work, attempt, .. } = &scope {
+            let alive: bool = sqlx::query_scalar(
+                "SELECT EXISTS(SELECT 1
+                 FROM work_leases w
+                 JOIN workshop_processes p ON p.work_id = w.id
+                 WHERE w.id = ?
+                 AND w.attempts = ?
+                 AND w.state = 'running'
+                 AND w.heartbeat > ?
+                 AND p.deadline > ?)",
+            )
+            .bind(work)
+            .bind(*attempt)
+            .bind(now - crate::lease::EXPIRY_MILLIS)
+            .bind(now)
+            .fetch_one(&state.db)
+            .await?;
+            if !alive {
+                return Err(ApiError::forbidden("This process lease ended"));
+            }
+        }
         let mut viewer = row.user.viewer(true, scope);
         viewer.personal_token = row.kind == "personal";
         return Ok(Some(viewer));
@@ -390,6 +453,50 @@ pub async fn hash_password(password: String) -> Result<String, ApiError> {
         .await
         .map_err(ApiError::internal)?
         .map_err(ApiError::internal)
+}
+
+fn build_path(viewer: &Viewer, parts: &Parts) -> Result<(), ApiError> {
+    if let Scope::Process { .. } = &viewer.scope {
+        let path = parts
+            .extensions
+            .get::<axum::extract::OriginalUri>()
+            .map(|uri| uri.0.path())
+            .unwrap_or_else(|| parts.uri.path());
+        if path.starts_with("/git/")
+            || (parts.method == axum::http::Method::GET && path.starts_with("/api/v1/groups/"))
+            || (parts.method == axum::http::Method::POST
+                && path.starts_with("/api/v1/groups/")
+                && (path.ends_with("/messages")
+                    || path.ends_with("/attachments")
+                    || path.ends_with("/resolve")))
+        {
+            return Ok(());
+        }
+        return Err(ApiError::forbidden(
+            "A process token only reads its group and posts in its request",
+        ));
+    }
+    if let Scope::Build { work, .. } = viewer.scope {
+        let path = parts
+            .extensions
+            .get::<axum::extract::OriginalUri>()
+            .map(|uri| uri.0.path())
+            .unwrap_or_else(|| parts.uri.path());
+        if path.starts_with("/git/")
+            || (parts.method == axum::http::Method::POST
+                && [
+                    format!("/api/v1/builds/{work}/pdf"),
+                    format!("/api/v1/builds/{work}/result"),
+                ]
+                .contains(&path.to_owned()))
+        {
+            return Ok(());
+        }
+        return Err(ApiError::forbidden(
+            "A build token only fetches its repository and reports its build",
+        ));
+    }
+    Ok(())
 }
 
 #[cfg(test)]

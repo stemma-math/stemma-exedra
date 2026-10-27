@@ -6,9 +6,10 @@ forum: that agent answers for the person who wrote the message, as “Claude,
 for Ada”. These three agents are fixed. Models, arguments and commands are
 settings on the computer, never profiles in the hub.
 
-The workshop is being redesigned. Its tasks, approvals, machine lending and
-build execution have been removed. Library and paper pages retain earlier
-build results and PDFs; pushes still reach the forge but create no builds.
+The workshop runs background work on members' machines. The hub keeps its
+queue, leases and results, and never runs a build or an agent. In this round
+it builds each new commit of the library's and papers' `main`, and runs
+[recipes requested on the board](workshop.md), with approval on the machine.
 
 ## Sign in and turn agents on
 
@@ -127,9 +128,73 @@ opens it in `$EDITOR`. `--json` provides structured explanations.
 In the app's This machine page, Every group edits general settings; each group
 shows its resolved values. Overrides say “Set for algebra” and can return to
 the general value. Environment-controlled fields say which variable sets
-them and are read-only. Overview, Agents and Isolation show the same controls in either scope. The general
+them and are read-only. Overview, Agents, Isolation and Workshop show the same controls in either scope. The general
 "Answer for me" switch also starts or stops the service; "Answer in this group"
 only changes that group's setting. This page never changes the command line's active group.
+
+## Workshop settings
+
+The Workshop section of This machine has the same scopes as Agents: every
+group or one group. These settings never change how answers run.
+
+```toml
+[workshop]
+enabled = false
+build = false
+build_concurrency = 1
+concurrency = 1
+runners = [] # All configured runners; or ["claude", "codex", "opencode"].
+others = "ask" # Or "never": refuse other people's requests.
+image = "stemma-workshop:<version>"
+# cpus and memory follow the effective agents.cpus and agents.memory.
+
+[groups.algebra.workshop]
+enabled = true
+build = true
+```
+
+`enabled` serves as a workshop for the group; `build` accepts its library and
+paper builds. `build_concurrency` limits builds at once across groups, and
+`concurrency` limits processes independently of builds and answers. `runners`
+selects the runners offered for processes; an empty array offers all configured
+ones, with their configured models. `others` decides whether other members'
+requests reach this machine for approval. CPU and memory
+limits use the same values as agents (4 CPUs and `8g` by default), unless
+overridden. All keys support the usual precedence, comment-preserving edits,
+`stemma config` and variables such as `STEMMA_WORKSHOP_BUILD=true`.
+
+Pending offers, standing approvals (each revocable) and the decision and run
+log appear in This machine › Workshop. Approve there, or on this machine with
+`stemma workshop pending`, `approve`, `decline`, `approvals` and `revoke`.
+Approvals stay in the state's `workshop-approvals.toml`, scoped to the hub and
+recipe blob version; each decision and run is logged under `logs/`. See
+[the workshop](workshop.md) for the format, limits and process token contract.
+
+The workshop requires Docker or Podman in `agents.isolation`. With `none`,
+it announces no workshop capability, and the doctor, settings command and
+app explain why it cannot be enabled. Answers may remain disabled while
+the workshop runs.
+
+`stemma machine image` builds both versioned images, agents first. The
+workshop image is `FROM stemma-agents:<version>` and adds Mathlib's sources
+and compiled cache for the library template. Versions can be overridden
+with Docker build arguments. `workshop.image` can instead name your own
+image built from it; Stemma never builds over that name. The doctor checks
+it, and the app shows its build state. One image for answers and workshop
+work is to be discussed later.
+
+A build has its own container and repository checkout under the group's
+managed workspace `builds/`, with no model credentials or agent sign-in
+mounts. The machine fetches exactly the requested commit using a short-lived
+build token that can only fetch that repository and report that build.
+Heartbeats run every 15 seconds; 60 seconds without one or a disconnected
+machine ends the lease. Work is queued again, up to three lost leases.
+Before it starts, the machine checks its isolation and the workshop image;
+without them it declines the build, and the hub does not offer that build
+to it again. Only the
+latest main commit is active: older queued work is dropped, running work is
+cancelled, and a late result stays in history without replacing the last
+passing state. Logs have secrets hidden and keep their last 200 kB.
 
 ## Environment and active group
 
@@ -174,8 +239,9 @@ revoked when the session ends. It reads the group, and posts, opens
 discussions and leaves notes for members there, always as "Claude, for
 Ada". It cannot push, attach
 files, or reach your account, your tokens, invitations, members or the
-group's settings. **A job's token** is for one answer: it only reads the
-group, and the hub posts the answer itself. Your computer's own token, and
+group's settings. **A job's token** is for one answer: it reads the group
+and may ask the workshop for work, for you, and the hub posts the answer
+itself. Your computer's own token, and
 any token made in Devices, never reaches an agent.
 
 ### Tools in the terminal
@@ -224,6 +290,12 @@ session's folder, which has no credentials, and without `STEMMA_TOKEN` or
 is told not to run `stemma` at all. This is not a wall: the agent runs as
 you, and one that insists can still read your files.
 
+Sessions, answers and workshop processes come with Stemma's skills, for
+this launch only and never in your own configuration: `workshop-recipes`,
+to write the group's workshop recipes. Claude Code loads them as a plugin
+(`--plugin-dir`) and OpenCode from its `skills` setting; Codex reads skills
+only from your folders, so its instructions say where Stemma's are.
+
 ### Answers
 
 When someone mentions `@claude`, their Claude answers on one of their
@@ -233,7 +305,9 @@ read-write; the job's folder, with its token, read-only; and the agent's
 own sign-in. It can run `lake build` or `latexmk` to check its answer.
 Without isolation, the agent only answers: Claude Code with none of its own
 tools, Codex in its read-only sandbox, OpenCode only reading. Either way,
-Stemma's tools only read.
+Stemma's tools only read, and ask the workshop: an answer asked to have
+work done makes a request on the board, for you, which opens saying which
+agent asked and from which thread. It cannot cancel or change requests.
 
 ### Held answers
 
@@ -292,7 +366,7 @@ Stemma's image is `stemma-agents:<version>`, with the `stemma` of that
 release, so that updating Stemma asks for it to be built again.
 
 While developing Stemma, `stemma machine image --dev`, run in a checkout,
-builds `stemma-agents:dev` from that checkout as it is, uncommitted changes
+builds `stemma-agents:dev`, then `stemma-workshop:dev`, from that checkout as it is, uncommitted changes
 included; `stemma config set agents.image stemma-agents:dev` makes agents
 use it. `agents.image` can name an image of your own
 instead, built from Stemma's (`FROM stemma-agents:<version>`) with what you

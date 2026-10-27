@@ -156,12 +156,12 @@
               class="button"
               disabled={controls.saving("image:")}
               onclick={() =>
-                controls.save({ kind: "image", group: controls.scope || null }, "Image built.")}
+                controls.save({ kind: "image", group: controls.scope || null }, "Images built.")}
             >
               {#if controls.saving("image:")}
                 <span class="spinner" aria-hidden="true"></span>
               {/if}
-              Build image
+              Build images
             </button>
             <details class="disclosure">
               <summary>Use your own image</summary>

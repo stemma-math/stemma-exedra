@@ -150,7 +150,7 @@ async fn get(hub: &Hub, person: &Person, path: &str) -> Value {
 }
 
 #[tokio::test(flavor = "multi_thread")]
-async fn papers_keep_source_and_archived_results_without_new_jobs() {
+async fn papers_keep_source_and_build_history() {
     let hub = hub().await;
     let ada = person(&hub, "ada", "admin").await;
     let (status, paper) = call(
@@ -163,7 +163,7 @@ async fn papers_keep_source_and_archived_results_without_new_jobs() {
     .await;
     assert_eq!(status, StatusCode::CREATED, "{paper}");
     let page = get(&hub, &ada, "/groups/geometry/papers/notes").await;
-    assert!(page["latest"].is_null());
+    assert_eq!(page["latest"]["state"], "queued");
     let source = get(&hub, &ada, "/groups/geometry/papers/notes/files").await;
     assert!(source["files"].is_array());
     let count: i64 = sqlx::query_scalar("SELECT count(*) FROM jobs")

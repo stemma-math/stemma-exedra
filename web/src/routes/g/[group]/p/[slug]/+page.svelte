@@ -6,6 +6,7 @@
   import { goto } from "$app/navigation";
   import { page } from "$app/state";
   import { api, type Member, type PaperPage } from "#lib/api.ts";
+  import BuildAgain from "#lib/components/BuildAgain.svelte";
   import BuildChip from "#lib/components/BuildChip.svelte";
   import Glyph from "#lib/components/Glyph.svelte";
   import { listen } from "#lib/events.ts";
@@ -169,7 +170,9 @@
       <p class="message message--danger">
         <span class="message__text">
           The newest build failed: {paper.latest.error}.{#if paper.pdf} The PDF shown is the last one made.{/if}
-          <button type="button" class="button button--link" data-opens="paper-build">Its log</button>
+          <button type="button" class="button button--link" data-opens="paper-build">
+            {paper.latest.again && group.role !== "guest" ? "Its log, and building again" : "Its log"}
+          </button>
         </span>
       </p>
     {:else if paper.latest && (paper.latest.state === "running" || paper.latest.state === "queued")}
@@ -204,7 +207,7 @@
       </p>
     {:else}
       <div class="card card--empty card__body">
-        <p class="empty">No PDF is available. New builds are paused.</p>
+        <p class="empty">No PDF is available yet. A workshop machine builds each new commit of main.</p>
       </div>
     {/if}
 
@@ -214,15 +217,25 @@
           <h2 class="dialog__title" id="paper-build-title">The newest build</h2>
           {#if paper.latest}
             {@const build = paper.latest}
+            {@const slug = paper.slug}
             <p class="row">
               <BuildChip {build} />
               <span>
                 Of <span class="identifier">{build.commit.slice(0, 10)}</span>,
-                <time datetime={build.created_at}>{exactly(build.created_at)}</time>.
+                <time datetime={build.created_at}>{exactly(build.created_at)}</time>{#if build.machine},
+                  on {build.machine}{/if}.
               </span>
             </p>
             {#if build.error}
               <p class="message message--danger"><span class="message__text">{build.error}</span></p>
+              {#if build.again && group.role !== "guest"}
+                <BuildAgain
+                  group={group.slug}
+                  again={async (builder) => {
+                    paper = await api.paperBuildAgain(group.slug, slug, build.id, builder);
+                  }}
+                />
+              {/if}
             {:else if build.progress}
               <p class="quiet">{build.progress}</p>
             {/if}
@@ -233,7 +246,7 @@
             <p class="dialog__text">The paper has not been compiled yet.</p>
           {/if}
           <p class="dialog__text">
-            It compiles from <code>main.tex</code> with <code>latexmk -pdf</code>: pdfLaTeX and BibTeX. Builds are currently paused.
+            It compiles from <code>main.tex</code> with <code>latexmk -pdf</code>: pdfLaTeX and BibTeX. A workshop machine builds each new commit of main.
           </p>
           <div class="dialog__actions">
         

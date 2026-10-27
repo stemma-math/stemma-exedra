@@ -42,6 +42,9 @@ pub struct McpArgs {
     /// Offer only the tools that read.
     #[arg(long)]
     read_only: bool,
+    /// With --read-only, offer this tool too (repeatable).
+    #[arg(long)]
+    also: Vec<String>,
     /// The hub, instead of the one signed in to.
     #[arg(long, env = "STEMMA_HUB")]
     hub: Option<String>,
@@ -115,7 +118,8 @@ pub async fn mcp(args: McpArgs) -> anyhow::Result<()> {
         config.token = Some(config::read_token_file(path)?);
     }
     let mut toolbox = Toolbox::new(config.hub()?, config::active_group(args.group.group)?)
-        .read_only(args.read_only);
+        .read_only(args.read_only)
+        .also(args.also);
     if let Some(dir) = args.attachment_dir.or_else(|| {
         args.token_file
             .and_then(|p| p.parent().map(|p| p.join("attachments")))

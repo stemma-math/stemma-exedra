@@ -23,41 +23,12 @@ pub fn definitions() -> Vec<ToolDef> {
             }, "required": ["slug", "title"]}),
             writes: true,
         },
-        ToolDef {
-            name: "list_papers",
-            handler: |toolbox, args, _agent| Box::pin(list(toolbox, args)),
-            terminal: &["papers"],
-            positional: &[],
-            description: "List the group's working papers, the readable account of what the \
-                          group is doing, each a LaTeX repository: their addresses (p/notes), \
-                          titles, authors and how their PDFs stand.",
-            input_schema: json!({
-                "type": "object",
-                "properties": {"group": {"type": "string", "description": GROUP}}
-            }),
-            writes: false,
-        },
-        ToolDef {
-            name: "read_paper",
-            handler: |toolbox, args, _agent| Box::pin(read(toolbox, args)),
-            terminal: &["papers", "read"],
-            positional: &["address"],
-            description: "Read a working paper's LaTeX source, by address (p/notes), at its \
-                          main: who writes it, how its PDF stands, its files, and its main \
-                          file (main.tex), or the file asked for (sections/intro.tex).",
-            input_schema: json!({
-                "type": "object",
-                "properties": {
-                    "address": {"type": "string", "description": "The paper: p/notes."},
-                    "file": {"type": "string",
-                             "description": "The file to read, by its path in the paper; \
-                                             main.tex if absent."},
-                    "group": {"type": "string", "description": GROUP}
-                },
-                "required": ["address"]
-            }),
-            writes: false,
-        },
+        ToolDef::read("list_papers", |toolbox, args, _agent| {
+            Box::pin(list(toolbox, args))
+        }),
+        ToolDef::read("read_paper", |toolbox, args, _agent| {
+            Box::pin(read(toolbox, args))
+        }),
     ]
 }
 

@@ -52,8 +52,13 @@ COPY Cargo.toml Cargo.lock ./
 COPY crates/ crates/
 COPY lean/ lean/
 COPY latex/ latex/
+COPY recipes/ recipes/
 COPY docker/agents/ docker/agents/
-RUN cargo build --release --locked --bin stemma \
+COPY docker/workshop/ docker/workshop/
+RUN --mount=type=cache,target=/usr/local/cargo/registry \
+    --mount=type=cache,target=/usr/local/cargo/git \
+    --mount=type=cache,target=/src/target \
+    cargo build --release --locked --bin stemma \
     && install -m 755 target/release/stemma /usr/local/bin/stemma
 
 FROM stemma-${STEMMA_SOURCE} AS stemma

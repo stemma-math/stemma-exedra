@@ -19,14 +19,23 @@ docker compose -f docker/compose.yaml logs hub   # the setup link
 ## The forge
 
 Forgejo keeps the groups' repositories. Each group is an organization, with
-its library (`library`) and a repository per paper (`paper-<slug>`). People
+its library (`library`), recipes (`recipes`), and a repository per paper
+(`paper-<slug>`). People
 sign in to Forgejo with their Stemma account: the hub is its OpenID Connect
 provider, and Forgejo's own password form is off (`ENABLE_INTERNAL_SIGNIN`),
 as are passwords over HTTP (`ENABLE_BASIC_AUTHENTICATION`); tokens still
 work. In Forgejo, a group's admins own its organization, its members write
 to its repositories and its guests read them: the hub keeps those teams as
 the roles are. Git goes through the hub, under `/git`, which applies the
-group's roles.
+group's roles. `main` has a push allow-list of the admins' team and the
+reserved user `workshop`; members keep write access to other branches.
+On start the hub reconciles existing repositories' protection.
+
+The hub creates two reserved Forgejo accounts without passwords or sign-in:
+`worker`, in each organization's members' team, for processes and pull requests;
+`workshop`, in its admins' team, for the git orchestrator. They are never
+people in Stemma. Only the hub acts as them, using its admin token with
+Forgejo's `Sudo` header; their credentials never exist on machines.
 
 Names can change in Stemma. Forgejo 16 provides `POST /orgs/{org}/rename`
 and the admin's `POST /admin/users/{username}/rename`; the hub uses them,
@@ -44,6 +53,20 @@ and set its public address.
 
 On its first start the hub prints a setup link for the first account, the
 hub's admin.
+
+## Workshop model keys
+
+Groups may give their workshop an API key in **Group settings › Workshop**.
+The hub encrypts keys in SQLite using `workshop.key`, created in its data
+folder on first start with mode 0600. Back up that file with the database.
+The API returns only the setter, time and last four characters, never the key.
+Keys are never sent to people's machines or agents.
+
+Whoever runs the hub could read them: the hub holds the encryption key and
+must decrypt each API key to call its provider. Each group should use a
+separate key made for this workshop, with a spending limit at its provider.
+The monthly token cap is checked before calls and can be exceeded by the last
+call's reported usage; it is not a replacement for the provider's limit.
 
 ## Accounts and invitations
 

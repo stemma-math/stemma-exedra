@@ -94,6 +94,7 @@ pub fn thread_heading(group: &str, thread: &Thread) -> String {
         (ThreadKind::Chat, Some(agent)) => format!("A chat with @{agent}"),
         (ThreadKind::Chat, None) => "A chat".into(),
         (ThreadKind::Discussion, _) => "A discussion".into(),
+        (ThreadKind::Request, _) => "A workshop request".into(),
     };
     format!(
         "# t{} – {}\n\n{kind} in {group}, started by {} on {}; {} messages.\n",
@@ -408,6 +409,8 @@ mod tests {
     #[test]
     fn messages_are_headed_by_their_address() {
         let message = Message {
+            orchestrator_model: None,
+            workshop: false,
             missing_references: Vec::new(),
             number: 45,
             author: User {

@@ -75,7 +75,18 @@ impl<'a> Notice<'a> {
 
 /// Whether unread notifications of `kind` in one thread become one.
 fn gathers(kind: NotificationKind) -> bool {
-    matches!(kind, NotificationKind::Mention | NotificationKind::Answer)
+    matches!(
+        kind,
+        NotificationKind::Mention
+            | NotificationKind::Answer
+            | NotificationKind::ReviewMerged
+            | NotificationKind::ReviewRefused
+            | NotificationKind::RequestDone
+            | NotificationKind::RequestFailed
+            | NotificationKind::RequestExpired
+            | NotificationKind::ProcessApproval
+            | NotificationKind::ProcessPullRequest
+    )
 }
 
 /// Tells each of `users` of `notice`, once.
@@ -356,6 +367,13 @@ async fn notification(state: &AppState, row: Row) -> ApiResult<Notification> {
             | NotificationKind::Answer
             | NotificationKind::Held
             | NotificationKind::Failed
+            | NotificationKind::RequestDone
+            | NotificationKind::RequestFailed
+            | NotificationKind::RequestExpired
+            | NotificationKind::ProcessApproval
+            | NotificationKind::ProcessPullRequest
+            | NotificationKind::ReviewMerged
+            | NotificationKind::ReviewRefused
     );
     // A thread of a group they have left is no longer theirs to read.
     let thread = match (row.thread_number, row.member) {
@@ -363,6 +381,7 @@ async fn notification(state: &AppState, row: Row) -> ApiResult<Notification> {
             number: number as u32,
             kind: match row.thread_kind.as_deref() {
                 Some("chat") => ThreadKind::Chat,
+                Some("request") => ThreadKind::Request,
                 _ => ThreadKind::Discussion,
             },
             title: row.thread_title.unwrap_or_default(),

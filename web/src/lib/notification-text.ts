@@ -3,15 +3,19 @@
 import type { Notification, Role } from "./api";
 import { ROLE_NAMES } from "./roles.ts";
 
-/** Who did it: a person, or an agent for them. */
+/** The workshop's orchestrators act for no one. */
+const byWorkshop = (n: Notification) => n.agent === "Workshop" && !n.actor;
+
+/** Who did it: a person, an agent for them, or the workshop. */
 function byOf(n: Notification): string {
+  if (byWorkshop(n)) return "Workshop";
   const person = n.actor?.display_name ?? "Someone";
   return n.agent ? `${n.agent}, for ${person}` : person;
 }
 
 /** The same, as a sentence starts with it. */
 export function whoOf(n: Notification): string {
-  return n.agent ? `${byOf(n)},` : byOf(n);
+  return n.agent && !byWorkshop(n) ? `${byOf(n)},` : byOf(n);
 }
 
 /** The notification in a sentence, without what it is about. */
@@ -20,6 +24,20 @@ export function sentenceOf(n: Notification): string {
   const agent = n.agent ?? "An agent";
   const group = n.group?.name ?? "a group";
   switch (n.kind) {
+    case "review_merged":
+      return `A pull request was merged into main${where}`;
+    case "review_refused":
+      return `A pull request was refused${where}`;
+    case "request_done":
+      return `Your workshop request finished${where}`;
+    case "request_failed":
+      return `Your workshop request failed${where}`;
+    case "request_expired":
+      return `Your workshop request expired while waiting for a machine${where}`;
+    case "process_approval":
+      return n.text ?? `${whoOf(n)} asks your workshop to run a process${where}`;
+    case "process_pull_request":
+      return `A pull request was opened for your request${where}`;
     // Gathered, they may be by several: the latest is named.
     case "mention":
       return n.count > 1

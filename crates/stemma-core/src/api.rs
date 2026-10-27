@@ -383,6 +383,8 @@ pub enum ThreadKind {
     Discussion,
     /// A resident agent answers every message.
     Chat,
+    /// A workshop request with its processes and discussion.
+    Request,
 }
 
 impl ThreadKind {
@@ -390,6 +392,7 @@ impl ThreadKind {
         match self {
             ThreadKind::Discussion => "discussion",
             ThreadKind::Chat => "chat",
+            ThreadKind::Request => "request",
         }
     }
 
@@ -397,6 +400,7 @@ impl ThreadKind {
         match s {
             "discussion" => Some(ThreadKind::Discussion),
             "chat" => Some(ThreadKind::Chat),
+            "request" => Some(ThreadKind::Request),
             _ => None,
         }
     }
@@ -457,6 +461,10 @@ pub struct UpdateThread {
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Message {
+    #[serde(default)]
+    pub orchestrator_model: Option<String>,
+    #[serde(default)]
+    pub workshop: bool,
     #[serde(default)]
     pub missing_references: Vec<String>,
     /// Its number in the thread: the `45` of `t12#45`. Never reused.
@@ -664,6 +672,10 @@ pub struct Build {
     pub error: Option<String>,
     /// Lean's version, as it ran.
     pub lean: Option<String>,
+    /// The machine that built it, or builds it.
+    pub machine: Option<String>,
+    /// Whether it may build again: it failed, and is of main's newest commit.
+    pub again: bool,
     #[serde(with = "time::serde::rfc3339")]
     pub created_at: OffsetDateTime,
     #[serde(with = "time::serde::rfc3339::option")]
@@ -765,6 +777,10 @@ pub struct PaperBuild {
     pub progress: Option<String>,
     /// Why it failed, in a line.
     pub error: Option<String>,
+    /// The machine that built it, or builds it.
+    pub machine: Option<String>,
+    /// Whether it may build again: it failed, and is of main's newest commit.
+    pub again: bool,
     #[serde(with = "time::serde::rfc3339")]
     pub created_at: OffsetDateTime,
     #[serde(with = "time::serde::rfc3339::option")]
@@ -1106,6 +1122,13 @@ pub enum Event {
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum NotificationKind {
+    ReviewMerged,
+    ReviewRefused,
+    ProcessPullRequest,
+    ProcessApproval,
+    RequestExpired,
+    RequestFailed,
+    RequestDone,
     /// Someone mentioned them in a message.
     Mention,
     /// An agent answered a message of theirs.
@@ -1131,6 +1154,13 @@ pub enum NotificationKind {
 impl NotificationKind {
     pub fn as_str(self) -> &'static str {
         match self {
+            NotificationKind::ReviewMerged => "review_merged",
+            NotificationKind::ReviewRefused => "review_refused",
+            NotificationKind::RequestDone => "request_done",
+            NotificationKind::RequestFailed => "request_failed",
+            NotificationKind::RequestExpired => "request_expired",
+            NotificationKind::ProcessApproval => "process_approval",
+            NotificationKind::ProcessPullRequest => "process_pull_request",
             NotificationKind::Mention => "mention",
             NotificationKind::Answer => "answer",
             NotificationKind::Held => "held",
@@ -1146,6 +1176,13 @@ impl NotificationKind {
 
     pub fn parse(s: &str) -> Option<NotificationKind> {
         Some(match s {
+            "review_merged" => NotificationKind::ReviewMerged,
+            "review_refused" => NotificationKind::ReviewRefused,
+            "request_done" => NotificationKind::RequestDone,
+            "request_failed" => NotificationKind::RequestFailed,
+            "request_expired" => NotificationKind::RequestExpired,
+            "process_approval" => NotificationKind::ProcessApproval,
+            "process_pull_request" => NotificationKind::ProcessPullRequest,
             "mention" => NotificationKind::Mention,
             "answer" => NotificationKind::Answer,
             "held" => NotificationKind::Held,

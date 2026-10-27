@@ -40,8 +40,8 @@
     <h1>Builds</h1>
   </div>
   <p class="quiet">
-    Earlier build results are kept here. New builds are paused. The library's
-    state is its last build that passed.
+    Each new commit of main is built on a group's connected workshop machine.
+    The library's state is its last build that passed.
   </p>
   {#if builds === null}
     <Loading label="Loading" />

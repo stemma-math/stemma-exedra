@@ -1,4 +1,4 @@
-//! The group library and archived build results. Pushes update main; new builds are paused.
+//! The group library, build queue and retained declaration inspections.
 
 use stemma_core::api::{Build, BuildState, Declaration, DeclarationState, SourceRange};
 
@@ -122,30 +122,9 @@ pub async fn created(state: &AppState, group_id: i64, _requester_id: i64) -> Api
     refresh(state, group_id, _requester_id).await
 }
 
-/// Update the recorded main commit without scheduling a build.
+/// Reconcile main with Forgejo and queue its latest commit for a workshop.
 pub async fn refresh(state: &AppState, group_id: i64, _requester_id: i64) -> ApiResult<()> {
-    let Some(head) = main_commit(state, group_id).await? else {
-        return Ok(());
-    };
-    let known: Option<Option<String>> =
-        sqlx::query_scalar("SELECT head FROM libraries WHERE group_id = ?")
-            .bind(group_id)
-            .fetch_optional(&state.db)
-            .await?;
-    let Some(known) = known else {
-        return Ok(());
-    };
-    if known.as_deref() == Some(head.as_str()) {
-        return Ok(());
-    }
-    sqlx::query("UPDATE libraries SET head = ? WHERE group_id = ?")
-        .bind(&head)
-        .bind(group_id)
-        .execute(&state.db)
-        .await?;
-    // A commit built already, as when `main` comes back to it, is not
-    // built again.
-    Ok(())
+    crate::builds::refresh(state, group_id, LIBRARY, None).await
 }
 
 // ── Builds ────────────────────────────────────────────────────────────
@@ -155,6 +134,12 @@ struct BuildRow {
     id: i64,
     commit_sha: String,
     succeeded: Option<bool>,
+    work_state: Option<String>,
+    machine: Option<String>,
+    /// Why the build waits, when a machine could not take it.
+    work_error: Option<String>,
+    builder: Option<String>,
+    newest: bool,
     error: Option<String>,
     lean: Option<String>,
     created_at: i64,
@@ -163,8 +148,14 @@ struct BuildRow {
 
 macro_rules! build_query {
     () => {
-        "SELECT b.id, b.commit_sha, b.succeeded, b.error, b.lean, b.created_at, b.finished_at
-         FROM library_builds b"
+        "SELECT b.id, b.commit_sha, b.succeeded, b.error, b.lean, b.created_at, b.finished_at,
+                w.state AS work_state, coalesce(b.machine, w.machine) AS machine,
+                w.error AS work_error, u.display_name AS builder,
+                coalesce(b.commit_sha = l.head, 0) AS newest
+         FROM library_builds b
+         LEFT JOIN work_leases w ON w.id = b.work_id
+         LEFT JOIN users u ON u.id = w.builder
+         LEFT JOIN libraries l ON l.group_id = b.group_id"
     };
 }
 
@@ -176,9 +167,30 @@ impl BuildRow {
             state: match self.succeeded {
                 Some(true) => BuildState::Succeeded,
                 Some(false) => BuildState::Failed,
-                None => BuildState::Cancelled,
+                None => match self.work_state.as_deref() {
+                    Some("queued") => BuildState::Queued,
+                    Some("running") => BuildState::Running,
+                    Some("failed") => BuildState::Failed,
+                    _ => BuildState::Cancelled,
+                },
             },
-            progress: None,
+            progress: match self.work_state.as_deref() {
+                Some("queued") => Some(crate::builds::waiting(
+                    self.builder.as_deref(),
+                    self.work_error.as_deref(),
+                )),
+                Some("running") => self
+                    .machine
+                    .as_ref()
+                    .map(|name| format!("Building on {name}")),
+                _ => None,
+            },
+            // A queued build has no machine yet, whoever declined it.
+            machine: self
+                .machine
+                .clone()
+                .filter(|_| self.work_state.as_deref() != Some("queued")),
+            again: self.work_state.as_deref() == Some("failed") && self.newest,
             error: self.error.clone(),
             lean: self.lean.clone(),
             created_at: db::from_millis(self.created_at),
@@ -226,7 +238,7 @@ pub async fn build(state: &AppState, group_id: i64, id: i64) -> ApiResult<(Build
 pub async fn current(state: &AppState, group_id: i64) -> ApiResult<Option<Build>> {
     let row: Option<BuildRow> = sqlx::query_as(concat!(
         build_query!(),
-        " WHERE b.group_id = ? AND b.succeeded = 1 ORDER BY b.id DESC LIMIT 1"
+        " WHERE b.group_id = ? AND b.succeeded = 1 AND b.accepted = 1 ORDER BY b.id DESC LIMIT 1"
     ))
     .bind(group_id)
     .fetch_optional(&state.db)
@@ -239,7 +251,7 @@ pub async fn current(state: &AppState, group_id: i64) -> ApiResult<Option<Build>
 /// The id of the build whose report is the library's state.
 pub async fn current_build_id(state: &AppState, group_id: i64) -> ApiResult<Option<i64>> {
     Ok(sqlx::query_scalar(
-        "SELECT id FROM library_builds WHERE group_id = ? AND succeeded = 1
+        "SELECT id FROM library_builds WHERE group_id = ? AND succeeded = 1 AND accepted = 1
          ORDER BY id DESC LIMIT 1",
     )
     .bind(group_id)
@@ -354,6 +366,54 @@ pub async fn resolve(state: &AppState, group_id: i64, name: &str) -> ApiResult<F
             state: Some(DeclarationState::Missing),
         },
     })
+}
+
+pub(crate) async fn store_report(
+    tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>,
+    build_id: i64,
+    report: &stemma_core::api::LibraryReport,
+) -> ApiResult<()> {
+    for d in &report.declarations {
+        let range = d.range;
+        sqlx::query(
+            "INSERT OR REPLACE INTO library_declarations
+                 (build_id, name, module, kind, type, doc, start_line, start_column, end_line,
+                  end_column, sorry, data_sorry, axioms, uses)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        )
+        .bind(build_id)
+        .bind(&d.name)
+        .bind(&d.module)
+        .bind(&d.kind)
+        .bind(&d.type_)
+        .bind(
+            d.doc
+                .as_deref()
+                .map(str::trim)
+                .filter(|doc| !doc.is_empty()),
+        )
+        .bind(range.map(|r| r.start_line))
+        .bind(range.map(|r| r.start_column))
+        .bind(range.map(|r| r.end_line))
+        .bind(range.map(|r| r.end_column))
+        .bind(d.sorry)
+        .bind(d.data_sorry)
+        .bind(serde_json::to_string(&d.axioms).map_err(ApiError::internal)?)
+        .bind(serde_json::to_string(&d.uses).map_err(ApiError::internal)?)
+        .execute(&mut **tx)
+        .await?;
+        for used in &d.uses {
+            sqlx::query(
+                "INSERT OR IGNORE INTO library_uses (build_id, used, user) VALUES (?, ?, ?)",
+            )
+            .bind(build_id)
+            .bind(used)
+            .bind(&d.name)
+            .execute(&mut **tx)
+            .await?;
+        }
+    }
+    Ok(())
 }
 
 #[cfg(test)]

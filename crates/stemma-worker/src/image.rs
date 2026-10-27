@@ -6,8 +6,6 @@
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
 
-use anyhow::Context as _;
-
 use crate::isolation::Engine;
 
 /// The image's description.
@@ -106,7 +104,29 @@ pub fn write_context(dir: &Path) -> anyhow::Result<()> {
             std::fs::Permissions::from_mode(0o755),
         )?;
     }
+    let workshop = dir.join("docker/workshop");
+    std::fs::create_dir_all(&workshop)?;
+    std::fs::write(workshop.join("Dockerfile"), WORKSHOP_DOCKERFILE)?;
+    std::fs::create_dir_all(dir.join("lean/template"))?;
+    for (name, text) in [
+        ("lean-toolchain", TOOLCHAIN),
+        (
+            "lakefile.toml",
+            include_str!("../../../lean/template/lakefile.toml"),
+        ),
+        (
+            "lake-manifest.json",
+            include_str!("../../../lean/template/lake-manifest.json"),
+        ),
+    ] {
+        std::fs::write(dir.join("lean/template").join(name), text)?;
+    }
     Ok(())
+}
+
+pub const WORKSHOP_DOCKERFILE: &str = include_str!("../../../docker/workshop/Dockerfile");
+pub fn workshop_image() -> String {
+    format!("stemma-workshop:{}", env!("CARGO_PKG_VERSION"))
 }
 
 /// Builds the image selected by the general or group settings.
@@ -130,6 +150,17 @@ pub async fn build_for(group: Option<&str>) -> anyhow::Result<()> {
     let engine = isolation::find_engine(&isolation, std::env::var_os("PATH").as_deref())
         .await
         .ok_or_else(|| anyhow::anyhow!("Install and start Docker or Podman."))?;
+    let workshop = config
+        .settings
+        .get("workshop.image", group)?
+        .value
+        .as_str()
+        .unwrap()
+        .to_owned();
+    anyhow::ensure!(
+        workshop == workshop_image(),
+        "workshop.image names your own image, {workshop}: build it yourself, or unset workshop.image"
+    );
     build(
         engine.as_ref(),
         &Build {
@@ -148,6 +179,7 @@ pub async fn build(engine: &dyn Engine, build: &Build) -> anyhow::Result<()> {
         std::env::temp_dir().join(format!("stemma-image-{:08x}", rand::random::<u32>()));
     write_context(&dir)?;
     run_build(engine, build, &dir).await?;
+    run_workshop_build(engine, &build.tag, &workshop_image(), &dir).await?;
     let _ = std::fs::remove_dir_all(&dir);
     Ok(())
 }
@@ -186,18 +218,62 @@ pub async fn build_dev(root: &Path, group: Option<&str>) -> anyhow::Result<()> {
         },
         root,
     )
-    .await
+    .await?;
+    run_workshop_build(engine.as_ref(), DEV_IMAGE, "stemma-workshop:dev", root).await
+}
+
+async fn run_workshop_build(
+    engine: &dyn Engine,
+    agents: &str,
+    tag: &str,
+    dir: &Path,
+) -> anyhow::Result<()> {
+    let mut command = tokio::process::Command::new(engine.program());
+    command
+        .args(["build", "--file"])
+        .arg(dir.join("docker/workshop/Dockerfile"))
+        .args([
+            "--tag",
+            tag,
+            "--build-arg",
+            &format!("AGENTS_IMAGE={agents}"),
+        ])
+        .arg(dir);
+    run_command(command).await
 }
 
 /// Runs the runtime's build of `build` in the folder `dir`.
 async fn run_build(engine: &dyn Engine, build: &Build, dir: &Path) -> anyhow::Result<()> {
-    let status = tokio::process::Command::new(engine.program())
-        .args(build_args(build, dir))
+    let mut command = tokio::process::Command::new(engine.program());
+    command.args(build_args(build, dir));
+    run_command(command).await
+}
+
+/// Keep the runtime's errors verbatim for both the terminal and the app.
+async fn run_command(mut command: tokio::process::Command) -> anyhow::Result<()> {
+    use std::io::Write;
+    use tokio::io::AsyncReadExt;
+    let mut child = command
         .stdin(Stdio::null())
-        .status()
-        .await
-        .with_context(|| format!("running {}", engine.program().display()));
-    anyhow::ensure!(status?.success(), "the image could not be built");
+        .stdout(Stdio::inherit())
+        .stderr(Stdio::piped())
+        .kill_on_drop(true)
+        .spawn()?;
+    let mut stderr = child.stderr.take().unwrap();
+    let mut raw = Vec::new();
+    let mut chunk = [0; 8192];
+    loop {
+        let count = stderr.read(&mut chunk).await?;
+        if count == 0 {
+            break;
+        }
+        std::io::stderr().write_all(&chunk[..count])?;
+        raw.extend_from_slice(&chunk[..count]);
+    }
+    let status = child.wait().await?;
+    if !status.success() {
+        anyhow::bail!("{}", String::from_utf8_lossy(&raw));
+    }
     Ok(())
 }
 
@@ -205,6 +281,21 @@ async fn run_build(engine: &dyn Engine, build: &Build, dir: &Path) -> anyhow::Re
 mod tests {
     use super::*;
 
+    #[test]
+    fn workshop_cache_matches_the_library_template() {
+        let template: toml::Value =
+            toml::from_str(include_str!("../../../lean/template/lakefile.toml")).unwrap();
+        let version = template["require"][0]["rev"].as_str().unwrap();
+        assert!(WORKSHOP_DOCKERFILE.contains(&format!("ARG MATHLIB_VERSION={version}")));
+        let dir = tempfile::tempdir().unwrap();
+        write_context(dir.path()).unwrap();
+        assert!(dir.path().join("docker/workshop/Dockerfile").is_file());
+        assert!(
+            dir.path()
+                .join("lean/template/lake-manifest.json")
+                .is_file()
+        );
+    }
     #[test]
     fn builds_this_versions_image() {
         let build = Build {

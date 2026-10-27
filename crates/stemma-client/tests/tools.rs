@@ -285,7 +285,13 @@ async fn mcp_serves_the_tools_and_names_the_agent() {
         let annotations = tool.annotations.as_ref().expect("tool annotations");
         let writes = matches!(
             tool.name.as_ref(),
-            "post_message" | "notify" | "open_thread" | "create_paper"
+            "post_message"
+                | "notify"
+                | "open_thread"
+                | "create_paper"
+                | "ask_workshop"
+                | "cancel_request"
+                | "upload_attachment"
         );
         assert_eq!(annotations.read_only_hint, Some(!writes), "{}", tool.name);
         assert_eq!(annotations.destructive_hint, Some(false));
@@ -308,7 +314,14 @@ async fn mcp_serves_the_tools_and_names_the_agent() {
             "create_paper",
             "list_papers",
             "read_paper",
+            "list_recipes",
+            "read_recipe",
+            "list_requests",
+            "read_request",
+            "ask_workshop",
+            "cancel_request",
             "download_attachment",
+            "upload_attachment",
         ]
     );
 

@@ -16,9 +16,12 @@ export function when(iso: string, now = new Date()): string {
   return day.format(date);
 }
 
-/** A moment, in full. */
-export function exactly(iso: string): string {
-  return dateTime.format(new Date(iso));
+/** A moment, in full: here, or in a given time zone. */
+export function exactly(at: string | number, timeZone?: string): string {
+  const format = timeZone
+    ? new Intl.DateTimeFormat("en", { dateStyle: "medium", timeStyle: "short", timeZone })
+    : dateTime;
+  return format.format(new Date(at));
 }
 
 export function fileSize(bytes: number): string {

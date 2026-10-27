@@ -22,7 +22,11 @@ body {
 
 .shell {
   --sidebar-min-width: calc(var(--space-16) * 4);
-  --sidebar-width: clamp(var(--sidebar-min-width), calc(var(--sidebar-min-width) * var(--sidebar-scale, 1)), calc(var(--sidebar-min-width) * 4 / 3));
+  --sidebar-width: clamp(
+    var(--sidebar-min-width),
+    calc(var(--sidebar-min-width) * var(--sidebar-scale, 1)),
+    calc(var(--sidebar-min-width) * 4 / 3)
+  );
   position: relative;
   display: grid;
   grid-template-columns: var(--sidebar-width) minmax(0, 1fr);
@@ -150,7 +154,9 @@ body {
     flex-direction: column;
   }
 
-  .shell__main { flex: 1; }
+  .shell__main {
+    flex: 1;
+  }
 
   .shell__bar {
     position: sticky;
@@ -610,40 +616,133 @@ stemma-toast-region {
   gap: var(--space-4);
 }
 
-.sidebar__head { padding: var(--space-5) var(--space-5) var(--space-3); }
-.sidebar__head p { margin: var(--space-2) 0 0; }
-.sidebar__brand, .account-frame__brand { display: flex; align-items: center; gap: var(--space-3); color: inherit; text-decoration: none; }
-.sidebar__brand stemma-mark { width: var(--space-8); }
-.sidebar__brand .wordmark { font-size: var(--step-6); }
-.sidebar__top { border: 0; padding-top: 0; }
-.sidebar__switcher { padding: var(--space-3); white-space: normal; }
-.sidebar__name { text-align: left; gap: var(--space-1); }
-.sidebar__foot { align-items: stretch; border: 0; padding: var(--space-3); }
-.sidebar__connection { display: flex; flex-wrap: wrap; gap: var(--space-2); padding-inline: var(--space-1); }
-.truncate { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.account-frame { display: flex; flex: 1; flex-direction: column; min-height: 100%; }
-.account-frame__head { display: flex; justify-content: space-between; align-items: center; gap: var(--space-3); padding: var(--space-4) var(--space-8); }
-.account-frame__brand stemma-mark { width: var(--space-6); }
-.account-frame__body { display: flex; flex: 1; }
-.account-frame__foot { display: flex; flex-wrap: wrap; align-items: center; gap: var(--space-5); padding: var(--space-4) var(--space-6); }
-.front__host { margin-top: var(--space-3); color: var(--on-dark-3); }
+.sidebar__head {
+  padding: var(--space-5) var(--space-5) var(--space-3);
+}
+.sidebar__head p {
+  margin: var(--space-2) 0 0;
+}
+.sidebar__brand,
+.account-frame__brand {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+  color: inherit;
+  text-decoration: none;
+}
+.sidebar__brand stemma-mark {
+  width: var(--space-8);
+}
+.sidebar__brand .wordmark {
+  font-size: var(--step-6);
+}
+.sidebar__top {
+  border: 0;
+  padding-top: 0;
+}
+.sidebar__switcher {
+  padding: var(--space-3);
+  white-space: normal;
+}
+.sidebar__name {
+  text-align: left;
+  gap: var(--space-1);
+}
+.sidebar__foot {
+  align-items: stretch;
+  border: 0;
+  padding: var(--space-3);
+}
+.sidebar__connection {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-2);
+  padding-inline: var(--space-1);
+}
+.truncate {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.account-frame {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  min-height: 100%;
+}
+.account-frame__head {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: var(--space-3);
+  padding: var(--space-4) var(--space-8);
+}
+.account-frame__brand stemma-mark {
+  width: var(--space-6);
+}
+.account-frame__body {
+  display: flex;
+  flex: 1;
+}
+.account-frame__foot {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-5);
+  padding: var(--space-4) var(--space-6);
+}
+.front__host {
+  margin-top: var(--space-3);
+  color: var(--on-dark-3);
+}
 @media (max-width: 40rem) {
-  .account-frame__head { padding: var(--space-3); flex-wrap: wrap; }
-  .account-frame__foot { gap: var(--space-3); }
-  .front { padding-bottom: 0; }
-  .sidebar__switcher .avatar { flex-shrink: 0; }
+  .account-frame__head {
+    padding: var(--space-3);
+    flex-wrap: wrap;
+  }
+  .account-frame__foot {
+    gap: var(--space-3);
+  }
+  .front {
+    padding-bottom: 0;
+  }
+  .sidebar__switcher .avatar {
+    flex-shrink: 0;
+  }
 }
 
-.public-frame { position: relative; isolation: isolate; height: 100dvh; overflow: hidden; }
-.public-frame__light { position: fixed; inset: 0; z-index: -1; pointer-events: none; }
-.public-frame__view { position: absolute; inset: 0; overflow: auto; overscroll-behavior: none; }
-.public-frame__inside { display: flex; flex-direction: column; }
-.public-frame__view > * { flex-shrink: 0; }
-
-
+.public-frame {
+  position: relative;
+  isolation: isolate;
+  height: 100dvh;
+  overflow: hidden;
+}
+.public-frame__light {
+  position: fixed;
+  inset: 0;
+  z-index: -1;
+  pointer-events: none;
+}
+.public-frame__view {
+  position: absolute;
+  inset: 0;
+  overflow: auto;
+  overscroll-behavior: none;
+}
+.public-frame__inside {
+  display: flex;
+  flex-direction: column;
+}
+.public-frame__view > * {
+  flex-shrink: 0;
+}
 
 /* Pages outside the group shell own their scroll area too. */
-.app > .page { overflow: auto; overscroll-behavior: none; }
+.app > .page {
+  overflow: auto;
+  overscroll-behavior: none;
+}
 
 /* ── The person's settings: one dialog, in the browser and the app ───── */
 .settings-dialog {
@@ -653,7 +752,10 @@ stemma-toast-region {
   overflow: hidden;
   overscroll-behavior: none;
 }
-.settings-dialog > .dialog__actions { margin: 0; padding: var(--space-4) var(--space-6); }
+.settings-dialog > .dialog__actions {
+  margin: 0;
+  padding: var(--space-4) var(--space-6);
+}
 .settings {
   display: grid;
   grid-template-columns: max-content minmax(0, 1fr);
@@ -661,18 +763,51 @@ stemma-toast-region {
   flex-basis: 0;
 }
 /* Keep the scrollport bounded before asynchronous content arrives. */
-.settings-dialog[open] { display: flex; flex-direction: column; max-height: calc(100dvh - var(--space-12)); }
-.settings { flex: 1 1 0; grid-template-rows: minmax(0, 1fr); }
+.settings-dialog[open] {
+  display: flex;
+  flex-direction: column;
+  max-height: calc(100dvh - var(--space-12));
+}
+.settings {
+  flex: 1 1 0;
+  grid-template-rows: minmax(0, 1fr);
+}
 /* The lines of what is about to appear; the last is shorter, as text's. */
-.loading-lines { display: grid; gap: var(--space-2); width: 100%; }
-.loading-lines__line { display: block; height: var(--space-4); }
-.loading-lines__line:last-child:not(:first-child) { width: 60%; }
+.loading-lines {
+  display: grid;
+  gap: var(--space-2);
+  width: 100%;
+}
+.loading-lines__line {
+  display: block;
+  height: var(--space-4);
+}
+.loading-lines__line:last-child:not(:first-child) {
+  width: 60%;
+}
 /* A file on its way, where its thumbnail will be. */
-.upload-placeholder { display: block; width: var(--space-16); height: var(--space-16); }
-.machine-tab[hidden] { display: none; }
-.settings__nav { padding: var(--space-5) var(--space-3); overflow: auto; overscroll-behavior: none; }
-.settings__group { margin: var(--space-5) 0 var(--space-2); padding-inline: var(--space-3); }
-.settings__separator { margin: var(--space-3) var(--space-3); border: 0; border-top: 1px solid var(--border); }
+.upload-placeholder {
+  display: block;
+  width: var(--space-16);
+  height: var(--space-16);
+}
+.machine-tab[hidden] {
+  display: none;
+}
+.settings__nav {
+  padding: var(--space-5) var(--space-3);
+  overflow: auto;
+  overscroll-behavior: none;
+}
+.settings__group {
+  margin: var(--space-5) 0 var(--space-2);
+  padding-inline: var(--space-3);
+}
+.settings__separator {
+  margin: var(--space-3) var(--space-3);
+  border: 0;
+  border-top: 1px solid var(--border);
+}
 .settings__pane {
   min-width: 0;
   min-height: 0;
@@ -681,25 +816,73 @@ stemma-toast-region {
   padding: var(--space-5) var(--space-6);
   gap: var(--space-5);
 }
-.settings__pane > * { flex-shrink: 0; }
-.setting { min-width: 0; }
-.setting__row { display: flex; align-items: center; justify-content: space-between; gap: var(--space-4); min-width: 0; }
-.setting__row > :not(.grow):not(.truncate) { flex-shrink: 0; }
+.settings__pane > * {
+  flex-shrink: 0;
+}
+.setting {
+  min-width: 0;
+}
+.setting__row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-4);
+  min-width: 0;
+}
+.setting__row > :not(.grow):not(.truncate) {
+  flex-shrink: 0;
+}
 .stack > :is(h1, h2, h3, p),
 .setting__row > :is(h1, h2, h3),
-.row > :is(h1, h2, h3) { margin: 0; }
+.row > :is(h1, h2, h3) {
+  margin: 0;
+}
 
 /* On a phone, the dialog fills the screen and its pages sit in a row on top. */
 @media (max-width: 40rem) {
-  .settings-dialog { width: 100vw; height: 100dvh; max-height: none; margin: 0; border-radius: 0; }
-  .settings-dialog[open] { display: flex; flex-direction: column; max-height: none; }
-  .settings { flex: 1; grid-template-columns: minmax(0, 1fr); grid-template-rows: auto minmax(0, 1fr); height: auto; }
-  .settings__nav { display: flex; align-items: center; gap: var(--space-1); padding: var(--space-3); overflow-x: auto; }
-  .settings__nav .nav-list { display: flex; gap: var(--space-1); }
-  .settings__nav .nav-item { width: auto; white-space: nowrap; }
-  .settings__group { margin: 0 var(--space-2); white-space: nowrap; }
-  .settings__separator { display: none; }
-  .settings__pane { padding: var(--space-4); }
+  .settings-dialog {
+    width: 100vw;
+    height: 100dvh;
+    max-height: none;
+    margin: 0;
+    border-radius: 0;
+  }
+  .settings-dialog[open] {
+    display: flex;
+    flex-direction: column;
+    max-height: none;
+  }
+  .settings {
+    flex: 1;
+    grid-template-columns: minmax(0, 1fr);
+    grid-template-rows: auto minmax(0, 1fr);
+    height: auto;
+  }
+  .settings__nav {
+    display: flex;
+    align-items: center;
+    gap: var(--space-1);
+    padding: var(--space-3);
+    overflow-x: auto;
+  }
+  .settings__nav .nav-list {
+    display: flex;
+    gap: var(--space-1);
+  }
+  .settings__nav .nav-item {
+    width: auto;
+    white-space: nowrap;
+  }
+  .settings__group {
+    margin: 0 var(--space-2);
+    white-space: nowrap;
+  }
+  .settings__separator {
+    display: none;
+  }
+  .settings__pane {
+    padding: var(--space-4);
+  }
 }
 
 /* Dragging temporarily overrides document selection and control transitions. */
@@ -715,7 +898,6 @@ html .app .shell.is-resizing *::before,
 html .app .shell.is-resizing *::after {
   transition: none;
 }
-
 
 /* A held answer, as its requester reads it before choosing: as written. */
 .held-answer {
@@ -735,18 +917,72 @@ html .app .shell.is-resizing *::after {
   max-width: 100%;
 }
 
-.setting-field__source:empty { display: none; }
+.setting-field__source:empty {
+  display: none;
+}
 
 /* Account pages keep their own bounded scroll area outside the group shell. */
-.app > .account-frame { min-height: 0; height: 100%; }
-.account-frame__body { min-height: 0; overflow: auto; overscroll-behavior: none; }
+.app > .account-frame {
+  min-height: 0;
+  height: 100%;
+}
+.account-frame__body {
+  min-height: 0;
+  overflow: auto;
+  overscroll-behavior: none;
+}
 
 /* Group links share the catalog table's two content columns. */
-.groups-list { --columns: minmax(0, 1fr) auto; }
+.groups-list {
+  --columns: minmax(0, 1fr) auto;
+}
 
-.startup-mark { width: var(--space-12); }
+.startup-mark {
+  width: var(--space-12);
+}
 
-.notification-list { --columns: auto auto minmax(0, 1fr) auto; }
-.notification-list .row-list__text { gap: var(--space-1); }
-.notification__control { display: flex; align-items: center; gap: var(--space-2); }
-.notification__note { display: block; }
+.notification-list {
+  --columns: auto auto minmax(0, 1fr) auto;
+}
+.notification-list .row-list__text {
+  gap: var(--space-1);
+}
+.notification__control {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+}
+.notification__note {
+  display: block;
+}
+
+/* ── Workshop ───────────────────────────────────────────────────────── */
+
+/* What a request asks for, a label beside each value. */
+.request-facts {
+  display: grid;
+  grid-template-columns: fit-content(14rem) minmax(0, 1fr);
+  gap: var(--space-3) var(--space-6);
+  align-items: baseline;
+  margin: 0;
+}
+
+.request-facts dd {
+  margin: 0;
+}
+
+@media (max-width: 40rem) {
+  .request-facts {
+    grid-template-columns: minmax(0, 1fr);
+    row-gap: var(--space-1);
+  }
+
+  .request-facts dd + dt {
+    margin-top: var(--space-2);
+  }
+}
+
+.workshop-requests,
+.workshop-reviews {
+  --columns: minmax(0, 1fr) auto;
+}

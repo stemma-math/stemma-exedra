@@ -18,46 +18,12 @@ const MAX_RANGE: u32 = 200;
 
 pub fn definitions() -> Vec<ToolDef> {
     vec![
-        ToolDef {
-            name: "list_threads",
-            handler: |toolbox, args, _agent| Box::pin(list_threads(toolbox, args)),
-            terminal: &["threads"],
-            positional: &[],
-            description: "List the threads of a group, most recently active first, with their \
-                          addresses (t12), titles and number of messages.",
-            input_schema: json!({
-                "type": "object",
-                "properties": {
-                    "group": {"type": "string", "description": GROUP},
-                    "kind": {"type": "string", "enum": ["discussion", "chat"],
-                             "description": "Only discussions, or only chats."},
-                    "limit": {"type": "integer", "minimum": 1, "maximum": 200,
-                              "description": "How many; 30 if absent."}
-                }
-            }),
-            writes: false,
-        },
-        ToolDef {
-            name: "read_thread",
-            handler: |toolbox, args, _agent| Box::pin(read_thread(toolbox, args)),
-            terminal: &["read"],
-            positional: &["address"],
-            description: "Read a thread, a message or a range of messages, by address: t12 \
-                          (the thread), t12#45 (a message) or t12#45-50 (messages 45 to 50). \
-                          Links to the web app work too. Each message comes headed by its \
-                          address, its author and its time. Declarations (lean:Name) and the \
-                          and papers are read too.",
-            input_schema: json!({
-                "type": "object",
-                "properties": {
-                    "address": {"type": "string", "description": "t12, t12#45, t12#45-50, lean:Name or p/notes."},
-                    "file": {"type": "string", "description": "For a paper, the source file to read."},
-                    "group": {"type": "string", "description": GROUP}
-                },
-                "required": ["address"]
-            }),
-            writes: false,
-        },
+        ToolDef::read("list_threads", |toolbox, args, _agent| {
+            Box::pin(list_threads(toolbox, args))
+        }),
+        ToolDef::read("read_thread", |toolbox, args, _agent| {
+            Box::pin(read_thread(toolbox, args))
+        }),
         ToolDef {
             name: "post_message",
             handler: |toolbox, args, agent| Box::pin(post_message(toolbox, args, agent)),
@@ -72,6 +38,7 @@ pub fn definitions() -> Vec<ToolDef> {
                     "thread": {"type": "string",
                                "description": "The thread (t12), or the message to reply to (t12#45)."},
                     "body": {"type": "string", "description": "The message, in Markdown."},
+                    "attachments": {"type":"array","items":{"type":"integer"},"description":"Ids returned by upload_attachment."},
                     "reply_to": {"type": "integer", "minimum": 1,
                                  "description": "The number of the message it replies to."},
                     "group": {"type": "string", "description": GROUP}
@@ -123,29 +90,9 @@ pub fn definitions() -> Vec<ToolDef> {
             }),
             writes: true,
         },
-        ToolDef {
-            name: "search",
-            handler: |toolbox, args, _agent| Box::pin(search(toolbox, args)),
-            terminal: &["search"],
-            positional: &["query"],
-            description: "Search a group's thread titles and messages, regardless of case and \
-                          accents: every word (or prefix), and \"phrases\" in quotes, narrowed by \
-                          author:<username>, since:/until: (2026-03-01, 7d, 2w), \
-                          in:forum|chats|papers|library|p/<slug>|t<n> and \
-                          kind:thread|message|agent|person. Results come with their addresses, \
-                          to read them with read_thread.",
-            input_schema: json!({
-                "type": "object",
-                "properties": {
-                    "query": {"type": "string", "description": "The words to find, all of them, and operators."},
-                    "group": {"type": "string", "description": GROUP},
-                    "limit": {"type": "integer", "minimum": 1, "maximum": 100,
-                              "description": "How many results; 20 if absent."}
-                },
-                "required": ["query"]
-            }),
-            writes: false,
-        },
+        ToolDef::read("search", |toolbox, args, _agent| {
+            Box::pin(search(toolbox, args))
+        }),
     ]
 }
 
@@ -266,6 +213,8 @@ async fn read_thread(toolbox: &Toolbox, args: Value) -> ToolResult {
 
 #[derive(Deserialize)]
 struct Post {
+    #[serde(default)]
+    attachments: Vec<i64>,
     thread: String,
     body: String,
     reply_to: Option<u32>,
@@ -292,7 +241,7 @@ async fn post_message(toolbox: &Toolbox, args: Value, agent: Option<&str>) -> To
             &PostMessage {
                 body: args.body,
                 reply_to,
-                attachments: Vec::new(),
+                attachments: args.attachments,
                 agent: agent.map(str::to_owned),
             },
         )

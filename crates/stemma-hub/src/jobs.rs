@@ -415,9 +415,20 @@ async fn start(
         attachments,
     )
     .await?;
-    sqlx::query("UPDATE jobs SET state = 'running', worker_id = ?, token_id = ?, attempts = attempts + 1, progress = NULL, updated_at = ? WHERE id = ? AND state = 'queued'")
-        .bind(worker_id).bind(token_id).bind(db::now()).bind(job.id).execute(&state.db).await?;
+    sqlx::query(
+        "UPDATE jobs
+         SET state = 'running', worker_id = ?, token_id = ?, attempts = attempts + 1,
+         progress = NULL, updated_at = ?
+         WHERE id = ? AND state = 'queued'",
+    )
+    .bind(worker_id)
+    .bind(token_id)
+    .bind(db::now())
+    .bind(job.id)
+    .execute(&state.db)
+    .await?;
     Ok(JobSpec {
+        process: false,
         id: job.id,
         group: GroupRef {
             id: group.group_id,
@@ -712,7 +723,20 @@ async fn say(state: &AppState, job: &JobRow, text: &str) -> ApiResult<u32> {
 pub async fn connected(state: &AppState, worker_id: i64, mut worker: Connected) -> ApiResult<()> {
     let old = {
         let mut workers = state.workers.lock().await;
-        let valid: bool = sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM api_tokens WHERE id = ? AND user_id = ? AND kind = 'personal' AND revoked_at IS NULL AND (expires_at IS NULL OR expires_at > ?))").bind(worker_id).bind(worker.owner_id).bind(db::now()).fetch_one(&state.db).await?;
+        let valid: bool = sqlx::query_scalar(
+            "SELECT EXISTS(SELECT 1
+             FROM api_tokens
+             WHERE id = ?
+             AND user_id = ?
+             AND kind = 'personal'
+             AND revoked_at IS NULL
+             AND (expires_at IS NULL OR expires_at > ?))",
+        )
+        .bind(worker_id)
+        .bind(worker.owner_id)
+        .bind(db::now())
+        .fetch_one(&state.db)
+        .await?;
         if !valid {
             return Err(ApiError::unauthenticated());
         }
@@ -743,6 +767,7 @@ pub async fn disconnected(state: &AppState, worker_id: i64, connection: u64) -> 
 
 /// Disconnects a machine, as when its token is revoked.
 pub async fn disconnect(state: &AppState, worker_id: i64) -> ApiResult<()> {
+    crate::builds::disconnect_token(state, worker_id).await?;
     let gone = state.workers.lock().await.connected.remove(&worker_id);
     if let Some(gone) = gone {
         requeue(state, worker_id, gone.running).await?;
@@ -757,8 +782,16 @@ async fn requeue(state: &AppState, worker_id: i64, jobs: HashMap<i64, JobKind>) 
             continue;
         };
         revoke_token(state, job.token_id).await?;
-        sqlx::query("UPDATE jobs SET state = 'queued', worker_id = NULL, token_id = NULL, progress = NULL, updated_at = ? WHERE id = ?")
-            .bind(db::now()).bind(job_id).execute(&state.db).await?;
+        sqlx::query(
+            "UPDATE jobs
+             SET state = 'queued', worker_id = NULL, token_id = NULL, progress = NULL,
+             updated_at = ?
+             WHERE id = ?",
+        )
+        .bind(db::now())
+        .bind(job_id)
+        .execute(&state.db)
+        .await?;
     }
     Ok(())
 }
@@ -769,7 +802,13 @@ pub async fn recover(state: &AppState) -> anyhow::Result<()> {
         sqlx::query_scalar("SELECT token_id FROM jobs WHERE state = 'running'")
             .fetch_all(&state.db)
             .await?;
-    sqlx::query("UPDATE jobs SET state = 'queued', worker_id = NULL, token_id = NULL, progress = NULL WHERE state = 'running'").execute(&state.db).await?;
+    sqlx::query(
+        "UPDATE jobs
+         SET state = 'queued', worker_id = NULL, token_id = NULL, progress = NULL
+         WHERE state = 'running'",
+    )
+    .execute(&state.db)
+    .await?;
     for token in tokens {
         revoke_token(state, token)
             .await
@@ -850,8 +889,18 @@ async fn canonical_groups(
 ) -> ApiResult<std::collections::BTreeMap<String, stemma_core::protocol::GroupAgents>> {
     let mut canonical = std::collections::BTreeMap::new();
     for (slug, scope) in groups {
-        let current: Option<String> = sqlx::query_scalar("SELECT slug FROM groups WHERE slug = ?1 UNION SELECT g.slug FROM group_names n JOIN groups g ON g.id = n.group_id WHERE n.name = ?1")
-            .bind(&slug).fetch_optional(&state.db).await?;
+        let current: Option<String> = sqlx::query_scalar(
+            "SELECT slug
+             FROM groups
+             WHERE slug = ?1 UNION
+             SELECT g.slug
+             FROM group_names n
+             JOIN groups g ON g.id = n.group_id
+             WHERE n.name = ?1",
+        )
+        .bind(&slug)
+        .fetch_optional(&state.db)
+        .await?;
         canonical.insert(current.unwrap_or(slug), scope);
     }
     Ok(canonical)

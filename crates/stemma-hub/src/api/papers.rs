@@ -51,6 +51,33 @@ pub async fn get(
     }))
 }
 
+/// Builds the paper's failed newest build again; members and admins ask.
+pub async fn build_again(
+    State(state): State<AppState>,
+    viewer: Viewer,
+    Path((slug, paper, id)): Path<(String, String, i64)>,
+    Json(body): Json<super::library::Again>,
+) -> ApiResult<Json<PaperPage>> {
+    let group = Membership::of(&state, &viewer, &slug).await?;
+    let row = papers::find(&state, group.group_id, &paper).await?;
+    let work: Option<i64> = sqlx::query_scalar(
+        "SELECT work_id
+         FROM paper_builds
+         WHERE paper_id = ? AND id = ?",
+    )
+    .bind(row.id)
+    .bind(id)
+    .fetch_optional(&state.db)
+    .await?
+    .ok_or_else(|| ApiError::not_found("Build"))?;
+    let work = work.ok_or_else(|| ApiError::conflict("This build was already built again"))?;
+    crate::builds::again_for(&state, &viewer, &group, work, body.builder).await?;
+    Ok(Json(PaperPage {
+        paper: row.to_api(&state).await?,
+        log: papers::latest_log(&state, row.id).await?,
+    }))
+}
+
 /// The paper, if the viewer may delete it: whoever created it, or a group
 /// admin. Its other authors only leave it.
 async fn deletable(

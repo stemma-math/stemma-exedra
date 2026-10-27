@@ -38,6 +38,13 @@ impl WorkerConfig {
                 _ => Runtime::Host,
             }),
             image: Some(get("agents.image")?.as_str().unwrap().into()),
+            memory: Some(get("agents.memory")?.as_str().unwrap().into()),
+            cpus: Some(
+                get("agents.cpus")?
+                    .as_float()
+                    .or_else(|| get("agents.cpus").ok()?.as_integer().map(|n| n as f64))
+                    .unwrap(),
+            ),
             ..Default::default()
         };
         for (handle, runner) in [

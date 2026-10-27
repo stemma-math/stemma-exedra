@@ -26,6 +26,8 @@ CREATE TABLE paper_authors (
 );
 
 CREATE TABLE paper_builds (
+    work_id INTEGER UNIQUE REFERENCES work_leases (id) ON DELETE CASCADE,
+    accepted INTEGER NOT NULL DEFAULT 1,
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     paper_id INTEGER NOT NULL REFERENCES papers (id) ON DELETE CASCADE,
     commit_sha TEXT NOT NULL,
@@ -34,6 +36,8 @@ CREATE TABLE paper_builds (
     log TEXT,
     -- The size of its uploaded PDF, in bytes, while it is kept.
     pdf_size INTEGER,
+    -- The machine that built it, kept when it is built again.
+    machine TEXT,
     created_at INTEGER NOT NULL,
     finished_at INTEGER
 );

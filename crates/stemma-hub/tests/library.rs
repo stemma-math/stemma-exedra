@@ -1,4 +1,4 @@
-//! Library creation and git authorization, without scheduling builds.
+//! Library creation and git authorization, and build scheduling.
 
 use std::path::Path;
 use std::sync::Arc;
@@ -112,7 +112,7 @@ fn git(dir: &Path, args: &[&str]) -> std::process::Output {
 }
 
 #[tokio::test(flavor = "multi_thread")]
-async fn libraries_are_made_cloned_and_pushed_without_building() {
+async fn libraries_are_made_cloned_and_pushed_with_roles() {
     let hub = hub().await;
     let ada = person(&hub, "ada", true).await;
     call(
@@ -129,7 +129,7 @@ async fn libraries_are_made_cloned_and_pushed_without_building() {
     assert_eq!(library["available"], true);
     assert_eq!(library["clone_path"], "/git/geometry/library.git");
     assert!(library["head"].is_string());
-    assert!(library["latest"].is_null());
+    assert_eq!(library["latest"]["state"], "queued");
     assert!(library["current"].is_null());
 
     // Cloned with the token as the password; not without it.
@@ -175,6 +175,49 @@ async fn libraries_are_made_cloned_and_pushed_without_building() {
     git(&dir, &["reset", "-q", "--hard", "HEAD~1"]);
     let forced = git(&dir, &["push", "-q", "--force", "origin", "main"]);
     assert!(!forced.status.success());
+
+    // Members can create and delete branches, but cannot update main or other refs.
+    let bob = person(&hub, "bob", false).await;
+    sqlx::query(
+        "INSERT INTO memberships (group_id, user_id, role, joined_at)
+         SELECT g.id, u.id, 'member', 0
+         FROM groups g, users u
+         WHERE u.username = 'bob'",
+    )
+    .execute(&hub.state.db)
+    .await
+    .unwrap();
+    let url = format!("http://bob:{bob}@{host}/git/geometry/library.git");
+    assert!(
+        git(work.path(), &["clone", "-q", &url, "member"])
+            .status
+            .success()
+    );
+    let member = work.path().join("member");
+    std::fs::write(member.join("NOTES.md"), "Notes.\n").unwrap();
+    git(&member, &["add", "NOTES.md"]);
+    git(&member, &["commit", "-qm", "Notes"]);
+    let denied = git(&member, &["push", "origin", "HEAD:main"]);
+    assert!(!denied.status.success());
+    assert!(
+        String::from_utf8_lossy(&denied.stderr).contains("Only the group's admins"),
+        "{denied:?}"
+    );
+    assert!(
+        git(&member, &["push", "origin", "HEAD:refs/heads/topic"])
+            .status
+            .success()
+    );
+    assert!(
+        git(&member, &["push", "origin", ":refs/heads/topic"])
+            .status
+            .success()
+    );
+    assert!(
+        !git(&member, &["push", "origin", "HEAD:refs/notes/test"])
+            .status
+            .success()
+    );
 
     // Guests clone the library, but do not push to it.
     let gus = person(&hub, "gus", false).await;
@@ -273,4 +316,601 @@ async fn libraries_are_made_cloned_and_pushed_without_building() {
     git(&checkout, &["commit", "-qm", "Notes"]);
     let pushed = git(&checkout, &["push", "-q", "origin", "main"]);
     assert!(!pushed.status.success());
+}
+
+/// Exercise the real WebSocket contract with a scripted build machine.
+#[tokio::test(flavor = "multi_thread")]
+async fn workshop_builds_latest_commits_with_fenced_leases_and_scoped_tokens() {
+    use futures_util::{SinkExt, StreamExt};
+    use stemma_core::protocol::{
+        BuildResult, GroupWorkshop, Hello, HubMessage, PROTOCOL_VERSION, WorkerMessage,
+    };
+    use tokio_tungstenite::tungstenite::{Message, client::IntoClientRequest};
+    let hub = hub().await;
+    let ada = person(&hub, "ada", true).await;
+    call(
+        &hub,
+        &ada,
+        "POST",
+        "/groups",
+        Some(json!({"slug":"geometry", "name":"Geometry"})),
+    )
+    .await;
+    let forge = hub.state.forge.as_ref().unwrap();
+    // An obsolete queued commit is cancelled before any machine arrives.
+    forge
+        .commit_files(
+            "geometry",
+            "library",
+            "main",
+            "Second",
+            &[("NOTES.md".into(), "Second".into())],
+        )
+        .await
+        .unwrap();
+    stemma_hub::library::refresh(&hub.state, 1, 1)
+        .await
+        .unwrap();
+    let queued = call(&hub, &ada, "GET", "/groups/geometry/library/builds", None).await;
+    assert_eq!(queued[0]["state"], "queued");
+    assert_eq!(queued[1]["state"], "cancelled");
+    let mut request = stemma_worker::connection::socket_url(&hub.url)
+        .unwrap()
+        .into_client_request()
+        .unwrap();
+    request
+        .headers_mut()
+        .insert("authorization", format!("Bearer {ada}").parse().unwrap());
+    let (mut socket, _) = tokio_tungstenite::connect_async(request).await.unwrap();
+    let hello = Hello {
+        protocol: PROTOCOL_VERSION,
+        version: "0.1.1".into(),
+        runners: vec![],
+        concurrency: 1,
+        agents: stemma_core::protocol::GroupAgents {
+            enabled: false,
+            priority: 0,
+            concurrency: Some(1),
+            runners: None,
+            attachments: Default::default(),
+        },
+        groups: Default::default(),
+        workshop: GroupWorkshop {
+            enabled: true,
+            build: true,
+            build_concurrency: 1,
+            concurrency: 1,
+            ..Default::default()
+        },
+        workshop_groups: Default::default(),
+    };
+    socket
+        .send(Message::Text(
+            serde_json::to_string(&WorkerMessage::Hello(hello))
+                .unwrap()
+                .into(),
+        ))
+        .await
+        .unwrap();
+    // Skip ping/identity messages, with a bounded wait.
+    async fn next(
+        socket: &mut tokio_tungstenite::WebSocketStream<
+            tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>,
+        >,
+    ) -> HubMessage {
+        tokio::time::timeout(std::time::Duration::from_secs(5), async {
+            loop {
+                if let Some(Ok(Message::Text(text))) = socket.next().await {
+                    return serde_json::from_str(&text).unwrap();
+                }
+            }
+        })
+        .await
+        .unwrap()
+    }
+    assert!(matches!(next(&mut socket).await, HubMessage::Welcome(_)));
+    let HubMessage::Build(first) = next(&mut socket).await else {
+        panic!("a build");
+    };
+    let http = reqwest::Client::new();
+    let get = |path: &str| {
+        http.get(format!("{}{path}", hub.url))
+            .bearer_auth(&first.token)
+    };
+    assert_eq!(
+        get("/git/geometry/library.git/info/refs?service=git-upload-pack")
+            .send()
+            .await
+            .unwrap()
+            .status(),
+        200
+    );
+    for path in [
+        "/api/v1/me",
+        "/api/v1/groups/geometry/library",
+        "/git/geometry/other.git/info/refs?service=git-upload-pack",
+        "/git/geometry/library.git/info/refs?service=git-receive-pack",
+    ] {
+        assert_eq!(get(path).send().await.unwrap().status(), 403, "{path}");
+    }
+    for path in [
+        format!("/api/v1/builds/{}/result", first.lease.id + 1),
+        format!("/api/v1/builds/{}/pdf", first.lease.id),
+    ] {
+        let response = http
+            .post(format!("{}{path}", hub.url))
+            .bearer_auth(&first.token)
+            .header("content-type", "application/pdf")
+            .body("%PDF-test")
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(response.status(), 403, "{path}");
+    }
+    socket
+        .send(Message::Text(
+            serde_json::to_string(&WorkerMessage::BuildHeartbeat { lease: first.lease })
+                .unwrap()
+                .into(),
+        ))
+        .await
+        .unwrap();
+    // Move main while running: cancellation, then a new lease for the latest commit.
+    forge
+        .commit_files(
+            "geometry",
+            "library",
+            "main",
+            "Third",
+            &[("NOTES.md".into(), "Third".into())],
+        )
+        .await
+        .unwrap();
+    stemma_hub::library::refresh(&hub.state, 1, 1)
+        .await
+        .unwrap();
+    assert!(
+        matches!(next(&mut socket).await, HubMessage::CancelBuild { lease } if lease == first.lease)
+    );
+    let HubMessage::Build(second) = next(&mut socket).await else {
+        panic!("latest build");
+    };
+    let passed = BuildResult {
+        succeeded: true,
+        report: Some(stemma_core::api::LibraryReport {
+            lean: "4.35.0".into(),
+            modules: vec!["Geometry.Basic".into()],
+            declarations: vec![],
+        }),
+        error: None,
+        log: format!(
+            "{}\n{}",
+            "x".repeat(210_000),
+            "stb_abcdefghijklmnopqrstuvwxyz0123456789"
+        ),
+    };
+    // A late result stays in history, but can never become current.
+    socket
+        .send(Message::Text(
+            serde_json::to_string(&WorkerMessage::BuildFinished {
+                lease: first.lease,
+                result: Box::new(passed.clone()),
+            })
+            .unwrap()
+            .into(),
+        ))
+        .await
+        .unwrap();
+    for _ in 0..50 {
+        let succeeded: Option<bool> =
+            sqlx::query_scalar("SELECT succeeded FROM library_builds WHERE work_id = ?")
+                .bind(first.lease.id)
+                .fetch_one(&hub.state.db)
+                .await
+                .unwrap();
+        if succeeded == Some(true) {
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+    }
+    assert!(
+        stemma_hub::library::current(&hub.state, 1)
+            .await
+            .unwrap()
+            .is_none()
+    );
+    let (accepted, log): (bool, String) =
+        sqlx::query_as("SELECT accepted, log FROM library_builds WHERE work_id = ?")
+            .bind(first.lease.id)
+            .fetch_one(&hub.state.db)
+            .await
+            .unwrap();
+    assert!(!accepted);
+    assert!(
+        log.len() <= 200_000
+            && log.contains("[hidden]")
+            && !log.contains("abcdefghijklmnopqrstuvwxyz")
+    );
+    // Expiry retries and fences old holders, up to three attempts.
+    for attempt in 1..=3 {
+        sqlx::query("UPDATE work_leases SET heartbeat = ? WHERE id = ?")
+            .bind(stemma_hub::db::now() - 61_000)
+            .bind(second.lease.id)
+            .execute(&hub.state.db)
+            .await
+            .unwrap();
+        stemma_hub::builds::dispatch(&hub.state).await.unwrap();
+        assert!(
+            matches!(next(&mut socket).await, HubMessage::CancelBuild { lease } if lease.attempt == attempt)
+        );
+        if attempt < 3 {
+            let HubMessage::Build(retry) = next(&mut socket).await else {
+                panic!("retry");
+            };
+            assert_eq!(retry.lease.attempt, attempt + 1);
+            let old_heartbeat: Option<i64> =
+                sqlx::query_scalar("SELECT heartbeat FROM work_leases WHERE id = ?")
+                    .bind(second.lease.id)
+                    .fetch_one(&hub.state.db)
+                    .await
+                    .unwrap();
+            socket
+                .send(Message::Text(
+                    serde_json::to_string(&WorkerMessage::BuildHeartbeat {
+                        lease: second.lease,
+                    })
+                    .unwrap()
+                    .into(),
+                ))
+                .await
+                .unwrap();
+            if attempt > 1 {
+                assert!(old_heartbeat.is_some());
+            }
+        }
+    }
+    let state: String = sqlx::query_scalar("SELECT state FROM work_leases WHERE id = ?")
+        .bind(second.lease.id)
+        .fetch_one(&hub.state.db)
+        .await
+        .unwrap();
+    assert_eq!(state, "failed");
+    let builds = call(&hub, &ada, "GET", "/groups/geometry/library/builds", None).await;
+    assert_eq!(builds[0]["state"], "failed");
+    assert!(builds[0]["error"].as_str().unwrap().contains("three times"));
+    // Another commit succeeds through the token's report endpoint.
+    forge
+        .commit_files(
+            "geometry",
+            "library",
+            "main",
+            "Fourth",
+            &[("NOTES.md".into(), "Fourth".into())],
+        )
+        .await
+        .unwrap();
+    stemma_hub::library::refresh(&hub.state, 1, 1)
+        .await
+        .unwrap();
+    let HubMessage::Build(third) = next(&mut socket).await else {
+        panic!("new build");
+    };
+    assert_eq!(
+        http.post(format!(
+            "{}/api/v1/builds/{}/result",
+            hub.url, third.lease.id
+        ))
+        .bearer_auth(&third.token)
+        .json(&passed)
+        .send()
+        .await
+        .unwrap()
+        .status(),
+        204
+    );
+    assert_eq!(
+        stemma_hub::library::current(&hub.state, 1)
+            .await
+            .unwrap()
+            .unwrap()
+            .commit,
+        third.commit
+    );
+    assert_eq!(
+        http.get(format!("{}/api/v1/me", hub.url))
+            .bearer_auth(&third.token)
+            .send()
+            .await
+            .unwrap()
+            .status(),
+        401
+    );
+    // A paper uploads its PDF with its own build token, then reports through the protocol.
+    let paper = call(
+        &hub,
+        &ada,
+        "POST",
+        "/groups/geometry/papers",
+        Some(json!({"slug":"notes", "title":"Notes"})),
+    )
+    .await;
+    assert_eq!(paper["latest"]["state"], "running");
+    let HubMessage::Build(paper) = next(&mut socket).await else {
+        panic!("paper build");
+    };
+    assert_eq!(
+        http.post(format!("{}/api/v1/builds/{}/pdf", hub.url, paper.lease.id))
+            .bearer_auth(&ada)
+            .body("%PDF-test")
+            .send()
+            .await
+            .unwrap()
+            .status(),
+        403
+    );
+    assert_eq!(
+        http.post(format!("{}/api/v1/builds/{}/pdf", hub.url, paper.lease.id))
+            .bearer_auth(&paper.token)
+            .body("%PDF-1.5\nTest")
+            .send()
+            .await
+            .unwrap()
+            .status(),
+        204
+    );
+    socket
+        .send(Message::Text(
+            serde_json::to_string(&WorkerMessage::BuildFinished {
+                lease: paper.lease,
+                result: Box::new(BuildResult {
+                    succeeded: true,
+                    ..Default::default()
+                }),
+            })
+            .unwrap()
+            .into(),
+        ))
+        .await
+        .unwrap();
+    for _ in 0..50 {
+        let page = call(&hub, &ada, "GET", "/groups/geometry/papers/notes", None).await;
+        if page["pdf"].is_object() {
+            assert_eq!(page["latest"]["state"], "succeeded");
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+    }
+    let page = call(&hub, &ada, "GET", "/groups/geometry/papers/notes", None).await;
+    assert!(page["pdf"].is_object());
+    socket.close(None).await.unwrap();
+}
+
+type Socket =
+    tokio_tungstenite::WebSocketStream<tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>>;
+
+/// A machine that builds for every group, as `token`'s owner.
+async fn builder(hub: &Hub, token: &str) -> Socket {
+    use futures_util::SinkExt;
+    use stemma_core::protocol::{
+        GroupAgents, GroupWorkshop, Hello, PROTOCOL_VERSION, WorkerMessage,
+    };
+    use tokio_tungstenite::tungstenite::{Message, client::IntoClientRequest};
+    let mut request = stemma_worker::connection::socket_url(&hub.url)
+        .unwrap()
+        .into_client_request()
+        .unwrap();
+    request
+        .headers_mut()
+        .insert("authorization", format!("Bearer {token}").parse().unwrap());
+    let (mut socket, _) = tokio_tungstenite::connect_async(request).await.unwrap();
+    let hello = Hello {
+        protocol: PROTOCOL_VERSION,
+        version: "0.1.1".into(),
+        runners: vec![],
+        concurrency: 1,
+        agents: GroupAgents {
+            enabled: false,
+            priority: 0,
+            concurrency: Some(1),
+            runners: None,
+            attachments: Default::default(),
+        },
+        groups: Default::default(),
+        workshop: GroupWorkshop {
+            enabled: true,
+            build: true,
+            build_concurrency: 1,
+            concurrency: 1,
+            ..Default::default()
+        },
+        workshop_groups: Default::default(),
+    };
+    let hello = serde_json::to_string(&WorkerMessage::Hello(hello)).unwrap();
+    socket.send(Message::Text(hello.into())).await.unwrap();
+    socket
+}
+
+/// The next build the hub hands this machine, if one comes within `wait`.
+async fn build_for(
+    socket: &mut Socket,
+    wait: std::time::Duration,
+) -> Option<stemma_core::protocol::BuildSpec> {
+    use futures_util::StreamExt;
+    use stemma_core::protocol::HubMessage;
+    use tokio_tungstenite::tungstenite::Message;
+    tokio::time::timeout(wait, async {
+        loop {
+            if let Some(Ok(Message::Text(text))) = socket.next().await
+                && let HubMessage::Build(spec) = serde_json::from_str(&text).unwrap()
+            {
+                return *spec;
+            }
+        }
+    })
+    .await
+    .ok()
+}
+
+async fn tell(socket: &mut Socket, message: stemma_core::protocol::WorkerMessage) {
+    use futures_util::SinkExt;
+    let text = serde_json::to_string(&message).unwrap();
+    socket
+        .send(tokio_tungstenite::tungstenite::Message::Text(text.into()))
+        .await
+        .unwrap();
+}
+
+/// The group's builds, once the newest is in `state`.
+async fn builds_once(hub: &Hub, token: &str, state: &str) -> Value {
+    for _ in 0..100 {
+        let builds = call(hub, token, "GET", "/groups/geometry/library/builds", None).await;
+        if builds[0]["state"] == state {
+            return builds;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+    }
+    panic!("the newest build never became {state}");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn declined_builds_go_elsewhere_and_failed_builds_build_again() {
+    use std::time::Duration;
+    use stemma_core::protocol::{BuildResult, WorkerMessage};
+    let hub = hub().await;
+    let ada = person(&hub, "ada", true).await;
+    let bob = person(&hub, "bob", false).await;
+    let eve = person(&hub, "eve", false).await;
+    call(
+        &hub,
+        &ada,
+        "POST",
+        "/groups",
+        Some(json!({"slug":"geometry", "name":"Geometry"})),
+    )
+    .await;
+    for (name, role) in [("bob", "member"), ("eve", "guest")] {
+        sqlx::query(
+            "INSERT INTO memberships (group_id, user_id, role, joined_at)
+             SELECT 1, id, ?, 0
+             FROM users
+             WHERE username = ?",
+        )
+        .bind(role)
+        .bind(name)
+        .execute(&hub.state.db)
+        .await
+        .unwrap();
+    }
+    let ada_id = call(&hub, &ada, "GET", "/me", None).await["id"].clone();
+
+    // Ada's machine has no workshop image: it declines, and is not asked again.
+    let mut ada_machine = builder(&hub, &ada).await;
+    let first = build_for(&mut ada_machine, Duration::from_secs(5))
+        .await
+        .expect("a build");
+    let reason = "docker has no image stemma-workshop:0.1.1".to_string();
+    tell(
+        &mut ada_machine,
+        WorkerMessage::BuildDeclined {
+            lease: first.lease,
+            reason,
+        },
+    )
+    .await;
+    let builds = builds_once(&hub, &ada, "queued").await;
+    assert_eq!(builds[0]["machine"], Value::Null);
+    let progress = builds[0]["progress"].as_str().unwrap();
+    assert!(
+        progress.contains("could not build it: docker has no image"),
+        "{progress}"
+    );
+    assert!(
+        build_for(&mut ada_machine, Duration::from_millis(500))
+            .await
+            .is_none()
+    );
+
+    // Bob's machine takes it, and it fails.
+    let mut bob_machine = builder(&hub, &bob).await;
+    let second = build_for(&mut bob_machine, Duration::from_secs(5))
+        .await
+        .expect("the build, elsewhere");
+    assert_eq!(second.lease.id, first.lease.id);
+    let failed = BuildResult {
+        succeeded: false,
+        error: Some("lake build failed".into()),
+        log: "error: out of memory".into(),
+        ..Default::default()
+    };
+    tell(
+        &mut bob_machine,
+        WorkerMessage::BuildFinished {
+            lease: second.lease,
+            result: Box::new(failed),
+        },
+    )
+    .await;
+    let builds = builds_once(&hub, &ada, "failed").await;
+    assert_eq!(builds[0]["again"], true);
+    let failed_id = builds[0]["id"].as_i64().unwrap();
+    let again = format!("/groups/geometry/library/builds/{failed_id}/again");
+
+    // Guests cannot ask; a member asks for Ada's machines only.
+    let response = reqwest::Client::new()
+        .post(format!("{}/api/v1{again}", hub.url))
+        .bearer_auth(&eve)
+        .json(&json!({"builder": null}))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(response.status(), 403);
+    let rebuilt = call(&hub, &bob, "POST", &again, Some(json!({"builder": ada_id}))).await;
+    assert_eq!(rebuilt["state"], "running");
+    let third = build_for(&mut ada_machine, Duration::from_secs(5))
+        .await
+        .expect("Ada's machine is asked again");
+    assert!(
+        build_for(&mut bob_machine, Duration::from_millis(300))
+            .await
+            .is_none()
+    );
+    let passed = BuildResult {
+        succeeded: true,
+        report: Some(stemma_core::api::LibraryReport {
+            lean: "4.35.0".into(),
+            modules: vec![],
+            declarations: vec![],
+        }),
+        ..Default::default()
+    };
+    tell(
+        &mut ada_machine,
+        WorkerMessage::BuildFinished {
+            lease: third.lease,
+            result: Box::new(passed),
+        },
+    )
+    .await;
+    let builds = builds_once(&hub, &ada, "succeeded").await;
+    // The failed build stays as history, with its log, and is done with.
+    assert_eq!(builds[1]["id"], failed_id);
+    assert_eq!(builds[1]["state"], "failed");
+    assert_eq!(builds[1]["again"], false);
+    let old = call(
+        &hub,
+        &ada,
+        "GET",
+        &format!("/groups/geometry/library/builds/{failed_id}"),
+        None,
+    )
+    .await;
+    assert_eq!(old["log"], "error: out of memory");
+    let response = reqwest::Client::new()
+        .post(format!("{}/api/v1{again}", hub.url))
+        .bearer_auth(&ada)
+        .json(&json!({"builder": null}))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(response.status(), 409);
 }

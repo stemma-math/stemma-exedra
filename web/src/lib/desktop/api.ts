@@ -46,3 +46,36 @@ export const diagnostics = (group: string | null = null) =>
 export const testSignIn = (agent: string, group: string | null) =>
   invoke<string>("test_sign_in", { agent, group });
 export const openExternal = (url: string) => invoke<void>("open_external", { url });
+
+export interface WorkshopState {
+  store: {
+    pending: {
+      hub: string;
+      owner: number;
+      decision: string;
+      offer: import("../workshop.ts").ProcessOffer;
+    }[];
+    approvals: {
+      id: number;
+      hub: string;
+      group: number;
+      recipe: string;
+      version: string;
+      requester: number;
+      request: number | null;
+      until: number | null;
+      max_runs: number | null;
+      minutes_per_run: number | null;
+      runs: number;
+      revoked: boolean;
+    }[];
+  };
+  log: string;
+}
+export const workshopState = () => invoke<WorkshopState>("workshop_state");
+export const workshopDecision = (
+  mode: string,
+  process: number | null,
+  approval: number | null,
+  limits: object = {},
+) => invoke<void>("workshop_decision", { mode, process, approval, limits });

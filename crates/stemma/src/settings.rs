@@ -84,6 +84,9 @@ fn secret(command: SecretCommand) -> anyhow::Result<()> {
 
 pub fn config(args: ConfigArgs) -> anyhow::Result<()> {
     let settings = Settings::load()?;
+    if let Some(why) = settings.workshop_problem(args.group.as_deref())? {
+        eprintln!("{why}");
+    }
     match args.command {
         Some(ConfigCommand::Path) => println!("{}", settings.path.display()),
         Some(ConfigCommand::Edit) => {

@@ -6,11 +6,12 @@
   import type { MachineControls } from "../machine.svelte.ts";
   import Agents from "./Agents.svelte";
   import Isolation from "./Isolation.svelte";
+  import Workshop from "./Workshop.svelte";
   import Overview from "./Overview.svelte";
 
   let { controls }: { controls: MachineControls } = $props();
 
-  const TABS = ["Overview", "Agents", "Isolation"] as const;
+  const TABS = ["Overview", "Agents", "Isolation", "Workshop"] as const;
   // The tab stays when the scope changes.
   let tab = $state<string>("Overview");
 </script>
@@ -88,6 +89,8 @@
             <Overview {controls} data={controls.data} />
           {:else if panel === "Agents"}
             <Agents {controls} data={controls.data} />
+          {:else if panel === "Workshop"}
+            <Workshop {controls} data={controls.data} />
           {:else}
             <Isolation {controls} data={controls.data} />
           {/if}

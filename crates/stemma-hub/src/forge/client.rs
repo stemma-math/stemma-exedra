@@ -472,22 +472,76 @@ impl Forge {
         Ok(())
     }
 
-    /// Protects `branch`: whoever may write pushes to it, but nobody
-    /// rewrites its history or deletes it.
+    /// Protects main with the admins' team and workshop as its push allow-list.
+    /// PATCH makes reconciliation update an existing rule too.
     pub async fn protect_branch(&self, owner: &str, name: &str, branch: &str) -> ForgeResult<()> {
-        self.send(
-            &format!("protect {branch} of {owner}/{name}"),
-            self.api(
-                Method::POST,
-                &format!("/repos/{owner}/{name}/branch_protections"),
+        let path = format!("/repos/{owner}/{name}/branch_protections");
+        let rule = json!({
+            "rule_name": branch, "enable_push": true,
+            "enable_push_whitelist": true,
+            "push_whitelist_teams": ["Owners"],
+            "push_whitelist_usernames": ["workshop"],
+            "enable_force_push": false,
+            "apply_to_admins": true,
+            "block_on_outdated_branch": true,
+        });
+        let existing: Option<Value> = self
+            .optional(
+                "find branch protection",
+                self.api(Method::GET, &format!("{path}/{branch}")),
             )
-            .json(&json!({
-                "rule_name": branch,
-                "enable_push": true,
-                "enable_push_whitelist": false,
-            })),
-        )
-        .await?;
+            .await?;
+        let request = if existing.is_some() {
+            self.api(Method::PATCH, &format!("{path}/{branch}"))
+        } else {
+            self.api(Method::POST, &path)
+        };
+        self.send("protect main", request.json(&rule)).await?;
+        Ok(())
+    }
+
+    /// An HTTP API request as a workshop identity. Its admin token stays on the hub.
+    pub fn as_workshop(
+        &self,
+        identity: WorkshopUser,
+        method: Method,
+        path: &str,
+    ) -> RequestBuilder {
+        self.api(method, path).header("Sudo", identity.login())
+    }
+
+    /// Internal identities have no password and cannot sign in.
+    pub async fn ensure_workshop_users(&self) -> ForgeResult<()> {
+        for identity in [WorkshopUser::Worker, WorkshopUser::Workshop] {
+            let login = identity.login();
+            let user: Option<User> = self
+                .optional(
+                    "find workshop account",
+                    self.api(Method::GET, &format!("/users/{login}")),
+                )
+                .await?;
+            if user.is_none() {
+                self.send(
+                    "create workshop account",
+                    self.api(Method::POST, "/admin/users").json(&json!({
+                        "username": login, "email": format!("{login}@stemma.invalid"),
+                        "full_name": login, "password": "", "must_change_password": false,
+                        "send_notify": false, "visibility": "private", "login_name": login,
+                        "source_id": self.source_id,
+                    })),
+                )
+                .await?;
+            }
+            self.send(
+                "disable workshop sign-in",
+                self.api(Method::PATCH, &format!("/admin/users/{login}"))
+                    .json(&json!({
+                        "login_name": login, "source_id": self.source_id,
+                        "prohibit_login": true, "allow_create_organization": false,
+                    })),
+            )
+            .await?;
+        }
         Ok(())
     }
 
@@ -532,7 +586,7 @@ impl Forge {
                 &format!("find {branch} of {owner}/{name}"),
                 self.api(
                     Method::GET,
-                    &format!("/repos/{owner}/{name}/branches/{branch}"),
+                    &format!("/repos/{owner}/{name}/branches/{}", encode_segment(branch)),
                 ),
             )
             .await?;
@@ -598,7 +652,140 @@ impl Forge {
         }
     }
 
+    /// Opens a process branch for the group's admins, always as worker.
+    pub async fn open_process_pull_request(
+        &self,
+        owner: &str,
+        repo: &str,
+        branch: &str,
+        title: &str,
+        body: &str,
+    ) -> ForgeResult<String> {
+        let existing: Vec<Value> = self
+            .all(
+                "find a process pull request",
+                &format!("/repos/{owner}/{repo}/pulls?state=open"),
+            )
+            .await?;
+        if let Some(pull) = existing
+            .iter()
+            .find(|p| p["head"]["ref"].as_str() == Some(branch))
+        {
+            return Ok(pull["html_url"].as_str().unwrap_or_default().into());
+        }
+        let value: Value = self
+            .json(
+                "open a process pull request",
+                self.as_workshop(
+                    WorkshopUser::Worker,
+                    Method::POST,
+                    &format!("/repos/{owner}/{repo}/pulls"),
+                )
+                .json(&json!({"head":branch,"base":"main","title":title,"body":body})),
+            )
+            .await?;
+        Ok(value["html_url"].as_str().unwrap_or_default().into())
+    }
+
     // ── Pull requests ─────────────────────────────────────────────────
+
+    pub async fn pull(&self, owner: &str, repo: &str, number: i64) -> ForgeResult<Value> {
+        self.json(
+            "read a pull request",
+            self.api(
+                Method::GET,
+                &format!("/repos/{owner}/{repo}/pulls/{number}"),
+            ),
+        )
+        .await
+    }
+    pub async fn pull_files(
+        &self,
+        owner: &str,
+        repo: &str,
+        number: i64,
+    ) -> ForgeResult<Vec<Value>> {
+        self.all(
+            "read pull request files",
+            &format!("/repos/{owner}/{repo}/pulls/{number}/files"),
+        )
+        .await
+    }
+    pub async fn pull_diff(&self, owner: &str, repo: &str, number: i64) -> ForgeResult<String> {
+        Ok(self
+            .send(
+                "read a pull request diff",
+                self.api(
+                    Method::GET,
+                    &format!("/repos/{owner}/{repo}/pulls/{number}.diff"),
+                ),
+            )
+            .await?
+            .text()
+            .await?)
+    }
+    /// Comparing head to main has no commits exactly when head contains main.
+    pub async fn contains(
+        &self,
+        owner: &str,
+        repo: &str,
+        head: &str,
+        main: &str,
+    ) -> ForgeResult<bool> {
+        let value: Value = self
+            .json(
+                "compare commits",
+                self.api(
+                    Method::GET,
+                    &format!("/repos/{owner}/{repo}/compare/{head}...{main}"),
+                ),
+            )
+            .await?;
+        Ok(value["total_commits"].as_u64() == Some(0))
+    }
+    pub async fn review_comment(
+        &self,
+        owner: &str,
+        repo: &str,
+        number: i64,
+        head: &str,
+        text: &str,
+    ) -> ForgeResult<()> {
+        self.send(
+            "review a pull request",
+            self.as_workshop(
+                WorkshopUser::Workshop,
+                Method::POST,
+                &format!("/repos/{owner}/{repo}/pulls/{number}/reviews"),
+            )
+            .json(&json!({"body":text,"event":"COMMENT","commit_id":head})),
+        )
+        .await?;
+        Ok(())
+    }
+    pub async fn merge_pull(
+        &self,
+        owner: &str,
+        repo: &str,
+        number: i64,
+        head: &str,
+        text: &str,
+    ) -> ForgeResult<()> {
+        self.send(
+            "merge a pull request",
+            self.as_workshop(
+                WorkshopUser::Workshop,
+                Method::POST,
+                &format!("/repos/{owner}/{repo}/pulls/{number}/merge"),
+            )
+            .json(
+                &json!({"Do":"merge","head_commit_id":head,"MergeMessageField":text,
+                "delete_branch_after_merge":false,"force_merge":false}),
+            ),
+        )
+        .await?;
+        Ok(())
+    }
 }
 
 /// A page of a repository's tree, as Forgejo lists it.
@@ -613,6 +800,8 @@ struct Tree {
 /// A file, or a folder, of a repository's tree.
 #[derive(Clone, Debug, Deserialize)]
 pub struct TreeEntry {
+    #[serde(default)]
+    pub sha: String,
     pub path: String,
     /// `blob` for a file, `tree` for a folder.
     #[serde(rename = "type")]
@@ -632,4 +821,19 @@ fn encode_segment(segment: &str) -> String {
             _ => format!("%{b:02X}"),
         })
         .collect()
+}
+
+/// The two reserved Forgejo identities of the workshop.
+#[derive(Clone, Copy, Debug)]
+pub enum WorkshopUser {
+    Worker,
+    Workshop,
+}
+impl WorkshopUser {
+    pub fn login(self) -> &'static str {
+        match self {
+            Self::Worker => "worker",
+            Self::Workshop => "workshop",
+        }
+    }
 }

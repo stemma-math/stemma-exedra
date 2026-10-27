@@ -124,6 +124,11 @@ pub async fn create_thread(
     Json(body): Json<CreateThread>,
 ) -> ApiResult<(StatusCode, Json<ThreadPage>)> {
     let group = Membership::of(&state, &viewer, &slug).await?;
+    if body.kind == ThreadKind::Request {
+        return Err(ApiError::invalid(
+            "Ask through the workshop to open a request",
+        ));
+    }
     let title = required_text(&body.title, "The title", 200)?;
     // A session's agent opens discussions, as itself; a job's never does.
     let agent = match viewer.agent() {
@@ -137,7 +142,10 @@ pub async fn create_thread(
             ));
         }
     };
-    if viewer.agent().is_some() && !body.attachments.is_empty() {
+    if viewer.agent().is_some()
+        && !matches!(viewer.scope, crate::auth::Scope::Process { .. })
+        && !body.attachments.is_empty()
+    {
         return Err(ApiError::forbidden("An agent's token cannot attach files"));
     }
     let (resident_agent, resident_runner) = match (body.kind, body.resident_agent) {
@@ -153,7 +161,7 @@ pub async fn create_thread(
                 .ok_or_else(|| ApiError::invalid(format!("Unknown agent @{agent}")))?;
             (Some(agent), Some(profile.runner))
         }
-        (ThreadKind::Discussion, Some(_)) => {
+        (ThreadKind::Discussion | ThreadKind::Request, Some(_)) => {
             return Err(ApiError::invalid("Only chats have a resident agent"));
         }
     };
@@ -220,6 +228,7 @@ pub async fn create_thread(
                 text,
                 None,
                 &body.attachments,
+                false,
             )
             .await?
             .1,
@@ -340,6 +349,9 @@ pub async fn post_message(
 ) -> ApiResult<(StatusCode, Json<Message>)> {
     let group = Membership::of(&state, &viewer, &slug).await?;
     let row = find_thread(&state, group.group_id, number).await?;
+    if row.kind == "request" && !group.role.can_write() {
+        return Err(ApiError::forbidden("Guests read workshop requests"));
+    }
     let agent = match viewer.agent() {
         Some(scope) if scope.can_post && scope.thread_id.is_none_or(|id| id == row.id) => {
             Some(scope.agent.clone())
@@ -353,12 +365,22 @@ pub async fn post_message(
             Some(_) if !viewer.with_token => {
                 return Err(ApiError::invalid("Only an API token posts for an agent"));
             }
-            Some(agent) => Some(required_text(agent, "The agent's name", 60)?),
+            Some(agent) => {
+                if agent.eq_ignore_ascii_case("workshop") {
+                    return Err(ApiError::invalid(
+                        "Workshop is reserved for the orchestrators",
+                    ));
+                }
+                Some(required_text(agent, "The agent's name", 60)?)
+            }
             None => None,
         },
     };
     // An agent's uploads would be its person's, waiting for their message.
-    if viewer.agent().is_some() && !body.attachments.is_empty() {
+    if viewer.agent().is_some()
+        && !matches!(viewer.scope, crate::auth::Scope::Process { .. })
+        && !body.attachments.is_empty()
+    {
         return Err(ApiError::forbidden("An agent's token cannot attach files"));
     }
     if body.body.trim().is_empty() && body.attachments.is_empty() {
@@ -374,7 +396,23 @@ pub async fn post_message(
     }
 
     let agent_runner = attribution_runner(&state, &viewer, agent.as_deref()).await?;
-    let message = post(
+    if let crate::auth::Scope::Process { work, .. } = viewer.scope {
+        for id in &body.attachments {
+            let allowed: bool = sqlx::query_scalar(
+                "SELECT EXISTS(SELECT 1 FROM attachments WHERE id=? AND process_work=?)",
+            )
+            .bind(id)
+            .bind(work)
+            .fetch_one(&state.db)
+            .await?;
+            if !allowed {
+                return Err(ApiError::forbidden(
+                    "A process attaches only its own uploads",
+                ));
+            }
+        }
+    }
+    let message = post_marked(
         &state,
         &group,
         row.id,
@@ -384,11 +422,15 @@ pub async fn post_message(
         &text,
         body.reply_to,
         &body.attachments,
+        matches!(viewer.scope, crate::auth::Scope::Process { .. }),
     )
     .await?;
     if agent.is_none() {
         let thread: Thread = find_thread(&state, group.group_id, number).await?.into();
         crate::jobs::summon(&state, &group, row.id, &thread, &message).await?;
+    }
+    if !matches!(viewer.scope, crate::auth::Scope::Process { .. }) {
+        crate::orchestrator::wake_message(&state, row.id, viewer.id).await?;
     }
     Ok((StatusCode::CREATED, Json(message)))
 }
@@ -397,6 +439,24 @@ async fn attribution_runner(
     viewer: &Viewer,
     agent: Option<&str>,
 ) -> ApiResult<Option<String>> {
+    if let crate::auth::Scope::Process { work, .. } = viewer.scope {
+        let raw: String = sqlx::query_scalar(
+            "SELECT coalesce(p.ask, r.ask)
+             FROM workshop_requests r
+             JOIN workshop_processes p ON p.thread_id = r.thread_id
+             WHERE p.work_id = ?",
+        )
+        .bind(work)
+        .fetch_one(&state.db)
+        .await?;
+        let ask: stemma_core::workshop::Ask =
+            serde_json::from_str(&raw).map_err(ApiError::internal)?;
+        return Ok(Some(if ask.runner == "claude" {
+            "claude-code".into()
+        } else {
+            ask.runner
+        }));
+    }
     if let Some(scope) = viewer.agent().filter(|scope| scope.session) {
         return Ok(stemma_core::api::AgentProfile::defaults()
             .into_iter()
@@ -432,6 +492,40 @@ pub(crate) async fn post(
     reply_to: Option<u32>,
     attachments: &[i64],
 ) -> ApiResult<Message> {
+    post_marked(
+        state,
+        group,
+        thread_id,
+        author_id,
+        agent,
+        agent_runner,
+        text,
+        reply_to,
+        attachments,
+        false,
+    )
+    .await
+}
+#[allow(clippy::too_many_arguments)]
+async fn post_marked(
+    state: &AppState,
+    group: &Membership,
+    thread_id: i64,
+    author_id: i64,
+    agent: Option<&str>,
+    agent_runner: Option<&str>,
+    text: &str,
+    reply_to: Option<u32>,
+    attachments: &[i64],
+    workshop: bool,
+) -> ApiResult<Message> {
+    let hidden;
+    let text = if workshop {
+        hidden = stemma_core::secrets::hide(text);
+        &hidden
+    } else {
+        text
+    };
     let mut tx = state.db.begin().await?;
     let (number, stored) = insert_message(
         &mut tx,
@@ -443,10 +537,20 @@ pub(crate) async fn post(
         text,
         reply_to,
         attachments,
+        workshop,
     )
     .await?;
     tx.commit().await?;
+    publish_post(state, group, thread_id, number, &stored).await
+}
 
+pub(crate) async fn publish_post(
+    state: &AppState,
+    group: &Membership,
+    thread_id: i64,
+    number: u32,
+    stored: &str,
+) -> ApiResult<Message> {
     let message = load_message(state, group, thread_id, number).await?;
     let thread: Thread = find_thread_by_id(state, thread_id).await?.into();
     state.publish(
@@ -457,7 +561,7 @@ pub(crate) async fn post(
         },
     );
     state.publish(group.group_id, Event::ThreadUpdated { thread });
-    tell_mentioned(state, group, thread_id, &message, &stored).await?;
+    tell_mentioned(state, group, thread_id, &message, stored).await?;
     Ok(message)
 }
 
@@ -469,9 +573,13 @@ async fn tell_mentioned(
     message: &Message,
     stored: &str,
 ) -> ApiResult<()> {
-    let notice = Notice::new(NotificationKind::Mention)
-        .at(group.group_id, thread_id, Some(message.number))
-        .by(message.author.id, message.agent.as_deref());
+    let mut notice =
+        Notice::new(NotificationKind::Mention).at(group.group_id, thread_id, Some(message.number));
+    if message.orchestrator_model.is_some() {
+        notice.agent = Some("Workshop");
+    } else {
+        notice = notice.by(message.author.id, message.agent.as_deref());
+    }
     let mentioned = mentioned(stored);
     notifications::notify_members(state, group.group_id, mentioned, message.author.id, &notice)
         .await
@@ -503,7 +611,7 @@ pub(crate) fn check_body(text: &str) -> ApiResult<String> {
 /// Adds a message to a thread with the next number, and attaches the
 /// author's uploads to it. Returns its number, and its stored text.
 #[allow(clippy::too_many_arguments)]
-async fn insert_message(
+pub(crate) async fn insert_message(
     tx: &mut Transaction<'_, Sqlite>,
     group: &Membership,
     thread_id: i64,
@@ -513,6 +621,7 @@ async fn insert_message(
     text: &str,
     reply_to: Option<u32>,
     attachment_ids: &[i64],
+    workshop: bool,
 ) -> ApiResult<(u32, String)> {
     let now = db::now();
     let number: i64 = sqlx::query_scalar(
@@ -526,8 +635,8 @@ async fn insert_message(
     let stored = crate::text::encode(&mut *tx, group.group_id, text).await?;
     let (rendered, _) = crate::text::render_with(&mut *tx, &stored).await?;
     let message_id = sqlx::query(
-        "INSERT INTO messages (thread_id, number, author_id, agent, agent_runner, body, body_ids, reply_to, created_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        "INSERT INTO messages (thread_id, number, author_id, agent, agent_runner, body, body_ids, reply_to, created_at, workshop)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
     )
     .bind(thread_id)
     .bind(number)
@@ -538,6 +647,7 @@ async fn insert_message(
     .bind(&stored)
     .bind(reply_to)
     .bind(now)
+    .bind(workshop)
     .execute(&mut **tx)
     .await?
     .last_insert_rowid();
@@ -563,10 +673,12 @@ async fn insert_message(
 
 #[derive(sqlx::FromRow)]
 struct MessageRow {
+    orchestrator_model: Option<String>,
     id: i64,
     number: i64,
     agent: Option<String>,
     agent_runner: Option<String>,
+    workshop: bool,
     body: String,
     body_ids: Option<String>,
     reply_to: Option<i64>,
@@ -585,9 +697,11 @@ pub(crate) async fn load_messages(
     to: u32,
 ) -> ApiResult<Vec<Message>> {
     let rows: Vec<MessageRow> = sqlx::query_as(
-        "SELECT m.id, m.number, m.agent, m.agent_runner, m.body, m.body_ids, m.reply_to, m.created_at, m.edited_at,
-                m.deleted_at, u.id AS user_id, u.username, u.display_name
-         FROM messages m JOIN users u ON u.id = m.author_id
+        "SELECT m.id, m.number, m.agent, m.agent_runner, m.workshop, m.orchestrator_model, m.body, m.body_ids, m.reply_to, m.created_at, m.edited_at,
+                m.deleted_at, coalesce(u.id, 0) AS user_id,
+                coalesce(u.username, 'workshop') AS username,
+                coalesce(u.display_name, 'Workshop') AS display_name
+         FROM messages m LEFT JOIN users u ON u.id = m.author_id
          WHERE m.thread_id = ? AND m.number BETWEEN ? AND ?
          ORDER BY m.number",
     )
@@ -625,9 +739,20 @@ pub(crate) async fn load_message(
 }
 
 fn to_message(row: MessageRow, attachments: Vec<stemma_core::api::Attachment>) -> Message {
+    let author = if row.orchestrator_model.is_some() {
+        stemma_core::api::User {
+            id: 0,
+            username: "workshop".into(),
+            display_name: "Workshop".into(),
+        }
+    } else {
+        row.author.into()
+    };
     Message {
+        orchestrator_model: row.orchestrator_model,
+        workshop: row.workshop,
         number: row.number as u32,
-        author: row.author.into(),
+        author,
         agent: row.agent,
         agent_runner: row.agent_runner,
         body: row.body,
@@ -643,7 +768,7 @@ fn to_message(row: MessageRow, attachments: Vec<stemma_core::api::Attachment>) -
 /// The message's id and author, if it exists and is not deleted.
 async fn editable_message(state: &AppState, thread_id: i64, number: u32) -> ApiResult<(i64, i64)> {
     sqlx::query_as(
-        "SELECT id, author_id FROM messages
+        "SELECT id, coalesce(author_id, 0) FROM messages
          WHERE thread_id = ? AND number = ? AND deleted_at IS NULL",
     )
     .bind(thread_id)

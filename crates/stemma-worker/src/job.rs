@@ -172,6 +172,7 @@ pub fn conversation_text(group: &GroupRef, conversation: &Conversation) -> Strin
     let thread = &conversation.thread;
     let kind = match thread.kind {
         ThreadKind::Discussion => "a discussion",
+        ThreadKind::Request => "a workshop request",
         ThreadKind::Chat => "a chat, where you answer every message",
     };
     let mut user = format!(

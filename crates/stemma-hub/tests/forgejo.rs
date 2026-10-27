@@ -345,7 +345,7 @@ async fn with_forgejo() {
     }
     assert_eq!(
         team_members(&setting, &slug, "Members").await,
-        [bob.as_str()]
+        [bob.as_str(), "worker"]
     );
     assert_eq!(
         team_members(&setting, &slug, "Guests").await,
@@ -434,7 +434,7 @@ async fn with_forgejo() {
         None,
     )
     .await;
-    assert!(team_members(&setting, &slug, "Members").await.is_empty());
+    assert_eq!(team_members(&setting, &slug, "Members").await, ["worker"]);
 
     forge_api(&setting, "DELETE", &format!("/repos/{slug}/library")).await;
     forge_api(&setting, "DELETE", &format!("/orgs/{slug}")).await;

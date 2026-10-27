@@ -5,6 +5,8 @@
   "windows": ["main"],
   "permissions": [
     "allow-snapshot",
+    "allow-workshop-state",
+    "allow-workshop-decision",
     "allow-diagnostics",
     "allow-open-external",
     "allow-login",

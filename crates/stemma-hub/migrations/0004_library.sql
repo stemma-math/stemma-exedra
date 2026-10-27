@@ -7,6 +7,8 @@ CREATE TABLE libraries (
 );
 
 CREATE TABLE library_builds (
+    work_id INTEGER UNIQUE REFERENCES work_leases (id) ON DELETE CASCADE,
+    accepted INTEGER NOT NULL DEFAULT 1,
     id INTEGER PRIMARY KEY,
     group_id INTEGER NOT NULL REFERENCES groups (id) ON DELETE CASCADE,
     commit_sha TEXT NOT NULL,
@@ -16,6 +18,8 @@ CREATE TABLE library_builds (
     log TEXT,
     -- Lean's version, as it ran.
     lean TEXT,
+    -- The machine that built it, kept when it is built again.
+    machine TEXT,
     created_at INTEGER NOT NULL,
     finished_at INTEGER
 );

@@ -43,8 +43,19 @@ pub(crate) fn tokens(value: &serde_json::Value) -> Option<u64> {
     value.as_u64()
 }
 
-pub fn allowed_tools(_job: &JobSpec) -> Vec<&'static str> {
-    stemma_client::tools::read_only_names()
+pub fn allowed_tools(job: &JobSpec) -> Vec<&'static str> {
+    if job.process {
+        stemma_client::tools::all_definitions()
+            .into_iter()
+            .filter(|t| !t.writes || ["post_message", "upload_attachment"].contains(&t.name))
+            .map(|t| t.name)
+            .collect()
+    } else {
+        // An answer reads, and may ask the workshop for work.
+        let mut names = stemma_client::tools::read_only_names();
+        names.push("ask_workshop");
+        names
+    }
 }
 
 /// The arguments of `stemma mcp` for a job: its hub, its group, its token
@@ -58,7 +69,7 @@ pub fn mcp_args(
     dir: &JobDir,
     work_dir: &std::path::Path,
 ) -> Vec<String> {
-    let args: Vec<String> = vec![
+    let mut args: Vec<String> = vec![
         "mcp".into(),
         "--hub".into(),
         sandbox.hub().to_owned(),
@@ -79,7 +90,13 @@ pub fn mcp_args(
         "--agent".into(),
         agent.display_name.clone(),
         "--read-only".into(),
+        // An answer may ask the workshop for work.
+        "--also".into(),
+        "ask_workshop".into(),
     ];
+    if job.process {
+        args.truncate(args.len() - 3);
+    }
     args
 }
 

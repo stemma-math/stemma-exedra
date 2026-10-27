@@ -65,14 +65,15 @@ jobs:
           workspaces: desktop/src-tauri -> target
       - uses: pnpm/action-setup@v4
         with:
-          package_json_file: desktop/package.json
+          package_json_file: web/package.json
       - uses: actions/setup-node@v5
         with:
           node-version: 24
           cache: pnpm
-          cache-dependency-path: desktop/pnpm-lock.yaml
+          cache-dependency-path: web/pnpm-lock.yaml
+      # The app's icons come from the web app's design package.
       - name: Install the design assets used by Tauri
-        run: pnpm --dir .. install --frozen-lockfile
+        run: pnpm --dir ../../web install --frozen-lockfile
       - name: Check formatting
         run: cargo fmt --all --check
       - name: Lint
@@ -121,11 +122,16 @@ jobs:
           cache-dependency-path: ${{ matrix.directory }}/pnpm-lock.yaml
       - name: Install
         run: pnpm install --frozen-lockfile
+      # The desktop app's interface is the web app's, built for it.
+      - name: Install the shared interface
+        if: matrix.directory == 'desktop'
+        run: pnpm --dir ../web install --frozen-lockfile
       - name: Check formatting
         run: pnpm format:check
       - name: Lint
         run: pnpm lint
       - name: Check types
+        if: matrix.directory == 'web'
         run: pnpm check
       - name: Test
         if: matrix.directory == 'web'

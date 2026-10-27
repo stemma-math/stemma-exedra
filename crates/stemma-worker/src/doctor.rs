@@ -98,6 +98,18 @@ async fn own_image(runtime: &str, image: &str, commands: &[String]) -> Check {
                 lacking
             }
         }
+        Ok(Ok(out)) => check(
+            "Agents' image",
+            false,
+            String::from_utf8_lossy(&out.stderr),
+            "Check the runtime's error above.",
+        ),
+        Ok(Err(error)) => check(
+            "Agents' image",
+            false,
+            error.to_string(),
+            "Check the runtime's error above.",
+        ),
         _ => check(
             "Agents' image",
             false,
@@ -299,6 +311,57 @@ pub async fn run(group: Option<&str>) -> Vec<Check> {
             for handle in &found {
                 checks.push(container_sign_in(settings, group, handle));
             }
+        }
+        if let Ok(Some(why)) = settings.workshop_problem(group) {
+            checks.push(check("Workshop", false, &why, &why));
+        }
+        if let Ok(value) = settings.get("agents.isolation", group)
+            && let Some(runtime @ ("docker" | "podman")) = value.value.as_str()
+        {
+            let image = settings
+                .get("workshop.image", group)
+                .unwrap()
+                .value
+                .as_str()
+                .unwrap()
+                .to_owned();
+            let out = tokio::process::Command::new(runtime)
+                .args(["image", "inspect", &image])
+                .output()
+                .await;
+            let present = out.as_ref().is_ok_and(|out| out.status.success());
+            let mut result = if present && image != crate::image::workshop_image() {
+                let mut commands: Vec<String> = vec!["git".into(), "lake".into(), "latexmk".into()];
+                commands.extend(found.iter().filter_map(|handle| {
+                    settings
+                        .get(&format!("agents.{handle}.container.command"), group)
+                        .ok()
+                        .and_then(|v| v.value.as_str().map(str::to_owned))
+                }));
+                let mut result = own_image(runtime, &image, &commands).await;
+                result.name = "Workshop image".into();
+                result.remedy = result
+                    .remedy
+                    .map(|s| s.replace("agents.image", "workshop.image"));
+                result
+            } else {
+                check(
+                    "Workshop image",
+                    present,
+                    &image,
+                    if image == crate::image::workshop_image() {
+                        "Build both images with stemma machine image."
+                    } else {
+                        "Build your image, or unset workshop.image to use Stemma's image."
+                    },
+                )
+            };
+            if let Ok(out) = out
+                && !out.status.success()
+            {
+                result.detail = String::from_utf8_lossy(&out.stderr).into_owned();
+            }
+            checks.push(result);
         }
         let folder = group.map(|g| settings.workspace(g)).unwrap_or_else(|| {
             settings

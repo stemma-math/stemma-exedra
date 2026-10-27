@@ -305,9 +305,21 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "1aa79e62e7697b8e29b513a68abacf485adcd1fe8284a4316c5ae868e6633327"
 dependencies = [
  "iana-time-zone",
+ "js-sys",
  "num-traits",
  "serde",
+ "wasm-bindgen",
  "windows-link",
+]
+
+[[package]]
+name = "chrono-tz"
+version = "0.10.4"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "a6139a8597ed92cf816dfb33f5dd6cf0bb93a6adc938f11039f371bc5bcd26c3"
+dependencies = [
+ "chrono",
+ "phf",
 ]
 
 [[package]]
@@ -1881,6 +1893,24 @@ dependencies = [
 ]
 
 [[package]]
+name = "phf"
+version = "0.12.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "913273894cec178f401a31ec4b656318d95473527be05c0752cc41cdc32be8b7"
+dependencies = [
+ "phf_shared",
+]
+
+[[package]]
+name = "phf_shared"
+version = "0.12.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "06005508882fb681fd97892ecff4b7fd0fee13ef1aa569f8695dae7ab9099981"
+dependencies = [
+ "siphasher",
+]
+
+[[package]]
 name = "pin-project-lite"
 version = "0.2.17"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2149,6 +2179,7 @@ dependencies = [
  "js-sys",
  "log",
  "mime",
+ "mime_guess",
  "percent-encoding",
  "pin-project-lite",
  "rustls",
@@ -2700,6 +2731,12 @@ dependencies = [
 ]
 
 [[package]]
+name = "siphasher"
+version = "1.0.4"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "33f4fe9184a62d842c9ef383018f3306d8ba224fd9d836f56d7288308847c256"
+
+[[package]]
 name = "slab"
 version = "0.4.12"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2945,6 +2982,7 @@ dependencies = [
  "stemma-hub",
  "stemma-worker",
  "tempfile",
+ "time",
  "tokio",
  "tokio-tungstenite 0.30.0",
  "tracing",
@@ -2980,10 +3018,14 @@ dependencies = [
 name = "stemma-core"
 version = "0.1.1"
 dependencies = [
+ "chrono",
+ "chrono-tz",
+ "semver",
  "serde",
  "serde_json",
  "thiserror",
  "time",
+ "toml",
 ]
 
 [[package]]
@@ -3016,6 +3058,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "stemma-fake-model"
+version = "0.1.1"
+dependencies = [
+ "axum",
+ "serde_json",
+ "tokio",
+]
+
+[[package]]
 name = "stemma-hub"
 version = "0.1.1"
 dependencies = [
@@ -3031,6 +3082,7 @@ dependencies = [
  "p256",
  "rand 0.10.3",
  "reqwest",
+ "ring",
  "rust-embed",
  "rustls",
  "serde",
@@ -3039,6 +3091,7 @@ dependencies = [
  "sqlx",
  "stemma-core",
  "stemma-fake-forge",
+ "stemma-fake-model",
  "stemma-worker",
  "subtle",
  "tempfile",
@@ -3046,6 +3099,7 @@ dependencies = [
  "time",
  "tokio",
  "tokio-stream",
+ "tokio-tungstenite 0.30.0",
  "tokio-util",
  "toml",
  "tower",

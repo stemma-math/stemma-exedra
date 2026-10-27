@@ -9,9 +9,9 @@ mod groups;
 mod hub;
 mod invitations;
 mod jobs;
-mod library;
+pub(crate) mod library;
 mod notifications;
-mod papers;
+pub(crate) mod papers;
 pub mod workers;
 
 use axum::Router;
@@ -121,9 +121,37 @@ pub fn router(state: AppState) -> Router {
                 .patch(forum::edit_message)
                 .delete(forum::delete_message),
         )
+        .route(
+            "/groups/{group}/workshop/model",
+            get(crate::model::get).put(crate::model::update),
+        )
+        .route(
+            "/groups/{group}/workshop/status",
+            get(crate::orchestrator::board),
+        )
+        .route(
+            "/groups/{group}/workshop/recipes",
+            get(crate::workshop::list_recipes),
+        )
+        .route(
+            "/groups/{group}/workshop/recipes/{name}",
+            get(crate::workshop::read_recipe),
+        )
+        .route(
+            "/groups/{group}/workshop/requests",
+            get(crate::workshop::list).post(crate::workshop::ask),
+        )
+        .route(
+            "/groups/{group}/workshop/requests/{number}",
+            get(crate::workshop::read).post(crate::workshop::action),
+        )
         .route("/groups/{group}/library", get(library::state))
         .route("/groups/{group}/library/builds", get(library::builds))
         .route("/groups/{group}/library/builds/{id}", get(library::build))
+        .route(
+            "/groups/{group}/library/builds/{id}/again",
+            post(library::build_again),
+        )
         .route(
             "/groups/{group}/library/declarations",
             get(library::declarations),
@@ -147,6 +175,10 @@ pub fn router(state: AppState) -> Router {
         .route(
             "/groups/{group}/papers/{paper}/authors/{username}",
             put(papers::add_author).delete(papers::remove_author),
+        )
+        .route(
+            "/groups/{group}/papers/{paper}/builds/{id}/again",
+            post(papers::build_again),
         )
         .route("/groups/{group}/papers/{paper}/pdf", get(papers::pdf))
         .route("/groups/{group}/papers/{paper}/files", get(papers::files))

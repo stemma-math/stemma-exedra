@@ -2083,7 +2083,7 @@ async fn a_group_is_an_organization_with_a_team_per_role() {
     // The hub's own account stays an owner.
     assert_eq!(
         forge.team_members("geometry", "Owners"),
-        ["ada", stemma_fake_forge::ADMIN]
+        ["ada", stemma_fake_forge::ADMIN, "workshop"]
     );
     let subject: String = sqlx::query_scalar("SELECT subject FROM users WHERE username = 'ada'")
         .fetch_one(&hub.state.db)
@@ -2094,7 +2094,7 @@ async fn a_group_is_an_organization_with_a_team_per_role() {
     // The teams follow the roles.
     let bob = hub.member(&ada, "bob").await;
     hub.join(&ada, "gus", "guest").await;
-    assert_eq!(forge.team_members("geometry", "Members"), ["bob"]);
+    assert_eq!(forge.team_members("geometry", "Members"), ["bob", "worker"]);
     assert_eq!(forge.team_members("geometry", "Guests"), ["gus"]);
     let bob_id = hub.get(&bob, "/me").await.json()["id"].as_i64().unwrap();
     let reply = hub
@@ -2106,10 +2106,10 @@ async fn a_group_is_an_organization_with_a_team_per_role() {
         )
         .await;
     assert_eq!(reply.status, StatusCode::NO_CONTENT);
-    assert!(forge.team_members("geometry", "Members").is_empty());
+    assert_eq!(forge.team_members("geometry", "Members"), ["worker"]);
     assert_eq!(
         forge.team_members("geometry", "Owners"),
-        ["ada", "bob", stemma_fake_forge::ADMIN]
+        ["ada", "bob", stemma_fake_forge::ADMIN, "workshop"]
     );
     let reply = hub
         .call(
@@ -2122,7 +2122,7 @@ async fn a_group_is_an_organization_with_a_team_per_role() {
     assert_eq!(reply.status, StatusCode::NO_CONTENT);
     assert_eq!(
         forge.team_members("geometry", "Owners"),
-        ["ada", stemma_fake_forge::ADMIN]
+        ["ada", stemma_fake_forge::ADMIN, "workshop"]
     );
 
     // The library is shown where it is in the forge.
@@ -2204,7 +2204,7 @@ async fn names_the_forge_keeps_are_not_usernames() {
     let ada = hub.admin_with_group().await;
     let reply = hub.post(&ada, "/hub/invitations", json!({})).await;
     let token = reply.json()["token"].as_str().unwrap().to_owned();
-    for username in ["admin", "explore", "ada.", "a--b"] {
+    for username in ["admin", "explore", "worker", "workshop", "ada.", "a--b"] {
         let reply = hub
             .post(
                 &Client::default(),
@@ -2228,7 +2228,7 @@ async fn someone_whose_name_the_forge_has_still_joins() {
         "member"
     );
     // That account is not given the group.
-    assert!(hub.forge.team_members("geometry", "Members").is_empty());
+    assert_eq!(hub.forge.team_members("geometry", "Members"), ["worker"]);
 }
 
 #[tokio::test]
@@ -2403,6 +2403,8 @@ async fn personal_tokens_route_by_group_priority_capacity_and_connection_time() 
     );
     assert!(dispatched(&mut two).is_none());
     let hello = stemma_core::protocol::Hello {
+        workshop: Default::default(),
+        workshop_groups: Default::default(),
         protocol: stemma_core::protocol::PROTOCOL_VERSION,
         version: "test".into(),
         runners: vec!["claude-code".into()],
@@ -2826,6 +2828,8 @@ async fn session_and_dispatched_job_tokens_enforce_attachment_rules() {
             computer,
             1,
             Hello {
+                workshop: Default::default(),
+                workshop_groups: Default::default(),
                 protocol: PROTOCOL_VERSION,
                 version: "test".into(),
                 runners: vec!["claude-code".into()],

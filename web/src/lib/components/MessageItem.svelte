@@ -73,6 +73,8 @@
 <li class="post" id={String(message.number)} aria-label="Message {message.number}">
   {#if message.agent}
     <AgentAvatar name={message.agent} runner={message.agent_runner} />
+  {:else if message.orchestrator_model != null}
+    <AgentAvatar name="Workshop" />
   {:else}
     <Avatar user={message.author} />
   {/if}
@@ -82,6 +84,11 @@
       <span class="post__attribution">for {message.author.display_name}</span>
     {:else}
       <span class="post__author">{message.author.display_name}</span>
+    {/if}
+    {#if message.orchestrator_model}
+      <span class="post__attribution" title="The group's model">with {message.orchestrator_model}</span>
+    {:else if message.workshop && message.orchestrator_model == null}
+      <span class="chip chip--small chip--info">Workshop</span>
     {/if}
     <a class="post__number" href="#{message.number}" title={address}>#{message.number}</a>
     <time class="post__time" datetime={message.created_at} title={exactly(message.created_at)}>

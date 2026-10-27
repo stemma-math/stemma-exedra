@@ -6,23 +6,31 @@
 
 pub mod api;
 pub mod auth;
+pub mod builds;
 pub mod config;
 pub mod db;
 pub mod error;
 pub mod forge;
 pub mod git;
 pub mod jobs;
+pub mod lease;
 pub mod library;
+pub mod model;
 pub mod names;
 pub mod notifications;
 pub mod oidc;
+pub mod orchestrator;
 pub mod papers;
+pub mod recipes;
 pub mod removal;
+pub mod review;
 pub mod search;
 pub mod secret;
 pub mod state;
 pub mod text;
 pub mod web;
+pub mod workshop;
+mod workshop_read;
 
 use std::sync::Arc;
 
@@ -43,6 +51,7 @@ pub fn app(state: AppState) -> Router {
         .with_state(state.clone());
     api::router(state.clone())
         .merge(git::router(state.clone()))
+        .merge(builds::router(state.clone()))
         .merge(oidc::router(state.clone()))
         .merge(hook)
         .fallback(web::serve)
@@ -68,6 +77,36 @@ pub async fn run(config: Config) -> anyhow::Result<()> {
     remove_unclaimed_uploads(&state).await?;
     oidc::forget_expired(&state.db).await?;
     jobs::recover(&state).await?;
+    orchestrator::recover(&state)
+        .await
+        .map_err(|e| anyhow::anyhow!(e.message))?;
+    builds::recover(&state)
+        .await
+        .map_err(|e| anyhow::anyhow!(e.message))?;
+    {
+        let state = state.clone();
+        tokio::spawn(async move {
+            let mut tick = tokio::time::interval(std::time::Duration::from_secs(5));
+            loop {
+                tokio::select! {
+                    _ = state.shutdown.cancelled() => break,
+                    _ = tick.tick() => background(&state).await,
+                }
+            }
+        });
+    }
+    {
+        let state = state.clone();
+        tokio::spawn(async move {
+            let mut tick = tokio::time::interval(std::time::Duration::from_secs(60));
+            loop {
+                tokio::select! {
+                    _ = state.shutdown.cancelled() => break,
+                    _ = tick.tick() => schedule(&state).await,
+                }
+            }
+        });
+    }
     {
         let state = state.clone();
         tokio::spawn(async move { forge::reconcile(&state).await });
@@ -154,4 +193,21 @@ async fn remove_unclaimed_uploads(state: &AppState) -> anyhow::Result<()> {
         let _ = tokio::fs::remove_file(state.config.attachments_dir().join(key)).await;
     }
     Ok(())
+}
+
+async fn background(state: &AppState) {
+    if let Err(error) = builds::dispatch(state).await {
+        tracing::error!(error = error.message, "dispatching builds");
+    }
+    if let Err(error) = review::tick(state).await {
+        tracing::error!(error = error.message, "reviewing workshop pull requests");
+    }
+    if let Err(error) = orchestrator::dispatch(state).await {
+        tracing::error!(error = error.message, "dispatching workshop turns");
+    }
+}
+async fn schedule(state: &AppState) {
+    if let Err(error) = workshop::tick(state).await {
+        tracing::error!(error = error.message, "scheduling workshop requests");
+    }
 }
