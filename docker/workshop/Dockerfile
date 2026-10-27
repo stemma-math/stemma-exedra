@@ -8,8 +8,15 @@ FROM ${AGENTS_IMAGE} AS cache
 ARG MATHLIB_VERSION=v4.35.0
 USER root
 COPY lean/template/lean-toolchain lean/template/lake-manifest.json /opt/stemma/cache/
+# Thousands of files download at once, and a few may be cut off: each try
+# fetches only what is still missing.
 RUN git clone --branch "$MATHLIB_VERSION" --depth 1 https://github.com/leanprover-community/mathlib4.git /opt/stemma/mathlib \
-    && cd /opt/stemma/mathlib && lake exe cache get \
+    && cd /opt/stemma/mathlib \
+    && for try in 1 2 3 4 5; do \
+         lake exe cache get && break; \
+         [ "$try" = 5 ] && exit 1; \
+         echo "Some files did not download: trying again"; sleep 10; \
+       done \
     && chmod -R a+rwX /opt/stemma/mathlib \
     && git config --system user.name Worker \
     && git config --system user.email worker@stemma.invalid \
