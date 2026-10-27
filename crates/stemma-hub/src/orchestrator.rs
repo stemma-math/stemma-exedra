@@ -448,7 +448,7 @@ fn definitions() -> Vec<Tool> {
         ),
         tool(
             "post",
-            "Post progress or say what the request waits for",
+            "Post progress or say what the request waits for, once: posting ends this turn",
             json!({"message": {"type": "string"}}),
             &["message"],
         ),
@@ -477,6 +477,9 @@ async fn turn(state: &AppState, thread: i64, group: i64) -> ApiResult<()> {
     ];
     let tools = definitions();
     let mut launched = false;
+    // One message per turn: a model that posts and then goes on, or ends
+    // with text too, would answer each wake several times.
+    let mut posted = false;
     let mut exhausted = true;
     let limit = model::step_cap(state, group).await?;
     for _ in 0..limit {
@@ -521,6 +524,9 @@ async fn turn(state: &AppState, thread: i64, group: i64) -> ApiResult<()> {
                     }
                     result.map(|id| json!({"process":id,"state":"offered"}))
                 }
+                "post" if posted => Err(ApiError::invalid(
+                    "This turn has posted already; its turn ends here",
+                )),
                 "post" => post(
                     state,
                     thread,
@@ -528,7 +534,10 @@ async fn turn(state: &AppState, thread: i64, group: i64) -> ApiResult<()> {
                     arg(&call.arguments, "message")?,
                 )
                 .await
-                .map(|_| json!("Posted")),
+                .map(|_| {
+                    posted = true;
+                    json!("Posted; this turn ends here")
+                }),
                 "close" => close(
                     state,
                     thread,
@@ -563,6 +572,10 @@ async fn turn(state: &AppState, thread: i64, group: i64) -> ApiResult<()> {
             }
         }
         if launched {
+            break;
+        }
+        if posted {
+            exhausted = false;
             break;
         }
     }

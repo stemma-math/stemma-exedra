@@ -31,8 +31,10 @@ Around each call, the hub:
 - hides the key in any error it shows.
 
 A **turn** is a loop of calls. After each reply, the hub runs the tool
-calls and appends their results, until the model replies with no tool
-call or reaches the group's step cap, 20 by default.
+calls and appends their results. The turn ends when the model replies with
+no tool call, posts, launches, closes, or reaches the group's step cap, 20 by
+default. A turn posts at most one message: a final reply in plain text is
+posted only when nothing else was.
 
 ## Workshop
 
@@ -63,7 +65,7 @@ reviews and what each waits for.
 | `recipes`, `recipe` | List and read the group's recipes |
 | `machines` | For a recipe and runner: eligible machines, their owners, connection, runners, models, version, room, and whether they take others' requests |
 | `launch` | Offer a recipe with inputs, runner and model, to the requester's machines, a member's, or anyone's |
-| `post` | Post progress, or say what the request waits for |
+| `post` | Post progress, or say what the request waits for. Once per turn, and it ends the turn |
 | `close` | Close the request as done or failed, with a message |
 
 `machines` never shows secrets or other settings. `launch` goes through
@@ -83,7 +85,7 @@ approved.
   reason.
 - It waits for processes and reviews before declaring success.
 - `close` needs a clear message. Otherwise it posts what it is waiting
-  for.
+  for, once per turn, and never about its own posts.
 - Posts are brief, in English, free of secrets, and never mention or
   impersonate a person.
 - Recurring requests wait for their next slot instead of closing, and
