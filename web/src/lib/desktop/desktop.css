@@ -49,6 +49,12 @@ html[data-desktop]
   z-index: 20;
   height: var(--space-8);
 }
+.machine-error {
+  max-height: calc(var(--space-16) * 4);
+  overflow-y: auto;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
 .setting__limits {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));

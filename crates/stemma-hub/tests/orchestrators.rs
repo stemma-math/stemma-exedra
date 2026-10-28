@@ -70,7 +70,8 @@ async fn encrypted_write_only_keys_provider_dialects_and_caps() {
                 0o600
             );
         }
-        model.tool("post", json!({"message":"Waiting for clarification."}));
+        // A step that reads goes on to another, which the cap stops.
+        model.tool("recipes", json!({}));
         free(&hub, &ada).await;
         idle(&hub).await;
         assert_eq!(model.requests().len(), 1, "the cap must stop the next step");
@@ -800,4 +801,25 @@ async fn thinking_cannot_launch_a_scheduled_recipe_early() {
     .await;
     assert!(req["processes"].as_array().unwrap().is_empty());
     assert_eq!(req["waiting"], "Waiting for the scheduled time");
+}
+#[tokio::test(flavor = "multi_thread")]
+async fn a_turn_posts_once() {
+    let model = stemma_fake_model::FakeModel::start().await;
+    let (hub, ada) = setup(&model).await;
+    key(&hub, &ada, "openrouter", 1_000_000).await;
+    model.tool("post", json!({"message":"Waiting for a machine."}));
+    model.tool("post", json!({"message":"I have posted here."}));
+    model.text("Still waiting for a machine.");
+    free(&hub, &ada).await;
+    idle(&hub).await;
+    assert_eq!(model.requests().len(), 1, "posting ends the turn");
+    let thread = call(&hub, &ada, "GET", "/groups/geometry/threads/1", None).await;
+    let posts: Vec<&str> = thread["messages"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|m| m["author"]["username"] == "workshop")
+        .map(|m| m["body"].as_str().unwrap())
+        .collect();
+    assert_eq!(posts, ["Waiting for a machine."]);
 }

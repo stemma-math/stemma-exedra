@@ -74,6 +74,10 @@ workshop.
    compiled cache. The first build takes a while, and so does each
    update of Stemma. On Apple silicon, Stemma is compiled inside the
    image, which takes longer.
+
+   If a build fails, Stemma says its last lines and keeps the whole log in
+   `~/.local/state/stemma/logs/image.log`; in the app, **Show the whole
+   log** opens it. Docker needs room: give it about 25 GB free.
 4. **Sign each agent in, for its containers.** Containers never read your
    own sign-ins, so each agent gets one of its own:
 
