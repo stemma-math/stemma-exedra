@@ -3,7 +3,6 @@
   import { api } from "#lib/api.ts";
   import { session, setSession } from "#lib/session.svelte.ts";
   import { toast, toastError } from "#lib/toast.ts";
-  import { connection } from "#lib/transport.svelte.ts";
 
   let username = $state(session.me?.username ?? "");
   let available = $state(false);
@@ -38,12 +37,11 @@
 </script>
 
 <form class="setting form" onsubmit={saveName}>
-  <NameField id="username" label="Username" kind="user" bind:value={username} bind:available />
   <div class="field">
     <label class="field__label" for="display-name">Your name</label>
     <input id="display-name" class="input" bind:value={displayName} required maxlength="80" />
   </div>
-  <p class="quiet">Signed in as <span class="identifier">{session.me?.username}</span>{#if __STEMMA_DESKTOP__ && connection.hub}, at <span class="identifier">{connection.hub}</span>{/if}.</p>
+  <NameField id="username" label="Username" kind="user" current={session.me?.username} bind:value={username} bind:available />
   <div class="row row--end"><button type="submit" class="button" disabled={savingName || !available}>{#if savingName}<span class="spinner" aria-hidden="true"></span>{/if}Save</button></div>
 </form>
 

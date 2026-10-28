@@ -22,14 +22,19 @@ Whoever asked becomes the new group's admin.
 
 ## Bringing people in
 
-In **Group settings**, admins make invitation links. Each link gives a
-role, expires, and has a number of uses. A link only adds an existing
-account to the group. People without an account first need one from the
-hub's admin. Admins also change roles and remove people there.
+In **Group settings › Invitations**, admins make invitation links. Each
+link gives a role, expires, and has a number of uses. A link only adds an
+existing account to the group. People without an account first need one
+from the hub's admin.
+
+In **Group settings › Members**, admins change roles and remove people,
+and anyone leaves. A group always keeps an admin: an admin can step down
+once there is another.
 
 ## Names
 
-Admins change the group's name and short name in **Group settings**. Each
+Admins change the group's name and short name in **Group settings ›
+General**. Each
 person changes their username in **Profile**. Old addresses keep working:
 links redirect, and references written with an old name show the current
 one.

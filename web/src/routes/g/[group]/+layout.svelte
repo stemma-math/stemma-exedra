@@ -36,6 +36,11 @@
     get group() {
       return group as Group;
     },
+    async refresh() {
+      const wanted = slug;
+      const found = await api.group(wanted);
+      if (wanted === slug) group = found;
+    },
   });
 
   $effect(() => {

@@ -7,6 +7,8 @@ const KEY = Symbol("group");
 
 export interface GroupContext {
   readonly group: Group;
+  /** Asks the hub for the group again, as after the viewer's role changed. */
+  refresh(): Promise<void>;
 }
 
 export function setGroupContext(context: GroupContext) {

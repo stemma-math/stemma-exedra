@@ -7,12 +7,12 @@ export type SettingsPage = (typeof PAGES)[number] | (typeof MACHINE_PAGES)[numbe
 
 export const settingsUI = $state<{ open: boolean; page: SettingsPage }>({
   open: false,
-  page: "Appearance",
+  page: "Profile",
 });
 
-/** Opens the settings at `page`; "Settings" alone opens the page the
- * account menu has no item of its own for: in the app, this machine's. */
-export function openSettings(page: SettingsPage = __STEMMA_DESKTOP__ ? "This machine" : "Devices") {
+/** Opens the settings at `page`; "Settings" alone opens the profile, or in
+ * the app this machine's. */
+export function openSettings(page: SettingsPage = __STEMMA_DESKTOP__ ? "This machine" : "Profile") {
   settingsUI.page = page;
   settingsUI.open = true;
 }

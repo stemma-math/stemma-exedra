@@ -1,7 +1,10 @@
 <script lang="ts">
   import { api } from "#lib/api.ts";
-  let { id, label, kind, group, value = $bindable(""), available = $bindable(false) }: {
+  import Glyph from "./Glyph.svelte";
+  let { id, label, kind, group, current, value = $bindable(""), available = $bindable(false) }: {
     id: string; label: string; kind: "user" | "group"; group?: string;
+    /** The name as it is now, which needs no word about it. */
+    current?: string;
     value: string; available?: boolean;
   } = $props();
   let reason = $state<string | null>(null);
@@ -22,10 +25,19 @@
     }, 200);
     return () => { active = false; clearTimeout(timer); };
   });
+  const unchanged = $derived(value === current);
 </script>
 
 <div class="field">
   <label class="field__label" for={id}>{label}</label>
   <input {id} class="input" bind:value required maxlength={kind === "user" ? 32 : 40} aria-describedby="{id}-availability" aria-invalid={!checking && !available} autocapitalize="none" spellcheck="false" />
-  <p id="{id}-availability" class="field__hint" aria-live="polite">{checking ? "Checking availability…" : reason ?? "This name is available to you."}</p>
+  <span id="{id}-availability" aria-live="polite" class="field__hint" class:field__success={!checking && available && !unchanged} class:field__error={!checking && !available}>
+    {#if checking}
+      {unchanged ? "" : "Checking…"}
+    {:else if !available}
+      <Glyph name="alert" small />{reason ?? "This name is taken."}
+    {:else if !unchanged}
+      <Glyph name="check" small />This name is available.
+    {/if}
+  </span>
 </div>

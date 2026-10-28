@@ -137,9 +137,9 @@
     <div class="field">
       <label class="field__label" for="ask-details">Details (optional)</label>
       <textarea id="ask-details" class="input" rows="4" bind:value={details}></textarea>
-      <p class="field__hint">
+      <span class="field__hint">
         The workshop chooses recipes and machines, with the group's model. Their owners approve each run.
-      </p>
+      </span>
     </div>
   {:else}
     <div class="field">
@@ -217,9 +217,9 @@
           <label class="field__label" for="ask-model">Model (optional)</label>
           <input id="ask-model" class="input" bind:value={model} placeholder="The machine's own" />
         </div>
-        <p class="field__hint">
+        <span class="field__hint">
           Others approve on their own machines: the request waits until they do.
-        </p>
+        </span>
       </fieldset>
       <fieldset class="fieldset stack">
         <legend>When</legend>
@@ -259,7 +259,7 @@
             </stemma-date-picker>
           </div>
         {/if}
-        <p class="field__hint">In {timezone}: daily and weekly requests keep this local time.</p>
+        <span class="field__hint">In {timezone}: daily and weekly requests keep this local time.</span>
       </fieldset>
       <div class="field">
         <label class="field__label" for="ask-wait">Wait for a machine</label>
