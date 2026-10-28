@@ -3,7 +3,7 @@
 # 3.7 GB of compressed content, including the base; other versions vary.
 # Lean, git, latexmk and the inspection's runtime are already in the base.
 # Measure the resulting image with docker image inspect after building.
-ARG AGENTS_IMAGE=stemma-agents:0.2.0
+ARG AGENTS_IMAGE=stemma-agents:0.2.1
 FROM ${AGENTS_IMAGE} AS cache
 ARG MATHLIB_VERSION=v4.35.0
 USER root
