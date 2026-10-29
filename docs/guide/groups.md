@@ -28,8 +28,9 @@ existing account to the group. People without an account first need one
 from the hub's admin.
 
 In **Group settings › Members**, admins change roles and remove people,
-and anyone leaves. A group always keeps an admin: an admin can step down
-once there is another.
+and anyone leaves. An admin's role and place are theirs alone: no admin
+demotes or removes another, and an admin steps down or leaves only once
+there is another.
 
 ## Names
 

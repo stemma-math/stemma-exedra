@@ -168,7 +168,7 @@
                 <span class="row-list__description">@{member.username}</span>
               </span>
               <span class="row-list__control">
-                {#if admin && !(self && member.role === "admin" && admins === 1)}
+                {#if admin && (member.role !== "admin" || (self && admins > 1))}
                   <stemma-select><select use:scriptedSelect={[member.role]}
                     class="input"
                     aria-label="Role of {member.display_name}"
@@ -184,7 +184,7 @@
                 {/if}
                 {#if self}
                   <button type="button" class="button button--quiet button--small" onclick={() => remove(member)}>Leave</button>
-                {:else if admin}
+                {:else if admin && member.role !== "admin"}
                   <button type="button" class="button button--quiet button--small button--danger" onclick={() => remove(member)}>Remove</button>
                 {/if}
               </span>
@@ -195,7 +195,7 @@
         </ul>
         <p class="quiet">
           Admins manage the group; members create papers; guests read and converse, summoning only their own agents.
-          {#if admin}The group always keeps at least one admin.{/if}
+          {#if admin}Only an admin can stop being one, and the group always keeps at least one.{/if}
         </p>
       {/if}
     </section>
