@@ -24,12 +24,8 @@ use crate::launch::{self, Launch, Mcp, Mode, Prepared};
 pub struct Work<'a> {
     /// The folder it starts in, on the machine: the job's scratch folder.
     pub dir: &'a Path,
-    /// The group's workspace, on the machine.
-    pub root: &'a Path,
     /// Where it runs: on the machine, or in the job's container.
     pub sandbox: &'a dyn Sandbox,
-    /// Its program in the container, if not its usual name.
-    pub contained_program: Option<String>,
 }
 
 /// What an agent said, and what it consumed, as its runner reports it.
@@ -114,21 +110,20 @@ pub fn prepared(
     prompt: &Prompt,
 ) -> anyhow::Result<Prepared> {
     let sandbox = work.sandbox;
-    let contained = sandbox.isolation().contained();
     let mcp = Mcp {
         command: sandbox.stemma(),
         args: mcp_args(sandbox, job, agent, dir, work.dir),
     };
     let args = config.args.clone();
-    // The machine's own program for it is not the container's.
-    let program = if contained {
-        work.contained_program.as_deref()
+    // The machine's own program for it is not the image's, which has its
+    // usual name.
+    let program = if sandbox.isolation().contained() {
+        None
     } else {
         config.command.as_deref()
     };
     let files_seen = sandbox.path(&dir.path);
     let dir_seen = sandbox.path(work.dir);
-    let root_seen = sandbox.path(work.root);
     let mut prepared = launch::prepare(&Launch {
         runner: &agent.runner,
         program,
@@ -140,8 +135,6 @@ pub fn prepared(
         files_seen: &files_seen,
         mode: Mode::Job {
             dir: &dir_seen,
-            root: &root_seen,
-            contained,
             allowed: allowed_tools(job).into_iter().map(str::to_owned).collect(),
         },
     })?;

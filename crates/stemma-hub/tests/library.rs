@@ -803,12 +803,12 @@ async fn declined_builds_go_elsewhere_and_failed_builds_build_again() {
     }
     let ada_id = call(&hub, &ada, "GET", "/me", None).await["id"].clone();
 
-    // Ada's machine has no workshop image: it declines, and is not asked again.
+    // Ada's machine has no image: it declines, and is not asked again.
     let mut ada_machine = builder(&hub, &ada).await;
     let first = build_for(&mut ada_machine, Duration::from_secs(5))
         .await
         .expect("a build");
-    let reason = "docker has no image stemma-workshop:0.1.1".to_string();
+    let reason = "docker has no image stemma/stemma:0.1.1".to_string();
     tell(
         &mut ada_machine,
         WorkerMessage::BuildDeclined {

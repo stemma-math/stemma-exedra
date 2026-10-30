@@ -113,7 +113,7 @@ fn containers_sign_ins_are_kept_among_the_credentials() {
 
 #[cfg(unix)]
 #[tokio::test(flavor = "multi_thread")]
-async fn foreground_service_answers_from_the_workspace_reading_only() {
+async fn foreground_service_answers_in_the_workspace_unisolated() {
     use serde_json::json;
     use std::{os::unix::fs::PermissionsExt, sync::Arc, time::Duration};
     let temp = tempfile::tempdir().unwrap();
@@ -190,7 +190,7 @@ cat >/dev/null
 test -z "${STEMMA_TOKEN:-}"
 test -z "${STEMMA_HUB:-}"
 test ! -e "$STEMMA_CONFIG_DIR/credentials.toml"
-test "$sandbox" = read-only
+test "$sandbox" = danger-full-access
 case "$PWD" in */groups/algebra/scratch/*) ;; *) exit 3 ;; esac
 test -d ../../library/.git
 test -n "$answer"
@@ -204,7 +204,7 @@ printf 'Read in the workspace.\n' > "$answer"
     std::fs::write(
         config_dir.join("config.toml"),
         format!(
-            "[agents.codex]\ncommand = {}\n",
+            "[machine]\nisolation = \"none\"\n[agents.codex]\ncommand = {}\n",
             serde_json::to_string(&runner.display().to_string()).unwrap()
         ),
     )
@@ -292,7 +292,7 @@ printf 'Read in the workspace.\n' > "$answer"
     let connections = state.connections.load(std::sync::atomic::Ordering::Relaxed);
     std::fs::write(
         config_dir.join("config.toml"),
-        "[agents.codex]\ncommand = '/missing/codex'\n",
+        "[machine]\nisolation = 'none'\n[agents.codex]\ncommand = '/missing/codex'\n",
     )
     .unwrap();
     tokio::time::timeout(Duration::from_secs(10), async {
@@ -329,7 +329,7 @@ printf 'Read in the workspace.\n' > "$answer"
     std::fs::write(
         config_dir.join("config.toml"),
         format!(
-            "[agents.codex]\ncommand = {}\n[groups.algebra.agents]\npriority = 'high'\n",
+            "[machine]\nisolation = 'none'\n[agents.codex]\ncommand = {}\n[groups.algebra.agents]\npriority = 'high'\n",
             serde_json::to_string(&runner.display().to_string()).unwrap()
         ),
     )

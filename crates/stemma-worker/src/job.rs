@@ -27,16 +27,13 @@ const CONTAINED: &str = "\
   `/stemma/scratch/`. You may run anything, such as `lake build` or
   `latexmk`, to check your answer. Nothing you write is kept.";
 
-/// What an answer on its person's computer is told.
+/// What an answer on its person's computer, unisolated, is told.
 const ON_THE_COMPUTER: &str = "\
-- You can read the group's workspace, two folders above the one you start
-  in (`../../library/` and `../../papers/<slug>/`, clones of its
-  repositories at `main`), but you cannot run commands or edit files:
-  answer from what you read and reason.
-- If you are asked to run something, or would need to, say that you cannot
-  because your person's computer answers here without isolation: with
-  Docker or Podman (`agents.isolation`, in This machine › Isolation), its
-  answers run in a container where you could.";
+- You work in the group's workspace, two folders above the one you start
+  in, a scratch folder: `../../library/` and `../../papers/<slug>/` are
+  clones of its repositories at `main`. You may run anything, such as
+  `lake build` or `latexmk`, to check your answer. You run on your
+  person's computer, as them: change nothing outside the scratch folder.";
 
 /// What every job of a machine shares.
 pub struct Context {
@@ -301,7 +298,6 @@ async fn ask(
     let scratch = crate::workspace::Scratch::create(&workspace.path, job.id)?;
     let host = context.host();
     let mut container = None;
-    let mut contained_program = None;
     // The agent's sign-in for containers, held while it answers.
     let mut _held = None;
     if let Some(Isolator::Containers(containers)) = &context.isolator {
@@ -328,7 +324,6 @@ async fn ask(
         // computer's environment.
         spec.pass_values = crate::sign_in::values(&spec.pass_env);
         container = Some(containers.start(&spec, &workspace.path).await?);
-        contained_program = containers.program(&agent.runner);
     }
     let sandbox: &dyn crate::isolation::Sandbox = match &container {
         Some(container) => container,
@@ -336,9 +331,7 @@ async fn ask(
     };
     let work = RunnerWork {
         dir: &scratch.0,
-        root: &workspace.path,
         sandbox,
-        contained_program,
     };
     let name = &agent.display_name;
     let minutes = cli_runner(context, &agent.runner)?

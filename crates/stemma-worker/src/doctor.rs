@@ -45,81 +45,6 @@ async fn program(name: &str, command: &str, remedy: &str) -> Check {
     }
 }
 
-/// Whether the person's own image has what an answer runs: `stemma`, for
-/// the agents' tools, and the agents' programs, `commands`. It starts a
-/// container of it to look, which only an image of one's own needs.
-async fn own_image(runtime: &str, image: &str, commands: &[String]) -> Check {
-    let wanted: Vec<&str> = std::iter::once("stemma")
-        .chain(commands.iter().map(String::as_str))
-        .collect();
-    // Prints each program that is missing.
-    let script = "for p in \"$@\"; do command -v \"$p\" >/dev/null || echo \"$p\"; done";
-    let output = tokio::time::timeout(
-        std::time::Duration::from_secs(60),
-        tokio::process::Command::new(runtime)
-            .args([
-                "run",
-                "--rm",
-                "--network",
-                "none",
-                "--entrypoint",
-                "sh",
-                image,
-            ])
-            .args(["-c", script, "sh"])
-            .args(&wanted)
-            .stdin(std::process::Stdio::null())
-            .output(),
-    )
-    .await;
-    let detail = format!("{image}, your own");
-    match output {
-        Ok(Ok(out)) if out.status.success() => {
-            let missing: Vec<String> = String::from_utf8_lossy(&out.stdout)
-                .lines()
-                .map(str::trim)
-                .filter(|l| !l.is_empty())
-                .map(str::to_owned)
-                .collect();
-            if missing.is_empty() {
-                check("Agents' image", true, detail, "")
-            } else {
-                let mut lacking = check(
-                    "Agents' image",
-                    false,
-                    format!("{detail}: it lacks {}", missing.join(", ")),
-                    "",
-                );
-                lacking.remedy = Some(format!(
-                    "It lacks {}: build your image from Stemma's, which has them, or go back to \
-                     Stemma's with stemma config unset agents.image.",
-                    missing.join(", ")
-                ));
-                lacking
-            }
-        }
-        Ok(Ok(out)) => check(
-            "Agents' image",
-            false,
-            String::from_utf8_lossy(&out.stderr),
-            "Check the runtime's error above.",
-        ),
-        Ok(Err(error)) => check(
-            "Agents' image",
-            false,
-            error.to_string(),
-            "Check the runtime's error above.",
-        ),
-        _ => check(
-            "Agents' image",
-            false,
-            format!("{detail}: it could not be started"),
-            "Check that the image runs a shell, or go back to Stemma's with \
-             stemma config unset agents.image.",
-        ),
-    }
-}
-
 /// Whether `handle`'s agent can sign in inside a container: the variables
 /// and files it is given, set and present here.
 fn container_sign_in(settings: &Settings, group: Option<&str>, handle: &str) -> Check {
@@ -250,7 +175,15 @@ pub async fn run(group: Option<&str>) -> Vec<Check> {
         }
         checks.push(checked);
     }
+    let isolation = settings
+        .as_ref()
+        .ok()
+        .and_then(|s| s.get("machine.isolation", group).ok())
+        .and_then(|v| v.value.as_str().map(str::to_owned))
+        .unwrap_or_default();
+    // Unisolated, jobs need on the computer what the image has.
     for (tool, purpose) in [
+        ("git", "the workshop's checkouts"),
         ("elan", "Lean toolchains"),
         ("lake", "checking Lean proofs"),
         ("latexmk", "checking LaTeX papers"),
@@ -261,107 +194,61 @@ pub async fn run(group: Option<&str>) -> Vec<Check> {
             &format!("Install {tool} so agents can check their work."),
         )
         .await;
-        result.purpose = Some(format!("Agents can use it for {purpose}."));
+        result.purpose = Some(if isolation == "none" {
+            format!("Answers and the workshop use it for {purpose}.")
+        } else {
+            format!("Your own sessions can use it for {purpose}; jobs have it in the image.")
+        });
         checks.push(result);
     }
     if let Ok(settings) = &settings {
-        if let Ok(value) = settings.get("agents.isolation", group)
-            && let Some(runtime @ ("docker" | "podman")) = value.value.as_str()
-        {
+        if let runtime @ ("docker" | "podman") = isolation.as_str() {
             checks.push(program(runtime, runtime, &format!("Install and start {runtime}.")).await);
             let image = settings
-                .get("agents.image", group)
+                .get("machine.image", group)
                 .ok()
                 .and_then(|v| v.value.as_str().map(str::to_owned))
                 .unwrap_or_default();
+            let tag = stemma_client::config::image_tag(&image).unwrap_or_default();
             let present = tokio::time::timeout(
                 std::time::Duration::from_secs(5),
                 tokio::process::Command::new(runtime)
-                    .args(["image", "inspect", &image])
+                    .args(["image", "inspect", &tag])
                     .output(),
             )
             .await
             .is_ok_and(|r| r.is_ok_and(|o| o.status.success()));
-            let own = image != crate::isolation::default_image();
-            checks.push(if !present {
-                check(
-                    "Agents' image",
-                    false,
-                    image,
-                    if own {
-                        "Build your image, or go back to Stemma's with stemma config unset agents.image."
-                    } else {
-                        "Build the image with stemma machine image."
-                    },
-                )
-            } else if own {
-                let commands: Vec<String> = found
-                    .iter()
-                    .filter_map(|handle| {
-                        settings
-                            .get(&format!("agents.{handle}.container.command"), group)
-                            .ok()
-                            .and_then(|v| v.value.as_str().map(str::to_owned))
-                    })
-                    .collect();
-                own_image(runtime, &image, &commands).await
-            } else {
-                check("Agents' image", true, image, "")
-            });
+            checks.push(check(
+                "Image",
+                present,
+                if present {
+                    image
+                } else {
+                    format!("{image}, not built")
+                },
+                "Build it with stemma machine image.",
+            ));
             for handle in &found {
                 checks.push(container_sign_in(settings, group, handle));
             }
-        }
-        if let Ok(Some(why)) = settings.workshop_problem(group) {
-            checks.push(check("Workshop", false, &why, &why));
-        }
-        if let Ok(value) = settings.get("agents.isolation", group)
-            && let Some(runtime @ ("docker" | "podman")) = value.value.as_str()
-        {
-            let image = settings
-                .get("workshop.image", group)
-                .unwrap()
-                .value
-                .as_str()
-                .unwrap()
-                .to_owned();
-            let out = tokio::process::Command::new(runtime)
-                .args(["image", "inspect", &image])
-                .output()
-                .await;
-            let present = out.as_ref().is_ok_and(|out| out.status.success());
-            let mut result = if present && image != crate::image::workshop_image() {
-                let mut commands: Vec<String> = vec!["git".into(), "lake".into(), "latexmk".into()];
-                commands.extend(found.iter().filter_map(|handle| {
-                    settings
-                        .get(&format!("agents.{handle}.container.command"), group)
-                        .ok()
-                        .and_then(|v| v.value.as_str().map(str::to_owned))
-                }));
-                let mut result = own_image(runtime, &image, &commands).await;
-                result.name = "Workshop image".into();
-                result.remedy = result
-                    .remedy
-                    .map(|s| s.replace("agents.image", "workshop.image"));
-                result
-            } else {
-                check(
-                    "Workshop image",
-                    present,
-                    &image,
-                    if image == crate::image::workshop_image() {
-                        "Build both images with stemma machine image."
-                    } else {
-                        "Build your image, or unset workshop.image to use Stemma's image."
-                    },
-                )
-            };
-            if let Ok(out) = out
-                && !out.status.success()
-            {
-                result.detail = String::from_utf8_lossy(&out.stderr).into_owned();
-            }
-            checks.push(result);
+        } else {
+            checks.push(Check {
+                name: "Isolation".into(),
+                status: Status::Warning,
+                detail:
+                    "None, not recommended: answers and the workshop run on this computer, as you"
+                        .into(),
+                purpose: Some(
+                    "Not recommended: agents run commands with everything you can reach, your \
+                     files and sign-ins included."
+                        .into(),
+                ),
+                remedy: Some(
+                    "Install Docker, or Podman, and choose it with stemma config set \
+                     machine.isolation docker."
+                        .into(),
+                ),
+            });
         }
         let folder = group.map(|g| settings.workspace(g)).unwrap_or_else(|| {
             settings

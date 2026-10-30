@@ -1,11 +1,13 @@
-//! Where a person's agent answers, when its owner chooses isolation: a
-//! container of its own, with Docker or Podman, from the agents' image
-//! (`docker/agents/Dockerfile`: Lean, LaTeX, the agents' programs, git and
-//! `stemma`). Inside, the agent has no limits; what it is given of the
-//! computer is only the group's workspace, read-write, the job's folder,
-//! read-only, and the agent's own sign-in, as configured per runner:
-//! variables passed by name, so that their values are on no command line,
-//! and files mounted read-only. Stemma's own settings never enter it.
+//! Where a machine runs its jobs (answers, the workshop's processes and
+//! builds): each in a container of its own, with Docker (by default) or
+//! Podman, from the machine's image (`machine.image`: Lean, Mathlib, LaTeX,
+//! the agents' programs, git and `stemma`); or, if its owner chooses no
+//! isolation, on the machine itself, as if it were the image. In a
+//! container the agent has no limits; what it is given of the computer is
+//! only the group's workspace, read-write, the job's folder, read-only, and
+//! the agent's own sign-in, as configured per runner: variables passed by
+//! name, so that their values are on no command line, and files mounted
+//! read-only. Stemma's own settings never enter it.
 //!
 //! It runs as the computer's user (never root), with no capabilities and
 //! no new privileges, with limits on memory, CPUs and processes, for as
@@ -31,9 +33,11 @@ pub const ROOT: &str = "/stemma";
 /// The home of the container's user.
 pub const HOME: &str = "/home/stemma";
 
-/// The agents' image, as `stemma machine image` tags it.
+/// The machine's image unless told otherwise, as `stemma machine image`
+/// tags it.
 pub fn default_image() -> String {
-    format!("stemma-agents:{}", env!("CARGO_PKG_VERSION"))
+    stemma_client::config::image_tag(&stemma_client::config::default_image())
+        .expect("Stemma's own image")
 }
 
 /// How long a runtime has to answer whether it works.
@@ -41,66 +45,38 @@ const RUNTIME_WAIT: Duration = Duration::from_secs(30);
 
 // ── Configuration ─────────────────────────────────────────────────────
 
-/// How a machine isolates agent jobs, as its owner configures it
-/// (`[isolation]` in its configuration).
-#[derive(Clone, Debug, Default, Deserialize, Serialize)]
-#[serde(deny_unknown_fields)]
+/// How a machine isolates its jobs, as its owner configures it
+/// (`[machine]` in its settings).
+#[derive(Clone, Debug, Default)]
 pub struct IsolationConfig {
-    /// `auto` (Docker, or else Podman), `docker`, `podman`, or `host`:
-    /// on the machine itself, unisolated. `auto` if absent.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub runtime: Option<Runtime>,
-    /// The runtime's program, if not `docker` or `podman` on the path.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub command: Option<String>,
-    /// The image; `stemma-agents:<this version>` if absent.
-    #[serde(skip_serializing_if = "Option::is_none")]
+    pub runtime: Runtime,
+    /// The image's tag; Stemma's own of this version if absent.
     pub image: Option<String>,
     /// The most memory a job's container may use: `8g` if absent.
-    #[serde(skip_serializing_if = "Option::is_none")]
     pub memory: Option<String>,
     /// How many CPUs it may use: 4 if absent.
-    #[serde(skip_serializing_if = "Option::is_none")]
     pub cpus: Option<f64>,
-    /// How many processes it may run at once: 4096 if absent.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub pids: Option<u32>,
-    /// The runtime's network it joins (`--network`); the runtime's own
-    /// if absent. Its agent needs to reach its model's provider and the
-    /// hub: `none` leaves it with neither.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub network: Option<String>,
-    /// The hub's address from inside a container, if not the one the
-    /// machine uses: that, or, if it is on the machine itself
-    /// (`localhost`), the name the runtime gives the machine.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub hub_url: Option<String>,
     /// How each runner's agent signs in inside the container, by runner.
-    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub agents: BTreeMap<String, AgentSignIn>,
 }
 
-/// Which runtime runs agent jobs.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Deserialize, Serialize)]
-#[serde(rename_all = "snake_case")]
+/// Which runtime runs a machine's jobs.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum Runtime {
-    /// Docker, or else Podman, whichever works.
     #[default]
-    Auto,
     Docker,
     Podman,
-    /// None: on the machine itself, unisolated. The owner's explicit
-    /// choice, where containers are not available.
+    /// None: on the machine itself, unisolated, as if it were the image.
+    /// The owner's explicit choice, which the doctor advises against.
     Host,
 }
 
 impl Runtime {
     pub fn parse(text: &str) -> Option<Runtime> {
         match text {
-            "auto" => Some(Runtime::Auto),
             "docker" => Some(Runtime::Docker),
             "podman" => Some(Runtime::Podman),
-            "host" => Some(Runtime::Host),
+            "none" => Some(Runtime::Host),
             _ => None,
         }
     }
@@ -119,9 +95,6 @@ pub struct AgentSignIn {
     /// Files of the machine, mounted read-only.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub files: Vec<SignInFile>,
-    /// The runner's program in the container, if not its usual name.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub command: Option<String>,
 }
 
 /// A file of the machine that an agent signs in with.
@@ -192,11 +165,6 @@ fn env_name(name: &str) -> bool {
 const KEPT: &[&str] = &["HOME", "PATH", "USER", "ELAN_HOME"];
 
 impl IsolationConfig {
-    /// The runtime chosen.
-    pub fn runtime(&self) -> Runtime {
-        self.runtime.unwrap_or_default()
-    }
-
     pub fn image(&self) -> String {
         self.image.clone().unwrap_or_else(default_image)
     }
@@ -205,7 +173,7 @@ impl IsolationConfig {
         Limits {
             memory: self.memory.clone().unwrap_or_else(|| "8g".into()),
             cpus: self.cpus.unwrap_or(4.0),
-            pids: self.pids.unwrap_or(4096),
+            pids: 4096,
         }
     }
 
@@ -214,7 +182,7 @@ impl IsolationConfig {
         for (runner, sign_in) in &self.agents {
             anyhow::ensure!(
                 runners::ALL.contains(&runner.as_str()),
-                "there is no runner {runner} (in [isolation.agents])"
+                "there is no runner {runner}"
             );
             for name in &sign_in.env {
                 anyhow::ensure!(
@@ -230,23 +198,6 @@ impl IsolationConfig {
                 file.target()?;
             }
         }
-        if let Some(memory) = &self.memory {
-            anyhow::ensure!(
-                memory
-                    .trim_end_matches(['b', 'k', 'm', 'g', 'B', 'K', 'M', 'G'])
-                    .parse::<u64>()
-                    .is_ok_and(|n| n > 0),
-                "the memory is a number with a unit, such as 8g: {memory}"
-            );
-        }
-        anyhow::ensure!(
-            self.cpus.is_none_or(|c| c > 0.0),
-            "the CPUs are more than 0"
-        );
-        anyhow::ensure!(
-            self.pids.is_none_or(|p| p >= 64),
-            "the processes are at least 64"
-        );
         Ok(())
     }
 }
@@ -374,7 +325,6 @@ pub struct ContainerSpec {
     /// The values of some of `pass_env`, from the person's credentials.
     pub pass_values: Vec<(String, String)>,
     pub limits: Limits,
-    pub network: Option<String>,
     /// Whether it reaches the machine by the runtime's name for it.
     pub host_alias: bool,
     /// How long it lives at most, even if this machine stops.
@@ -395,6 +345,8 @@ pub fn run_args(engine: &dyn Engine, spec: &ContainerSpec) -> Vec<String> {
         spec.name.clone(),
         "--label".into(),
         format!("org.stemma.job={}", spec.job),
+        // The image is the machine's own build, never one from a registry.
+        "--pull=never".into(),
     ];
     args.extend(engine.user_args(spec.user));
     args.extend([
@@ -405,9 +357,6 @@ pub fn run_args(engine: &dyn Engine, spec: &ContainerSpec) -> Vec<String> {
         format!("--cpus={}", spec.limits.cpus),
         format!("--pids-limit={}", spec.limits.pids),
     ]);
-    if let Some(network) = &spec.network {
-        args.push(format!("--network={network}"));
-    }
     if spec.host_alias {
         args.extend(engine.host_alias_args());
     }
@@ -646,7 +595,7 @@ impl Sandbox for Container {
 
 // ── What a machine isolates with ──────────────────────────────────────
 
-/// How a machine runs agent jobs, as found when it starts.
+/// How a machine runs its jobs, as found when it starts.
 #[derive(Clone, Debug)]
 pub enum Isolator {
     /// On the machine itself, unisolated: its owner's choice.
@@ -655,14 +604,13 @@ pub enum Isolator {
     Containers(Arc<Containers>),
 }
 
-/// A machine's containers for the agents: its runtime, image, limits and
-/// how agents sign in inside.
+/// A machine's containers: its runtime, image, limits and how agents sign
+/// in inside.
 #[derive(Debug)]
 pub struct Containers {
     pub engine: Arc<dyn Engine>,
     pub image: String,
     pub limits: Limits,
-    pub network: Option<String>,
     /// The hub, as containers reach it, and whether by the runtime's name
     /// for the machine.
     pub hub: String,
@@ -769,17 +717,14 @@ async fn available_cpus(program: &Path) -> Option<f64> {
     None
 }
 
-/// The engine of `kind` whose program is found on `search` and works.
-async fn engine(
-    kind: Runtime,
-    command: Option<&str>,
-    search: Option<&OsStr>,
-) -> Option<Arc<dyn Engine>> {
-    let program = command.unwrap_or(match kind {
+/// The engine of `kind`, Docker or Podman, whose program is found on
+/// `search` and works; none for the host, or if it does not work.
+pub async fn find_engine(kind: Runtime, search: Option<&OsStr>) -> Option<Arc<dyn Engine>> {
+    let program = match kind {
         Runtime::Docker => "docker",
         Runtime::Podman => "podman",
-        _ => return None,
-    });
+        Runtime::Host => return None,
+    };
     let program = detect::find_program(program, search)?;
     if !works(&program).await {
         return None;
@@ -790,28 +735,10 @@ async fn engine(
     })
 }
 
-/// The runtime a machine would use, as `config` says, found on `search`:
-/// Docker or Podman, and whether its program works; none for the host, or
-/// if none works.
-pub async fn find_engine(
-    config: &IsolationConfig,
-    search: Option<&OsStr>,
-) -> Option<Arc<dyn Engine>> {
-    let command = config.command.as_deref();
-    match config.runtime() {
-        Runtime::Host => None,
-        Runtime::Auto => match engine(Runtime::Docker, command, search).await {
-            Some(found) => Some(found),
-            None => engine(Runtime::Podman, command, search).await,
-        },
-        kind => engine(kind, command, search).await,
-    }
-}
-
-/// How a machine runs agent jobs, as `config` says and what it
-/// finds on `search` (a list of folders, as `PATH` has them): on itself,
-/// if its owner chose so; else in containers, with a runtime that works
-/// and has the image. If it can do neither, why.
+/// How a machine runs its jobs, as `config` says and what it finds on
+/// `search` (a list of folders, as `PATH` has them): on itself, if its
+/// owner chose so; else in containers, with a runtime that works and has
+/// the image. If it can do neither, why.
 pub async fn resolve(
     config: &IsolationConfig,
     hub: &str,
@@ -820,18 +747,17 @@ pub async fn resolve(
     if let Err(error) = config.validate() {
         return Err(format!("its isolation is misconfigured: {error:#}"));
     }
-    if config.runtime() == Runtime::Host {
+    if config.runtime == Runtime::Host {
         return Ok(Isolator::Host);
     }
-    let Some(engine) = find_engine(config, search).await else {
-        let wanted = match config.runtime() {
-            Runtime::Docker => "Docker",
+    let Some(engine) = find_engine(config.runtime, search).await else {
+        let wanted = match config.runtime {
             Runtime::Podman => "Podman",
-            _ => "Docker or Podman",
+            _ => "Docker",
         };
         return Err(format!(
             "{wanted} is not installed or does not work here (`info` fails), and the machine's \
-             owner did not choose to run agent jobs on it unisolated"
+             owner did not choose to run its jobs unisolated"
         ));
     };
     let image = config.image();
@@ -841,10 +767,7 @@ pub async fn resolve(
             engine.program().display()
         ));
     }
-    let (hub, host_alias) = match &config.hub_url {
-        Some(url) => (url.trim_end_matches('/').to_owned(), false),
-        None => hub_in_container(hub, engine.host_alias()),
-    };
+    let (hub, host_alias) = hub_in_container(hub, engine.host_alias());
     // A container may not ask for more CPUs than the runtime has.
     let mut limits = config.limits();
     if let Some(cpus) = available_cpus(engine.program()).await {
@@ -854,7 +777,6 @@ pub async fn resolve(
         engine,
         image,
         limits,
-        network: config.network.clone(),
         hub,
         host_alias,
         agents: config.agents.clone(),
@@ -890,13 +812,8 @@ impl Containers {
         Ok((sign_in.env.clone(), mounts))
     }
 
-    /// The program of `runner` in the container.
-    pub fn program(&self, runner: &str) -> Option<String> {
-        self.agents.get(runner).and_then(|a| a.command.clone())
-    }
-
-    /// A job's container, as `spec` asks, with this machine's image,
-    /// limits and network.
+    /// A job's container, as `spec` asks, with this machine's image and
+    /// limits.
     pub fn spec(
         &self,
         job: i64,
@@ -914,7 +831,6 @@ impl Containers {
             pass_env,
             pass_values: Vec::new(),
             limits: self.limits.clone(),
-            network: self.network.clone(),
             host_alias: self.host_alias,
             lifetime,
             job,
@@ -948,7 +864,7 @@ mod tests {
     fn spec() -> ContainerSpec {
         ContainerSpec {
             name: "stemma-job-7-0000abcd".into(),
-            image: "stemma-agents:1.0.0".into(),
+            image: "stemma/stemma:1.0.0".into(),
             user: (501, 20),
             mounts: vec![
                 Mount::Bind {
@@ -976,7 +892,6 @@ mod tests {
                 cpus: 4.0,
                 pids: 4096,
             },
-            network: None,
             host_alias: true,
             lifetime: Duration::from_secs(600),
             job: 7,
@@ -1010,7 +925,7 @@ mod tests {
             position(&args, flag);
         }
         assert!(!args.iter().any(|a| a.contains("privileged")));
-        assert!(!args.iter().any(|a| a.starts_with("--network")));
+        position(&args, "--pull=never");
         let user = position(&args, "--user");
         assert_eq!(args[user + 1], "501:20");
         assert!(!args.contains(&"--userns=keep-id".to_owned()));
@@ -1038,7 +953,7 @@ mod tests {
             [
                 "--workdir",
                 "/stemma",
-                "stemma-agents:1.0.0",
+                "stemma/stemma:1.0.0",
                 "sleep",
                 "600"
             ]
@@ -1056,13 +971,10 @@ mod tests {
         let podman = Podman {
             program: "podman".into(),
         };
-        let mut spec = spec();
-        spec.network = Some("none".into());
-        let args = run_args(&podman, &spec);
+        let args = run_args(&podman, &spec());
         position(&args, "--userns=keep-id");
         let user = position(&args, "--user");
         assert_eq!(args[user + 1], "501:20");
-        position(&args, "--network=none");
         assert!(!args.iter().any(|a| a.starts_with("--add-host")));
         assert_eq!(podman.host_alias(), "host.containers.internal");
     }
@@ -1128,22 +1040,25 @@ mod tests {
 
     #[test]
     fn reads_and_checks_how_agents_sign_in() {
-        let config: IsolationConfig = toml::from_str(
-            r#"
-            runtime = "podman"
-            memory = "12g"
-            [agents.claude-code]
-            env = ["CLAUDE_CODE_OAUTH_TOKEN"]
-            [agents.codex]
-            files = [{ from = "~/.codex/auth.json" }]
-            [agents.opencode]
-            env = ["OPENROUTER_API_KEY"]
-            files = [{ from = "/srv/opencode/auth.json", to = "/home/stemma/.local/share/opencode/auth.json" }]
-            "#,
-        )
-        .unwrap();
+        let agents =
+            |text: &str| -> BTreeMap<String, AgentSignIn> { toml::from_str(text).unwrap() };
+        let config = IsolationConfig {
+            runtime: Runtime::Podman,
+            memory: Some("12g".into()),
+            agents: agents(
+                r#"
+                [claude-code]
+                env = ["CLAUDE_CODE_OAUTH_TOKEN"]
+                [codex]
+                files = [{ from = "~/.codex/auth.json" }]
+                [opencode]
+                env = ["OPENROUTER_API_KEY"]
+                files = [{ from = "/srv/opencode/auth.json", to = "/home/stemma/.local/share/opencode/auth.json" }]
+                "#,
+            ),
+            ..Default::default()
+        };
         config.validate().unwrap();
-        assert_eq!(config.runtime(), Runtime::Podman);
         assert_eq!(config.limits().memory, "12g");
         assert_eq!(config.limits().cpus, 4.0);
         let codex = &config.agents["codex"].files[0];
@@ -1158,16 +1073,17 @@ mod tests {
         assert_eq!(config.image(), default_image());
 
         for wrong in [
-            "[agents.api]\nenv = [\"KEY\"]",
-            "[agents.codex]\nenv = [\"OPENAI_API_KEY=sk-…\"]",
-            "[agents.codex]\nenv = [\"PATH\"]",
-            "[agents.codex]\nfiles = [{ from = \"auth.json\", to = \"/home/stemma/auth.json\" }]",
-            "[agents.codex]\nfiles = [{ from = \"/etc/auth.json\" }]",
-            "[agents.codex]\nfiles = [{ from = \"~/a\", to = \"/stemma/jobs/a\" }]",
-            "memory = \"lots\"",
-            "pids = 2",
+            "[api]\nenv = [\"KEY\"]",
+            "[codex]\nenv = [\"OPENAI_API_KEY=sk-…\"]",
+            "[codex]\nenv = [\"PATH\"]",
+            "[codex]\nfiles = [{ from = \"auth.json\", to = \"/home/stemma/auth.json\" }]",
+            "[codex]\nfiles = [{ from = \"/etc/auth.json\" }]",
+            "[codex]\nfiles = [{ from = \"~/a\", to = \"/stemma/jobs/a\" }]",
         ] {
-            let config: IsolationConfig = toml::from_str(wrong).unwrap();
+            let config = IsolationConfig {
+                agents: agents(wrong),
+                ..Default::default()
+            };
             let checked = config.validate().and_then(|()| {
                 for sign_in in config.agents.values() {
                     for file in &sign_in.files {
@@ -1178,7 +1094,8 @@ mod tests {
             });
             assert!(checked.is_err(), "{wrong}");
         }
-        assert!(toml::from_str::<IsolationConfig>("runtime = \"chroot\"").is_err());
+        assert_eq!(Runtime::parse("none"), Some(Runtime::Host));
+        assert_eq!(Runtime::parse("chroot"), None);
     }
 
     fn fake(dir: &Path, name: &str, body: &str) -> PathBuf {
@@ -1198,14 +1115,18 @@ mod tests {
         let bin = tempfile::tempdir().unwrap();
         let search = std::env::join_paths([bin.path()]).unwrap();
         let hub = "http://127.0.0.1:8080";
-        let auto = IsolationConfig::default();
+        let docker = IsolationConfig::default();
+        let podman = IsolationConfig {
+            runtime: Runtime::Podman,
+            ..Default::default()
+        };
 
-        // Nothing installed.
-        let error = resolve(&auto, hub, Some(&search)).await.unwrap_err();
-        assert!(error.contains("Docker or Podman"), "{error}");
-        // The owner's choice needs nothing.
+        // Docker, by default, is not installed.
+        let error = resolve(&docker, hub, Some(&search)).await.unwrap_err();
+        assert!(error.starts_with("Docker is not"), "{error}");
+        // The owner's choice of none needs nothing.
         let host = IsolationConfig {
-            runtime: Some(Runtime::Host),
+            runtime: Runtime::Host,
             ..Default::default()
         };
         assert!(matches!(
@@ -1221,26 +1142,21 @@ mod tests {
             "podman",
             "case \"$1\" in info) exit 0;; image) [ -f \"$(dirname \"$0\")/image\" ];; esac",
         );
-        let error = resolve(&auto, hub, Some(&search)).await.unwrap_err();
+        let error = resolve(&docker, hub, Some(&search)).await.unwrap_err();
+        assert!(error.starts_with("Docker is not"), "{error}");
+        let error = resolve(&podman, hub, Some(&search)).await.unwrap_err();
         assert!(error.contains("stemma machine image"), "{error}");
         std::fs::write(bin.path().join("image"), "").unwrap();
-        let Ok(Isolator::Containers(found)) = resolve(&auto, hub, Some(&search)).await else {
+        let Ok(Isolator::Containers(found)) = resolve(&podman, hub, Some(&search)).await else {
             panic!("Podman, with its image");
         };
         assert_eq!(found.engine.isolation(), Isolation::Podman);
         assert_eq!(found.hub, "http://host.containers.internal:8080");
         assert!(found.host_alias);
-        // Docker, asked for by name, does not work.
-        let docker = IsolationConfig {
-            runtime: Some(Runtime::Docker),
-            ..Default::default()
-        };
-        let error = resolve(&docker, hub, Some(&search)).await.unwrap_err();
-        assert!(error.starts_with("Docker is not"), "{error}");
 
-        // Once it works, Docker comes first.
+        // Once Docker works, and has the image.
         fake(bin.path(), "docker", "exit 0");
-        let Ok(Isolator::Containers(found)) = resolve(&auto, hub, Some(&search)).await else {
+        let Ok(Isolator::Containers(found)) = resolve(&docker, hub, Some(&search)).await else {
             panic!("Docker");
         };
         assert_eq!(found.engine.isolation(), Isolation::Docker);

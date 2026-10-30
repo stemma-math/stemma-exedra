@@ -13,26 +13,26 @@
 //! - [`Mode::Session`], interactive: the person's private conversation
 //!   with their agent, which `stemma claude`, `stemma codex` and
 //!   `stemma opencode` open.
-//! - [`Mode::Job`], headless: an answer in a thread. In a container of its
-//!   own, the agent has no limits: the container holds only the group's
-//!   workspace, its sign-in and the job's token. On the computer itself, it
-//!   only answers: it reads, and runs no commands.
+//! - [`Mode::Job`], headless: an answer in a thread, or a workshop's
+//!   process. The agent has no limits: in a container of its own, the
+//!   container holds only the group's workspace, its sign-in and the job's
+//!   token; on the computer itself, where its owner chose to run jobs
+//!   unisolated, it acts as their user.
 //!
 //! For each runner:
 //!
 //! - Claude Code reads Stemma's tools from an MCP configuration
 //!   (`--mcp-config`) and its instructions from `--append-system-prompt`.
 //!   A job runs it with `-p` and only those MCP tools
-//!   (`--strict-mcp-config`): contained, with every tool and no asking
-//!   (`--dangerously-skip-permissions`); otherwise with none of its own.
+//!   (`--strict-mcp-config`), with every tool and no asking
+//!   (`--dangerously-skip-permissions`).
 //! - Codex gets Stemma's tools and instructions as configuration values on
 //!   its command line (`-c mcp_servers.stemma.…`,
-//!   `-c developer_instructions=…`). A job runs `codex exec`, contained
-//!   with full access, otherwise in its read-only sandbox.
+//!   `-c developer_instructions=…`). A job runs `codex exec`, with full
+//!   access.
 //! - OpenCode reads a configuration of its own from `OPENCODE_CONFIG`,
 //!   which it merges with the person's: Stemma's tools, and its
-//!   instructions in a file. A job runs `opencode run`: contained, allowed
-//!   everything; otherwise, only reading.
+//!   instructions in a file. A job runs `opencode run`, allowed everything.
 //!
 //! Stemma's skills go in the launch's folder too, as a Claude Code plugin
 //! (`--plugin-dir`) whose `skills` folder OpenCode also reads (`skills` in
@@ -62,11 +62,6 @@ pub enum Mode<'a> {
     Job {
         /// The folder it starts in, as it sees it.
         dir: &'a Path,
-        /// The group's workspace, as it sees it, which it may read.
-        root: &'a Path,
-        /// Whether it runs in a container of its own, with no limits there;
-        /// else on the computer, only answering.
-        contained: bool,
         /// The Stemma tools it may use, by name.
         allowed: Vec<String>,
     },
@@ -231,19 +226,11 @@ fn claude_code(launch: &Launch, plugin: &Path, prepared: &mut Prepared) -> anyho
             push(args, &["--disallowedTools", "Bash(stemma:*)"]);
             push(args, &["--append-system-prompt", launch.instructions]);
         }
-        Mode::Job {
-            contained, allowed, ..
-        } => {
+        Mode::Job { .. } => {
             push(args, &["-p", "--output-format", "stream-json", "--verbose"]);
             push(args, &["--no-session-persistence", "--strict-mcp-config"]);
             push(args, &["--mcp-config", &mcp_file]);
-            if *contained {
-                push(args, &["--dangerously-skip-permissions"]);
-            } else {
-                push(args, &["--tools", ""]);
-                push(args, &["--allowedTools", &stemma_tools(allowed).join(",")]);
-                push(args, &["--permission-mode", "dontAsk"]);
-            }
+            push(args, &["--dangerously-skip-permissions"]);
             push(args, &["--append-system-prompt", launch.instructions]);
         }
     }
@@ -301,20 +288,18 @@ fn codex(launch: &Launch, plugin: &Path, prepared: &mut Prepared) {
     ];
     let mut answer = None;
     let args = &mut prepared.args;
-    if let Mode::Job { dir, contained, .. } = &launch.mode {
+    if let Mode::Job { dir, .. } = &launch.mode {
         // In a container of its own, the container is its sandbox: Codex's
         // own needs what a container does not allow.
-        let sandbox = if *contained {
-            "danger-full-access"
-        } else {
-            "read-only"
-        };
         let file = dir.join("answer.md");
         push(
             args,
             &["exec", "--skip-git-repo-check", "--ephemeral", "--json"],
         );
-        push(args, &["--sandbox", sandbox, "--color", "never"]);
+        push(
+            args,
+            &["--sandbox", "danger-full-access", "--color", "never"],
+        );
         push(args, &["--cd", &dir.display().to_string()]);
         push(
             args,
@@ -358,30 +343,11 @@ fn opencode(launch: &Launch, plugin: &Path, prepared: &mut Prepared) -> anyhow::
         Mode::Session { allowed } | Mode::Job { allowed, .. } => allowed,
     };
     let mut permission = serde_json::Map::new();
-    let unlimited = matches!(
-        launch.mode,
-        Mode::Job {
-            contained: true,
-            ..
-        }
-    );
-    if let Mode::Job { root, .. } = &launch.mode {
+    if let Mode::Job { .. } = &launch.mode {
         config["autoupdate"] = json!(false);
         config["share"] = json!("disabled");
-        if unlimited {
-            permission.insert("*".into(), json!("allow"));
-        } else {
-            permission.insert("*".into(), json!("deny"));
-            for tool in ["read", "glob", "grep", "list"] {
-                permission.insert(tool.into(), json!("allow"));
-            }
-            permission.insert(
-                "external_directory".into(),
-                json!({root.display().to_string(): "allow"}),
-            );
-        }
-    }
-    if !unlimited {
+        permission.insert("*".into(), json!("allow"));
+    } else {
         // Scope automatic permission to the tools this Stemma session exposes.
         // https://opencode.ai/docs/permissions/ and /docs/mcp-servers/
         permission.insert("stemma_*".into(), json!("deny"));
@@ -513,31 +479,19 @@ mod tests {
     fn claude_code_for_a_job() {
         let files = tempfile::tempdir().unwrap();
         let mcp = mcp();
+        // Every tool, without asking.
         let mode = Mode::Job {
-            root: Path::new("/workspace"),
-            dir: files.path(),
-            contained: false,
+            dir: Path::new("/stemma/scratch/7"),
             allowed: vec!["read_thread".into()],
         };
         let prepared = prepare(&launch(runners::CLAUDE_CODE, files.path(), &mcp, mode)).unwrap();
-        for flag in ["-p", "--strict-mcp-config", "dontAsk", "--tools"] {
+        for flag in [
+            "-p",
+            "--strict-mcp-config",
+            "--dangerously-skip-permissions",
+        ] {
             assert!(prepared.args.contains(&flag.to_owned()), "{flag}");
         }
-        assert!(!prepared.args.iter().any(|a| a.contains("skip-permissions")));
-
-        // In a container, every tool, without asking.
-        let mode = Mode::Job {
-            root: Path::new("/stemma"),
-            dir: Path::new("/stemma/scratch/7"),
-            contained: true,
-            allowed: vec!["read_thread".into()],
-        };
-        let prepared = prepare(&launch(runners::CLAUDE_CODE, files.path(), &mcp, mode)).unwrap();
-        assert!(
-            prepared
-                .args
-                .contains(&"--dangerously-skip-permissions".to_owned())
-        );
         for flag in ["--tools", "--allowedTools", "dontAsk"] {
             assert!(!prepared.args.contains(&flag.to_owned()), "{flag}");
         }
@@ -590,14 +544,11 @@ mod tests {
         );
 
         let mode = Mode::Job {
-            root: Path::new("/workspace"),
             dir: files.path(),
-            contained: false,
             allowed: vec![],
         };
         let prepared = prepare(&launch(runners::CODEX, files.path(), &mcp, mode)).unwrap();
         assert_eq!(prepared.args[0], "exec");
-        assert!(prepared.args.contains(&"read-only".to_owned()));
         assert_eq!(prepared.args.last().unwrap(), "-");
         assert_eq!(prepared.answer, Some(files.path().join("answer.md")));
 
@@ -605,9 +556,7 @@ mod tests {
         // container is its sandbox.
         let seen = Path::new("/stemma/jobs/7");
         let mode = Mode::Job {
-            root: Path::new("/workspace"),
             dir: Path::new("/stemma/scratch/7"),
-            contained: true,
             allowed: vec![],
         };
         let prepared = prepare(&Launch {
@@ -639,9 +588,7 @@ mod tests {
         let files = tempfile::tempdir().unwrap();
         let mcp = mcp();
         let mode = Mode::Job {
-            root: Path::new("/workspace"),
             dir: Path::new("/stemma/scratch/7"),
-            contained: true,
             allowed: vec![],
         };
         let prepared = prepare(&Launch {
@@ -660,7 +607,7 @@ mod tests {
         assert_eq!(config["instructions"][0], "/stemma/jobs/7/instructions.md");
         assert!(files.path().join("instructions.md").is_file());
         assert_eq!(config["skills"][0], "/stemma/jobs/7/plugin/skills");
-        // Contained, it is allowed everything.
+        // It is allowed everything.
         assert_eq!(config["permission"], json!({"*": "allow"}));
     }
 
@@ -708,69 +655,26 @@ mod tests {
         }
     }
     #[test]
-    fn on_the_computer_an_answer_only_reads() {
+    fn a_job_uses_only_the_stemma_tools_it_is_allowed() {
         let files = tempfile::tempdir().unwrap();
         let mcp = mcp();
-        for runner in runners::ALL {
-            let prepared = prepare(&launch(
-                runner,
-                files.path(),
-                &mcp,
-                Mode::Job {
-                    root: Path::new("/workspace"),
-                    dir: files.path(),
-                    contained: false,
-                    allowed: vec!["read_thread".into(), "search".into()],
-                },
-            ))
-            .unwrap();
-            match *runner {
-                runners::CODEX => {
-                    let values: Vec<_> = prepared
-                        .args
-                        .windows(2)
-                        .filter(|w| w[0] == "-c")
-                        .map(|w| w[1].as_str())
-                        .collect();
-                    assert!(values.contains(&"approval_policy=\"never\""));
-                    assert!(
-                        values.contains(
-                            &"mcp_servers.stemma.default_tools_approval_mode=\"approve\""
-                        )
-                    );
-                    assert!(values.contains(
-                        &"mcp_servers.stemma.enabled_tools=[\"read_thread\", \"search\"]"
-                    ));
-                    assert!(
-                        !values.iter().any(|v| v.contains("approval_mode")
-                            && !v.starts_with("mcp_servers.stemma."))
-                    );
-                }
-                runners::CLAUDE_CODE => {
-                    let tools = prepared
-                        .args
-                        .windows(2)
-                        .find(|w| w[0] == "--allowedTools")
-                        .unwrap();
-                    assert_eq!(tools[1], "mcp__stemma__read_thread,mcp__stemma__search");
-                    assert!(
-                        !prepared
-                            .args
-                            .iter()
-                            .any(|arg| arg.contains("skip-permissions"))
-                    );
-                }
-                runners::OPENCODE => {
-                    let config = read_json(&files.path().join("opencode.json")).unwrap();
-                    assert_eq!(config["permission"]["stemma_search"], "allow");
-                    assert_eq!(config["permission"]["stemma_read_thread"], "allow");
-                    assert_eq!(config["permission"]["stemma_*"], "deny");
-                    assert_eq!(config["permission"]["*"], "deny");
-                    assert!(config["permission"]["bash"].is_null());
-                    assert!(config["permission"]["edit"].is_null());
-                }
-                _ => unreachable!(),
-            }
-        }
+        let prepared = prepare(&launch(
+            runners::CODEX,
+            files.path(),
+            &mcp,
+            Mode::Job {
+                dir: files.path(),
+                allowed: vec!["read_thread".into(), "search".into()],
+            },
+        ))
+        .unwrap();
+        let values: Vec<_> = prepared
+            .args
+            .windows(2)
+            .filter(|w| w[0] == "-c")
+            .map(|w| w[1].as_str())
+            .collect();
+        assert!(values.contains(&"approval_policy=\"never\""));
+        assert!(values.contains(&"mcp_servers.stemma.enabled_tools=[\"read_thread\", \"search\"]"));
     }
 }

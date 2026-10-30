@@ -22,7 +22,7 @@ pub struct ConfigArgs {
 /// Whether a listing shows `key`: the containers' keys only with isolation,
 /// unless all are asked for.
 fn listed(key: &str, isolated: bool, all: bool) -> bool {
-    all || isolated || !(key.contains(".container.") || key == "agents.image")
+    all || isolated || !(key.contains(".container.") || key == "machine.image")
 }
 
 #[derive(Subcommand)]
@@ -84,9 +84,6 @@ fn secret(command: SecretCommand) -> anyhow::Result<()> {
 
 pub fn config(args: ConfigArgs) -> anyhow::Result<()> {
     let settings = Settings::load()?;
-    if let Some(why) = settings.workshop_problem(args.group.as_deref())? {
-        eprintln!("{why}");
-    }
     match args.command {
         Some(ConfigCommand::Path) => println!("{}", settings.path.display()),
         Some(ConfigCommand::Edit) => {
@@ -114,7 +111,7 @@ pub fn config(args: ConfigArgs) -> anyhow::Result<()> {
                     let values = settings.explain(args.group.as_deref(), &Default::default())?;
                     let isolated = values
                         .iter()
-                        .any(|v| v.key == "agents.isolation" && v.value.as_str() != Some("none"));
+                        .any(|v| v.key == "machine.isolation" && v.value.as_str() != Some("none"));
                     values
                         .into_iter()
                         .filter(|v| listed(&v.key, isolated, args.all))
@@ -194,8 +191,8 @@ mod tests {
     fn containers_keys_are_listed_with_isolation_or_all() {
         assert!(listed("agents.claude.model", false, false));
         assert!(!listed("agents.claude.container.env", false, false));
-        assert!(!listed("agents.image", false, false));
+        assert!(!listed("machine.image", false, false));
         assert!(listed("agents.claude.container.env", true, false));
-        assert!(listed("agents.image", false, true));
+        assert!(listed("machine.image", false, true));
     }
 }

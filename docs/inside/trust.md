@@ -58,6 +58,11 @@ With isolation, an answer or process runs in a container that:
 
 Builds run in containers too, with no model sign-in at all.
 
+Without isolation (`machine.isolation = "none"`), answers, processes and
+builds run on the computer, as its person, with nothing of the above:
+everything that person can reach is within the agent's reach. It is the
+owner's choice, and `stemma doctor` advises against it.
+
 ## Secrets in what agents write
 
 Before posting an answer, the hub scans it for secrets: Stemma tokens,

@@ -166,13 +166,13 @@
         onchange={(event) => save(event.currentTarget.value)}
       />
     {/if}
-  {:else if key === "agents.isolation"}
+  {:else if key === "machine.isolation"}
     <stemma-segmented label="Isolation"
       ><div class="segmented">
         {#each [
-          ["none", "None"],
           ["docker", "Docker"],
           ["podman", "Podman"],
+          ["none", "None"],
         ] as [value, label] (value)}
           <button
             type="button"

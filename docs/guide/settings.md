@@ -21,6 +21,23 @@ stemma config edit                              # opens the file in $EDITOR
 The order, highest first, is: command-line options, environment variables,
 the group's value, the general value, the default.
 
+## This machine
+
+```toml
+[machine]
+isolation = "docker"    # docker, podman or none
+cpus = 4
+memory = "8g"
+```
+
+| Key | Default | Meaning |
+| --- | --- | --- |
+| `isolation` | `"docker"` | Where answers and the workshop run: in containers, with `docker` or `podman`, or `none`, on this computer, as you; not recommended |
+| `image` | `"stemma/stemma-<version>"` | The image they run in: Stemma's own, of this version |
+| `cpus`, `memory` | `4`, `8g` | Limits of each container |
+
+See [the images](/inside/images) for where an image comes from.
+
 ## Agents
 
 ```toml
@@ -28,7 +45,6 @@ the group's value, the general value, the default.
 enabled = true          # answer for me
 concurrency = 2         # answers at once
 priority = "normal"     # high, normal, low, or a number
-isolation = "docker"    # none, docker or podman
 attachments = "mine"    # none, mine or group
 
 [agents.claude]
@@ -50,11 +66,8 @@ enabled = false
 | `enabled` | `true` | Answer for me |
 | `concurrency` | `1` | Answers at once |
 | `priority` | `"normal"` | Which of your computers answers first |
-| `isolation` | `"none"` | Run answers in containers: `docker` or `podman` |
 | `attachments` | `"mine"` | Whose files agents may read |
-| `image` | `stemma-agents:<version>` | The image answers run in |
 | `workspace` | Stemma's data folder | Where each group's folder is |
-| `cpus`, `memory` | `4`, `8g` | Limits of each container |
 
 Each of `[agents.claude]`, `[agents.codex]` and `[agents.opencode]` takes
 `command`, `args`, `model` and `timeout_minutes`, 15 by default.
@@ -75,9 +88,8 @@ enabled = true
 build = true
 ```
 
-The workshop needs `agents.isolation` set to `docker` or `podman`. Its
-containers use the same CPU and memory limits as answers unless you set
-`workshop.cpus` and `workshop.memory`.
+The workshop runs where answers do, in the same image and with the same
+limits, as `[machine]` says.
 
 ## Secrets for containers
 

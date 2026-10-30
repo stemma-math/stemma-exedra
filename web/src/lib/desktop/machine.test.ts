@@ -15,7 +15,6 @@ const data = (username: string): Snapshot => ({
   settings: [setting(), setting("agents.priority", "normal")],
   secrets: [],
   checks: [],
-  stemma_image: "stemma-agents:0.1.1",
   signed_in: [],
   service: { installed: false, running: false, connected: false, signed_out: false, logs: "" },
 });
@@ -104,7 +103,7 @@ describe("machine controls", () => {
   it("does not wait for diagnostics after an isolation save or let an older check overwrite it", async () => {
     const controls = new MachineControls();
     controls.data = data("Ada");
-    controls.data.settings.push(setting("agents.isolation", "none"));
+    controls.data.settings.push(setting("machine.isolation", "none"));
     const old = deferred<Awaited<ReturnType<typeof diagnostics>>>();
     vi.mocked(diagnostics)
       .mockReturnValueOnce(old.promise)
@@ -115,9 +114,9 @@ describe("machine controls", () => {
         checks: [],
       });
     const checking = controls.check();
-    vi.mocked(action).mockResolvedValueOnce(setting("agents.isolation", "docker"));
-    await controls.save({ kind: "set", key: "agents.isolation", value: "docker" });
-    expect(controls.saving("agents.isolation")).toBe(false);
+    vi.mocked(action).mockResolvedValueOnce(setting("machine.isolation", "docker"));
+    await controls.save({ kind: "set", key: "machine.isolation", value: "docker" });
+    expect(controls.saving("machine.isolation")).toBe(false);
     old.resolve({ service: data("").service, secrets: ["OLD"], signed_in: [], checks: [] });
     await checking;
     expect(controls.data.secrets).toEqual(["NEW"]);

@@ -1,4 +1,4 @@
-//! This computer's service and agents' image.
+//! This computer's service and the image its jobs run in.
 use clap::{Args, Subcommand};
 use stemma_worker::{image, service, sign_in};
 
@@ -15,10 +15,11 @@ enum MachineCommand {
     Stop,
     /// Run the service in this terminal.
     Run,
-    /// Build the agents' and workshop's images for Docker or Podman.
+    /// Build the image answers and the workshop run in, for Docker or Podman.
     Image {
-        /// Build the development image, stemma-agents:dev, from the checkout
-        /// of Stemma in this folder, as it is.
+        /// Build it from the checkout of Stemma in this folder, as it is,
+        /// under the same name; building it again without --dev brings
+        /// back the release's.
         #[arg(long)]
         dev: bool,
     },
@@ -65,12 +66,8 @@ pub async fn machine(args: MachineArgs) -> anyhow::Result<()> {
             image::build_for(None).await?;
         }
         Some(MachineCommand::Image { dev: true }) => {
-            image::build_dev(&std::env::current_dir()?, None).await?;
-            println!(
-                "Built {} and stemma-workshop:dev. Select them with agents.image and workshop.image. Agents image: {}",
-                image::DEV_IMAGE,
-                image::DEV_IMAGE
-            );
+            let tag = image::build_dev(&std::env::current_dir()?, None).await?;
+            println!("Built {tag} from this checkout.");
         }
         Some(MachineCommand::SignIn { agent }) => sign_in(&agent)?,
         Some(MachineCommand::SignOut { agent }) => {

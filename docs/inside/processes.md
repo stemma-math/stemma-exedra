@@ -37,8 +37,8 @@ to several processes, and a recurring request has one for each slot.
    It checks the offer against its approval once more before starting the
    model.
 4. **The container.** The process runs in its own container, from the
-   workshop image, with the runner's full tools and its owner's container
-   sign-in. Its checkouts are exclusive, under the group's `processes/`
+   computer's image, with the runner's full tools and its owner's
+   container sign-in; without isolation, on the computer, as its owner. Its checkouts are exclusive, under the group's `processes/`
    folder, never the managed `main` clones. Git is already authenticated
    with the process token.
 5. **The work.** The agent posts progress in the request's thread, marked

@@ -37,17 +37,17 @@ STEMMA_TEST_FORGEJO=http://127.0.0.1:3000 cargo test -p stemma-hub --test forgej
 STEMMA_TEST_LEAN=1 cargo test -p stemma-worker --test end_to_end lean
 ```
 
-## Development images
+## The development image
 
 Containers run the `stemma` of their image. To try your changes in
-containers, build the development images from your checkout, uncommitted
-changes included, and point the settings at them:
+containers, build the image from your checkout, uncommitted changes
+included. It takes the image's usual name, so no setting changes:
 
 ```sh
 stemma machine image --dev
-stemma config set agents.image stemma-agents:dev
-stemma config set workshop.image stemma-workshop:dev
 ```
+
+`stemma machine image`, without `--dev`, brings back the release's.
 
 ## The desktop app
 
