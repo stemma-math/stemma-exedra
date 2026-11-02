@@ -91,6 +91,21 @@ Hub admins open **Hub administration** from the account menu to:
 A deleted account's writing stays, shown as written by a deleted account.
 The last hub admin cannot be removed.
 
+### A forgotten password
+
+Stemma keeps only a hash of each password, and sends no email: nobody can
+read a password, and there is no recovery by mail. Whoever runs the hub
+gives an account a new one, from the hub's machine:
+
+```sh
+docker compose -f docker/compose.yaml exec hub stemma hub reset-password --username ada
+```
+
+It asks for the new password twice, or reads it from standard input with
+`--password-stdin`, and signs the person out of the web everywhere. Their
+computers, signed in with tokens, keep working. Tell them the new password
+in person, and to change it in **Settings**.
+
 ## Model keys
 
 A group's admins may give the workshop an API key, in **Group settings ›

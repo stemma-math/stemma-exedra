@@ -240,6 +240,33 @@ pub async fn update_me(
     Ok(Json(me_of(&state, viewer.id).await?))
 }
 
+/// Gives `username` a new password, for whoever runs the hub, and ends
+/// every session of theirs: for a person who forgot theirs. Their tokens,
+/// and so their computers, keep working.
+pub async fn reset_password(state: &AppState, username: &str, password: String) -> ApiResult<()> {
+    check_password(&password)?;
+    let id: i64 = sqlx::query_scalar(
+        "SELECT id FROM users WHERE username = ? COLLATE NOCASE AND deleted_at IS NULL",
+    )
+    .bind(username.trim().trim_start_matches('@'))
+    .fetch_optional(&state.db)
+    .await?
+    .ok_or_else(|| ApiError::not_found("Account"))?;
+    let hash = auth::hash_password(password).await?;
+    let mut tx = state.db.begin().await?;
+    sqlx::query("UPDATE users SET password_hash = ? WHERE id = ?")
+        .bind(hash)
+        .bind(id)
+        .execute(&mut *tx)
+        .await?;
+    sqlx::query("DELETE FROM sessions WHERE user_id = ?")
+        .bind(id)
+        .execute(&mut *tx)
+        .await?;
+    tx.commit().await?;
+    Ok(())
+}
+
 /// Changes the password, and ends every other session.
 pub async fn change_password(
     State(state): State<AppState>,
