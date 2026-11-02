@@ -232,7 +232,6 @@ export type GroupEvent =
 
 export type NotificationKind =
   | "review_merged"
-  | "review_refused"
   | "request_done"
   | "request_failed"
   | "request_expired"
@@ -491,6 +490,8 @@ export const api = {
     post<import("./workshop.ts").WorkshopRequest>(`${g(group)}/workshop/requests/${number}`, {
       action,
     }),
+  approveMerge: (group: string, id: number) =>
+    post<import("./workshop.ts").Merge>(`${g(group)}/workshop/merges/${id}/approve`, {}),
   user: (username: string) => get<User>(`/users/${encodeURIComponent(username)}`),
   setupState: () => get<{ needed: boolean }>("/setup"),
   setup: (body: { token: string; username: string; display_name: string; password: string }) =>

@@ -36,7 +36,7 @@
   }
 </script>
 
-{#each Object.entries(recipe.front.inputs) as [name, input] (name)}
+{#each Object.entries(recipe.manifest.inputs) as [name, input] (name)}
   {@const required = input.required}
   <div class="field">
     <label class="field__label" for="recipe-input-{name}">{input.description}{required ? "" : " (optional)"}</label>

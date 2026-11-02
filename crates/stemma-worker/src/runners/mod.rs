@@ -17,7 +17,7 @@ use tokio::process::Command;
 
 use crate::config::CliRunner;
 use crate::isolation::Sandbox;
-use crate::job::{Context, JobDir, Prompt};
+use crate::job::{JobDir, Prompt};
 use crate::launch::{self, Launch, Mcp, Mode, Prepared};
 
 /// Where and how a runner works.
@@ -41,9 +41,15 @@ pub(crate) fn tokens(value: &serde_json::Value) -> Option<u64> {
 
 pub fn allowed_tools(job: &JobSpec) -> Vec<&'static str> {
     if job.process {
+        // A process reads, posts and attaches in its request, and does what
+        // its recipe's permissions allow.
         stemma_client::tools::all_definitions()
             .into_iter()
-            .filter(|t| !t.writes || ["post_message", "upload_attachment"].contains(&t.name))
+            .filter(|t| {
+                !t.writes
+                    || ["post_message", "upload_attachment"].contains(&t.name)
+                    || job.permissions.iter().any(|p| p == t.name)
+            })
             .map(|t| t.name)
             .collect()
     } else {
@@ -101,7 +107,6 @@ pub fn mcp_args(
 /// and Stemma's tools with the job's token; where it runs, as it sees its
 /// files there.
 pub fn prepared(
-    _context: &Context,
     config: &CliRunner,
     job: &JobSpec,
     agent: &AgentProfile,

@@ -133,7 +133,10 @@ pub async fn create_thread(
     // A session's agent opens discussions, as itself; a job's never does.
     let agent = match viewer.agent() {
         None => None,
-        Some(scope) if scope.session && body.kind == ThreadKind::Discussion => {
+        Some(scope)
+            if (scope.session || viewer.may("open_thread"))
+                && body.kind == ThreadKind::Discussion =>
+        {
             Some(scope.agent.clone())
         }
         Some(_) => {
@@ -353,7 +356,11 @@ pub async fn post_message(
         return Err(ApiError::forbidden("Guests read workshop requests"));
     }
     let agent = match viewer.agent() {
-        Some(scope) if scope.can_post && scope.thread_id.is_none_or(|id| id == row.id) => {
+        Some(scope)
+            if scope.can_post
+                && (scope.thread_id.is_none_or(|id| id == row.id)
+                    || viewer.may("post_message")) =>
+        {
             Some(scope.agent.clone())
         }
         Some(_) => {

@@ -3018,6 +3018,7 @@ dependencies = [
 name = "stemma-core"
 version = "0.2.1"
 dependencies = [
+ "base64 0.23.1",
  "chrono",
  "chrono-tz",
  "semver",

@@ -1115,13 +1115,37 @@ async fn merge_pull(
         if headers.get("sudo").and_then(|v| v.to_str().ok()) != Some("workshop") {
             return message(StatusCode::FORBIDDEN, "merge as workshop");
         }
-        if body["Do"] != "merge"
+        if !["merge", "fast-forward-only"].contains(&body["Do"].as_str().unwrap_or(""))
             || main_of(&bare, &pull.head).await.as_deref() != body["head_commit_id"].as_str()
         {
             return message(StatusCode::CONFLICT, "head changed");
         }
     }
     let before = main_of(&bare, &pull.base).await;
+    // Fast-forward only: the base moves to the head, which must contain it.
+    if body["Do"] == "fast-forward-only" {
+        let (Some(base), Some(head)) = (before.clone(), main_of(&bare, &pull.head).await) else {
+            return message(StatusCode::NOT_FOUND, "the branch does not exist");
+        };
+        if run_git(&bare, &["merge-base", "--is-ancestor", &base, &head])
+            .await
+            .is_err()
+        {
+            return message(StatusCode::CONFLICT, "not a fast-forward");
+        }
+        let reference = format!("refs/heads/{}", pull.base);
+        if let Err(error) = run_git(&bare, &["update-ref", &reference, &head, &base]).await {
+            return message(StatusCode::CONFLICT, &error);
+        }
+        find_pull(&inner, &owner, &name, number, |p| {
+            p.open = false;
+            p.merged = Some(head.clone());
+        });
+        if pull.base == "main" {
+            notify(&inner, &owner, &name, before, Some(head)).await;
+        }
+        return StatusCode::OK.into_response();
+    }
     let Ok(work) = tempfile::tempdir() else {
         return message(StatusCode::INTERNAL_SERVER_ERROR, "no folder");
     };

@@ -61,8 +61,9 @@ and in whose name, to use Stemma only through its tools and never the
 `stemma` command, the API or git directly, and to post only when asked,
 showing the text first.
 
-**Processes** get the [workshop contract](/inside/processes#the-prompt)
-followed by the recipe.
+**Processes** launch their agents with `stemma agent run`, which gives the
+[workshop contract](/inside/processes#the-agents-contract) followed by the
+recipe's file.
 
 ## The tools
 

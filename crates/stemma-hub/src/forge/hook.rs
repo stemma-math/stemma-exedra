@@ -112,6 +112,10 @@ async fn pushed(state: &AppState, push: &Push) -> anyhow::Result<()> {
     else {
         return Ok(());
     };
+    // The group's open pull requests in it are prepared against the new main.
+    crate::merges::main_moved(state, group_id, &push.repository.name)
+        .await
+        .map_err(|e| anyhow::anyhow!(e.message))?;
     let pusher: Option<i64> = match &push.pusher {
         Some(pusher) => {
             sqlx::query_scalar(

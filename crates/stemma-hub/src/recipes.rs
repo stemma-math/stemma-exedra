@@ -1,21 +1,48 @@
-//! Recipes are read only from one immutable main commit in Forgejo.
+//! Recipes are read only from one immutable main commit in Forgejo: each is a
+//! folder at the root of the group's `recipes` repository.
+use std::collections::BTreeMap;
+
 use crate::{
     error::{ApiError, ApiResult},
     forge,
     state::AppState,
 };
+use sha2::{Digest, Sha256};
 use stemma_core::{
-    recipe::{Recipe, RecipeError},
+    recipe::{self, Recipe, RecipeError},
     workshop::RecipeFile,
 };
 pub const REPOSITORY: &str = "recipes";
+
 /// What a group's `recipes` repository starts with.
 pub fn template() -> Vec<(String, String)> {
-    vec![(
-        "general.md".into(),
-        include_str!("../../../recipes/template/general.md").into(),
-    )]
+    [
+        (
+            recipe::MANIFEST,
+            include_str!("../../../recipes/template/general/recipe.toml"),
+        ),
+        (
+            recipe::ENTRY,
+            include_str!("../../../recipes/template/general/run.sh"),
+        ),
+        (
+            "files/prompt.md",
+            include_str!("../../../recipes/template/general/files/prompt.md"),
+        ),
+    ]
+    .into_iter()
+    .map(|(path, text)| (format!("general/{path}"), text.to_owned()))
+    .collect()
 }
+
+/// Whether `name` may name a recipe: letters, digits, `-` and `_`.
+pub fn valid_name(name: &str) -> bool {
+    !name.is_empty()
+        && name
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || b"_-".contains(&b))
+}
+
 pub async fn list(state: &AppState, slug: &str) -> ApiResult<Vec<RecipeFile>> {
     let forge = state
         .forge
@@ -33,47 +60,61 @@ pub async fn list(state: &AppState, slug: &str) -> ApiResult<Vec<RecipeFile>> {
         .await
         .map_err(forge::api_error)?
         .unwrap_or_default();
-    let mut recipes = Vec::new();
-    for file in files
-        .into_iter()
-        .filter(|f| !f.path.contains('/') && f.path.ends_with(".md"))
-    {
-        let name = file.path.trim_end_matches(".md").to_owned();
-        if !name
-            .bytes()
-            .all(|b| b.is_ascii_alphanumeric() || b"_-".contains(&b))
+    // Each folder at the root is a recipe; files at the root are not.
+    let mut folders: BTreeMap<String, Vec<forge::client::TreeEntry>> = BTreeMap::new();
+    for file in files {
+        if let Some((name, _)) = file.path.split_once('/')
+            && valid_name(name)
         {
-            continue;
+            folders.entry(name.to_owned()).or_default().push(file);
         }
-        let parsed = if file.size > 128 * 1024 {
+    }
+    let mut recipes = Vec::new();
+    for (name, entries) in folders {
+        let mut digest = Sha256::new();
+        for entry in &entries {
+            digest.update(entry.path.as_bytes());
+            digest.update([0]);
+            digest.update(entry.sha.as_bytes());
+            digest.update(b"\n");
+        }
+        let version: String = digest
+            .finalize()
+            .iter()
+            .take(20)
+            .map(|b| format!("{b:02x}"))
+            .collect();
+        let size: u64 = entries.iter().map(|e| e.size).sum();
+        let parsed = if size > recipe::MAX_BYTES as u64 || entries.len() > recipe::MAX_FILES + 2 {
             Err(RecipeError {
-                file: file.path.clone(),
+                file: name.clone(),
                 line: 1,
-                message: "Recipe is larger than 128 KiB".into(),
+                message: format!(
+                    "A recipe holds at most {} files and 1 MiB",
+                    recipe::MAX_FILES
+                ),
             })
         } else {
-            let raw = forge
-                .raw_file(slug, REPOSITORY, &commit, &file.path)
-                .await
-                .map_err(forge::api_error)?
-                .unwrap_or_default();
-            String::from_utf8(raw)
-                .map_err(|_| RecipeError {
-                    file: file.path.clone(),
-                    line: 1,
-                    message: "Recipe is not UTF-8".into(),
-                })
-                .and_then(|s| Recipe::parse(&file.path, &s))
+            let mut folder = BTreeMap::new();
+            for entry in &entries {
+                let raw = forge
+                    .raw_file(slug, REPOSITORY, &commit, &entry.path)
+                    .await
+                    .map_err(forge::api_error)?
+                    .unwrap_or_default();
+                folder.insert(entry.path[name.len() + 1..].to_owned(), raw);
+            }
+            Recipe::parse(&name, folder)
         };
         let (recipe, error) = match parsed {
             Ok(r) => (Some(r), None),
             Err(e) => (None, Some(e)),
         };
         recipes.push(RecipeFile {
+            url: forge.public_url(&format!("{slug}/recipes/src/commit/{commit}/{name}")),
             name,
-            version: file.sha,
+            version,
             commit: commit.clone(),
-            url: forge.public_url(&format!("{slug}/recipes/src/commit/{commit}/{}", file.path)),
             recipe,
             error,
         });
@@ -86,31 +127,4 @@ pub async fn read(state: &AppState, slug: &str, name: &str) -> ApiResult<RecipeF
         .into_iter()
         .find(|r| r.name == name)
         .ok_or_else(|| ApiError::not_found("Recipe"))
-}
-
-/// The group's own `rebase` recipe, or else the hub's.
-pub async fn rebase(state: &AppState, slug: &str) -> ApiResult<RecipeFile> {
-    if let Some(file) = list(state, slug)
-        .await?
-        .into_iter()
-        .find(|r| r.name == "rebase")
-    {
-        return Ok(file);
-    }
-    use sha2::{Digest, Sha256};
-    let source = include_str!("../recipes/rebase.md");
-    Ok(RecipeFile {
-        name: "rebase".into(),
-        version: format!(
-            "builtin-{}",
-            Sha256::digest(source)
-                .iter()
-                .map(|b| format!("{b:02x}"))
-                .collect::<String>()
-        ),
-        commit: "builtin".into(),
-        url: String::new(),
-        recipe: Some(Recipe::parse("rebase.md", source).map_err(ApiError::internal)?),
-        error: None,
-    })
 }

@@ -8,6 +8,7 @@ repository.workspace = true
 license.workspace = true
 
 [dependencies]
+base64.workspace = true
 chrono = { version = "0.4", features = ["serde"] }
 chrono-tz = "0.10"
 semver = "1"

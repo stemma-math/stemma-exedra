@@ -178,8 +178,27 @@ async fn group(hub: &Hub, token: &str) {
     )
     .await;
     let recipes = [
-        ("prove.md", include_str!("recipes/prove.md")),
-        ("review-paper.md", include_str!("recipes/review-paper.md")),
+        (
+            "prove/recipe.toml",
+            include_str!("recipes/prove/recipe.toml"),
+        ),
+        ("prove/run.sh", include_str!("recipes/prove/run.sh")),
+        (
+            "prove/files/prompt.md",
+            include_str!("recipes/prove/files/prompt.md"),
+        ),
+        (
+            "review-paper/recipe.toml",
+            include_str!("recipes/review-paper/recipe.toml"),
+        ),
+        (
+            "review-paper/run.sh",
+            include_str!("recipes/review-paper/run.sh"),
+        ),
+        (
+            "review-paper/files/prompt.md",
+            include_str!("recipes/review-paper/files/prompt.md"),
+        ),
     ];
     hub.state
         .forge

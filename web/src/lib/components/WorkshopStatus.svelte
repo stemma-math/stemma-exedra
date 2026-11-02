@@ -4,12 +4,11 @@
   import type { WorkshopStatus } from "#lib/workshop.ts";
   import WorkshopState from "./WorkshopState.svelte";
 
-  // What the workshop's orchestrators are doing: the group's model, its use, and the merge queues.
+  // What the workshop's orchestrators are doing: the group's model, its use, and the pull requests.
   let { group }: { group: string } = $props();
   let status = $state<WorkshopStatus | null>(null);
 
   const thinking = $derived(status?.turns.filter((turn) => turn.thinking) ?? []);
-  const repositories = $derived([...new Set(status?.reviews.map((review) => review.repository))].sort());
   const PROVIDERS: Record<string, string> = { anthropic: "Anthropic", openai: "OpenAI", openrouter: "OpenRouter" };
 
   $effect(() => {
@@ -39,7 +38,7 @@
         {#if model.has_key}
           {model.model}, from {PROVIDERS[model.provider]}
         {:else}
-          None yet: requests in plain words and reviews wait until an admin sets one
+          None yet: requests in plain words, and merges with conflicts, wait until an admin sets one
         {/if}
       </dd>
       <dt class="label">This month</dt>
@@ -63,30 +62,25 @@
     {/if}
   </section>
 
-  {#each repositories as repository (repository)}
-    <section class="stack" aria-label="Merge queue of {repository}">
-      <h2>Merge queue: {repository}</h2>
+  {#if status.merges.length}
+    <section class="stack" aria-label="Pull requests">
+      <h2>Pull requests</h2>
       <div class="card">
         <div class="table workshop-reviews">
-          {#each status.reviews.filter((review) => review.repository === repository) as review (review.id)}
-            <div class="table__row">
+          {#each status.merges as merge (merge.id)}
+            <a class="table__row" href="/g/{group}/t/{merge.thread}">
               <span class="stack stack--tight">
-                <span>
-                  <a class="link" href={review.url}>Pull request {review.number}</a>, for
-                  <a class="link" href="/g/{group}/t/{review.thread}"><span class="identifier">t{review.thread}</span></a>
+                <strong>{merge.title}</strong>
+                <span class="quiet">
+                  <span class="identifier">#{merge.number}</span> in {merge.repository}, for
+                  <span class="identifier">t{merge.thread}</span>{#if merge.message}. {merge.message}{/if}
                 </span>
-                {#if review.message || review.rebases}
-                  <span class="quiet">
-                    {review.message ?? ""}{#if review.rebases}
-                      {review.message ? " – " : ""}{review.rebases} of 3 rebases{/if}
-                  </span>
-                {/if}
               </span>
-              <WorkshopState state={review.state} />
-            </div>
+              <WorkshopState state={merge.state} />
+            </a>
           {/each}
         </div>
       </div>
     </section>
-  {/each}
+  {/if}
 {/if}

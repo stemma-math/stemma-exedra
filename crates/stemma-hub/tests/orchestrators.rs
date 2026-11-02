@@ -339,11 +339,15 @@ async fn no_key_and_provider_errors_are_explicit_and_never_echo_keys() {
             .contains("failed while answering: Upstream overloaded")
     );
 }
+/// A process, launched by Workshop, that pushes `file` with `text` to its
+/// branch and delivers a pull request.
 async fn opened(
     hub: &Hub,
     ada: &str,
     model: &stemma_fake_model::FakeModel,
     socket: &mut Socket,
+    file: &str,
+    text: &str,
 ) -> ProcessSpec {
     model.tool("launch", launch());
     free(hub, ada).await;
@@ -368,7 +372,8 @@ async fn opened(
         }
     };
     let temp = tempfile::tempdir().unwrap();
-    let repo = &spec.repositories[0];
+    let repo = &spec.checkouts[0];
+    let branch = spec.branch.clone().unwrap();
     assert!(
         git(
             temp.path(),
@@ -380,23 +385,11 @@ async fn opened(
     );
     let dir = temp.path().join("work");
     assert!(
-        git(
-            &dir,
-            &spec.token,
-            &["checkout", "-qb", &repo.branch, &repo.base]
-        )
-        .status
-        .success()
+        git(&dir, &spec.token, &["checkout", "-qb", &branch, &repo.base])
+            .status
+            .success()
     );
-    let module = format!("Proof{}", spec.offer.process);
-    std::fs::write(
-        dir.join(format!("{module}.lean")),
-        format!(
-            "theorem proof_{} : True := by trivial\n",
-            spec.offer.process
-        ),
-    )
-    .unwrap();
+    std::fs::write(dir.join(file), text).unwrap();
     assert!(git(&dir, &spec.token, &["add", "."]).status.success());
     assert!(
         git(&dir, &spec.token, &["commit", "-qm", "Prove True"])
@@ -406,7 +399,7 @@ async fn opened(
     let push = git(
         &dir,
         &spec.token,
-        &["push", "origin", &format!("HEAD:{}", repo.branch)],
+        &["push", "origin", &format!("HEAD:{branch}")],
     );
     assert!(
         push.status.success(),
@@ -422,7 +415,11 @@ async fn finish_process(hub: &Hub, socket: &mut Socket, spec: &ProcessSpec, erro
         WorkerMessage::ProcessFinished {
             lease: spec.lease,
             result: Box::new(ProcessResult {
-                summary: "Process complete.".into(),
+                outputs: vec![stemma_core::workshop::Delivered::PullRequest {
+                    repository: "library".into(),
+                    title: format!("Proof {}", spec.offer.process),
+                    body: "Lean checks it.".into(),
+                }],
                 error,
                 ..Default::default()
             }),
@@ -446,70 +443,123 @@ async fn finish_process(hub: &Hub, socket: &mut Socket, spec: &ProcessSpec, erro
     }
     panic!("process did not finish");
 }
-async fn passing(hub: &Hub, review: i64, sorry: bool, module: &str) {
-    stemma_hub::review::tick(&hub.state).await.unwrap();
-    let work: i64 = sqlx::query_scalar(
-        "SELECT build_work
-         FROM workshop_reviews
-         WHERE id = ?",
-    )
-    .bind(review)
-    .fetch_one(&hub.state.db)
-    .await
-    .unwrap();
-    sqlx::query(
-        "UPDATE work_leases
-         SET state = 'passed'
-         WHERE id = ?",
-    )
-    .bind(work)
-    .execute(&hub.state.db)
-    .await
-    .unwrap();
-    sqlx::query(
-        "UPDATE library_builds
-         SET succeeded = 1, finished_at = 1
-         WHERE work_id = ?",
-    )
-    .bind(work)
-    .execute(&hub.state.db)
-    .await
-    .unwrap();
-    sqlx::query("INSERT INTO library_declarations (build_id,name,module,kind,type,sorry,data_sorry,axioms,uses)
-                 SELECT id, ?, ?, 'theorem', 'True', ?, 0, ?, '[]'
-                 FROM library_builds
-                 WHERE work_id = ?")
-        .bind(format!("{module}.proof")).bind(module).bind(sorry).bind(if sorry { "[\"sorryAx\"]" } else { "[]" }).bind(work).execute(&hub.state.db).await.unwrap();
+/// The merge of `process`'s pull request, once it is prepared.
+async fn merge_of(hub: &Hub, process: i64) -> (i64, String) {
+    for _ in 0..200 {
+        let (id, state, message): (i64, String, Option<String>) = sqlx::query_as(
+            "SELECT id, state, message
+             FROM workshop_merges
+             WHERE process_id = ?",
+        )
+        .bind(process)
+        .fetch_one(&hub.state.db)
+        .await
+        .unwrap();
+        if state != "preparing" {
+            return (id, state);
+        }
+        if let Some(message) = message {
+            panic!("{message}");
+        }
+        stemma_hub::merges::tick(&hub.state).await.unwrap();
+        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+    }
+    panic!("the merge was not prepared");
 }
-async fn review_state(hub: &Hub, review: i64) -> String {
+/// The number of `process`'s request.
+async fn request_of(hub: &Hub, process: i64) -> i64 {
     sqlx::query_scalar(
-        "SELECT state
-         FROM workshop_reviews
-         WHERE id = ?",
+        "SELECT t.number FROM threads t JOIN workshop_processes p ON p.thread_id = t.id WHERE p.id = ?",
     )
-    .bind(review)
+    .bind(process)
     .fetch_one(&hub.state.db)
     .await
     .unwrap()
 }
+/// `main` of the library, as a member clones it: its file `name`, and its
+/// head's parents.
+fn main_of(hub: &Hub, token: &str, name: &str) -> (String, usize) {
+    let temp = tempfile::tempdir().unwrap();
+    assert!(
+        git(
+            temp.path(),
+            token,
+            &[
+                "clone",
+                "-q",
+                &format!("{}/git/geometry/library.git", hub.url),
+                "main"
+            ]
+        )
+        .status
+        .success()
+    );
+    let dir = temp.path().join("main");
+    let parents = git(&dir, token, &["rev-list", "--parents", "-n1", "HEAD"]);
+    let count = String::from_utf8_lossy(&parents.stdout)
+        .split_whitespace()
+        .count()
+        - 1;
+    (
+        std::fs::read_to_string(dir.join(name)).unwrap_or_default(),
+        count,
+    )
+}
 #[tokio::test(flavor = "multi_thread")]
-async fn a_built_pull_merges_as_workshop_and_queues_mains_build() {
+async fn a_pull_request_merges_cleanly_once_its_requester_approves() {
     let model = stemma_fake_model::FakeModel::start().await;
     let (hub, ada) = setup(&model).await;
     key(&hub, &ada, "openai", 10000).await;
     let mut socket = machine(&hub, &ada).await;
-    let spec = opened(&hub, &ada, &model, &mut socket).await;
-    passing(&hub, 1, false, &format!("Proof{}", spec.offer.process)).await;
-    model.tool(
-        "decide",
-        json!({"decision":"merge","message":"The proof is correct and the head builds."}),
+    let spec = opened(
+        &hub,
+        &ada,
+        &model,
+        &mut socket,
+        "Proof.lean",
+        "theorem p : True := trivial\n",
+    )
+    .await;
+    let (id, state) = merge_of(&hub, spec.offer.process).await;
+    assert_eq!(state, "ready");
+    let number = request_of(&hub, spec.offer.process).await;
+    let request = call(
+        &hub,
+        &ada,
+        "GET",
+        &format!("/groups/geometry/workshop/requests/{number}"),
+        None,
+    )
+    .await;
+    assert_eq!(request["merges"][0]["state"], "ready");
+    assert_eq!(
+        request["merges"][0]["body"]
+            .as_str()
+            .unwrap()
+            .lines()
+            .next(),
+        Some("Lean checks it.")
     );
-    stemma_hub::review::tick(&hub.state).await.unwrap();
-    assert_eq!(review_state(&hub, 1).await, "merged");
-    let notices = call(&hub, &ada, "GET", "/me/notifications", None).await;
-    assert!(notices.to_string().contains("review_merged"));
+    // Only the requester, or an admin, approves; never an agent's token.
+    let bob = person(&hub, "bob", false).await;
+    sqlx::query(
+        "INSERT INTO memberships(group_id, user_id, role, joined_at)
+         SELECT g.id, u.id, 'member', 0 FROM groups g, users u WHERE u.username = 'bob'",
+    )
+    .execute(&hub.state.db)
+    .await
+    .unwrap();
+    let approve = format!("/api/v1/groups/geometry/workshop/merges/{id}/approve");
+    assert_eq!(status(&hub, &bob, "POST", &approve, json!({})).await, 403);
+    let merged = call(&hub, &ada, "POST", &approve[7..], Some(json!({}))).await;
+    assert_eq!(merged["state"], "merged");
+    assert_eq!(merged["approved_by"]["username"], "ada");
     let pulls = hub._forge.pulls("geometry", "library");
     assert!(pulls[0].merged.is_some());
+    // A true merge: main's head has main and the pull request as parents.
+    let (text, parents) = main_of(&hub, &ada, "Proof.lean");
+    assert_eq!(text, "theorem p : True := trivial\n");
+    assert_eq!(parents, 2);
     let commit = pulls[0].merged.as_ref().unwrap();
     let queued: bool = sqlx::query_scalar(
         "SELECT EXISTS(SELECT 1
@@ -521,163 +571,79 @@ async fn a_built_pull_merges_as_workshop_and_queues_mains_build() {
     .await
     .unwrap();
     assert!(queued);
-    // The recipe review, not process completion, finishes the request.
+    assert_eq!(status(&hub, &ada, "POST", &approve, json!({})).await, 409);
+}
+#[tokio::test(flavor = "multi_thread")]
+async fn main_moving_prepares_again_and_the_model_resolves_conflicts() {
+    let model = stemma_fake_model::FakeModel::start().await;
+    let (hub, ada) = setup(&model).await;
+    key(&hub, &ada, "anthropic", 10000).await;
+    let mut socket = machine(&hub, &ada).await;
+    let first = opened(
+        &hub,
+        &ada,
+        &model,
+        &mut socket,
+        "Shared.lean",
+        "theorem a : True := trivial\n",
+    )
+    .await;
+    let second = opened(
+        &hub,
+        &ada,
+        &model,
+        &mut socket,
+        "Shared.lean",
+        "theorem b : True := trivial\n",
+    )
+    .await;
+    let (first_id, _) = merge_of(&hub, first.offer.process).await;
+    let (second_id, state) = merge_of(&hub, second.offer.process).await;
+    assert_eq!(state, "ready");
+    idle(&hub).await;
+    call(
+        &hub,
+        &ada,
+        "POST",
+        &format!("/groups/geometry/workshop/merges/{first_id}/approve"),
+        Some(json!({})),
+    )
+    .await;
+    // Main moved: the second is prepared again, and now conflicts.
+    let resolved = "theorem a : True := trivial\ntheorem b : True := trivial\n";
     model.tool(
-        "close",
-        json!({"done":true,"message":"The proof was reviewed and merged into main."}),
+        "resolve",
+        json!({"files":[{"path":"Shared.lean","content":resolved}],
+               "explanation":"Both sides added a theorem to Shared.lean; the merge keeps both."}),
     );
-    stemma_hub::orchestrator::dispatch(&hub.state)
+    stemma_hub::merges::main_moved(&hub.state, 1, "library")
         .await
         .unwrap();
-    idle(&hub).await;
+    let (_, state) = merge_of(&hub, second.offer.process).await;
+    assert_eq!(state, "ready");
+    let number = request_of(&hub, second.offer.process).await;
     let request = call(
         &hub,
         &ada,
         "GET",
-        "/groups/geometry/workshop/requests/1",
+        &format!("/groups/geometry/workshop/requests/{number}"),
         None,
     )
     .await;
-    assert_eq!(request["state"], "done");
-}
-#[tokio::test(flavor = "multi_thread")]
-async fn sorry_requires_the_recipes_explicit_permission() {
-    for accept in [false, true] {
-        let model = stemma_fake_model::FakeModel::start().await;
-        let (hub, ada) = setup(&model).await;
-        key(&hub, &ada, "anthropic", 10000).await;
-        let mut socket = machine(&hub, &ada).await;
-        let spec = opened(&hub, &ada, &model, &mut socket).await;
-        if accept {
-            let raw: String = sqlx::query_scalar(
-                "SELECT recipe
-                 FROM workshop_processes
-                 WHERE id = ?",
-            )
-            .bind(spec.offer.process)
-            .fetch_one(&hub.state.db)
-            .await
-            .unwrap();
-            let mut recipe: Value = serde_json::from_str(&raw).unwrap();
-            recipe["recipe"]["front"]["accept_sorry"] = json!(true);
-            sqlx::query(
-                "UPDATE workshop_processes
-                 SET recipe = ?
-                 WHERE id = ?",
-            )
-            .bind(recipe.to_string())
-            .bind(spec.offer.process)
-            .execute(&hub.state.db)
-            .await
-            .unwrap();
-            model.tool("decide",json!({"decision":"merge","message":"The admitted result is useful for this recipe, which permits sorry."}));
-        }
-        passing(&hub, 1, true, &format!("Proof{}", spec.offer.process)).await;
-        stemma_hub::review::tick(&hub.state).await.unwrap();
-        assert_eq!(
-            review_state(&hub, 1).await,
-            if accept { "merged" } else { "refused" }
-        );
-    }
-}
-async fn rebase_offer(socket: &mut Socket) -> ProcessSpec {
-    let offer = loop {
-        if let HubMessage::ProcessOffer(offer) = next(socket).await {
-            break offer;
-        }
-    };
-    assert_eq!(offer.recipe.name, "rebase");
-    send(
-        socket,
-        WorkerMessage::ProcessDecision {
-            process: offer.process,
-            accept: true,
-            pending: false,
-        },
+    let card = &request["merges"][0];
+    assert_eq!(card["conflicts"], json!(["Shared.lean"]));
+    assert!(card["explanation"].as_str().unwrap().contains("keeps both"));
+    call(
+        &hub,
+        &ada,
+        "POST",
+        &format!("/groups/geometry/workshop/merges/{second_id}/approve"),
+        Some(json!({})),
     )
     .await;
-    loop {
-        if let HubMessage::Process(spec) = next(socket).await {
-            return *spec;
-        }
-    }
-}
-#[tokio::test(flavor = "multi_thread")]
-async fn racing_pulls_are_serialized_and_the_second_rebases_on_its_original_machine() {
-    let model = stemma_fake_model::FakeModel::start().await;
-    let (hub, ada) = setup(&model).await;
-    key(&hub, &ada, "openrouter", 10000).await;
-    let mut socket = machine(&hub, &ada).await;
-    let first = opened(&hub, &ada, &model, &mut socket).await;
-    let second = opened(&hub, &ada, &model, &mut socket).await;
-    passing(&hub, 1, false, &format!("Proof{}", first.offer.process)).await;
-    assert_eq!(review_state(&hub, 2).await, "queued");
-    model.tool(
-        "decide",
-        json!({"decision":"merge","message":"Merge the first proof."}),
-    );
-    stemma_hub::review::tick(&hub.state).await.unwrap();
-    passing(&hub, 2, false, &format!("Proof{}", second.offer.process)).await;
-    stemma_hub::review::tick(&hub.state).await.unwrap();
-    assert_eq!(review_state(&hub, 2).await, "rebasing");
-    let rebase = rebase_offer(&mut socket).await;
-    let repo = &rebase.repositories[0];
-    assert!(repo.force_push);
-    assert_eq!(repo.branch, second.repositories[0].branch);
-    let temp = tempfile::tempdir().unwrap();
-    assert!(
-        git(
-            temp.path(),
-            &rebase.token,
-            &["clone", "-q", &format!("{}{}", hub.url, repo.path), "work"]
-        )
-        .status
-        .success()
-    );
-    let dir = temp.path().join("work");
-    assert!(
-        git(
-            &dir,
-            &rebase.token,
-            &["checkout", "-qb", &repo.branch, &repo.base]
-        )
-        .status
-        .success()
-    );
-    assert!(
-        git(&dir, &rebase.token, &["rebase", "origin/main"])
-            .status
-            .success()
-    );
-    let pushed = git(
-        &dir,
-        &rebase.token,
-        &[
-            "push",
-            "--force-with-lease",
-            "origin",
-            &format!("HEAD:{}", repo.branch),
-        ],
-    );
-    assert!(
-        pushed.status.success(),
-        "{}",
-        String::from_utf8_lossy(&pushed.stderr)
-    );
-    assert!(
-        !git(&dir, &rebase.token, &["push", "origin", "HEAD:main"])
-            .status
-            .success()
-    );
-    finish_process(&hub, &mut socket, &rebase, None).await;
-    passing(&hub, 2, false, &format!("Proof{}", second.offer.process)).await;
-    model.tool(
-        "decide",
-        json!({"decision":"merge","message":"The rebased proof builds on current main."}),
-    );
-    stemma_hub::review::tick(&hub.state).await.unwrap();
-    assert_eq!(review_state(&hub, 2).await, "merged");
-    assert_eq!(hub._forge.pulls("geometry", "library").len(), 2);
+    let (text, parents) = main_of(&hub, &ada, "Shared.lean");
+    assert_eq!(text, resolved);
+    assert_eq!(parents, 2);
     assert!(
         hub._forge
             .pulls("geometry", "library")
@@ -686,40 +652,60 @@ async fn racing_pulls_are_serialized_and_the_second_rebases_on_its_original_mach
     );
 }
 #[tokio::test(flavor = "multi_thread")]
-async fn the_third_unsuccessful_rebase_refuses() {
+async fn conflicts_wait_for_the_groups_model() {
     let model = stemma_fake_model::FakeModel::start().await;
     let (hub, ada) = setup(&model).await;
     key(&hub, &ada, "openai", 10000).await;
     let mut socket = machine(&hub, &ada).await;
-    let original = opened(&hub, &ada, &model, &mut socket).await;
-    passing(&hub, 1, false, &format!("Proof{}", original.offer.process)).await;
-    model.tool(
-        "decide",
-        json!({"decision":"rebase","message":"Rework this branch on main."}),
-    );
-    stemma_hub::review::tick(&hub.state).await.unwrap();
-    for _ in 0..3 {
-        let spec = rebase_offer(&mut socket).await;
-        finish_process(
-            &hub,
-            &mut socket,
-            &spec,
-            Some("Could not resolve the conflict".into()),
-        )
-        .await;
-        stemma_hub::review::tick(&hub.state).await.unwrap();
-    }
-    assert_eq!(review_state(&hub, 1).await, "refused");
-    let rebases: i64 = sqlx::query_scalar(
-        "SELECT rebases
-         FROM workshop_reviews
-         WHERE id = 1",
+    let first = opened(
+        &hub,
+        &ada,
+        &model,
+        &mut socket,
+        "Shared.lean",
+        "theorem a : True := trivial\n",
     )
-    .fetch_one(&hub.state.db)
-    .await
-    .unwrap();
-    assert_eq!(rebases, 3);
-    assert!(hub._forge.pulls("geometry", "library")[0].merged.is_none());
+    .await;
+    let second = opened(
+        &hub,
+        &ada,
+        &model,
+        &mut socket,
+        "Shared.lean",
+        "theorem b : True := trivial\n",
+    )
+    .await;
+    idle(&hub).await;
+    let (first_id, _) = merge_of(&hub, first.offer.process).await;
+    call(
+        &hub,
+        &ada,
+        "POST",
+        &format!("/groups/geometry/workshop/merges/{first_id}/approve"),
+        Some(json!({})),
+    )
+    .await;
+    call(&hub, &ada, "PUT", "/groups/geometry/workshop/model", Some(json!({"provider":"openai","model":"scripted","api_key":"","monthly_cap":10000,"step_cap":20}))).await;
+    stemma_hub::merges::main_moved(&hub.state, 1, "library")
+        .await
+        .unwrap();
+    let (_, state) = merge_of(&hub, second.offer.process).await;
+    assert_eq!(state, "waiting");
+    let number = request_of(&hub, second.offer.process).await;
+    let request = call(
+        &hub,
+        &ada,
+        "GET",
+        &format!("/groups/geometry/workshop/requests/{number}"),
+        None,
+    )
+    .await;
+    assert!(
+        request["merges"][0]["message"]
+            .as_str()
+            .unwrap()
+            .contains("key")
+    );
 }
 
 #[tokio::test(flavor = "multi_thread")]

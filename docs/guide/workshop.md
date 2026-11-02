@@ -12,7 +12,8 @@ or a paper. The hub only coordinates: it never runs an agent or a build.
 - the requests, waiting, running or finished;
 - the group's recipes, or the errors in them;
 - the group's model and how much of its monthly cap it has used;
-- what Workshop is thinking about, and each repository's merge queue.
+- what Workshop is thinking about, and the pull requests its processes
+  opened.
 
 Guests can read the board. Members and admins ask.
 
@@ -21,8 +22,9 @@ Guests can read the board. Members and admins ask.
 **Ask the workshop** offers two ways:
 
 - **In plain words**: a title and details. Workshop, the group's
-  orchestrator, chooses a recipe, a runner and machines, and reports in
-  the request's thread. This needs a group model, set by an admin.
+  orchestrator, chooses a recipe and its inputs, a runner and machines,
+  and reports in the request's thread. This needs a group model, set by
+  an admin.
 - **With a recipe**: choose one of the group's recipes and fill in its
   inputs: text, a paper, a declaration or a thread.
 
@@ -35,8 +37,7 @@ For a recipe, you also choose:
 - **How long to wait** for a machine: an hour, a day or a week.
 
 Every request is a numbered thread, `[[t42]]`. Its header shows the recipe,
-inputs, schedule, processes, machines, branches, pull requests and the
-tokens used. Anyone in the group can discuss the work there. A message from
+inputs, schedule, pull requests, processes, machines and the tokens used. Anyone in the group can discuss the work there. A message from
 the requester or an admin wakes Workshop up.
 
 The requester or an admin can cancel a request. A recurring request can
@@ -65,16 +66,22 @@ minutes per run. When the recipe changes, you are asked again.
 
 ## What happens next
 
-1. A process starts on the machine, in a container, with its own checkout
-   of the repositories the recipe writes.
-2. The agent works, and posts progress in the request's thread.
-3. It pushes to its own branch. The hub opens a pull request for each
-   branch pushed, and posts the agent's summary.
-4. Then it depends on the recipe:
-   - **`merge = "none"`**: the pull request waits for the group's admins.
-   - **`merge = "review"`**: the git orchestrator has it built on a
-     member's machine, reviews it with the group's model, and merges it,
-     refuses it, or asks for a rebase.
+1. A process starts on the machine, in a container, in a folder of its
+   own: the recipe's `run.sh` and files, with your inputs in place, and
+   checkouts of the library and of the papers you named.
+2. `run.sh` runs. Most recipes launch the agent you chose, which posts
+   progress in the request's thread.
+3. The run delivers what it produced, as its recipe allows: messages in the
+   request's thread, and pull requests from its own branch.
+4. Each pull request gets a card in the request's header, from the git
+   orchestrator:
+   - **it merges cleanly** into `main`, or
+   - **it conflicts** with `main`, and Workshop prepared a merge that
+     resolves it, explained in plain words.
+
+   The requester or an admin reads it, with what the process said in the
+   pull request, and **approves the merge**. The card follows `main`: when
+   `main` moves, the merge is prepared again.
 
 A failed process may be retried once on another machine, if it had not
 pushed anything yet.
@@ -82,10 +89,10 @@ pushed anything yet.
 ## The group's model
 
 In **Group settings › Workshop**, an admin gives the workshop an API key for
-Anthropic, OpenAI or OpenRouter, and chooses a model. The two orchestrators
-use it: Workshop, which handles requests in plain words and reports, and
-the git orchestrator, which reviews and merges. People's agents never use
-this key: processes run with their machine owner's own agents.
+Anthropic, OpenAI or OpenRouter, and chooses a model. Workshop uses it to
+handle requests in plain words and report, and to resolve a pull request's
+conflicts with `main`. People's agents never use this key: processes run
+with their machine owner's own agents.
 
 - Use a key made for this, with a spending limit at the provider.
 - The hub encrypts the key. Nobody can read it back, and only its last
@@ -94,12 +101,14 @@ this key: processes run with their machine owner's own agents.
   **step cap** per turn. At the cap, Workshop stops thinking until the
   next month or a higher cap.
 
-Without a key, recipes still run. Requests in plain words and reviews wait,
+Without a key, recipes still run, and pull requests that merge cleanly can
+be approved. Requests in plain words, and merges with conflicts, wait,
 saying a key is needed.
 
 ## Recipes
 
-A group's recipes are Markdown files in its `recipes` repository. Every
-group starts with one, **Anything else** (`general`), for any task. It may
-write the library and a paper, runs for up to a day, and goes to review.
-See [Writing recipes](/guide/recipes) to add your own.
+A group's recipes are folders in its `recipes` repository: what each takes
+and delivers, the `run.sh` a process runs, and its files. Every group starts
+with one, **Anything else** (`general`), for any task: one agent works on it
+for up to a day, and delivers pull requests and messages. See
+[Writing recipes](/guide/recipes) to add your own.

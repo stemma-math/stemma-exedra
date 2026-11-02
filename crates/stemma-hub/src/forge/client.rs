@@ -162,6 +162,18 @@ impl Forge {
 
     /// A request for a repository's git, as Forgejo's admin: `path` is
     /// `owner/name.git/info/refs` and the like.
+    /// Where git reaches a repository, and the header that signs the hub in
+    /// as the forge's admin, for the hub's own merges.
+    pub fn git_remote(&self, owner: &str, name: &str) -> (String, String) {
+        (
+            format!("{}/{owner}/{name}.git", self.base),
+            format!(
+                "Authorization: Basic {}",
+                STANDARD.encode(format!("stemma:{}", self.token))
+            ),
+        )
+    }
+
     pub fn git(&self, method: Method, path: &str, query: Option<&str>) -> RequestBuilder {
         let mut url = format!("{}/{path}", self.base);
         if let Some(query) = query.filter(|q| !q.is_empty()) {
@@ -699,77 +711,14 @@ impl Forge {
         )
         .await
     }
-    pub async fn pull_files(
-        &self,
-        owner: &str,
-        repo: &str,
-        number: i64,
-    ) -> ForgeResult<Vec<Value>> {
-        self.all(
-            "read pull request files",
-            &format!("/repos/{owner}/{repo}/pulls/{number}/files"),
-        )
-        .await
-    }
-    pub async fn pull_diff(&self, owner: &str, repo: &str, number: i64) -> ForgeResult<String> {
-        Ok(self
-            .send(
-                "read a pull request diff",
-                self.api(
-                    Method::GET,
-                    &format!("/repos/{owner}/{repo}/pulls/{number}.diff"),
-                ),
-            )
-            .await?
-            .text()
-            .await?)
-    }
-    /// Comparing head to main has no commits exactly when head contains main.
-    pub async fn contains(
-        &self,
-        owner: &str,
-        repo: &str,
-        head: &str,
-        main: &str,
-    ) -> ForgeResult<bool> {
-        let value: Value = self
-            .json(
-                "compare commits",
-                self.api(
-                    Method::GET,
-                    &format!("/repos/{owner}/{repo}/compare/{head}...{main}"),
-                ),
-            )
-            .await?;
-        Ok(value["total_commits"].as_u64() == Some(0))
-    }
-    pub async fn review_comment(
+    /// Merges a pull request whose head already contains `main`, by moving
+    /// `main` to that head, as workshop; only if the head is still `head`.
+    pub async fn fast_forward_pull(
         &self,
         owner: &str,
         repo: &str,
         number: i64,
         head: &str,
-        text: &str,
-    ) -> ForgeResult<()> {
-        self.send(
-            "review a pull request",
-            self.as_workshop(
-                WorkshopUser::Workshop,
-                Method::POST,
-                &format!("/repos/{owner}/{repo}/pulls/{number}/reviews"),
-            )
-            .json(&json!({"body":text,"event":"COMMENT","commit_id":head})),
-        )
-        .await?;
-        Ok(())
-    }
-    pub async fn merge_pull(
-        &self,
-        owner: &str,
-        repo: &str,
-        number: i64,
-        head: &str,
-        text: &str,
     ) -> ForgeResult<()> {
         self.send(
             "merge a pull request",
@@ -778,10 +727,8 @@ impl Forge {
                 Method::POST,
                 &format!("/repos/{owner}/{repo}/pulls/{number}/merge"),
             )
-            .json(
-                &json!({"Do":"merge","head_commit_id":head,"MergeMessageField":text,
-                "delete_branch_after_merge":false,"force_merge":false}),
-            ),
+            .json(&json!({"Do":"fast-forward-only","head_commit_id":head,
+                "delete_branch_after_merge":false,"force_merge":false})),
         )
         .await?;
         Ok(())

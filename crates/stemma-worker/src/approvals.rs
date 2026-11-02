@@ -125,7 +125,7 @@ fn covers(a: &Approval, hub: &str, owner: i64, offer: &ProcessOffer, reserved: u
                 .recipe
                 .recipe
                 .as_ref()
-                .is_some_and(|r| r.front.timeout_minutes <= m)
+                .is_some_and(|r| r.manifest.timeout_minutes <= m)
         })
 }
 /// Retains an immutable offer for display. The service calls this only after
@@ -212,7 +212,7 @@ pub fn approve(
                 .recipe
                 .recipe
                 .as_ref()
-                .map(|r| r.front.timeout_minutes)
+                .map(|r| r.manifest.timeout_minutes)
                 .unwrap_or(u32::MAX);
             anyhow::ensure!(
                 limits.minutes.is_none_or(|m| minutes <= m),
@@ -340,7 +340,6 @@ mod tests {
     }
     fn offer(process: i64, requester: i64, version: &str) -> ProcessOffer {
         ProcessOffer {
-            rebase: None,
             process,
             group: GroupRef {
                 id: 1,
@@ -361,15 +360,36 @@ mod tests {
                 url: "http://forge/algebra/recipes".into(),
                 recipe: Some(
                     Recipe::parse(
-                        "prove.md",
-                        include_str!("../../stemma-hub/tests/support/recipes/prove.md"),
+                        "prove",
+                        [
+                            (
+                                "recipe.toml",
+                                &include_bytes!(
+                                    "../../stemma-hub/tests/support/recipes/prove/recipe.toml"
+                                )[..],
+                            ),
+                            (
+                                "run.sh",
+                                include_bytes!(
+                                    "../../stemma-hub/tests/support/recipes/prove/run.sh"
+                                ),
+                            ),
+                            (
+                                "files/prompt.md",
+                                include_bytes!(
+                                    "../../stemma-hub/tests/support/recipes/prove/files/prompt.md"
+                                ),
+                            ),
+                        ]
+                        .into_iter()
+                        .map(|(path, bytes)| (path.to_owned(), bytes.to_vec()))
+                        .collect(),
                     )
                     .unwrap(),
                 ),
                 error: None,
             },
-            inputs: Default::default(),
-            prompt: "Prove True".into(),
+            inputs: [("statement".into(), "True".into())].into(),
             runner: "codex".into(),
             model: None,
             recurring: true,
@@ -501,7 +521,7 @@ mod tests {
         let original = offer(1, 1, "v1");
         receive(dir.path(), "hub", &owner, original.clone(), Others::Ask).unwrap();
         let mut changed = original.clone();
-        changed.prompt = "Different work".into();
+        changed.inputs = [("statement".into(), "Different work".into())].into();
         assert!(start(dir.path(), "hub", &owner, &changed).is_err());
         start(dir.path(), "hub", &owner, &original).unwrap();
     }

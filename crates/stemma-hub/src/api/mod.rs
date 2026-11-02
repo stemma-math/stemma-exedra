@@ -145,6 +145,10 @@ pub fn router(state: AppState) -> Router {
             "/groups/{group}/workshop/requests/{number}",
             get(crate::workshop::read).post(crate::workshop::action),
         )
+        .route(
+            "/groups/{group}/workshop/merges/{id}/approve",
+            post(crate::merges::approve),
+        )
         .route("/groups/{group}/library", get(library::state))
         .route("/groups/{group}/library/builds", get(library::builds))
         .route("/groups/{group}/library/builds/{id}", get(library::build))

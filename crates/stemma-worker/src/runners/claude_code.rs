@@ -14,11 +14,9 @@ use stemma_core::protocol::{JobSpec, Usage};
 
 use super::{Answer, Work, failed, prepared, run_command, tokens};
 use crate::config::CliRunner;
-use crate::job::{Context, JobDir, Progress, Prompt};
+use crate::job::{JobDir, Progress, Prompt};
 
-#[allow(clippy::too_many_arguments)]
 pub async fn run(
-    context: &Context,
     config: &CliRunner,
     job: &JobSpec,
     agent: &AgentProfile,
@@ -27,7 +25,7 @@ pub async fn run(
     prompt: &Prompt,
     progress: &Progress,
 ) -> anyhow::Result<Answer> {
-    let prepared = prepared(context, config, job, agent, dir, work, prompt)?;
+    let prepared = prepared(config, job, agent, dir, work, prompt)?;
     let command = super::command(&prepared, work);
 
     let mut result: Option<(String, bool)> = None;

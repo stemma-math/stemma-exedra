@@ -38,15 +38,7 @@ pub async fn wake_group(state: &AppState, group: i64) -> ApiResult<()> {
     .bind(group)
     .execute(&state.db)
     .await?;
-    sqlx::query(
-        "UPDATE workshop_reviews
-         SET state = 'queued', resume_month = NULL
-         WHERE group_id = ? AND state = 'waiting'",
-    )
-    .bind(group)
-    .execute(&state.db)
-    .await?;
-    Ok(())
+    crate::merges::wake_group(state, group).await
 }
 pub async fn wake(state: &AppState, thread: i64) -> ApiResult<()> {
     sqlx::query(
@@ -74,20 +66,6 @@ pub async fn wake_message(state: &AppState, thread: i64, author: i64) -> ApiResu
     )
     .bind(thread)
     .bind(author)
-    .execute(&state.db)
-    .await?;
-    sqlx::query(
-        "UPDATE workshop_reviews
-         SET state = 'queued', resume_month = NULL
-         WHERE process_id IN (SELECT id
-         FROM workshop_processes
-         WHERE thread_id = ?)
-         AND state = 'waiting' AND EXISTS(SELECT 1
-         FROM workshop_requests
-         WHERE thread_id = ? AND wake = 1)",
-    )
-    .bind(thread)
-    .bind(thread)
     .execute(&state.db)
     .await?;
     dispatch(state).await
@@ -358,19 +336,8 @@ pub(crate) async fn close(
     .bind(thread)
     .fetch_one(&state.db)
     .await?;
-    let reviewing: bool = sqlx::query_scalar(
-        "SELECT EXISTS(SELECT 1
-         FROM workshop_reviews v
-         JOIN workshop_processes p ON p.id = v.process_id
-         WHERE p.thread_id = ? AND v.state NOT IN ('merged', 'refused'))",
-    )
-    .bind(thread)
-    .fetch_one(&state.db)
-    .await?;
-    if active || reviewing {
-        return Err(ApiError::invalid(
-            "Wait for the outstanding processes and reviews",
-        ));
+    if active {
+        return Err(ApiError::invalid("Wait for the outstanding processes"));
     }
     let number = post(state, thread, model, text).await?;
     sqlx::query(
@@ -405,6 +372,24 @@ pub(crate) async fn close(
     .await?;
     Ok(())
 }
+/// What Workshop chooses a recipe by: its manifest, without its files.
+fn summaries(recipes: &[RecipeFile]) -> Value {
+    json!(
+        recipes
+            .iter()
+            .map(|file| match &file.recipe {
+                Some(recipe) => json!({
+                    "name": file.name, "version": file.version,
+                    "title": recipe.manifest.title, "summary": recipe.manifest.summary,
+                    "hint": recipe.manifest.hint, "inputs": recipe.manifest.inputs,
+                    "outputs": recipe.outputs(), "permissions": recipe.manifest.permissions,
+                    "timeout_minutes": recipe.manifest.timeout_minutes,
+                }),
+                None => json!({"name": file.name, "error": file.error}),
+            })
+            .collect::<Vec<_>>()
+    )
+}
 fn tool(name: &str, description: &str, properties: Value, required: &[&str]) -> Tool {
     Tool {
         name: name.into(),
@@ -415,10 +400,15 @@ fn tool(name: &str, description: &str, properties: Value, required: &[&str]) -> 
 fn definitions() -> Vec<Tool> {
     let mut tools = crate::workshop_read::definitions();
     tools.extend([
-        tool("recipes", "List the group's recipes", json!({}), &[]),
+        tool(
+            "recipes",
+            "List the group's recipes: what each is, takes and delivers",
+            json!({}),
+            &[],
+        ),
         tool(
             "recipe",
-            "Read a recipe",
+            "Read a recipe, with its run.sh and files",
             json!({"name": {"type": "string"}}),
             &["name"],
         ),
@@ -472,7 +462,8 @@ async fn turn(state: &AppState, thread: i64, group: i64) -> ApiResult<()> {
         Message::text("system", include_str!("../prompts/workshop.md")),
         Message::text(
             "user",
-            json!({"request":req,"thread":messages,"recipes":recipes,"board":board}).to_string(),
+            json!({"request":req,"thread":messages,"recipes":summaries(&recipes),"board":board})
+                .to_string(),
         ),
     ];
     let tools = definitions();
@@ -502,7 +493,7 @@ async fn turn(state: &AppState, thread: i64, group: i64) -> ApiResult<()> {
                 return Ok(());
             }
             let result = match call.name.as_str() {
-                "recipes" => Ok(json!(recipes)),
+                "recipes" => Ok(summaries(&recipes)),
                 "recipe" => {
                     crate::recipes::read(state, &member.slug, arg(&call.arguments, "name")?)
                         .await
@@ -518,7 +509,7 @@ async fn turn(state: &AppState, thread: i64, group: i64) -> ApiResult<()> {
                     ask.model = call.arguments["model"].as_str().map(str::to_owned);
                     ask.assignment = serde_json::from_value(call.arguments["assignment"].clone())
                         .map_err(|e| ApiError::invalid(format!("{e}")))?;
-                    let result = launch(state, thread, ask, None, None, None).await;
+                    let result = launch(state, thread, ask).await;
                     if result.is_ok() {
                         launched = true;
                     }
@@ -591,11 +582,7 @@ async fn turn(state: &AppState, thread: i64, group: i64) -> ApiResult<()> {
             "SELECT EXISTS(SELECT 1
              FROM workshop_processes p
              JOIN work_leases w ON w.id = p.work_id
-             WHERE p.thread_id = ?1 AND w.state IN ('queued', 'running'))
-             OR EXISTS(SELECT 1
-             FROM workshop_reviews v
-             JOIN workshop_processes p ON p.id = v.process_id
-             WHERE p.thread_id = ?1 AND v.state NOT IN ('merged', 'refused'))",
+             WHERE p.thread_id = ?1 AND w.state IN ('queued', 'running'))",
         )
         .bind(thread)
         .fetch_one(&state.db)
@@ -603,7 +590,7 @@ async fn turn(state: &AppState, thread: i64, group: i64) -> ApiResult<()> {
         let waiting = if req.next_at.is_some_and(|at| at > db::now()) && req.processes.is_empty() {
             "Waiting for the scheduled time"
         } else if active {
-            "Waiting for the outstanding processes and reviews"
+            "Waiting for the outstanding processes"
         } else if exhausted {
             "Waiting for guidance from the requester or an admin; this turn reached its step limit"
         } else {
@@ -630,16 +617,9 @@ fn arg<'a>(args: &'a Value, name: &str) -> ApiResult<&'a str> {
         .ok_or_else(|| ApiError::invalid(format!("Missing {name}")))
 }
 
-/// A launch creates a process on the existing request. Each process retains its
-/// own recipe and inputs, including internally requested rebases.
-pub(crate) async fn launch(
-    state: &AppState,
-    thread: i64,
-    ask: Ask,
-    rebase: Option<i64>,
-    repositories: Option<Vec<stemma_core::protocol::ProcessRepository>>,
-    machine: Option<i64>,
-) -> ApiResult<i64> {
+/// A launch creates a process on the existing request. Each process retains
+/// its own recipe and inputs.
+pub(crate) async fn launch(state: &AppState, thread: i64, ask: Ask) -> ApiResult<i64> {
     let _guard = state.process_changes.lock().await;
     if !open(state, thread).await? {
         return Err(ApiError::invalid("The request is closed"));
@@ -653,28 +633,20 @@ pub(crate) async fn launch(
     .fetch_one(&state.db)
     .await?;
     let slug = Membership::of_group(state, group).await?.slug;
-    let file = if rebase.is_some() {
-        crate::recipes::rebase(state, &slug).await?
-    } else {
-        crate::recipes::read(state, &slug, &ask.recipe).await?
-    };
+    let file = crate::recipes::read(state, &slug, &ask.recipe).await?;
     validate(state, group, &file, &ask).await?;
     let original = request(state, thread).await?;
-    if rebase.is_none() {
-        if original.ask.schedule.at.is_some_and(|at| at > db::now())
-            && original.processes.is_empty()
-        {
-            return Err(ApiError::invalid("Wait for the request's scheduled time"));
-        }
-        if original.processes.iter().any(|process| {
-            ["waiting", "running"].contains(&process.state.as_str())
-                && process.recipe.version == file.version
-                && process.inputs == ask.inputs
-        }) {
-            return Err(ApiError::conflict(
-                "A process for these recipe inputs is already outstanding",
-            ));
-        }
+    if original.ask.schedule.at.is_some_and(|at| at > db::now()) && original.processes.is_empty() {
+        return Err(ApiError::invalid("Wait for the request's scheduled time"));
+    }
+    if original.processes.iter().any(|process| {
+        ["waiting", "running"].contains(&process.state.as_str())
+            && process.recipe.version == file.version
+            && process.inputs == ask.inputs
+    }) {
+        return Err(ApiError::conflict(
+            "A process for these recipe inputs is already outstanding",
+        ));
     }
     #[derive(sqlx::FromRow)]
     struct Previous {
@@ -698,14 +670,13 @@ pub(crate) async fn launch(
     .fetch_optional(&state.db)
     .await?;
     let mut retry_of = None;
-    if rebase.is_none()
-        && let Some(Previous {
-            id,
-            retry_of: retried,
-            pushed,
-            recipe: Some(raw_recipe),
-            ask: Some(raw_ask),
-        }) = previous
+    if let Some(Previous {
+        id,
+        retry_of: retried,
+        pushed,
+        recipe: Some(raw_recipe),
+        ask: Some(raw_ask),
+    }) = previous
     {
         let old_file: RecipeFile = serde_json::from_str(&raw_recipe).map_err(ApiError::internal)?;
         let old_ask: Ask = serde_json::from_str(&raw_ask).map_err(ApiError::internal)?;
@@ -729,9 +700,8 @@ pub(crate) async fn launch(
     .last_insert_rowid();
     let id = sqlx::query(
         "INSERT INTO workshop_processes
-         (thread_id, work_id, slot, expires_at, recipe, ask, rebase_review,
-         repositories, machine_id, retry_of)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+         (thread_id, work_id, slot, expires_at, recipe, ask, retry_of)
+         VALUES (?, ?, ?, ?, ?, ?, ?)",
     )
     .bind(thread)
     .bind(work)
@@ -739,38 +709,10 @@ pub(crate) async fn launch(
     .bind(db::now() + i64::from(ask.wait_hours) * 3_600_000)
     .bind(serde_json::to_string(&file).map_err(ApiError::internal)?)
     .bind(serde_json::to_string(&ask).map_err(ApiError::internal)?)
-    .bind(rebase)
-    .bind(
-        repositories
-            .map(|r| serde_json::to_string(&r))
-            .transpose()
-            .map_err(ApiError::internal)?,
-    )
-    .bind(machine)
     .bind(retry_of)
     .execute(&mut *tx)
     .await?
     .last_insert_rowid();
-    if let Some(review) = rebase {
-        let changed = sqlx::query(
-            "UPDATE workshop_reviews
-             SET state = 'rebasing', rebase_process = ?, rebases = rebases + 1,
-             head = (SELECT json_extract(repositories, '$[0].base')
-             FROM workshop_processes
-             WHERE id = ?)
-             WHERE id = ? AND rebases < 3 AND state NOT IN ('merged', 'refused')",
-        )
-        .bind(id)
-        .bind(id)
-        .bind(review)
-        .execute(&mut *tx)
-        .await?
-        .rows_affected();
-        if changed == 0 {
-            tx.rollback().await?;
-            return Err(ApiError::conflict("The review no longer accepts a rebase"));
-        }
-    }
     if let Some(previous) = retry_of {
         sqlx::query(
             "INSERT INTO workshop_offers (process_id, machine_id, connection, decision)
@@ -800,16 +742,6 @@ async fn validate(state: &AppState, group: i64, file: &RecipeFile, ask: &Ask) ->
     if !["claude", "codex", "opencode"].contains(&ask.runner.as_str()) {
         return Err(ApiError::invalid("Unknown runner"));
     }
-    let recipe = file
-        .recipe
-        .as_ref()
-        .ok_or_else(|| ApiError::invalid("Invalid recipe"))?;
-    recipe
-        .render(&format!("{}.md", file.name), &ask.inputs)
-        .map_err(|e| ApiError::invalid(format!("{e}")))?;
-    if !recipe.front.runners.is_empty() && !recipe.front.runners.contains(&ask.runner) {
-        return Err(ApiError::invalid("The recipe does not accept this runner"));
-    }
     if let stemma_core::workshop::Assignment::Member { user } = ask.assignment {
         let valid: bool = sqlx::query_scalar(
             "SELECT EXISTS(SELECT 1
@@ -824,36 +756,7 @@ async fn validate(state: &AppState, group: i64, file: &RecipeFile, ask: &Ask) ->
             return Err(ApiError::invalid("Choose a group member"));
         }
     }
-    for (name, input) in &recipe.front.inputs {
-        if let Some(value) = ask.inputs.get(name) {
-            if value.len() > 100_000 {
-                return Err(ApiError::invalid("An input is too long"));
-            }
-            match input.kind {
-                stemma_core::recipe::InputKind::Paper => {
-                    crate::papers::find(state, group, value).await?;
-                }
-                stemma_core::recipe::InputKind::Thread => {
-                    forum::find_thread(
-                        state,
-                        group,
-                        value
-                            .trim_start_matches('t')
-                            .parse()
-                            .map_err(|e| ApiError::invalid(format!("{e}")))?,
-                    )
-                    .await?;
-                }
-                stemma_core::recipe::InputKind::Declaration
-                    if !crate::library::resolve(state, group, value).await?.exists =>
-                {
-                    return Err(ApiError::not_found("Declaration"));
-                }
-                _ => {}
-            }
-        }
-    }
-    Ok(())
+    workshop::check_inputs(state, group, file, &ask.inputs).await
 }
 async fn machines(state: &AppState, thread: i64, slug: &str, args: &Value) -> ApiResult<Value> {
     let req = request(state, thread).await?;
@@ -913,31 +816,7 @@ async fn machines(state: &AppState, thread: i64, slug: &str, args: &Value) -> Ap
     Ok(json!(output))
 }
 pub(crate) async fn status(state: &AppState, group: i64) -> ApiResult<Value> {
-    #[derive(sqlx::FromRow, serde::Serialize)]
-    struct BoardReview {
-        id: i64,
-        repository: String,
-        number: i64,
-        url: String,
-        state: String,
-        message: Option<String>,
-        rebases: i64,
-        thread: i64,
-    }
-    // Every open review, and the latest finished ones.
-    let reviews: Vec<BoardReview> = sqlx::query_as(
-        "SELECT v.id, v.repository, v.pull_number AS number, v.url, v.state, v.message,
-         v.rebases, t.number AS thread
-         FROM workshop_reviews v
-         JOIN workshop_processes p ON p.id = v.process_id
-         JOIN threads t ON t.id = p.thread_id
-         WHERE v.group_id = ?
-         ORDER BY v.state IN ('merged', 'refused'), v.id DESC
-         LIMIT 20",
-    )
-    .bind(group)
-    .fetch_all(&state.db)
-    .await?;
+    let merges = crate::merges::of_group(state, group).await?;
     let turns: Vec<(i64, bool, Option<String>)> = sqlx::query_as(
         "SELECT t.number, r.thinking,
          coalesce(r.waiting, CASE r.state WHEN 'running' THEN 'A process is running'
@@ -956,7 +835,7 @@ pub(crate) async fn status(state: &AppState, group: i64) -> ApiResult<Value> {
         })
         .collect();
     let model = model::settings(state, group).await?.public();
-    Ok(json!({"model": model, "reviews": reviews, "turns": turns}))
+    Ok(json!({"model": model, "merges": merges, "turns": turns}))
 }
 pub async fn board(
     State(state): State<AppState>,

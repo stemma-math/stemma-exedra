@@ -144,10 +144,9 @@ async fn processes_push_only_their_branch_post_only_in_their_request_and_open_as
         .await,
         403
     );
-    assert_eq!(
-        spec.repositories[0].branch,
-        format!("workshop/1-{}", offer.process)
-    );
+    let branch = spec.branch.clone().unwrap();
+    assert_eq!(branch, format!("workshop/1-{}", offer.process));
+    assert_eq!(spec.checkouts[0].name, "library");
     assert!(
         status(&hub, token, "GET", "/api/v1/groups/geometry", Value::Null)
             .await
@@ -206,7 +205,7 @@ async fn processes_push_only_their_branch_post_only_in_their_request_and_open_as
     assert!(posted["body"].as_str().unwrap().contains("[hidden]"));
     assert_eq!(posted["author"]["username"], "ada");
     let temp = tempfile::tempdir().unwrap();
-    let repo = &spec.repositories[0];
+    let repo = &spec.checkouts[0];
     assert!(
         git(
             temp.path(),
@@ -218,7 +217,7 @@ async fn processes_push_only_their_branch_post_only_in_their_request_and_open_as
     );
     let dir = temp.path().join("work");
     assert!(
-        git(&dir, token, &["checkout", "-qb", &repo.branch, &repo.base])
+        git(&dir, token, &["checkout", "-qb", &branch, &repo.base])
             .status
             .success()
     );
@@ -245,11 +244,7 @@ async fn processes_push_only_their_branch_post_only_in_their_request_and_open_as
             "{reference}"
         );
     }
-    let pushed = git(
-        &dir,
-        token,
-        &["push", "origin", &format!("HEAD:{}", repo.branch)],
-    );
+    let pushed = git(&dir, token, &["push", "origin", &format!("HEAD:{branch}")]);
     assert!(
         pushed.status.success(),
         "{}",
@@ -260,7 +255,16 @@ async fn processes_push_only_their_branch_post_only_in_their_request_and_open_as
         WorkerMessage::ProcessFinished {
             lease: spec.lease,
             result: Box::new(ProcessResult {
-                summary: "Proved True and checked the proof.".into(),
+                outputs: vec![
+                    stemma_core::workshop::Delivered::PullRequest {
+                        repository: "library".into(),
+                        title: "Prove True".into(),
+                        body: "Proved True; Lean checks it.".into(),
+                    },
+                    stemma_core::workshop::Delivered::Message {
+                        text: "Proved True and checked the proof.".into(),
+                    },
+                ],
                 usage: Usage {
                     input_tokens: Some(100),
                     output_tokens: Some(20),
@@ -280,14 +284,31 @@ async fn processes_push_only_their_branch_post_only_in_their_request_and_open_as
             None,
         )
         .await;
-        if found["state"] == "done" {
+        if found["state"] == "done" && found["merges"][0]["state"] == "ready" {
             assert!(found["processes"][0]["branches"][0]["pull_request"].is_string());
             assert_eq!(found["processes"][0]["usage"]["input_tokens"], 100);
+            assert_eq!(found["merges"][0]["title"], "Prove True");
+            assert_eq!(found["merges"][0]["conflicts"], json!([]));
             break;
         }
         tokio::time::sleep(std::time::Duration::from_millis(20)).await;
     }
     assert_eq!(hub._forge.pulls("geometry", "library").len(), 1);
+    let thread = call(&hub, &ada, "GET", "/groups/geometry/threads/1", None).await;
+    let bodies: Vec<&str> = thread["messages"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter_map(|m| m["body"].as_str())
+        .collect();
+    assert!(
+        bodies.contains(&"Proved True and checked the proof."),
+        "{bodies:?}"
+    );
+    assert!(
+        bodies.iter().any(|b| b.contains("merges cleanly")),
+        "{bodies:?}"
+    );
     let pull: Value = reqwest::Client::new()
         .get(format!(
             "{}/api/v1/repos/geometry/library/pulls/1",
@@ -385,14 +406,18 @@ async fn pending_offers_first_acceptance_recurring_slots_and_expiry_are_durable(
         panic!("Bob's lease")
     };
     assert_eq!(spec.owner.id, bob_id);
-    assert!(spec.repositories.is_empty());
+    // A recipe that opens no pull requests pushes nothing.
+    assert!(spec.branch.is_none());
+    assert_eq!(spec.checkouts[0].name, "library");
 
     send(
         &mut b,
         WorkerMessage::ProcessFinished {
             lease: spec.lease,
             result: Box::new(ProcessResult {
-                summary: "Reviewed the paper.".into(),
+                outputs: vec![stemma_core::workshop::Delivered::Message {
+                    text: "Reviewed the paper.".into(),
+                }],
                 ..Default::default()
             }),
         },
@@ -613,7 +638,9 @@ async fn retries_use_another_machine_once_and_a_possible_push_fences_them() {
         WorkerMessage::ProcessFinished {
             lease: spec1.lease,
             result: Box::new(ProcessResult {
-                summary: "Late success".into(),
+                outputs: vec![stemma_core::workshop::Delivered::Message {
+                    text: "Late success".into(),
+                }],
                 ..Default::default()
             }),
         },
@@ -736,7 +763,9 @@ async fn an_approved_offer_waits_when_capacity_fills_before_acceptance() {
         WorkerMessage::ProcessFinished {
             lease: first.lease,
             result: Box::new(ProcessResult {
-                summary: "Finished the first review.".into(),
+                outputs: vec![stemma_core::workshop::Delivered::Message {
+                    text: "Finished the first review.".into(),
+                }],
                 ..Default::default()
             }),
         },
@@ -770,7 +799,7 @@ async fn an_approved_offer_waits_when_capacity_fills_before_acceptance() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
-async fn the_general_recipe_writes_a_paper_only_when_given_one() {
+async fn a_process_checks_out_the_library_and_may_push_its_branch_anywhere_in_the_group() {
     let hub = hub(None).await;
     let ada = person(&hub, "ada", true).await;
     group(&hub, &ada).await;
@@ -788,6 +817,14 @@ async fn the_general_recipe_writes_a_paper_only_when_given_one() {
     let HubMessage::ProcessOffer(offer) = next(&mut socket).await else {
         panic!("offer")
     };
+    // The machine renders the recipe's folder itself, from the offer.
+    let recipe = offer.recipe.recipe.as_ref().unwrap();
+    let rendered = recipe.render("general", &offer.inputs).unwrap();
+    assert!(
+        String::from_utf8_lossy(&rendered["files/prompt.md"])
+            .contains("Tidy the library's imports.")
+    );
+    assert!(recipe.manifest.hint.is_some());
     send(
         &mut socket,
         WorkerMessage::ProcessDecision {
@@ -800,6 +837,47 @@ async fn the_general_recipe_writes_a_paper_only_when_given_one() {
     let HubMessage::Process(spec) = next(&mut socket).await else {
         panic!("lease")
     };
-    let repositories: Vec<&str> = spec.repositories.iter().map(|r| r.path.as_str()).collect();
+    let repositories: Vec<&str> = spec.checkouts.iter().map(|r| r.path.as_str()).collect();
     assert_eq!(repositories, ["/git/geometry/library.git"]);
+    assert_eq!(
+        spec.branch.as_deref(),
+        Some(format!("workshop/1-{}", offer.process).as_str())
+    );
+    // A pull request it did not push is refused, and fails the process.
+    send(
+        &mut socket,
+        WorkerMessage::ProcessFinished {
+            lease: spec.lease,
+            result: Box::new(ProcessResult {
+                outputs: vec![stemma_core::workshop::Delivered::PullRequest {
+                    repository: "library".into(),
+                    title: "Tidy".into(),
+                    body: String::new(),
+                }],
+                ..Default::default()
+            }),
+        },
+    )
+    .await;
+    for _ in 0..100 {
+        let request = call(
+            &hub,
+            &ada,
+            "GET",
+            "/groups/geometry/workshop/requests/1",
+            None,
+        )
+        .await;
+        if request["state"] == "failed" {
+            assert!(
+                request["processes"][0]["error"]
+                    .as_str()
+                    .unwrap()
+                    .contains("nothing was pushed")
+            );
+            return;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+    }
+    panic!("the process should have failed");
 }

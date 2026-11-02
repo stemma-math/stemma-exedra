@@ -26,8 +26,6 @@ export function sentenceOf(n: Notification): string {
   switch (n.kind) {
     case "review_merged":
       return `A pull request was merged into main${where}`;
-    case "review_refused":
-      return `A pull request was refused${where}`;
     case "request_done":
       return `Your workshop request finished${where}`;
     case "request_failed":

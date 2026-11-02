@@ -42,8 +42,8 @@ Compiler-made declarations, such as recursors and auxiliary lemmas, are
 left out and counted toward the declaration they belong to. The report
 also lists which modules import which. A later build inspects again only
 the modules a commit changed and those that import them, and keeps the
-rest. This is what the library's pages, the agents' `library_*` tools and
-the git orchestrator's review read.
+rest. This is what the library's pages and the agents' `library_*` tools
+read.
 
 ## Mathlib, once
 
@@ -64,9 +64,3 @@ or a build without isolation, still builds, but fetches its own.
   stays in the history.
 - **The last good state stays.** A failing or waiting build never
   replaces the library's last passing inspection or a paper's last PDF.
-
-## Builds for review
-
-The git orchestrator asks the same queue to build a pull request's head
-before reviewing it. Such a build is recorded apart: it never replaces the
-library's inspection or a paper's PDF.

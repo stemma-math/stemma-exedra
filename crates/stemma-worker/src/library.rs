@@ -107,7 +107,7 @@ pub async fn run_in(
 }
 
 /// Runs a command, shown in the log as `shown`.
-async fn run_shown(
+pub(crate) async fn run_shown(
     mut command: Command,
     shown: &str,
     log: &Log,

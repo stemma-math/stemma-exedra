@@ -42,8 +42,9 @@ group. When you ask, it can post, open a thread or create a paper, as
 
 **Workshop › Ask the workshop** asks for background work: in plain words, or
 with one of the group's recipes. It runs on your computers, or on another
-member's with their approval. Its results come back as pull requests to
-the library or a paper. See [The workshop](/guide/workshop).
+member's with their approval. Its results come back as messages in the
+request's thread, and as pull requests to the library or a paper, whose
+merges you approve. See [The workshop](/guide/workshop).
 
 ## Work with git
 

@@ -392,16 +392,26 @@ pub async fn run_cli(
     progress: &Progress,
 ) -> anyhow::Result<Answer> {
     let config = cli_runner(context, &agent.runner)?;
+    run_agent(&config, job, agent, dir, work, prompt, progress).await
+}
+
+/// Runs `agent` with its runner's `config`, wherever `work` says.
+pub async fn run_agent(
+    config: &crate::config::CliRunner,
+    job: &JobSpec,
+    agent: &AgentProfile,
+    dir: &JobDir,
+    work: &RunnerWork<'_>,
+    prompt: &Prompt,
+    progress: &Progress,
+) -> anyhow::Result<Answer> {
     match agent.runner.as_str() {
         names::CLAUDE_CODE => {
-            runners::claude_code::run(context, &config, job, agent, dir, work, prompt, progress)
-                .await
+            runners::claude_code::run(config, job, agent, dir, work, prompt, progress).await
         }
-        names::CODEX => {
-            runners::codex::run(context, &config, job, agent, dir, work, prompt, progress).await
-        }
+        names::CODEX => runners::codex::run(config, job, agent, dir, work, prompt, progress).await,
         names::OPENCODE => {
-            runners::opencode::run(context, &config, job, agent, dir, work, prompt, progress).await
+            runners::opencode::run(config, job, agent, dir, work, prompt, progress).await
         }
         other => anyhow::bail!("this machine has no runner {other}"),
     }

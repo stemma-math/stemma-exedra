@@ -1,6 +1,6 @@
 <script lang="ts">
   import { exactly } from "#lib/format.ts";
-  import { runnerName } from "#lib/workshop.ts";
+  import { deliversText, rendered, runnerName } from "#lib/workshop.ts";
   import { action, workshopState, workshopDecision, type WorkshopState } from "../api.ts";
   import type { Snapshot } from "../api.ts";
   import type { MachineControls } from "../machine.svelte.ts";
@@ -100,23 +100,28 @@
       <details class="card card__body stack" open>
         <summary>{p.offer.requester.display_name} asks: {p.offer.request.title}</summary>
         <p>
-          {p.offer.group.name}, t{p.offer.request.number}, process {p.offer.process}.
-          {runnerName(p.offer.runner)}{p.offer.model ? ` (${p.offer.model})` : ""}, for at most
-          {p.offer.recipe.recipe?.front.timeout_minutes}
-          minutes.
+          {p.offer.group.name}, t{p.offer.request.number}, process {p.offer.process}. Its agents use
+          {runnerName(p.offer.runner)}{p.offer.model ? ` (${p.offer.model})` : ""}.
         </p>
+        {#if p.offer.recipe.recipe}
+          <p>{p.offer.recipe.recipe.manifest.title}: {deliversText(p.offer.recipe.recipe)}.</p>
+        {/if}
         <p class="quiet">
           Recipe {p.offer.recipe.name}, version
           <code title={p.offer.recipe.version}>{p.offer.recipe.version.slice(0, 12)}</code>. Expires
           {exactly(p.offer.expires_at)}.
         </p>
-        {#if p.offer.rebase}
-          <p class="message message--warning">
-            Rebase {p.offer.rebase.path}: this process may force-push only
-            <code>{p.offer.rebase.branch}</code>.
-          </p>
+        {#if p.offer.recipe.recipe}
+          {@const recipe = p.offer.recipe.recipe}
+          <span class="label">What it runs: run.sh</span>
+          <pre>{rendered(recipe, "run.sh", p.offer.inputs)}</pre>
+          {#each Object.keys(recipe.files).filter((path) => path !== "run.sh") as path (path)}
+            <details class="disclosure">
+              <summary>{path}</summary>
+              <pre>{rendered(recipe, path, p.offer.inputs) ?? "Not text."}</pre>
+            </details>
+          {/each}
         {/if}
-        <pre>{p.offer.prompt}</pre>
         <div class="field">
           <label class="field__label" for="approval-mode-{p.offer.process}">Approve</label
           ><stemma-select

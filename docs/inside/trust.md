@@ -12,7 +12,7 @@ against that token, not against what the agent says it is.
 | **Personal** | Your computer, or a script | Until revoked | What you may, as you |
 | **Agent's** | An agent in a session | The session, a day at most | Read one group; post, open threads, leave notes, create papers, ask and cancel workshop requests, as “Claude, for Ada” |
 | **Job's** | An agent answering | The answer | Read one group; ask the workshop for you. The hub posts the answer |
-| **Process** | An agent in a workshop process | The lease | Read the group; post and attach in its request's thread only; fetch the group's repositories; push only its assigned branches |
+| **Process** | A workshop process: its script and its agents | The lease | Read the group; post and attach in its request's thread; what its recipe's permissions allow; fetch the group's repositories; push only its own branch |
 | **Build** | A build | The lease | Fetch one repository; report that build |
 
 Your personal token never reaches an agent, and neither does any token
@@ -22,16 +22,19 @@ administration.
 
 The tools an agent sees are exactly what its token allows. An answer's
 tools are read-only plus `ask_workshop`. A session's add posting. A
-process's let it post only in its own thread.
+process's let it post in its own thread, and do what its recipe's
+permissions allow: posting elsewhere, opening threads, leaving notes or
+creating papers. A process never does more than its requester may.
 
 ## Git
 
 All git traffic goes through the hub, which checks the token and the
 group's roles before passing it on to Forgejo. For a process, the hub reads
 the push's command list before streaming it: a push to any branch other
-than the assigned ones is refused before it reaches Forgejo. A rebase
-process may force-push only the branch it rebases. Only admins and the
-reserved `workshop` account may write `main`.
+than its own, `workshop/<request>-<process>`, is refused before it reaches
+Forgejo; a process whose recipe opens no pull requests pushes nothing. Only
+admins and the reserved `workshop` account may write `main`, and
+`workshop` merges only what a person approved.
 
 ## Approval on the machine
 

@@ -7,7 +7,10 @@ machines use, and a SQLite database with attachments in its data folder.
 
 The hub is light. It runs no agents, builds or checkouts: people's
 computers do. It only stores, coordinates, and makes HTTP calls to Forgejo
-and, for the workshop's orchestrators, to a model provider.
+and, for the workshop's orchestrators, to a model provider. To prepare the
+merges of the workshop's pull requests, it keeps bare copies of the groups'
+repositories in its data folder and merges with git's plumbing, so it
+needs git 2.38 or later; its image has it.
 
 ## With Docker Compose
 
@@ -73,7 +76,8 @@ guests read. Only admins, and the workshop, may push to `main`.
 Git goes through the hub, at its own address, which checks roles and
 tokens before passing on. The hub keeps two reserved Forgejo accounts that
 nobody signs in to: **worker**, which opens the workshop's pull requests,
-and **workshop**, the git orchestrator, which merges them.
+and **workshop**, the git orchestrator, which merges them once a person
+approves.
 
 ## Administration
 

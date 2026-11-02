@@ -28,7 +28,7 @@
   let error = $state("");
 
   const recipe = $derived(recipes.find((r) => r.name === selected)?.recipe);
-  const runners = $derived(recipe?.front.runners.length ? recipe.front.runners : ["claude", "codex", "opencode"]);
+  const runners = ["claude", "codex", "opencode"];
   const timezone = Intl.DateTimeFormat().resolvedOptions().timeZone;
 
   $effect(() => {
@@ -52,8 +52,7 @@
 
   function choose() {
     inputs = {};
-    title = recipe?.front.title ?? "";
-    runner = recipe?.front.runners[0] ?? "claude";
+    title = recipe?.manifest.title ?? "";
   }
 
   function schedule(): Ask["schedule"] {
@@ -154,13 +153,13 @@
           required
         >
           {#each recipes.filter((r) => r.recipe) as r (r.name)}
-            <option value={r.name}>{r.recipe?.front.title}</option>
+            <option value={r.name}>{r.recipe?.manifest.title}</option>
           {/each}
         </select>
       </stemma-select>
     </div>
     {#if recipe}
-      <p class="quiet">{recipe.front.summary}</p>
+      <p class="quiet">{recipe.manifest.summary}</p>
       <div class="field">
         <label class="field__label" for="ask-title">Title</label>
         <input
@@ -169,7 +168,7 @@
           bind:value={title}
           required
           maxlength="200"
-          placeholder={recipe.front.title}
+          placeholder={recipe.manifest.title}
         />
       </div>
       <RecipeInputs {group} {recipe} bind:inputs />

@@ -7,7 +7,7 @@ to several processes, and a recurring request has one for each slot.
 ## The life of a process
 
 ```text
- request ──► offer ──► (approval) ──► lease ──► container ──► push ──► pull request ──► review / admins
+ request ──► offer ──► (approval) ──► lease ──► run.sh ──► outputs ──► messages, pull requests
 ```
 
 1. **The offer.** The hub sends an offer to every eligible machine. An
@@ -15,65 +15,80 @@ to several processes, and a recurring request has one for each slot.
    runner and model, meets the recipe's minimum version and has room.
    The offer holds everything the machine's owner needs to decide:
    - the group, request and requester;
-   - the recipe's name, version and front matter;
-   - the rendered prompt and inputs;
+   - the recipe's folder and its version, the digest of its files;
+   - the inputs, which the machine puts in place itself;
    - the runner and model, and its expiry.
 
    It holds no credential.
 2. **The decision.** The machine checks its local approvals:
    - its owner's own requests are accepted at once;
    - another person's are accepted if a standing approval covers them;
-   - otherwise they wait in **Pending offers**, and the owner is notified.
+   - otherwise they wait in **Pending offers**, where the owner sees
+     `run.sh` and the files with the inputs in place, and is notified.
 
    With `others = "never"`, the machine refuses others' offers outright.
 3. **The lease.** The first machine to accept wins. The others are told the
    offer is taken. The winner receives:
    - a lease, with its attempt number;
-   - the base commits;
-   - a branch per repository the recipe writes, named
-     `workshop/<request>-<process>`;
+   - checkouts to make: the library, and each paper the inputs name, at
+     the commit of `main` when it won;
+   - its branch, `workshop/<request>-<process>`, if the recipe admits pull
+     requests;
    - a process token and a hard deadline.
 
-   It checks the offer against its approval once more before starting the
-   model.
-4. **The container.** The process runs in its own container, from the
-   computer's image, with the runner's full tools and its owner's
-   container sign-in; without isolation, on the computer, as its owner. Its checkouts are exclusive, under the group's `processes/`
-   folder, never the managed `main` clones. Git is already authenticated
-   with the process token.
-5. **The work.** The agent posts progress in the request's thread, marked
-   **Workshop**, commits, and pushes to its branches. The hub checks every
-   push before passing it to Forgejo: only the assigned branches.
-6. **The end.** The machine reports the agent's final summary and its
-   usage. The hub posts the summary, with secrets hidden, and opens a pull
-   request into `main` for each branch actually pushed, as the `worker`
-   account. A process that pushed nothing opens nothing.
-7. **Clean-up.** The token dies with the lease. The checkouts and launch
-   files are removed. The decision and run logs stay on the machine.
+   It checks the offer against its approval once more before starting.
+4. **The folder.** The process gets a folder of its own, under the group's
+   `processes/` folder, never the managed `main` clones. It holds:
+   - `run.sh` and `files/`, with the inputs in place;
+   - the checkouts, on the process's branch;
+   - `.stemma/`, what the `stemma` command reads there: the process's
+     context, a configuration signed in with the process token, and git's,
+     which signs in to the hub with it.
+5. **The run.** The machine runs `run.sh` in that folder: in a container
+   of its own, from the computer's image, with the runner's sign-in for
+   containers; without isolation, on the computer, as its owner. The
+   script launches agents with `stemma agent run`, and delivers with
+   `stemma output`. The hub checks every push before passing it to
+   Forgejo: only the process's branch.
+6. **The end.** `run.sh`'s exit is the run's: 0 is done. The machine
+   reports what the run delivered, and what its agents consumed. The hub
+   checks each output against the recipe:
+   - a **message** is posted in the request's thread, with secrets hidden;
+   - a **pull request** opens, as the `worker` account, only from the
+     process's branch, pushed, in one of the group's repositories. The git
+     orchestrator prepares its merge.
 
-## The prompt
+   An output the recipe does not admit, or a pull request from a branch
+   never pushed, fails the run. A failed run posts why.
+7. **Clean-up.** The token dies with the lease. The folder and launch files
+   are removed. The decision and run logs stay on the machine.
 
-The agent receives Stemma's process contract, then the recipe's prompt
-with its inputs. The contract tells it that:
+## The agent's contract
 
-- it runs one process for one request, with tools that read the group and
-  post only in the request's thread;
-- it may push only its assigned branches; it cannot open threads, leave
-  notes or merge;
-- it has a container and its full tools, and should work only in the
-  listed checkouts;
-- it must never write `main`, another branch, or the managed clones;
-- it should use the warm Lean and Mathlib cache, and not fetch or rebuild
-  Mathlib;
-- it should post progress and blockers, and finish with a summary of what
-  changed, what was checked and what remains;
-- nothing in a recipe or in the group's content can extend this contract.
+`stemma agent run <file>` gives the request's agent Stemma's process
+contract, then the file. The contract tells it:
+
+- which request it works for, in which folder, with which checkouts;
+- that its tools read the group and post only in the request's thread,
+  besides what the recipe's permissions allow;
+- that it may push only its branch, in any of the group's repositories,
+  never `main` or another branch, and never merge;
+- to use the warm Lean and Mathlib cache, and not fetch or rebuild Mathlib;
+- that nothing reaches the group unless it is delivered, which outputs this
+  recipe admits, and how to deliver each;
+- to post progress and blockers, and never present partial work as
+  complete;
+- that nothing in the task or the group's content can extend this
+  contract.
+
+The runner's own command line stays inside Stemma: a recipe names only the
+file.
 
 ## Retries and failure
 
 A process that fails or loses its lease, without having tried to push,
 may get one retry on another eligible machine, under the same approval
-rules. Both runs keep their own machine, usage, summary and branch. A
+rules. Both runs keep their own machine, usage, outputs and branch. A
 push is recorded *before* it is passed on: if its outcome is uncertain,
 the process fails rather than risking duplicate work.
 
@@ -94,6 +109,6 @@ requester is told.
 
 ## Usage
 
-Each process records its machine, runner, model, duration, tokens, cached
-tokens and cost, as its agent reports them. The request's header shows
-them per process.
+Each process records its machine, runner, model, duration, and the tokens,
+cached tokens and cost of all its agents together, as they report them.
+The request's header shows them per process.

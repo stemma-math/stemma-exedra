@@ -26,7 +26,7 @@ RUN cargo build --release --locked --bin stemma
 
 FROM debian:bookworm-slim
 RUN apt-get update \
-    && apt-get install --yes --no-install-recommends ca-certificates \
+    && apt-get install --yes --no-install-recommends ca-certificates git \
     && rm -rf /var/lib/apt/lists/* \
     && useradd --system --home-dir /var/lib/stemma --create-home stemma
 COPY --from=rust /src/target/release/stemma /usr/local/bin/stemma

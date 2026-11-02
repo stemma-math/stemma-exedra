@@ -18,7 +18,7 @@ use stemma_core::protocol::{JobSpec, Usage};
 
 use super::{Answer, Work, failed, prepared, run_command, tokens};
 use crate::config::CliRunner;
-use crate::job::{Context, JobDir, Progress, Prompt};
+use crate::job::{JobDir, Progress, Prompt};
 
 /// What OpenCode said, from its events.
 #[derive(Default)]
@@ -94,9 +94,7 @@ pub fn usage_of_output(output: &str) -> Usage {
     said.usage
 }
 
-#[allow(clippy::too_many_arguments)]
 pub async fn run(
-    context: &Context,
     config: &CliRunner,
     job: &JobSpec,
     agent: &AgentProfile,
@@ -105,7 +103,7 @@ pub async fn run(
     prompt: &Prompt,
     progress: &Progress,
 ) -> anyhow::Result<Answer> {
-    let mut prepared = prepared(context, config, job, agent, dir, work, prompt)?;
+    let mut prepared = prepared(config, job, agent, dir, work, prompt)?;
     // The request is its message, last.
     prepared.args.push(prompt.user.clone());
     let command = super::command(&prepared, work);

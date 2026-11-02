@@ -9,22 +9,24 @@ export interface Usage {
   cache_write_tokens?: number;
   cost_usd?: number;
 }
+export type Output = "pull_request" | "message";
 export interface Recipe {
-  front: {
+  manifest: {
     title: string;
     summary: string;
-    runners: string[];
-    writes: ("library" | "paper")[];
+    hint?: string;
     timeout_minutes: number;
-    min_version: string | null;
-    merge: "none" | "review";
-    accept_sorry: boolean;
+    min_version?: string;
+    /** Every output Stemma knows, when absent. */
+    outputs?: Output[];
+    permissions?: string[];
     inputs: Record<
       string,
       { description: string; kind: "text" | "paper" | "declaration" | "thread"; required: boolean }
     >;
   };
-  prompt: string;
+  /** `run.sh` and the files under `files/`: text, or anything else. */
+  files: Record<string, string | { base64: string }>;
 }
 export interface RecipeFile {
   name: string;
@@ -82,16 +84,30 @@ export interface WorkshopRequest {
   next_at: number | null;
   waiting: string | null;
   processes: Process[];
+  merges: Merge[];
+}
+/** A pull request a process opened, and its merge, prepared for approval. */
+export interface Merge {
+  id: number;
+  process: number;
+  repository: string;
+  number: number;
+  url: string;
+  title: string;
+  body: string;
+  state: "preparing" | "ready" | "waiting" | "merged" | "closed";
+  conflicts: string[];
+  explanation: string | null;
+  message: string | null;
+  approved_by: User | null;
 }
 export interface ProcessOffer {
-  rebase: { path: string; base: string; branch: string; force_push: boolean } | null;
   process: number;
   group: { id: number; slug: string; name: string };
   request: { number: number; title: string };
   requester: User;
   recipe: RecipeFile;
   inputs: Record<string, string>;
-  prompt: string;
   runner: string;
   model: string | null;
   recurring: boolean;
@@ -102,10 +118,10 @@ export interface ProcessOffer {
 const STATES: Record<string, { tone: string; text: string }> = {
   queued: { tone: "neutral", text: "Queued" },
   building: { tone: "info", text: "Building" },
-  reviewing: { tone: "info", text: "Reviewing" },
-  rebasing: { tone: "warning", text: "Rebasing" },
+  preparing: { tone: "info", text: "Preparing" },
+  ready: { tone: "info", text: "Ready to merge" },
   merged: { tone: "success", text: "Merged" },
-  refused: { tone: "danger", text: "Refused" },
+  closed: { tone: "neutral", text: "Closed" },
   waiting: { tone: "neutral", text: "Waiting" },
   running: { tone: "info", text: "Running" },
   done: { tone: "success", text: "Done" },
@@ -172,14 +188,45 @@ export interface WorkshopModel {
 export interface WorkshopStatus {
   model: WorkshopModel;
   turns: { number: number; thinking: boolean; waiting: string | null }[];
-  reviews: {
+  merges: {
     id: number;
     repository: string;
     number: number;
     url: string;
+    title: string;
     state: string;
     message: string | null;
-    rebases: number;
     thread: number;
   }[];
+}
+
+const OUTPUTS: Record<Output, string> = {
+  pull_request: "pull requests",
+  message: "messages",
+};
+
+/** What a recipe may deliver, and for how long it runs, in a sentence. */
+export function deliversText(recipe: Recipe): string {
+  const outputs = recipe.manifest.outputs ?? (Object.keys(OUTPUTS) as Output[]);
+  const what = outputs.length
+    ? `Delivers ${outputs.map((output) => OUTPUTS[output]).join(" and ")}`
+    : "Delivers nothing";
+  const also = recipe.manifest.permissions?.length
+    ? `; may also ${recipe.manifest.permissions.map((p) => p.replaceAll("_", " ")).join(", ")}`
+    : "";
+  return `${what}${also}; runs for at most ${recipe.manifest.timeout_minutes} minutes`;
+}
+
+/** A recipe's text file, with each declared input's value in place, as a
+ * machine runs it; `null` for a file that is not text. */
+export function rendered(
+  recipe: Recipe,
+  path: string,
+  inputs: Record<string, string> = {},
+): string | null {
+  const file = recipe.files[path];
+  if (typeof file !== "string") return null;
+  return file.replace(/\{\{([^}]*)\}\}/g, (whole, name: string) =>
+    name.trim() in recipe.manifest.inputs ? (inputs[name.trim()] ?? "") : whole,
+  );
 }
