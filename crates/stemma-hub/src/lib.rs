@@ -181,6 +181,21 @@ pub async fn create_admin(config: Config, account: NewAccount) -> anyhow::Result
     Ok(())
 }
 
+/// Gives an account a new password, from the hub's own machine, ending its
+/// sessions.
+pub async fn reset_password(
+    config: Config,
+    username: &str,
+    password: String,
+) -> anyhow::Result<()> {
+    let state = open(config).await?;
+    api::reset_password(&state, username, password)
+        .await
+        .map_err(|e| anyhow::anyhow!(e.message))?;
+    tracing::info!(username, "Reset the account's password");
+    Ok(())
+}
+
 /// Removes files uploaded more than a day ago that no message carries.
 async fn remove_unclaimed_uploads(state: &AppState) -> anyhow::Result<()> {
     let keys: Vec<String> = sqlx::query_scalar(

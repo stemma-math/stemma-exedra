@@ -870,6 +870,37 @@ async fn changing_the_password_ends_other_sessions() {
     );
 }
 
+#[tokio::test]
+async fn the_hubs_owner_resets_a_forgotten_password() {
+    let hub = TestHub::new().await;
+    let ada = hub.admin_with_group().await;
+    let short = stemma_hub::api::reset_password(&hub.state, "ada", "short".into()).await;
+    assert!(short.is_err());
+    let nobody = stemma_hub::api::reset_password(&hub.state, "nobody", "long enough".into()).await;
+    assert_eq!(nobody.unwrap_err().code, "not_found");
+    stemma_hub::api::reset_password(&hub.state, "@Ada", "a new one".into())
+        .await
+        .unwrap();
+    assert_eq!(hub.get(&ada, "/me").await.status, StatusCode::UNAUTHORIZED);
+    let old = hub
+        .post(
+            &Client::default(),
+            "/session",
+            json!({"username": "ada", "password": "analytical"}),
+        )
+        .await;
+    assert_ne!(old.status, StatusCode::OK);
+    let new = signed_in(
+        &hub.post(
+            &Client::default(),
+            "/session",
+            json!({"username": "ada", "password": "a new one"}),
+        )
+        .await,
+    );
+    assert_eq!(hub.get(&new, "/me").await.status, StatusCode::OK);
+}
+
 fn multipart(name: &str, content_type: &str, data: &[u8]) -> (String, Vec<u8>) {
     let boundary = "stemma-test-boundary";
     let mut body = format!(

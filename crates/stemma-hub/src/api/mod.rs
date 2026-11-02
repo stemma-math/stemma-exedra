@@ -1,7 +1,7 @@
 //! The JSON API, version 1, under `/api/v1`.
 
 mod account;
-pub use account::{create_user, valid_username};
+pub use account::{create_user, reset_password, valid_username};
 pub(crate) mod attachments;
 mod events;
 pub(crate) mod forum;

@@ -129,6 +129,15 @@ enum HubCommand {
         #[arg(long)]
         password_stdin: bool,
     },
+    /// Give an account a new password, for someone who forgot theirs, and
+    /// sign them out of the web; their computers stay signed in.
+    ResetPassword {
+        #[arg(long)]
+        username: String,
+        /// Read the password from standard input instead of asking.
+        #[arg(long)]
+        password_stdin: bool,
+    },
 }
 
 #[tokio::main]
@@ -226,6 +235,15 @@ async fn hub(args: HubArgs) -> anyhow::Result<()> {
                 password,
             };
             stemma_hub::create_admin(config, account).await
+        }
+        HubCommand::ResetPassword {
+            username,
+            password_stdin,
+        } => {
+            let password = read_password(password_stdin)?;
+            stemma_hub::reset_password(config, &username, password).await?;
+            println!("Gave {username} a new password, and signed them out of the web.");
+            Ok(())
         }
     }
 }
