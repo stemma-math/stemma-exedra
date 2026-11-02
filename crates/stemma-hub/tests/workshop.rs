@@ -881,3 +881,87 @@ async fn a_process_checks_out_the_library_and_may_push_its_branch_anywhere_in_th
     }
     panic!("the process should have failed");
 }
+
+#[tokio::test(flavor = "multi_thread")]
+async fn every_group_has_general_the_hubs_unless_its_own_replaces_it() {
+    let hub = hub(None).await;
+    let ada = person(&hub, "ada", true).await;
+    group(&hub, &ada).await;
+    // The group's own `general/`, from the template, comes from the forge.
+    let recipes = call(&hub, &ada, "GET", "/groups/geometry/workshop/recipes", None).await;
+    let general = &recipes[0];
+    assert_eq!(general["name"], "general");
+    assert_ne!(general["commit"], "builtin");
+    assert!(!general["url"].as_str().unwrap().is_empty());
+    // Without the folder, as before recipes were folders, the hub's own.
+    hub._forge
+        .push_branch(
+            "geometry",
+            "recipes",
+            "main",
+            &[],
+            &[
+                "general/recipe.toml",
+                "general/run.sh",
+                "general/files/prompt.md",
+            ],
+        )
+        .await;
+    let recipes = call(&hub, &ada, "GET", "/groups/geometry/workshop/recipes", None).await;
+    let names: Vec<&str> = recipes
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|r| r["name"].as_str().unwrap())
+        .collect();
+    assert_eq!(names, ["general", "prove", "review-paper"]);
+    let general = &recipes[0];
+    assert_eq!(general["commit"], "builtin");
+    assert_eq!(general["url"], "");
+    assert!(general["version"].as_str().unwrap().starts_with("builtin-"));
+    assert!(general["error"].is_null());
+    let mut socket = machine(&hub, &ada).await;
+    let mut ask = ask_body("general", json!({"kind":"mine"}));
+    ask["inputs"] = json!({"task": "Tidy the library's imports."});
+    let asked = call(
+        &hub,
+        &ada,
+        "POST",
+        "/groups/geometry/workshop/requests",
+        Some(ask),
+    )
+    .await;
+    assert_eq!(asked["thread"]["kind"], "request");
+    let HubMessage::ProcessOffer(offer) = next(&mut socket).await else {
+        panic!("offer")
+    };
+    assert_eq!(offer.recipe.commit, "builtin");
+    let rendered = offer
+        .recipe
+        .recipe
+        .as_ref()
+        .unwrap()
+        .render("general", &offer.inputs)
+        .unwrap();
+    assert!(
+        String::from_utf8_lossy(&rendered["files/prompt.md"])
+            .contains("Tidy the library's imports.")
+    );
+    // A group's own `general/`, even an invalid one, replaces the hub's.
+    hub._forge
+        .push_branch(
+            "geometry",
+            "recipes",
+            "main",
+            &[("general/recipe.toml", "not a manifest")],
+            &[],
+        )
+        .await;
+    let recipes = call(&hub, &ada, "GET", "/groups/geometry/workshop/recipes", None).await;
+    assert_eq!(recipes.as_array().unwrap().len(), 3);
+    let general = &recipes[0];
+    assert_eq!(general["name"], "general");
+    assert_ne!(general["commit"], "builtin");
+    assert!(general["recipe"].is_null());
+    assert!(!general["error"].is_null());
+}

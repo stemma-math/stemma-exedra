@@ -139,7 +139,7 @@
           <p>{file.recipe.manifest.summary}</p>
           {#if file.recipe.manifest.hint}<p class="quiet">{file.recipe.manifest.hint}</p>{/if}
           <p class="quiet">
-            {deliversText(file.recipe)}. <a class="link" href={file.url}>{file.name}</a>, version
+            {deliversText(file.recipe)}. {#if file.url}<a class="link" href={file.url}>{file.name}</a>{:else}{file.name}, from the hub{/if}, version
             <code title={file.version}>{file.version.slice(0, 12)}</code>.
           </p>
           {#if Object.keys(file.recipe.manifest.inputs).length}
@@ -170,7 +170,7 @@
             </details>
           {/each}
         {:else}
-          <p class="quiet"><a class="link" href={file.url}>{file.name}</a> in the forge.</p>
+          <p class="quiet">{#if file.url}<a class="link" href={file.url}>{file.name}</a> in the forge{:else}{file.name}, from the hub{/if}.</p>
         {/if}
       </details>
     {/each}

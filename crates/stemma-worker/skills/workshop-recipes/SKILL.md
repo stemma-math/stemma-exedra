@@ -20,7 +20,9 @@ group's admins merge them. A recipe holds at most 200 files and 1 MiB.
 
 Look at the recipes the group already has first (`stemma tools workshop recipes`,
 or the `list_recipes` tool), so as not to duplicate one and to match how the
-group writes them. `general` covers anything no other recipe does: a new
+group writes them. `general` covers anything no other recipe does, and
+every group has it: the hub provides it unless the repository has its own
+`general/` folder, which replaces it. A new
 recipe is worth it for work the group asks for often, or that needs its own
 inputs, steps or limits.
 

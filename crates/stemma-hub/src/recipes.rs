@@ -35,6 +35,45 @@ pub fn template() -> Vec<(String, String)> {
     .collect()
 }
 
+/// The name of the recipe every group has.
+pub const GENERAL: &str = "general";
+
+/// The hub's own `general`, from the template, for a group whose `recipes`
+/// repository has no `general/` folder. Its version follows the template.
+pub fn builtin_general() -> RecipeFile {
+    let prefix = format!("{GENERAL}/");
+    let mut digest = Sha256::new();
+    let mut folder = BTreeMap::new();
+    for (path, text) in template() {
+        let Some(path) = path.strip_prefix(&prefix) else {
+            continue;
+        };
+        digest.update(path.as_bytes());
+        digest.update([0]);
+        digest.update(text.as_bytes());
+        digest.update(b"\n");
+        folder.insert(path.to_owned(), text.into_bytes());
+    }
+    let version: String = digest
+        .finalize()
+        .iter()
+        .take(20)
+        .map(|b| format!("{b:02x}"))
+        .collect();
+    let (recipe, error) = match Recipe::parse(GENERAL, folder) {
+        Ok(r) => (Some(r), None),
+        Err(e) => (None, Some(e)),
+    };
+    RecipeFile {
+        name: GENERAL.to_owned(),
+        version: format!("builtin-{version}"),
+        commit: "builtin".to_owned(),
+        url: String::new(),
+        recipe,
+        error,
+    }
+}
+
 /// Whether `name` may name a recipe: letters, digits, `-` and `_`.
 pub fn valid_name(name: &str) -> bool {
     !name.is_empty()
@@ -43,7 +82,18 @@ pub fn valid_name(name: &str) -> bool {
             .all(|b| b.is_ascii_alphanumeric() || b"_-".contains(&b))
 }
 
+/// A group's recipes, sorted by name. Every group has `general`: the hub's,
+/// unless the group's own `general/` folder, even an invalid one, replaces it.
 pub async fn list(state: &AppState, slug: &str) -> ApiResult<Vec<RecipeFile>> {
+    let mut recipes = list_forge(state, slug).await?;
+    if !recipes.iter().any(|r| r.name == GENERAL) {
+        recipes.push(builtin_general());
+        recipes.sort_by(|a, b| a.name.cmp(&b.name));
+    }
+    Ok(recipes)
+}
+
+async fn list_forge(state: &AppState, slug: &str) -> ApiResult<Vec<RecipeFile>> {
     let forge = state
         .forge
         .as_ref()

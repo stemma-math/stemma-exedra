@@ -151,7 +151,7 @@
           <dd>At most {request.ask.wait_hours === 1 ? "an hour" : `${request.ask.wait_hours} hours`} per run</dd>
           <dt class="label">Recipe</dt>
           <dd>
-            <a class="link" href={request.recipe.url}>{request.recipe.name}</a>, version
+            {#if request.recipe.url}<a class="link" href={request.recipe.url}>{request.recipe.name}</a>{:else}{request.recipe.name}{/if}, version
             <code title={request.recipe.version}>{request.recipe.version.slice(0, 12)}</code>
           </dd>
         {:else}

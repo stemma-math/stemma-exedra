@@ -21,6 +21,10 @@ propose recipes on a branch with a pull request, and admins merge them.
 Once merged, the recipe appears on the board. If it has errors, the board
 shows them instead, with the file and line.
 
+Every group always has `general`. A new group's repository starts with its
+folder, to adapt. Without a `general/` folder, the hub provides its own;
+with one, even one with errors, the group's replaces the hub's.
+
 ## The folder
 
 ```text
