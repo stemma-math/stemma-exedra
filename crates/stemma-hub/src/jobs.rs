@@ -429,6 +429,7 @@ async fn start(
     .await?;
     Ok(JobSpec {
         process: false,
+        permissions: vec![],
         id: job.id,
         group: GroupRef {
             id: group.group_id,

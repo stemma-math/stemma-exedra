@@ -122,6 +122,8 @@ pub struct Request {
     pub next_at: Option<i64>,
     pub waiting: Option<String>,
     pub processes: Vec<Process>,
+    /// The pull requests its processes opened, each with its merge card.
+    pub merges: Vec<Merge>,
 }
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Process {
@@ -141,6 +143,46 @@ pub struct Process {
     pub branches: Vec<ProcessBranch>,
     pub usage: Usage,
     pub error: Option<String>,
+}
+/// What a process delivered, as its script or its agent said; the hub
+/// checks each against its recipe before acting on it.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
+pub enum Delivered {
+    /// A message in the request's thread.
+    Message { text: String },
+    /// A pull request from the process's branch in `repository`: `library`,
+    /// or `paper-<slug>`.
+    PullRequest {
+        repository: String,
+        title: String,
+        #[serde(default)]
+        body: String,
+    },
+}
+/// A pull request a process opened, and what merging it into `main` takes:
+/// the git orchestrator prepares the merge, and a person approves it.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct Merge {
+    pub id: i64,
+    pub process: i64,
+    pub repository: String,
+    pub number: i64,
+    pub url: String,
+    pub title: String,
+    /// What its process said of it.
+    pub body: String,
+    /// `preparing`, `ready`, `waiting` (for the group's model), `merged`
+    /// or `closed`.
+    pub state: String,
+    /// The files where it and `main` both changed, resolved in the prepared
+    /// merge.
+    pub conflicts: Vec<String>,
+    /// How the prepared merge resolves them, in plain words.
+    pub explanation: Option<String>,
+    /// Why it is not ready, or what became of it.
+    pub message: Option<String>,
+    pub approved_by: Option<User>,
 }
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct ProcessBranch {

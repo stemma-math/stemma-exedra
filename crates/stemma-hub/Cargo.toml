@@ -30,7 +30,7 @@ stemma-core.workspace = true
 subtle.workspace = true
 thiserror.workspace = true
 time.workspace = true
-tokio = { workspace = true, features = ["time"] }
+tokio = { workspace = true, features = ["process", "time"] }
 tokio-stream.workspace = true
 tokio-util = { workspace = true, features = ["rt"] }
 toml.workspace = true

@@ -24,7 +24,8 @@ pub struct Hub {
     pub config: Config,
     pub model_key: crate::model::Key,
     pub model_client: crate::model::Client,
-    pub review_changes: tokio::sync::Mutex<()>,
+    /// One merge prepared or made at a time.
+    pub merge_changes: tokio::sync::Mutex<()>,
     /// Every group's live updates; each listener keeps its group's.
     pub events: broadcast::Sender<GroupEvent>,
     /// Every person's own live updates; each listener keeps its person's.
@@ -80,7 +81,7 @@ impl Hub {
             sockets: tokio_util::task::TaskTracker::new(),
             model_key: crate::model::Key::load_or_create(&config.data_dir.join("workshop.key"))?,
             model_client: crate::model::Client::new()?,
-            review_changes: Default::default(),
+            merge_changes: Default::default(),
             config,
             events,
             personal,

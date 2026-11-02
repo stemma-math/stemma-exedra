@@ -80,7 +80,6 @@ fn gathers(kind: NotificationKind) -> bool {
         NotificationKind::Mention
             | NotificationKind::Answer
             | NotificationKind::ReviewMerged
-            | NotificationKind::ReviewRefused
             | NotificationKind::RequestDone
             | NotificationKind::RequestFailed
             | NotificationKind::RequestExpired
@@ -373,7 +372,6 @@ async fn notification(state: &AppState, row: Row) -> ApiResult<Notification> {
             | NotificationKind::ProcessApproval
             | NotificationKind::ProcessPullRequest
             | NotificationKind::ReviewMerged
-            | NotificationKind::ReviewRefused
     );
     // A thread of a group they have left is no longer theirs to read.
     let thread = match (row.thread_number, row.member) {

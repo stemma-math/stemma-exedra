@@ -153,23 +153,23 @@ async fn serve(
             );
         }
     }
+    // A process pushes only its own branch, in any of the group's
+    // repositories, and only if its recipe admits pull requests.
     let process_branch = if let Scope::Process { work, .. } = viewer.scope {
         if service == Service::Push {
-            let raw: Option<String> =
-                sqlx::query_scalar("SELECT branches FROM workshop_processes WHERE work_id=?")
+            let branch: Option<String> =
+                sqlx::query_scalar("SELECT branch FROM workshop_processes WHERE work_id=?")
                     .bind(work)
                     .fetch_optional(&state.db)
                     .await
-                    .unwrap_or(None);
-            let branches: Vec<stemma_core::workshop::ProcessBranch> = raw
-                .and_then(|s| serde_json::from_str(&s).ok())
-                .unwrap_or_default();
-            match branches.into_iter().find(|b| b.repository == name) {
-                Some(branch) => Some(format!("refs/heads/{}", branch.branch)),
+                    .unwrap_or(None)
+                    .flatten();
+            match branch {
+                Some(branch) => Some(format!("refs/heads/{branch}")),
                 None => {
                     return refused(
                         StatusCode::FORBIDDEN,
-                        "This process cannot push to this repository",
+                        "This process's recipe opens no pull requests, so it pushes nothing",
                     );
                 }
             }
@@ -376,10 +376,7 @@ async fn check_scoped_push(
             Err(why) => return Err(push_error(why, &read)),
             Ok(Some((refs, _))) => {
                 if branch.is_some_and(|branch| refs.iter().any(|name| name != branch)) {
-                    return Err(push_error(
-                        "A process may push only its assigned branch",
-                        &read,
-                    ));
+                    return Err(push_error("A process may push only its own branch", &read));
                 }
                 if let Some(why) = refused_ref(&refs, role) {
                     return Err(push_error(why, &read));

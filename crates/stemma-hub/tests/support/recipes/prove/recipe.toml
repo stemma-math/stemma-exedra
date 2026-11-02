@@ -1,0 +1,8 @@
+title = "Prove a statement"
+summary = "Proves a statement in the library, on a branch, and opens a pull request."
+timeout_minutes = 60
+
+[inputs.statement]
+description = "What to prove, in words or in Lean"
+kind = "text"
+required = true

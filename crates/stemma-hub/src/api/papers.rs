@@ -31,7 +31,9 @@ pub async fn create(
     Path(slug): Path<String>,
     Json(body): Json<CreatePaper>,
 ) -> ApiResult<(StatusCode, Json<Paper>)> {
-    viewer.require_full()?;
+    if !viewer.may("create_paper") {
+        viewer.require_full()?;
+    }
     let group = Membership::of(&state, &viewer, &slug).await?;
     let paper = papers::create(&state, &group, &viewer.user(), &body.slug, &body.title).await?;
     Ok((StatusCode::CREATED, Json(paper)))

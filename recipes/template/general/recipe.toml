@@ -1,0 +1,17 @@
+title = "Anything else"
+summary = "Whatever the group needs that no other recipe covers: proofs, papers, reviews, refactors or research."
+hint = "Use it only when no other recipe fits the request."
+timeout_minutes = 1440
+
+[inputs.task]
+description = "What to do, in your own words"
+kind = "text"
+required = true
+
+[inputs.paper]
+description = "A paper to work on"
+kind = "paper"
+
+[inputs.thread]
+description = "A thread with the discussion behind it"
+kind = "thread"

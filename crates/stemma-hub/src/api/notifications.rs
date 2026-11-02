@@ -88,7 +88,7 @@ pub async fn send_note(
 ) -> ApiResult<StatusCode> {
     let group = Membership::of(&state, &viewer, &slug).await?;
     let agent = match viewer.agent() {
-        Some(scope) if scope.session => Some(scope.agent.clone()),
+        Some(scope) if scope.session || viewer.may("notify") => Some(scope.agent.clone()),
         Some(_) => {
             return Err(ApiError::forbidden(
                 "An answer's agent cannot leave notes: it answers in its thread",

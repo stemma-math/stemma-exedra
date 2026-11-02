@@ -50,6 +50,9 @@ pub enum Scope {
         agent: AgentScope,
         work: i64,
         attempt: u32,
+        /// The tools its recipe allows beyond reading and posting in its
+        /// request, by name.
+        permissions: Vec<String>,
     },
     Build {
         work: i64,
@@ -98,6 +101,11 @@ impl Viewer {
         }
     }
 
+    /// Whether a process's recipe allows the tool `name` beyond its request.
+    pub fn may(&self, name: &str) -> bool {
+        matches!(&self.scope, Scope::Process { permissions, .. } if permissions.iter().any(|p| p == name))
+    }
+
     /// Fails for an agent's token: what follows needs the person.
     pub fn require_full(&self) -> Result<(), ApiError> {
         match self.scope {
@@ -144,6 +152,7 @@ struct TokenRow {
     agent: Option<String>,
     can_post: bool,
     attachments: String,
+    permissions: String,
 }
 
 impl FromRequestParts<AppState> for Viewer {
@@ -180,7 +189,7 @@ async fn authenticate(headers: &HeaderMap, state: &AppState) -> Result<Option<Vi
         let hash = secret::token_hash(&token);
         let row = sqlx::query_as::<_, TokenRow>(
             "SELECT u.id, u.username, u.display_name, u.hub_admin, t.id AS token_id,
-                    t.kind, t.build_work, t.lease_attempt, t.group_id, t.thread_id, t.agent, t.can_post, t.attachments
+                    t.kind, t.build_work, t.lease_attempt, t.group_id, t.thread_id, t.agent, t.can_post, t.attachments, t.permissions
              FROM api_tokens t JOIN users u ON u.id = t.user_id
              WHERE t.token_hash = ? AND t.revoked_at IS NULL
                AND (t.expires_at IS NULL OR t.expires_at > ?)",
@@ -219,6 +228,7 @@ async fn authenticate(headers: &HeaderMap, state: &AppState) -> Result<Option<Vi
                     .build_work
                     .ok_or_else(|| ApiError::internal("process token without work"))?,
                 attempt: row.lease_attempt.unwrap_or_default() as u32,
+                permissions: serde_json::from_str(&row.permissions).unwrap_or_default(),
                 agent: AgentScope {
                     token_id: row.token_id,
                     attachments: row.attachments.parse().map_err(ApiError::internal)?,
@@ -462,13 +472,22 @@ fn build_path(viewer: &Viewer, parts: &Parts) -> Result<(), ApiError> {
             .get::<axum::extract::OriginalUri>()
             .map(|uri| uri.0.path())
             .unwrap_or_else(|| parts.uri.path());
+        let groups = path.strip_prefix("/api/v1/groups/").unwrap_or("");
+        let in_group = |end: &str| {
+            groups
+                .split_once('/')
+                .is_some_and(|(_, rest)| rest == end.trim_start_matches('/'))
+        };
         if path.starts_with("/git/")
             || (parts.method == axum::http::Method::GET && path.starts_with("/api/v1/groups/"))
             || (parts.method == axum::http::Method::POST
                 && path.starts_with("/api/v1/groups/")
                 && (path.ends_with("/messages")
                     || path.ends_with("/attachments")
-                    || path.ends_with("/resolve")))
+                    || path.ends_with("/resolve")
+                    || (in_group("threads") && viewer.may("open_thread"))
+                    || (in_group("notes") && viewer.may("notify"))
+                    || (in_group("papers") && viewer.may("create_paper"))))
         {
             return Ok(());
         }

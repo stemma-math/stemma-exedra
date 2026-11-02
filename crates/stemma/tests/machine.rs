@@ -420,3 +420,261 @@ printf 'Read in the workspace.\n' > "$answer"
     assert!(status.success());
     server.abort();
 }
+
+/// A whole workshop process on a machine that runs its jobs unisolated: the
+/// recipe's run.sh, with its inputs in place, launches the request's agent
+/// with `stemma agent run`, pushes its branch, and delivers a pull request
+/// and a message with `stemma output`; the hub opens the pull request, and
+/// its merge, approved, lands in main.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_process_runs_its_recipe_and_delivers_what_it_made() {
+    use serde_json::{Value, json};
+    use std::{os::unix::fs::PermissionsExt, sync::Arc, time::Duration};
+    let temp = tempfile::tempdir().unwrap();
+    let forge = stemma_fake_forge::FakeForge::start().await;
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let url = format!("http://{}", listener.local_addr().unwrap());
+    let state = Arc::new(
+        stemma_hub::Hub::new(
+            stemma_hub::db::in_memory().await.unwrap(),
+            stemma_hub::Config {
+                data_dir: temp.path().join("hub"),
+                public_url: Some(url.clone()),
+                forge: Some(stemma_hub::config::ForgeConfig::new(
+                    &forge.url,
+                    "http://forge.test/callback",
+                    stemma_hub::config::ForgeSecrets {
+                        token: stemma_fake_forge::TOKEN.into(),
+                        webhook_secret: "test hook".into(),
+                        client_secret: "test client".into(),
+                    },
+                )),
+                ..Default::default()
+            },
+        )
+        .unwrap(),
+    );
+    stemma_hub::api::create_user(
+        &state,
+        stemma_core::api::NewAccount {
+            username: "ada".into(),
+            display_name: "Ada".into(),
+            password: "test password".into(),
+        },
+        true,
+    )
+    .await
+    .unwrap();
+    let app = stemma_hub::app(state.clone());
+    let server = tokio::spawn(async move {
+        axum::serve(listener, app).await.unwrap();
+    });
+    let mut hub = stemma_client::Hub::new(&url, None).unwrap();
+    hub.sign_in("ada", "test password").await.unwrap();
+    let token = hub.create_token("Test computer").await.unwrap();
+    let http = reqwest::Client::new();
+    let call = |method: reqwest::Method, path: &str, body: Value| {
+        http.request(method, format!("{url}/api/v1{path}"))
+            .bearer_auth(&token.secret)
+            .json(&body)
+            .send()
+    };
+    let created = call(
+        reqwest::Method::POST,
+        "/groups",
+        json!({"slug":"algebra", "name":"Algebra"}),
+    )
+    .await
+    .unwrap();
+    assert!(created.status().is_success());
+    state
+        .forge
+        .as_ref()
+        .unwrap()
+        .commit_files(
+            "algebra",
+            "recipes",
+            "main",
+            "Add a recipe",
+            &[
+                (
+                    "touch/recipe.toml".into(),
+                    "title = \"Touch\"\nsummary = \"Adds a theorem.\"\ntimeout_minutes = 5\n\
+                     [inputs.name]\ndescription = \"Its name\"\nkind = \"text\"\nrequired = true\n"
+                        .into(),
+                ),
+                (
+                    "touch/run.sh".into(),
+                    r#"#!/bin/sh
+set -eu
+answer=$(stemma agent run files/prompt.md)
+cd library
+printf 'theorem {{name}} : True := trivial\n' > Touched.lean
+git add Touched.lean
+git commit -qm 'Add {{name}}'
+git push -q origin HEAD
+stemma output pull-request library --title 'Add {{name}}' --body "$answer"
+stemma output message "Added {{name}}. $answer"
+"#
+                    .into(),
+                ),
+                (
+                    "touch/files/prompt.md".into(),
+                    "Say hello to {{name}}.".into(),
+                ),
+            ],
+        )
+        .await
+        .unwrap();
+    let runner = temp.path().join("fake-codex");
+    std::fs::write(
+        &runner,
+        r#"#!/bin/sh
+set -eu
+if [ "${1:-}" = --version ]; then echo 'codex test'; exit 0; fi
+answer=''
+while [ "$#" -gt 0 ]; do
+  case "$1" in
+    --output-last-message) shift; answer="$1" ;;
+  esac
+  shift
+done
+prompt=$(cat)
+case "$PWD" in */groups/algebra/processes/*) ;; *) exit 3 ;; esac
+test -d library/.git
+case "$prompt" in *"Say hello to touched."*) ;; *) exit 4 ;; esac
+printf 'Hello, touched.\n' > "$answer"
+"#,
+    )
+    .unwrap();
+    std::fs::set_permissions(&runner, std::fs::Permissions::from_mode(0o700)).unwrap();
+    let config_dir = temp.path().join("config");
+    std::fs::create_dir_all(&config_dir).unwrap();
+    std::fs::write(
+        config_dir.join("config.toml"),
+        format!(
+            "[machine]\nisolation = \"none\"\n[agents.codex]\ncommand = {}\n\
+             [workshop]\nenabled = true\nbuild = false\n",
+            serde_json::to_string(&runner.display().to_string()).unwrap()
+        ),
+    )
+    .unwrap();
+    let mut process = tokio::process::Command::new(env!("CARGO_BIN_EXE_stemma"));
+    process
+        .args(["machine", "run"])
+        .env("STEMMA_CONFIG_DIR", &config_dir)
+        .env("STEMMA_STATE_DIR", temp.path().join("state"))
+        .env("STEMMA_DATA_DIR", temp.path().join("data"))
+        .env("STEMMA_SERVICE_DIR", temp.path().join("service"))
+        .env("STEMMA_HUB", &url)
+        .env("STEMMA_TOKEN", &token.secret)
+        .kill_on_drop(true)
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::from(
+            std::fs::File::create(temp.path().join("service.log")).unwrap(),
+        ));
+    let _child = process.spawn().unwrap();
+    let logs = || {
+        let mut text = std::fs::read_to_string(temp.path().join("service.log")).unwrap();
+        if let Ok(log) = std::fs::read_to_string(temp.path().join("state/logs/workshop.jsonl")) {
+            text.push_str(&log);
+        }
+        text
+    };
+    tokio::time::timeout(Duration::from_secs(15), async {
+        loop {
+            if state.workers.lock().await.is_online(token.token.id) {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(30)).await;
+        }
+    })
+    .await
+    .expect("service connects with the personal token");
+    let asked = call(
+        reqwest::Method::POST,
+        "/groups/algebra/workshop/requests",
+        json!({
+            "recipe": "touch", "title": "Touch it", "inputs": {"name": "touched"},
+            "assignment": {"kind": "mine"}, "runner": "codex", "model": null,
+            "schedule": {"timezone": "Europe/Madrid"}, "wait_hours": 1,
+        }),
+    )
+    .await
+    .unwrap();
+    assert!(
+        asked.status().is_success(),
+        "{}",
+        asked.text().await.unwrap()
+    );
+    let request: Value = tokio::time::timeout(Duration::from_secs(60), async {
+        loop {
+            let request: Value = call(
+                reqwest::Method::GET,
+                "/groups/algebra/workshop/requests/1",
+                Value::Null,
+            )
+            .await
+            .unwrap()
+            .json()
+            .await
+            .unwrap();
+            if request["state"] == "failed" {
+                panic!("the process failed: {request}\n{}", logs());
+            }
+            if request["state"] == "done" && request["merges"][0]["state"] == "ready" {
+                break request;
+            }
+            tokio::time::sleep(Duration::from_millis(100)).await;
+        }
+    })
+    .await
+    .unwrap_or_else(|_| panic!("the process did not finish: {}", logs()));
+    assert_eq!(request["merges"][0]["title"], "Add touched");
+    assert!(
+        request["merges"][0]["body"]
+            .as_str()
+            .unwrap()
+            .starts_with("Hello, touched.")
+    );
+    let thread: Value = call(
+        reqwest::Method::GET,
+        "/groups/algebra/threads/1",
+        Value::Null,
+    )
+    .await
+    .unwrap()
+    .json()
+    .await
+    .unwrap();
+    assert!(
+        thread["messages"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|m| m["body"] == "Added touched. Hello, touched."),
+        "{thread}"
+    );
+    let id = request["merges"][0]["id"].as_i64().unwrap();
+    let approved = call(
+        reqwest::Method::POST,
+        &format!("/groups/algebra/workshop/merges/{id}/approve"),
+        json!({}),
+    )
+    .await
+    .unwrap();
+    assert!(
+        approved.status().is_success(),
+        "{}",
+        approved.text().await.unwrap()
+    );
+    assert!(forge.pulls("algebra", "library")[0].merged.is_some());
+    // The process's folder is gone.
+    assert_eq!(
+        std::fs::read_dir(temp.path().join("data/groups/algebra/processes"))
+            .unwrap()
+            .count(),
+        0
+    );
+    server.abort();
+}

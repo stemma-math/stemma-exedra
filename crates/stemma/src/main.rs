@@ -4,6 +4,7 @@ mod client;
 mod launcher;
 mod machine;
 mod output;
+mod process;
 mod settings;
 mod tools;
 mod workshop;
@@ -41,6 +42,8 @@ This computer:
 
 Workshop:
   workshop    Approve work on this computer
+  agent       In a recipe's run.sh: launch the request's agent
+  output      In a recipe's run.sh: deliver a message or a pull request
 
 Running a hub:
   hub         Run a hub
@@ -87,6 +90,10 @@ enum Command {
     /// Serve Stemma's tools to an agent over MCP, on standard input and
     /// output, for agents you install Stemma into.
     Mcp(client::McpArgs),
+    /// In a workshop process: launch the request's agent on a prompt.
+    Agent(process::AgentArgs),
+    /// In a workshop process: deliver a message or a pull request.
+    Output(process::OutputArgs),
 }
 
 #[derive(Args)]
@@ -187,6 +194,8 @@ async fn main() -> anyhow::Result<()> {
         Command::Config(args) => settings::config(args),
         Command::Tools => unreachable!("tools are handled from the shared catalog"),
         Command::Mcp(args) => client::mcp(args).await,
+        Command::Agent(args) => process::agent(args).await,
+        Command::Output(args) => process::output(args),
         Command::Claude(args) => exit(launcher::launch(runners::CLAUDE_CODE, args).await?),
         Command::Codex(args) => exit(launcher::launch(runners::CODEX, args).await?),
         Command::Opencode(args) => exit(launcher::launch(runners::OPENCODE, args).await?),

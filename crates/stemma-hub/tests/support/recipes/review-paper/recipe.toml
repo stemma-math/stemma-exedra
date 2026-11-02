@@ -1,0 +1,9 @@
+title = "Review a paper"
+summary = "Reads a working paper and leaves a mathematical review in the request's thread."
+timeout_minutes = 45
+outputs = ["message"]
+
+[inputs.paper_reference]
+description = "The paper's short name or [[p/short-name]] reference"
+kind = "text"
+required = true

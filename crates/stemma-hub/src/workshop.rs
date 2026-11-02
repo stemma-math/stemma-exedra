@@ -14,7 +14,7 @@ use serde::Deserialize;
 use stemma_core::{
     api::{NotificationKind, Thread, ThreadKind, User},
     protocol::*,
-    recipe::{InputKind, Repository},
+    recipe::{InputKind, Output},
     workshop::*,
 };
 
@@ -253,6 +253,7 @@ pub(crate) async fn to_api(state: &AppState, mut row: Row) -> ApiResult<Request>
         next_at: row.next_at,
         waiting: orchestrator_waiting.or(waiting),
         processes,
+        merges: crate::merges::of_thread(state, row.thread_id).await?,
     })
 }
 /// People, their sessions and their answers ask; a process never asks for
@@ -320,6 +321,53 @@ async fn asked_by_agent(
     forum::publish_post(state, group, thread, number, &stored).await?;
     Ok(())
 }
+/// Checks a request's inputs against its recipe, and each against the group:
+/// a paper, a thread and a declaration must exist.
+pub(crate) async fn check_inputs(
+    state: &AppState,
+    group: i64,
+    file: &RecipeFile,
+    inputs: &std::collections::BTreeMap<String, String>,
+) -> ApiResult<()> {
+    let recipe = file.recipe.as_ref().ok_or_else(|| {
+        ApiError::invalid(
+            file.error
+                .as_ref()
+                .map(ToString::to_string)
+                .unwrap_or_else(|| "This recipe cannot run".into()),
+        )
+    })?;
+    recipe
+        .check(&file.name, inputs)
+        .map_err(|e| ApiError::invalid(e.message))?;
+    for (name, input) in &recipe.manifest.inputs {
+        let Some(value) = inputs.get(name).filter(|v| !v.trim().is_empty()) else {
+            continue;
+        };
+        if value.len() > 100_000 {
+            return Err(ApiError::invalid("An input is too long"));
+        }
+        match input.kind {
+            InputKind::Paper => {
+                crate::papers::find(state, group, value).await?;
+            }
+            InputKind::Thread => {
+                let number = value
+                    .trim_start_matches('t')
+                    .parse()
+                    .map_err(|_| ApiError::invalid("Expected a thread number"))?;
+                forum::find_thread(state, group, number).await?;
+            }
+            InputKind::Declaration => {
+                if !crate::library::resolve(state, group, value).await?.exists {
+                    return Err(ApiError::not_found("Declaration"));
+                }
+            }
+            InputKind::Text => {}
+        }
+    }
+    Ok(())
+}
 pub async fn ask(
     State(state): State<AppState>,
     viewer: Viewer,
@@ -383,50 +431,7 @@ pub async fn ask(
         }
     } else {
         let file = recipes::read(&state, &group.slug, &ask.recipe).await?;
-
-        let recipe = file.recipe.as_ref().ok_or_else(|| {
-            ApiError::invalid(
-                file.error
-                    .as_ref()
-                    .map(ToString::to_string)
-                    .unwrap_or_default(),
-            )
-        })?;
-        recipe
-            .render(&format!("{}.md", file.name), &ask.inputs)
-            .map_err(|e| ApiError::invalid(e.to_string()))?;
-        if !recipe.front.runners.is_empty() && !recipe.front.runners.contains(&ask.runner) {
-            return Err(ApiError::invalid("The recipe does not accept this runner"));
-        }
-        for (name, input) in &recipe.front.inputs {
-            let Some(value) = ask.inputs.get(name).filter(|v| !v.trim().is_empty()) else {
-                continue;
-            };
-            if value.len() > 100_000 {
-                return Err(ApiError::invalid("An input is too long"));
-            }
-            match input.kind {
-                InputKind::Paper => {
-                    crate::papers::find(&state, group.group_id, value).await?;
-                }
-                InputKind::Thread => {
-                    let number = value
-                        .trim_start_matches('t')
-                        .parse()
-                        .map_err(|_| ApiError::invalid("Expected a thread number"))?;
-                    forum::find_thread(&state, group.group_id, number).await?;
-                }
-                InputKind::Declaration => {
-                    if !crate::library::resolve(&state, group.group_id, value)
-                        .await?
-                        .exists
-                    {
-                        return Err(ApiError::not_found("Declaration"));
-                    }
-                }
-                InputKind::Text => {}
-            }
-        }
+        check_inputs(&state, group.group_id, &file, &ask.inputs).await?;
         file
     };
     let now = db::now();
@@ -544,17 +549,6 @@ pub async fn action(
                 "UPDATE workshop_requests
                  SET state='cancelled', next_at=NULL
                  WHERE thread_id=?",
-            )
-            .bind(row.thread_id)
-            .execute(&mut *tx)
-            .await?;
-            sqlx::query(
-                "UPDATE workshop_reviews
-                 SET state = 'refused', message = 'Request cancelled'
-                 WHERE process_id IN (SELECT id
-                 FROM workshop_processes
-                 WHERE thread_id = ?)
-                 AND state NOT IN ('merged', 'refused')",
             )
             .bind(row.thread_id)
             .execute(&mut *tx)
@@ -753,26 +747,7 @@ async fn offer(state: &AppState, process: i64) -> ApiResult<ProcessOffer> {
     .fetch_one(&state.db)
     .await?;
     let g = Membership::of_group(state, group_id).await?;
-    let prompt = recipe
-        .recipe
-        .as_ref()
-        .ok_or_else(|| ApiError::internal("invalid stored recipe"))?
-        .render(&format!("{}.md", recipe.name), &ask.inputs)
-        .map_err(ApiError::internal)?;
-    let raw: Option<String> = sqlx::query_scalar(
-        "SELECT repositories
-         FROM workshop_processes
-         WHERE id = ?",
-    )
-    .bind(process)
-    .fetch_one(&state.db)
-    .await?;
-    let rebase = raw
-        .map(|r| decode::<Vec<ProcessRepository>>(&r))
-        .transpose()?
-        .and_then(|mut r| r.pop());
     Ok(ProcessOffer {
-        rebase,
         process,
         group: GroupRef {
             id: group_id,
@@ -796,7 +771,6 @@ async fn offer(state: &AppState, process: i64) -> ApiResult<ProcessOffer> {
         },
         recipe,
         inputs: ask.inputs,
-        prompt,
         runner: ask.runner,
         model: ask.model,
         recurring: row.recurring,
@@ -980,7 +954,7 @@ pub async fn decision(
                             .recipe
                             .as_ref()
                             .unwrap()
-                            .front
+                            .manifest
                             .title
                             .to_lowercase()
                     )),
@@ -1059,53 +1033,47 @@ pub async fn decision(
         return Ok(());
     }
     let recipe = offer.recipe.recipe.as_ref().unwrap();
-    let mut repositories = Vec::new();
     let forge = state
         .forge
         .as_ref()
         .ok_or_else(|| ApiError::not_found("Forge"))?;
-    for writes in &recipe.front.writes {
-        let name = match writes {
-            Repository::Library => "library".to_owned(),
-            Repository::Paper => {
-                let input = recipe
-                    .front
-                    .inputs
-                    .iter()
-                    .find(|(_, i)| i.kind == InputKind::Paper)
-                    .unwrap()
-                    .0;
-                // An optional paper left empty: the process writes no paper.
-                let Some(slug) = offer.inputs.get(input).filter(|s| !s.trim().is_empty()) else {
-                    continue;
-                };
-                format!("paper-{slug}")
+    // The library, and each paper the inputs name, are checked out for it.
+    let mut names = vec!["library".to_owned()];
+    for (name, input) in &recipe.manifest.inputs {
+        if input.kind == InputKind::Paper
+            && let Some(slug) = offer.inputs.get(name).filter(|s| !s.trim().is_empty())
+        {
+            let repository = format!("paper-{}", slug.trim());
+            if !names.contains(&repository) {
+                names.push(repository);
             }
-        };
-        let base = forge
+        }
+    }
+    let mut checkouts = Vec::new();
+    for name in names {
+        let Some(base) = forge
             .branch_commit(&offer.group.slug, &name, "main")
             .await
             .map_err(forge::api_error)?
-            .ok_or_else(|| ApiError::not_found("Repository main"))?;
-        repositories.push(ProcessRepository {
+        else {
+            continue;
+        };
+        checkouts.push(ProcessRepository {
             path: format!("/git/{}/{}.git", offer.group.slug, name),
+            name,
             base,
-            branch: format!("workshop/{}-{process}", offer.request.number),
-            force_push: false,
         });
     }
-    let overrides: Option<String> = sqlx::query_scalar(
-        "SELECT repositories
-         FROM workshop_processes
-         WHERE id = ?",
-    )
-    .bind(process)
-    .fetch_one(&state.db)
-    .await?;
-    if let Some(raw) = overrides {
-        repositories = decode(&raw)?;
-    }
-    let deadline = db::now() + i64::from(recipe.front.timeout_minutes) * 60_000;
+    let branch = recipe
+        .admits(Output::PullRequest)
+        .then(|| format!("workshop/{}-{process}", offer.request.number));
+    let permissions: Vec<&str> = recipe
+        .manifest
+        .permissions
+        .iter()
+        .map(|p| p.tool())
+        .collect();
+    let deadline = db::now() + i64::from(recipe.manifest.timeout_minutes) * 60_000;
     let token = crate::secret::token("stp_");
     let lease = LeaseRef {
         id: work,
@@ -1117,8 +1085,8 @@ pub async fn decision(
     let token_id = sqlx::query(
         "INSERT INTO api_tokens(user_id, name, token_hash, prefix, created_at, kind,
          group_id, build_work, lease_attempt, thread_id, agent, can_post, attachments,
-         expires_at)
-         VALUES (?, 'Process', ?, ?, ?, 'process', ?, ?, ?, ?, ?, 1, 'group', ?)",
+         expires_at, permissions)
+         VALUES (?, 'Process', ?, ?, ?, 'process', ?, ?, ?, ?, ?, 1, 'group', ?, ?)",
     )
     .bind(machine.owner)
     .bind(crate::secret::token_hash(&token))
@@ -1130,6 +1098,7 @@ pub async fn decision(
     .bind(thread)
     .bind(runner_name)
     .bind(db::now() + lease::EXPIRY_MILLIS)
+    .bind(encode(&permissions)?)
     .execute(&mut *tx)
     .await?
     .last_insert_rowid();
@@ -1138,31 +1107,16 @@ pub async fn decision(
         let _ = machine.sender.send(HubMessage::ProcessTaken { process });
         return Ok(());
     }
-    let branches: Vec<ProcessBranch> = repositories
-        .iter()
-        .map(|r| ProcessBranch {
-            repository: r
-                .path
-                .rsplit('/')
-                .next()
-                .unwrap()
-                .trim_end_matches(".git")
-                .into(),
-            branch: r.branch.clone(),
-            commit: None,
-            pull_request: None,
-        })
-        .collect();
     sqlx::query(
         "UPDATE workshop_processes
-         SET owner_id=?,machine_id=?,started_at=?,deadline=?,branches=?
+         SET owner_id=?,machine_id=?,started_at=?,deadline=?,branch=?
          WHERE id=?",
     )
     .bind(machine.owner)
     .bind(holder)
     .bind(db::now())
     .bind(deadline)
-    .bind(encode(&branches)?)
+    .bind(&branch)
     .bind(process)
     .execute(&mut *tx)
     .await?;
@@ -1208,7 +1162,8 @@ pub async fn decision(
             offer,
             owner: user(state, machine.owner).await?,
             token,
-            repositories,
+            branch,
+            checkouts,
             deadline,
         })));
     Ok(())
@@ -1285,10 +1240,10 @@ pub async fn finished(
     }
     sqlx::query(
         "UPDATE workshop_processes
-         SET summary=?,usage=?
+         SET outputs=?,usage=?
          WHERE id=?",
     )
-    .bind(stemma_core::secrets::hide(&result.summary))
+    .bind(encode(&result.outputs)?)
     .bind(encode(&result.usage)?)
     .bind(id)
     .execute(&mut *tx)
@@ -1312,8 +1267,9 @@ pub async fn finished(
     finish_pending(state).await?;
     dispatch(state).await
 }
-/// Durable finalization also recovers after a machine or hub disappears. Pushes
-/// are discovered from the forge, never trusted from an agent's result.
+/// Durable finalization also recovers after a machine or hub disappears. A
+/// process's outputs are checked against its recipe, and its pull requests
+/// against the forge, before anything is posted or opened.
 pub async fn finish_pending(state: &AppState) -> ApiResult<()> {
     let _turn = state.process_changes.lock().await;
     #[derive(sqlx::FromRow)]
@@ -1322,11 +1278,11 @@ pub async fn finish_pending(state: &AppState) -> ApiResult<()> {
         work_id: i64,
         state: String,
         error: Option<String>,
-        summary: Option<String>,
-        branches: String,
+        outputs: String,
+        branch: Option<String>,
     }
     let rows: Vec<Finished> = sqlx::query_as(
-        "SELECT p.id, p.work_id, w.state, w.error, p.summary, p.branches
+        "SELECT p.id, p.work_id, w.state, w.error, p.outputs, p.branch
          FROM workshop_processes p
          JOIN work_leases w ON w.id = p.work_id
          WHERE w.state IN ('passed', 'failed', 'cancelled') AND p.finished_at IS NULL
@@ -1337,110 +1293,14 @@ pub async fn finish_pending(state: &AppState) -> ApiResult<()> {
     for Finished {
         id,
         work_id: work,
-        state: status,
-        error,
-        summary,
-        branches: raw,
+        state: mut status,
+        mut error,
+        outputs,
+        branch,
     } in rows
     {
         let offer = offer(state, id).await?;
         let thread = thread_id(state, id).await?;
-        let rebase: Option<i64> = sqlx::query_scalar(
-            "SELECT rebase_review
-             FROM workshop_processes
-             WHERE id = ?",
-        )
-        .bind(id)
-        .fetch_one(&state.db)
-        .await?;
-        let mut branches: Vec<ProcessBranch> = decode(&raw)?;
-        if let Some(forge) = &state.forge {
-            for branch in &mut branches {
-                if let Some(head) = forge
-                    .branch_commit(&offer.group.slug, &branch.repository, &branch.branch)
-                    .await
-                    .map_err(forge::api_error)?
-                {
-                    branch.commit = Some(head);
-                    if rebase.is_none() && branch.pull_request.is_none() {
-                        branch.pull_request = Some(
-                            forge
-                                .open_process_pull_request(
-                                    &offer.group.slug,
-                                    &branch.repository,
-                                    &branch.branch,
-                                    &offer.request.title,
-                                    &format!(
-                                        "For [{}]({}/g/{}/t/{}).",
-                                        offer.request.title,
-                                        state.config.base_url(),
-                                        offer.group.slug,
-                                        offer.request.number
-                                    ),
-                                )
-                                .await
-                                .map_err(forge::api_error)?,
-                        );
-                    }
-                }
-            }
-        }
-        let reviewed = if rebase.is_none() {
-            crate::review::enqueue(state, id, &branches, &offer.recipe).await?
-        } else {
-            false
-        };
-        if reviewed {
-            sqlx::query(
-                "UPDATE workshop_requests
-                 SET orchestrated = 1
-                 WHERE thread_id = ?",
-            )
-            .bind(thread)
-            .execute(&state.db)
-            .await?;
-        }
-        let orchestrated: bool = sqlx::query_scalar(
-            "SELECT orchestrated
-             FROM workshop_requests
-             WHERE thread_id = ?",
-        )
-        .bind(thread)
-        .fetch_one(&state.db)
-        .await?;
-        let pushed = branches.iter().any(|b| b.commit.is_some());
-        let expired = error
-            .as_ref()
-            .is_some_and(|e| e.contains("expired while waiting"));
-        let mut text = summary.filter(|s| !s.trim().is_empty()).unwrap_or_else(|| {
-            format!(
-                "Process {id}: {}.",
-                if expired { "expired" } else { &status }
-            )
-        });
-        if let Some(error) = &error {
-            text.push_str(&format!("\n\n{error}"));
-        }
-        for b in branches.iter().filter(|b| b.pull_request.is_some()) {
-            text.push_str(&format!(
-                "\n\n[Pull request for {}]({})",
-                b.repository,
-                b.pull_request.as_ref().unwrap()
-            ));
-        }
-        let successor: Option<i64> = sqlx::query_scalar(
-            "SELECT id
-             FROM workshop_processes
-             WHERE retry_of=?",
-        )
-        .bind(id)
-        .fetch_optional(&state.db)
-        .await?;
-        if let Some(next) = successor {
-            text.push_str(&format!(
-                "\n\nRetrying as process {next}, waiting for another eligible machine."
-            ));
-        }
         let group = Membership::of_group(state, offer.group.id).await?;
         let owner: Option<i64> = sqlx::query_scalar(
             "SELECT owner_id
@@ -1450,16 +1310,83 @@ pub async fn finish_pending(state: &AppState) -> ApiResult<()> {
         .bind(id)
         .fetch_one(&state.db)
         .await?;
+        let outputs: Vec<Delivered> = decode(&outputs)?;
+        let delivered = if status == "cancelled" {
+            Delivery::default()
+        } else {
+            deliver(state, &offer, id, branch.as_deref(), &outputs).await?
+        };
+        if !delivered.refused.is_empty() && status == "passed" {
+            status = "failed".into();
+            error = Some(delivered.refused.join("\n"));
+        } else if !delivered.refused.is_empty() {
+            let mut text = error.unwrap_or_default();
+            for why in &delivered.refused {
+                text.push('\n');
+                text.push_str(why);
+            }
+            error = Some(text.trim().to_owned());
+        }
+        let orchestrated: bool = sqlx::query_scalar(
+            "SELECT orchestrated
+             FROM workshop_requests
+             WHERE thread_id = ?",
+        )
+        .bind(thread)
+        .fetch_one(&state.db)
+        .await?;
+        let expired = error
+            .as_ref()
+            .is_some_and(|e| e.contains("expired while waiting"));
+        let successor: Option<i64> = sqlx::query_scalar(
+            "SELECT id
+             FROM workshop_processes
+             WHERE retry_of=?",
+        )
+        .bind(id)
+        .fetch_optional(&state.db)
+        .await?;
+        let mut posts = delivered.messages.clone();
+        if status != "passed" {
+            let mut text = format!(
+                "Process {id} {}.",
+                if expired {
+                    "expired"
+                } else if status == "cancelled" {
+                    "was cancelled"
+                } else {
+                    "failed"
+                }
+            );
+            if let Some(error) = error.as_ref().filter(|_| status == "failed") {
+                text.push_str(&format!("\n\n{error}"));
+            }
+            if let Some(next) = successor {
+                text.push_str(&format!(
+                    "\n\nRetrying as process {next}, waiting for another eligible machine."
+                ));
+            }
+            posts.push(text);
+        }
         let mut tx = state.db.begin().await?;
         sqlx::query(
             "UPDATE workshop_processes
-             SET finished_at=?,branches=?,pushed=?
+             SET finished_at=?,branches=?
              WHERE id=?",
         )
         .bind(db::now())
-        .bind(encode(&branches)?)
-        .bind(pushed)
+        .bind(encode(&delivered.branches)?)
         .bind(id)
+        .execute(&mut *tx)
+        .await?;
+        sqlx::query(
+            "UPDATE work_leases
+             SET state=?,error=?
+             WHERE id=?",
+        )
+        .bind(&status)
+        .bind(error.as_deref().map(stemma_core::secrets::hide))
+        .bind(work)
         .execute(&mut *tx)
         .await?;
         sqlx::query(
@@ -1501,25 +1428,37 @@ pub async fn finish_pending(state: &AppState) -> ApiResult<()> {
         .bind(thread)
         .execute(&mut *tx)
         .await?;
-        let (number, stored) = forum::insert_message(
-            &mut tx,
-            &group,
-            thread,
-            owner.unwrap_or(offer.requester.id),
-            Some(runner_name(&offer.runner)),
-            Some(if offer.runner == "claude" {
-                "claude-code"
-            } else {
-                &offer.runner
-            }),
-            &stemma_core::secrets::hide(&text),
-            None,
-            &[],
-            true,
-        )
-        .await?;
+        let mut stored_posts = Vec::new();
+        for text in &posts {
+            stored_posts.push(
+                forum::insert_message(
+                    &mut tx,
+                    &group,
+                    thread,
+                    owner.unwrap_or(offer.requester.id),
+                    Some(runner_name(&offer.runner)),
+                    Some(if offer.runner == "claude" {
+                        "claude-code"
+                    } else {
+                        &offer.runner
+                    }),
+                    &stemma_core::secrets::hide(text),
+                    None,
+                    &[],
+                    true,
+                )
+                .await?,
+            );
+        }
         tx.commit().await?;
-        let m = forum::publish_post(state, &group, thread, number, &stored).await?;
+        let mut last = None;
+        for (number, stored) in stored_posts {
+            last = Some(
+                forum::publish_post(state, &group, thread, number, &stored)
+                    .await?
+                    .number,
+            );
+        }
         let pending: Vec<i64> = sqlx::query_scalar(
             "UPDATE workshop_offers
              SET decision = 'taken'
@@ -1546,11 +1485,15 @@ pub async fn finish_pending(state: &AppState) -> ApiResult<()> {
             NotificationKind::RequestFailed
         };
         if !orchestrated && successor.is_none() && status != "cancelled" {
+            let text = posts
+                .last()
+                .cloned()
+                .unwrap_or_else(|| format!("{} is done.", offer.request.title));
             notifications::notify(
                 state,
                 &[offer.requester.id],
                 &Notice::new(kind)
-                    .at(offer.group.id, thread, Some(m.number))
+                    .at(offer.group.id, thread, last)
                     .text(&text),
             )
             .await?;
@@ -1558,18 +1501,158 @@ pub async fn finish_pending(state: &AppState) -> ApiResult<()> {
         if orchestrated {
             crate::orchestrator::wake(state, thread).await?;
         }
-        if pushed && rebase.is_none() {
+        if !delivered.branches.is_empty() {
             notifications::notify(
                 state,
                 &[offer.requester.id],
                 &Notice::new(NotificationKind::ProcessPullRequest)
-                    .at(offer.group.id, thread, Some(m.number))
+                    .at(offer.group.id, thread, last)
                     .text("A pull request was opened for your request"),
             )
             .await?;
         }
     }
-    Ok(())
+    drop(_turn);
+    crate::merges::tick(state).await
+}
+
+/// What the hub made of a process's outputs.
+#[derive(Default)]
+struct Delivery {
+    /// The messages to post, in order.
+    messages: Vec<String>,
+    /// The pull requests opened.
+    branches: Vec<ProcessBranch>,
+    /// Why some outputs were not delivered.
+    refused: Vec<String>,
+}
+
+/// Checks each output against the recipe and the forge: a pull request
+/// opens only from the process's own branch, which it pushed, into one of
+/// the group's repositories.
+async fn deliver(
+    state: &AppState,
+    offer: &ProcessOffer,
+    process: i64,
+    branch: Option<&str>,
+    outputs: &[Delivered],
+) -> ApiResult<Delivery> {
+    let mut delivery = Delivery::default();
+    let recipe = offer.recipe.recipe.as_ref();
+    let admits = |output| recipe.is_some_and(|r| r.admits(output));
+    for output in outputs {
+        match output {
+            Delivered::Message { text } => {
+                if !admits(Output::Message) {
+                    delivery
+                        .refused
+                        .push("Its recipe does not deliver messages.".into());
+                } else if !text.trim().is_empty() {
+                    delivery.messages.push(text.chars().take(100_000).collect());
+                }
+            }
+            Delivered::PullRequest {
+                repository,
+                title,
+                body,
+            } => {
+                let refused = |why: &str| format!("No pull request in {repository}: {why}");
+                let Some(branch) = branch.filter(|_| admits(Output::PullRequest)) else {
+                    delivery
+                        .refused
+                        .push(refused("its recipe does not open pull requests."));
+                    continue;
+                };
+                if !repository_of_group(state, offer.group.id, repository).await? {
+                    delivery
+                        .refused
+                        .push(refused("it is not one of the group's repositories."));
+                    continue;
+                }
+                if delivery
+                    .branches
+                    .iter()
+                    .any(|b| &b.repository == repository)
+                {
+                    continue;
+                }
+                let Some(forge) = &state.forge else {
+                    delivery.refused.push(refused("the hub has no forge."));
+                    continue;
+                };
+                let Some(head) = forge
+                    .branch_commit(&offer.group.slug, repository, branch)
+                    .await
+                    .map_err(forge::api_error)?
+                else {
+                    delivery
+                        .refused
+                        .push(refused(&format!("nothing was pushed to {branch}.")));
+                    continue;
+                };
+                let title = match title.trim() {
+                    "" => offer.request.title.clone(),
+                    title => title.chars().take(200).collect(),
+                };
+                let body = format!(
+                    "{}\n\nFor [{}]({}/g/{}/t/{}).",
+                    stemma_core::secrets::hide(body.trim()),
+                    offer.request.title,
+                    state.config.base_url(),
+                    offer.group.slug,
+                    offer.request.number
+                );
+                let url = forge
+                    .open_process_pull_request(
+                        &offer.group.slug,
+                        repository,
+                        branch,
+                        &title,
+                        body.trim(),
+                    )
+                    .await
+                    .map_err(forge::api_error)?;
+                crate::merges::open(
+                    state,
+                    process,
+                    offer.group.id,
+                    repository,
+                    branch,
+                    &url,
+                    &title,
+                    body.trim(),
+                )
+                .await?;
+                delivery.branches.push(ProcessBranch {
+                    repository: repository.clone(),
+                    branch: branch.to_owned(),
+                    commit: Some(head),
+                    pull_request: Some(url),
+                });
+            }
+        }
+    }
+    Ok(delivery)
+}
+
+/// Whether `name` is the group's library, or one of its papers'.
+pub(crate) async fn repository_of_group(
+    state: &AppState,
+    group: i64,
+    name: &str,
+) -> ApiResult<bool> {
+    if name == "library" {
+        return Ok(true);
+    }
+    Ok(sqlx::query_scalar(
+        "SELECT EXISTS(SELECT 1
+         FROM papers
+         WHERE group_id = ? AND repository = ?)",
+    )
+    .bind(group)
+    .bind(name)
+    .fetch_one(&state.db)
+    .await?)
 }
 
 /// Stop model work before a request or group is removed.
@@ -1632,7 +1715,7 @@ pub(crate) async fn retry(
     .fetch_one(&mut **tx)
     .await?;
     let controlled: bool = sqlx::query_scalar(
-        "SELECT r.orchestrated OR p.rebase_review IS NOT NULL
+        "SELECT r.orchestrated
          FROM workshop_processes p
          JOIN workshop_requests r ON r.thread_id = p.thread_id
          WHERE p.id = ?",

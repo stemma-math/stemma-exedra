@@ -1123,7 +1123,6 @@ pub enum Event {
 #[serde(rename_all = "snake_case")]
 pub enum NotificationKind {
     ReviewMerged,
-    ReviewRefused,
     ProcessPullRequest,
     ProcessApproval,
     RequestExpired,
@@ -1155,7 +1154,6 @@ impl NotificationKind {
     pub fn as_str(self) -> &'static str {
         match self {
             NotificationKind::ReviewMerged => "review_merged",
-            NotificationKind::ReviewRefused => "review_refused",
             NotificationKind::RequestDone => "request_done",
             NotificationKind::RequestFailed => "request_failed",
             NotificationKind::RequestExpired => "request_expired",
@@ -1177,7 +1175,6 @@ impl NotificationKind {
     pub fn parse(s: &str) -> Option<NotificationKind> {
         Some(match s {
             "review_merged" => NotificationKind::ReviewMerged,
-            "review_refused" => NotificationKind::ReviewRefused,
             "request_done" => NotificationKind::RequestDone,
             "request_failed" => NotificationKind::RequestFailed,
             "request_expired" => NotificationKind::RequestExpired,

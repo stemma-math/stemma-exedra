@@ -161,6 +161,9 @@ pub struct Welcome {
 pub struct JobSpec {
     #[serde(default)]
     pub process: bool,
+    /// A process's tools beyond reading and posting in its request, by name.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub permissions: Vec<String>,
     pub id: i64,
     pub group: GroupRef,
     /// A token for the hub's API while the job lasts, scoped to its group;
@@ -307,9 +310,6 @@ pub struct BuildResult {
 /// accepting; accepting this offer does not promise that it won the lease.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct ProcessOffer {
-    /// Internal rebase grant, visible before approval. Only this existing branch
-    /// may be rewritten; absent for ordinary recipe work.
-    pub rebase: Option<ProcessRepository>,
     /// Durable process number, unique on this hub.
     pub process: i64,
     /// Stable group identity and its current name.
@@ -317,13 +317,12 @@ pub struct ProcessOffer {
     /// The request's numbered thread, title and requester.
     pub request: ThreadRef,
     pub requester: User,
-    /// The committed recipe at main: blob version, recipes commit, front matter
-    /// and source prompt. Approvals must match the blob version exactly.
+    /// The recipe's folder at the recipes' main, with its version, the digest
+    /// of its files. Approvals must match the version exactly.
     pub recipe: crate::workshop::RecipeFile,
-    /// Validated inputs, also rendered into prompt without recursive expansion.
+    /// Validated inputs, put in the recipe's files as they are.
     pub inputs: std::collections::BTreeMap<String, String>,
-    pub prompt: String,
-    /// Recipe runner handle and optional exact model requested.
+    /// The runner its agents use, and the exact model, if one was asked for.
     pub runner: String,
     pub model: Option<String>,
     /// Who chose this machine assignment, independent of who owns the machine.
@@ -341,33 +340,34 @@ pub struct ProcessSpec {
     pub offer: ProcessOffer,
     /// The winning machine's owner; all process messages are attributed to them.
     pub owner: User,
-    /// Fetches the group; posts and attaches only in the request's thread;
-    /// pushes only the listed branches while this lease is alive.
+    /// Reads the group, posts in the request's thread, does what the
+    /// recipe's permissions allow, and pushes only `branch`, while this
+    /// lease is alive.
     pub token: String,
-    /// Every writable repository, immutable base and exclusive push branch.
-    /// A read-only recipe receives an empty list.
-    pub repositories: Vec<ProcessRepository>,
+    /// The one branch it may push, `workshop/<request>-<process>`, in any of
+    /// the group's repositories, if its recipe admits pull requests.
+    pub branch: Option<String>,
+    /// The repositories checked out for it before it starts: the library,
+    /// and each paper its inputs name.
+    pub checkouts: Vec<ProcessRepository>,
     /// Hard end of this run, in Unix milliseconds; heartbeat never extends it.
     pub deadline: i64,
 }
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ProcessRepository {
+    /// `library`, or `paper-<slug>`.
+    pub name: String,
     /// Hub-relative git path, never an upstream credential.
     pub path: String,
     /// Immutable commit of main at launch.
     pub base: String,
-    /// The assigned branch; a rebase may force-push only this branch.
-    pub branch: String,
-    /// A rebase starts at the PR head and may force-push its assigned branch.
-    #[serde(default)]
-    pub force_push: bool,
 }
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
 pub struct ProcessResult {
-    /// Markdown summary posted by the hub, with secrets hidden.
-    pub summary: String,
+    /// Why it failed: its script's exit, or what stopped it.
     pub error: Option<String>,
-    /// What was pushed; the hub verifies these against Forgejo before opening PRs.
-    pub pushed: Vec<crate::workshop::ProcessBranch>,
+    /// What it delivered, in order.
+    pub outputs: Vec<crate::workshop::Delivered>,
+    /// What its agents consumed, together.
     pub usage: Usage,
 }

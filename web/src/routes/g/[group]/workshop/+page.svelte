@@ -9,7 +9,7 @@
   import { exactly } from "#lib/format.ts";
   import { groupContext } from "#lib/group.svelte.ts";
   import { toastError } from "#lib/toast.ts";
-  import type { Recipe, RecipeFile, WorkshopRequest } from "#lib/workshop.ts";
+  import { deliversText, type RecipeFile, type WorkshopRequest } from "#lib/workshop.ts";
 
   const context = groupContext();
   const group = $derived(context.group);
@@ -50,14 +50,9 @@
     };
   });
 
-  /** A recipe's prompt, its inputs' places shown as code. */
-  function prompt(recipe: Recipe): string {
-    return recipe.prompt.replace(/\{\{\s*([\w-]+)\s*\}\}/g, "`{{$1}}`");
-  }
-
   /** A request in a line: its recipe, who asked, and what it waits for. */
   function about(request: WorkshopRequest): string {
-    let text = `${request.recipe.recipe?.front.title ?? request.recipe.name}, by ${request.requester.display_name}`;
+    let text = `${request.recipe.recipe?.manifest.title ?? request.recipe.name}, by ${request.requester.display_name}`;
     const waiting = request.paused ? null : request.waiting;
     if (waiting) text += `. ${waiting}`;
     if (request.next_at !== null && !request.paused) {
@@ -65,11 +60,6 @@
       text += `${waiting ? ":" : ", next at"} ${exactly(request.next_at, timezone)} (${timezone})`;
     }
     return text;
-  }
-
-  function writes(recipe: Recipe): string {
-    const what = recipe.front.writes.length ? `Writes to the ${recipe.front.writes.join(" and the ")}` : "Reads only";
-    return `${what}, for at most ${recipe.front.timeout_minutes} minutes`;
   }
 </script>
 
@@ -125,8 +115,9 @@
   <section class="stack" aria-label="Recipes">
     <h2>Recipes</h2>
     <p class="quiet">
-      Written by the group in its recipes repository. Members propose changes through pull requests; admins merge
-      them into main.
+      Written by the group in its recipes repository, a folder each: what it takes and delivers, the
+      <code>run.sh</code> a process runs, and its files. Members propose changes through pull requests; admins
+      merge them into main.
     </p>
     {#if !loaded}
       <Loading />
@@ -136,22 +127,25 @@
     {#each recipes as file (file.name)}
       <details class="card disclosure">
         <summary>
-          <span class="grow">{file.recipe?.front.title ?? file.name}</span>
+          <span class="grow">{file.recipe?.manifest.title ?? file.name}</span>
           {#if file.error}<span class="chip chip--small chip--danger">Invalid</span>{/if}
         </summary>
         {#if file.error}
           <p class="message message--danger">{file.error.file}, line {file.error.line}: {file.error.message}</p>
         {/if}
         {#if file.recipe}
-          <p>{file.recipe.front.summary}</p>
+          {@const script = file.recipe.files["run.sh"]}
+          {@const others = Object.keys(file.recipe.files).filter((path) => path !== "run.sh")}
+          <p>{file.recipe.manifest.summary}</p>
+          {#if file.recipe.manifest.hint}<p class="quiet">{file.recipe.manifest.hint}</p>{/if}
           <p class="quiet">
-            {writes(file.recipe)}. <a class="link" href={file.url}>{file.name}.md</a>, version
+            {deliversText(file.recipe)}. <a class="link" href={file.url}>{file.name}</a>, version
             <code title={file.version}>{file.version.slice(0, 12)}</code>.
           </p>
-          {#if Object.keys(file.recipe.front.inputs).length}
+          {#if Object.keys(file.recipe.manifest.inputs).length}
             <div>
               <dl class="request-facts">
-                {#each Object.entries(file.recipe.front.inputs) as [name, input] (name)}
+                {#each Object.entries(file.recipe.manifest.inputs) as [name, input] (name)}
                   <dt><code>{name}</code></dt>
                   <dd>{input.description}{input.required ? "" : " (optional)"}</dd>
                 {/each}
@@ -159,11 +153,24 @@
             </div>
           {/if}
           <details class="disclosure">
-            <summary>Prompt</summary>
-            <Markdown text={prompt(file.recipe)} group={group.slug} compact />
+            <summary>run.sh</summary>
+            <pre><code>{typeof script === "string" ? script : ""}</code></pre>
           </details>
+          {#each others as path (path)}
+            {@const text = file.recipe.files[path]}
+            <details class="disclosure">
+              <summary>{path}</summary>
+              {#if typeof text !== "string"}
+                <p class="quiet">Not text.</p>
+              {:else if path.endsWith(".md")}
+                <Markdown text={text.replace(/\{\{([^}]*)\}\}/g, "`{{$1}}`")} group={group.slug} compact />
+              {:else}
+                <pre><code>{text}</code></pre>
+              {/if}
+            </details>
+          {/each}
         {:else}
-          <p class="quiet"><a class="link" href={file.url}>{file.name}.md</a> in the forge.</p>
+          <p class="quiet"><a class="link" href={file.url}>{file.name}</a> in the forge.</p>
         {/if}
       </details>
     {/each}

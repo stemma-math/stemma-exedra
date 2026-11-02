@@ -15,6 +15,7 @@ pub mod git;
 pub mod jobs;
 pub mod lease;
 pub mod library;
+pub mod merges;
 pub mod model;
 pub mod names;
 pub mod notifications;
@@ -23,7 +24,6 @@ pub mod orchestrator;
 pub mod papers;
 pub mod recipes;
 pub mod removal;
-pub mod review;
 pub mod search;
 pub mod secret;
 pub mod state;
@@ -199,8 +199,8 @@ async fn background(state: &AppState) {
     if let Err(error) = builds::dispatch(state).await {
         tracing::error!(error = error.message, "dispatching builds");
     }
-    if let Err(error) = review::tick(state).await {
-        tracing::error!(error = error.message, "reviewing workshop pull requests");
+    if let Err(error) = merges::tick(state).await {
+        tracing::error!(error = error.message, "preparing workshop merges");
     }
     if let Err(error) = orchestrator::dispatch(state).await {
         tracing::error!(error = error.message, "dispatching workshop turns");

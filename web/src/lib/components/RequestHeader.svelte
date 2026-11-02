@@ -2,13 +2,22 @@
   import { api } from "#lib/api.ts";
   import { exactly } from "#lib/format.ts";
   import { toastError } from "#lib/toast.ts";
-  import { assignmentText, runnerName, scheduleText, type Process, type WorkshopRequest } from "#lib/workshop.ts";
+  import {
+    assignmentText,
+    runnerName,
+    scheduleText,
+    type Merge,
+    type Process,
+    type WorkshopRequest,
+  } from "#lib/workshop.ts";
   import Markdown from "./Markdown.svelte";
   import WorkshopState from "./WorkshopState.svelte";
 
   let { group, number, canManage }: { group: string; number: number; canManage: boolean } = $props();
   let request = $state<WorkshopRequest | null>(null);
   let saving = $state(false);
+  /** The merge being approved, by its id. */
+  let approving = $state<number | null>(null);
   let memberNames = $state<Record<number, string>>({});
 
   const recipe = $derived(request?.recipe.recipe ?? null);
@@ -51,6 +60,37 @@
     }
   }
 
+  async function approve(merge: Merge) {
+    approving = merge.id;
+    try {
+      await api.approveMerge(group, merge.id);
+      request = await api.workshopRequest(group, number);
+    } catch (error) {
+      toastError(error);
+      request = await api.workshopRequest(group, number).catch(() => request);
+    } finally {
+      approving = null;
+    }
+  }
+
+  /** What a pull request's merge is waiting for, or became. */
+  function mergeText(merge: Merge): string {
+    switch (merge.state) {
+      case "preparing":
+        return "Workshop is preparing its merge into main.";
+      case "ready":
+        return merge.conflicts.length
+          ? `It conflicts with main in ${merge.conflicts.join(", ")}. Workshop prepared a merge that resolves it:`
+          : "It merges cleanly into main.";
+      case "merged":
+        return merge.approved_by ? `Merged into main, as ${merge.approved_by.display_name} approved.` : "Merged into main.";
+      case "closed":
+        return merge.message ? `${merge.message}.` : "Closed without merging.";
+      default:
+        return merge.message ? `${merge.message}.` : "Waiting.";
+    }
+  }
+
   /** When a process ran, in its request's time zone. */
   function times(process: Process, ask: WorkshopRequest["ask"]): string {
     const at = (ms: number) => exactly(ms, ask.schedule.timezone);
@@ -78,14 +118,14 @@
   <section class="stack" aria-label="Workshop request">
     <div class="card card__body stack">
       <div class="row">
-        <h2 class="grow">{request.ask.recipe ? (recipe?.front.title ?? request.recipe.name) : "Asked in plain words"}</h2>
+        <h2 class="grow">{request.ask.recipe ? (recipe?.manifest.title ?? request.recipe.name) : "Asked in plain words"}</h2>
         <WorkshopState state={request.state} paused={request.paused} />
       </div>
       {#if request.waiting && !request.paused}<p class="quiet" role="status">{request.waiting}.</p>{/if}
 
       <dl class="request-facts">
         {#each Object.entries(request.ask.inputs) as [name, value] (name)}
-          {@const input = recipe?.front.inputs[name]}
+          {@const input = recipe?.manifest.inputs[name]}
           <dt class="label">{input?.description ?? name[0].toUpperCase() + name.slice(1)}</dt>
           <dd>
             {#if input?.kind === "paper"}
@@ -134,6 +174,44 @@
       {/if}
     </div>
 
+    {#if request.merges.length}
+      <h3>Pull requests</h3>
+      {#each request.merges as merge (merge.id)}
+        <article class="card card__body stack" aria-label="Pull request {merge.number} in {merge.repository}">
+          <div class="row">
+            <span class="grow">
+              <a class="link" href={merge.url}>{merge.title}</a>
+              <span class="quiet">, <span class="identifier">#{merge.number}</span> in {merge.repository}</span>
+            </span>
+            <WorkshopState state={merge.state} />
+          </div>
+          {#if merge.body}
+            <details class="disclosure">
+              <summary>What its process said</summary>
+              <Markdown text={merge.body} {group} compact />
+            </details>
+          {/if}
+          <p class="quiet" role="status">{mergeText(merge)}</p>
+          {#if merge.state === "ready" && merge.explanation}
+            <Markdown text={merge.explanation} {group} compact />
+          {/if}
+          {#if merge.state === "ready" && canManage}
+            <div class="row row--end">
+              <button
+                type="button"
+                class="button button--primary"
+                disabled={approving !== null}
+                onclick={() => approve(merge)}
+              >
+                {#if approving === merge.id}<span class="spinner" aria-hidden="true"></span>{/if}
+                Approve the merge
+              </button>
+            </div>
+          {/if}
+        </article>
+      {/each}
+    {/if}
+
     <h3>Processes</h3>
     {#if !request.processes.length}
       <p class="empty">No runs yet.</p>
@@ -146,7 +224,7 @@
           <WorkshopState state={process.state} />
         </summary>
         <p>
-          {process.recipe.recipe?.front.title ?? process.recipe.name}, with
+          {process.recipe.recipe?.manifest.title ?? process.recipe.name}, with
           {runnerName(process.runner)}{process.model ? ` (${process.model})` : ""}.
         </p>
         <p class="quiet">{times(process, request.ask)}.</p>
