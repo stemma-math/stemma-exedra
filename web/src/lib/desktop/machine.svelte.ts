@@ -144,7 +144,7 @@ export class MachineControls {
         command.kind === "secret" ||
         command.kind === "sign_in" ||
         command.kind === "sign_out" ||
-        /^(workshop\.(image|enabled|build)|agents\.(isolation|image|workspace)|agents\.[^.]+\.(command|container\..+))$/.test(
+        /^(workshop\.(enabled|build)|machine\.(isolation|image)|agents\.workspace|agents\.[^.]+\.(command|container\..+))$/.test(
           command.key ?? "",
         )
       )

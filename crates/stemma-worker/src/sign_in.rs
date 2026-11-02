@@ -161,7 +161,7 @@ pub async fn test(handle: &str, group: Option<&str>) -> anyhow::Result<String> {
     .await
     .map_err(|why| anyhow::anyhow!("Containers do not work here: {why}"))?
     else {
-        anyhow::bail!("Answers do not run in containers: choose Docker or Podman first");
+        anyhow::bail!("This machine runs its jobs unisolated: choose Docker or Podman first");
     };
     // In Stemma's own folder, as an answer's: the runtime may not see the
     // system's temporary folder (Docker Desktop on macOS does not).
@@ -188,9 +188,7 @@ pub async fn test(handle: &str, group: Option<&str>) -> anyhow::Result<String> {
     );
     spec.pass_values = values(&spec.pass_env);
     let container = containers.start(&spec, work.path()).await?;
-    let program = containers
-        .program(runner)
-        .unwrap_or_else(|| handle.to_owned());
+    let program = handle.to_owned();
     const ASK: &str = "Reply with the single word: ready";
     let args: Vec<String> = match handle {
         "claude" => vec!["-p".into(), ASK.into(), "--max-turns".into(), "1".into()],

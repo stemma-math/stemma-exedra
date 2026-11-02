@@ -1,15 +1,17 @@
-# The agents' image: where personal replies run in isolated containers. It has git and curl, elan
-# with a Lean toolchain, a selection of TeX Live with latexmk for the
-# papers, the agents' programs (Claude Code, Codex and OpenCode) and
-# `stemma` of the machine's version, for the agents' tools (`stemma mcp`).
-# Every version is explicit, below, and may be changed with `--build-arg`.
+# Stemma's image, `stemma/stemma`: where a machine runs its jobs in
+# isolated containers, its people's answers and its group's workshop
+# alike. It has git and curl, elan with a Lean toolchain, Mathlib with its
+# compiled cache, a selection of TeX Live with latexmk for the papers, the
+# agents' programs (Claude Code, Codex and OpenCode) and `stemma` of the
+# machine's version, for the agents' tools (`stemma mcp`). Every version
+# is explicit, below, and may be changed with `--build-arg`.
 #
-# `stemma machine image` builds it, tagged
-# `stemma-agents:<version>`. From the repository's root,
-# this builds it with `stemma` built from the repository:
+# `stemma machine image` builds it, tagged `stemma/stemma:<version>`. From
+# the repository's root, this builds it with `stemma` built from the
+# repository, as `stemma machine image --dev` does:
 #
-#     docker build -f docker/agents/Dockerfile --build-arg STEMMA_SOURCE=local \
-#         --build-arg STEMMA_VERSION=<version> -t stemma-agents:<version> .
+#     docker build -f docker/images/stemma/Dockerfile --build-arg STEMMA_SOURCE=local \
+#         --build-arg STEMMA_VERSION=<version> -t stemma/stemma:<version> .
 #
 # Where `stemma` comes from, as STEMMA_SOURCE says (a macOS binary does not
 # run in a Linux container):
@@ -21,6 +23,8 @@
 # - local: built from the build's context, Stemma's repository.
 
 ARG STEMMA_SOURCE=release
+ARG LEAN_TOOLCHAIN=leanprover/lean4:v4.35.0
+ARG ELAN_VERSION=4.2.4
 
 FROM debian:bookworm-slim AS stemma-release
 ARG STEMMA_VERSION
@@ -53,8 +57,7 @@ COPY crates/ crates/
 COPY lean/ lean/
 COPY latex/ latex/
 COPY recipes/ recipes/
-COPY docker/agents/ docker/agents/
-COPY docker/workshop/ docker/workshop/
+COPY docker/images/ docker/images/
 RUN --mount=type=cache,target=/usr/local/cargo/registry \
     --mount=type=cache,target=/usr/local/cargo/git \
     --mount=type=cache,target=/src/target \
@@ -63,21 +66,9 @@ RUN --mount=type=cache,target=/usr/local/cargo/registry \
 
 FROM stemma-${STEMMA_SOURCE} AS stemma
 
-FROM node:24-bookworm-slim
-ARG STEMMA_VERSION
-ARG LEAN_TOOLCHAIN=leanprover/lean4:v4.35.0
-ARG ELAN_VERSION=4.2.4
-ARG CLAUDE_CODE_VERSION=2.1.302
-ARG CODEX_VERSION=0.163.0
-ARG OPENCODE_VERSION=1.19.3
-LABEL org.opencontainers.image.title="Stemma's agents" \
-      org.opencontainers.image.source="https://github.com/stemma-math/stemma-exedra" \
-      org.stemma.version="$STEMMA_VERSION" \
-      org.stemma.lean-toolchain="$LEAN_TOOLCHAIN" \
-      org.stemma.elan="$ELAN_VERSION" \
-      org.stemma.claude-code="$CLAUDE_CODE_VERSION" \
-      org.stemma.codex="$CODEX_VERSION" \
-      org.stemma.opencode="$OPENCODE_VERSION"
+FROM node:24-bookworm-slim AS tools
+ARG LEAN_TOOLCHAIN
+ARG ELAN_VERSION
 
 RUN apt-get update \
     && apt-get install --yes --no-install-recommends ca-certificates curl git \
@@ -110,6 +101,39 @@ RUN set -eu; \
     lean --version; \
     chmod -R a+rwX /opt/elan
 
+# Mathlib, at the version of a new group's library, with its compiled
+# cache, which the workshop's builds and processes start from. Thousands of
+# files download at once, and a few may be cut off: each try fetches only
+# what is still missing. Only the result is kept, without the downloaded
+# archives.
+FROM tools AS mathlib
+ARG MATHLIB_VERSION=v4.35.0
+COPY lean/template/lean-toolchain lean/template/lake-manifest.json /opt/stemma/cache/
+RUN git clone --branch "$MATHLIB_VERSION" --depth 1 https://github.com/leanprover-community/mathlib4.git /opt/stemma/mathlib \
+    && cd /opt/stemma/mathlib \
+    && for try in 1 2 3 4 5; do \
+         lake exe cache get && break; \
+         [ "$try" = 5 ] && exit 1; \
+         echo "Some files did not download: trying again"; sleep 10; \
+       done \
+    && chmod -R a+rwX /opt/stemma/mathlib
+
+FROM tools
+ARG STEMMA_VERSION
+ARG LEAN_TOOLCHAIN
+ARG ELAN_VERSION
+ARG CLAUDE_CODE_VERSION=2.1.302
+ARG CODEX_VERSION=0.163.0
+ARG OPENCODE_VERSION=1.19.3
+LABEL org.opencontainers.image.title="Stemma" \
+      org.opencontainers.image.source="https://github.com/stemma-math/stemma-exedra" \
+      org.stemma.version="$STEMMA_VERSION" \
+      org.stemma.lean-toolchain="$LEAN_TOOLCHAIN" \
+      org.stemma.elan="$ELAN_VERSION" \
+      org.stemma.claude-code="$CLAUDE_CODE_VERSION" \
+      org.stemma.codex="$CODEX_VERSION" \
+      org.stemma.opencode="$OPENCODE_VERSION"
+
 # The agents' programs. They sign in as the machine's owner configures,
 # with variables or files the container is given; none is kept here.
 RUN npm install --global \
@@ -119,7 +143,14 @@ RUN npm install --global \
     && npm cache clean --force
 
 COPY --from=stemma /usr/local/bin/stemma /usr/local/bin/stemma
-COPY docker/agents/entrypoint.sh /usr/local/bin/stemma-entrypoint
+COPY docker/images/stemma/entrypoint.sh /usr/local/bin/stemma-entrypoint
+COPY --from=mathlib /opt/stemma/mathlib /opt/stemma/mathlib
+
+# The workshop's commits say who made them through git's environment; this
+# is only their fallback.
+RUN git config --system user.name Worker \
+    && git config --system user.email worker@stemma.invalid \
+    && git config --system safe.directory '*'
 
 # The job runs as the machine's user, whatever its id: its home, and where
 # the agents keep their state, are anyone's in the container, which lasts

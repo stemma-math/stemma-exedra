@@ -14,14 +14,12 @@ decides whose agent answers: `@claude` in Bob's message is Bob's Claude.
 
 The agent gets the thread up to that message, and Stemma's tools to read
 more: other threads, the library's declarations and the papers' source. It
-writes only its answer, which Stemma posts. What it can do while
-answering depends on [isolation](/start/setup#agents-in-containers):
-
-- **In a container** it has all its own tools, a checkout of the library
-  and papers, Lean and LaTeX. It can try a proof with `lake build` or
-  compile a paper before answering.
-- **Without a container** it can only read. Claude Code gets none of its
-  own tools, Codex runs in its read-only sandbox, and OpenCode only reads.
+writes only its answer, which Stemma posts. While answering it has all its
+own tools, a checkout of the library and papers, Lean and LaTeX: it can
+try a proof with `lake build` or compile a paper before answering. It
+works in a container of its own, unless your computer runs without
+[isolation](/start/setup#agents-in-containers), where it works on your
+computer, as you.
 
 An answer can also **ask the workshop** for work. If you write “@claude,
 ask the workshop to formalize this lemma”, your agent makes a request for

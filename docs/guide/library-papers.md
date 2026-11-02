@@ -44,7 +44,7 @@ fails. Only the newest commit counts: older builds are dropped.
 
 A machine that cannot build declines, and the build goes to another
 machine; the build says which machine could not, and why. A machine
-cannot build when it is at its limit or lacks the workshop image.
+cannot build when it is at its limit or lacks its image.
 
 ### Build again
 
@@ -55,5 +55,5 @@ build stays in the history with its log.
 ### Offering builds
 
 **This machine › Workshop › Build the library and papers** offers your
-computer for builds, for every group or one. It needs Docker or Podman and
-the workshop image, as in [setup](/start/setup#agents-in-containers).
+computer for builds, for every group or one. It builds in its image, as in
+[setup](/start/setup#agents-in-containers).

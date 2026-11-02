@@ -1,7 +1,8 @@
-//! The agents' image, which `stemma machine image` builds:
-//! `docker/agents/Dockerfile` in Stemma's repository, embedded in the
-//! binary, with Lean, the agents' programs, git, and `stemma` of this
-//! version, for the agents' tools inside.
+//! Stemma's image, which `stemma machine image` builds:
+//! `docker/images/stemma/Dockerfile` in Stemma's repository, embedded in
+//! the binary, with Lean, Mathlib, LaTeX, the agents' programs, git, and
+//! `stemma` of this version, for the agents' tools inside. A machine runs
+//! all its jobs in it: answers, and the workshop's processes and builds.
 
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
@@ -9,10 +10,10 @@ use std::process::Stdio;
 use crate::isolation::Engine;
 
 /// The image's description.
-pub const DOCKERFILE: &str = include_str!("../../../docker/agents/Dockerfile");
+pub const DOCKERFILE: &str = include_str!("../../../docker/images/stemma/Dockerfile");
 
 /// What the image runs first, as the job's user.
-pub const ENTRYPOINT: &str = include_str!("../../../docker/agents/entrypoint.sh");
+pub const ENTRYPOINT: &str = include_str!("../../../docker/images/stemma/entrypoint.sh");
 
 /// The toolchain of a new group's library, which the image has unless told
 /// otherwise.
@@ -75,7 +76,7 @@ pub fn build_args(build: &Build, context: &Path) -> Vec<String> {
         "build".into(),
         "--file".into(),
         context
-            .join("docker/agents/Dockerfile")
+            .join("docker/images/stemma/Dockerfile")
             .display()
             .to_string(),
         "--tag".into(),
@@ -92,7 +93,7 @@ pub fn build_args(build: &Build, context: &Path) -> Vec<String> {
 
 /// Writes the build's folder: the image's description and what it copies.
 pub fn write_context(dir: &Path) -> anyhow::Result<()> {
-    let folder = dir.join("docker/agents");
+    let folder = dir.join("docker/images/stemma");
     std::fs::create_dir_all(&folder)?;
     std::fs::write(folder.join("Dockerfile"), DOCKERFILE)?;
     std::fs::write(folder.join("entrypoint.sh"), ENTRYPOINT)?;
@@ -104,9 +105,6 @@ pub fn write_context(dir: &Path) -> anyhow::Result<()> {
             std::fs::Permissions::from_mode(0o755),
         )?;
     }
-    let workshop = dir.join("docker/workshop");
-    std::fs::create_dir_all(&workshop)?;
-    std::fs::write(workshop.join("Dockerfile"), WORKSHOP_DOCKERFILE)?;
     std::fs::create_dir_all(dir.join("lean/template"))?;
     for (name, text) in [
         ("lean-toolchain", TOOLCHAIN),
@@ -124,47 +122,27 @@ pub fn write_context(dir: &Path) -> anyhow::Result<()> {
     Ok(())
 }
 
-pub const WORKSHOP_DOCKERFILE: &str = include_str!("../../../docker/workshop/Dockerfile");
-pub fn workshop_image() -> String {
-    format!("stemma-workshop:{}", env!("CARGO_PKG_VERSION"))
+/// The runtime that builds the image: the machine's, or Docker if it runs
+/// its jobs unisolated.
+async fn engine(config: &crate::WorkerConfig) -> anyhow::Result<std::sync::Arc<dyn Engine>> {
+    use crate::isolation::{Runtime, find_engine};
+    let runtime = match config.isolation.runtime {
+        Runtime::Podman => Runtime::Podman,
+        _ => Runtime::Docker,
+    };
+    find_engine(runtime, std::env::var_os("PATH").as_deref())
+        .await
+        .ok_or_else(|| anyhow::anyhow!("Install and start Docker or Podman."))
 }
 
-/// Builds the image selected by the general or group settings.
+/// Builds the machine's image, as the general or group settings name it.
 pub async fn build_for(group: Option<&str>) -> anyhow::Result<()> {
-    use crate::isolation;
     let config = crate::WorkerConfig::load(group)?;
-    let mut isolation = config.isolation.clone();
-    isolation.runtime = Some(match isolation.runtime() {
-        isolation::Runtime::Podman => isolation::Runtime::Podman,
-        _ => isolation::Runtime::Docker,
-    });
-    // Stemma builds only its own image. Another name is the person's own
-    // image, which they build; building Stemma's under it would hide that.
-    let tag = isolation.image();
-    anyhow::ensure!(
-        tag == isolation::default_image(),
-        "agents.image names your own image, {tag}: Stemma builds only its own, {}. \
-         Build yours yourself, or go back to Stemma's with: stemma config unset agents.image",
-        isolation::default_image()
-    );
-    let engine = isolation::find_engine(&isolation, std::env::var_os("PATH").as_deref())
-        .await
-        .ok_or_else(|| anyhow::anyhow!("Install and start Docker or Podman."))?;
-    let workshop = config
-        .settings
-        .get("workshop.image", group)?
-        .value
-        .as_str()
-        .unwrap()
-        .to_owned();
-    anyhow::ensure!(
-        workshop == workshop_image(),
-        "workshop.image names your own image, {workshop}: build it yourself, or unset workshop.image"
-    );
+    let engine = engine(&config).await?;
     build(
         engine.as_ref(),
         &Build {
-            tag,
+            tag: config.isolation.image(),
             source: Source::for_this_machine(),
             toolchain: TOOLCHAIN.into(),
             version: env!("CARGO_PKG_VERSION").into(),
@@ -178,40 +156,30 @@ pub async fn build(engine: &dyn Engine, build: &Build) -> anyhow::Result<()> {
     let dir: PathBuf =
         std::env::temp_dir().join(format!("stemma-image-{:08x}", rand::random::<u32>()));
     write_context(&dir)?;
-    run_build(engine, build, &dir).await?;
-    run_workshop_build(engine, &build.tag, &workshop_image(), &dir).await?;
+    let built = run_build(engine, build, &dir).await;
     let _ = std::fs::remove_dir_all(&dir);
-    Ok(())
+    built
 }
 
-/// The development image's name: it is never a release's.
-pub const DEV_IMAGE: &str = "stemma-agents:dev";
-
-/// Builds the development image, `stemma-agents:dev`, from the checkout of
-/// Stemma at `root`, as it is: its `stemma` is that code's, uncommitted
-/// changes included. Agents use it once `agents.image` names it.
-pub async fn build_dev(root: &Path, group: Option<&str>) -> anyhow::Result<()> {
-    use crate::isolation;
+/// Builds the machine's image from the checkout of Stemma at `root`, as it
+/// is, under the same name: its `stemma` is that code's, uncommitted
+/// changes included. Building it again without `--dev` brings back the
+/// release's.
+pub async fn build_dev(root: &Path, group: Option<&str>) -> anyhow::Result<String> {
     anyhow::ensure!(
         root.join("Cargo.toml").is_file()
             && root.join("crates/stemma").is_dir()
-            && root.join("docker/agents/Dockerfile").is_file(),
+            && root.join("docker/images/stemma/Dockerfile").is_file(),
         "{} is not a checkout of Stemma: run this in one",
         root.display()
     );
     let config = crate::WorkerConfig::load(group)?;
-    let mut isolation = config.isolation.clone();
-    isolation.runtime = Some(match isolation.runtime() {
-        isolation::Runtime::Podman => isolation::Runtime::Podman,
-        _ => isolation::Runtime::Docker,
-    });
-    let engine = isolation::find_engine(&isolation, std::env::var_os("PATH").as_deref())
-        .await
-        .ok_or_else(|| anyhow::anyhow!("Install and start Docker or Podman."))?;
+    let engine = engine(&config).await?;
+    let tag = config.isolation.image();
     run_build(
         engine.as_ref(),
         &Build {
-            tag: DEV_IMAGE.into(),
+            tag: tag.clone(),
             source: Source::Local,
             toolchain: TOOLCHAIN.into(),
             version: env!("CARGO_PKG_VERSION").into(),
@@ -219,27 +187,7 @@ pub async fn build_dev(root: &Path, group: Option<&str>) -> anyhow::Result<()> {
         root,
     )
     .await?;
-    run_workshop_build(engine.as_ref(), DEV_IMAGE, "stemma-workshop:dev", root).await
-}
-
-async fn run_workshop_build(
-    engine: &dyn Engine,
-    agents: &str,
-    tag: &str,
-    dir: &Path,
-) -> anyhow::Result<()> {
-    let mut command = tokio::process::Command::new(engine.program());
-    command
-        .args(["build", "--file"])
-        .arg(dir.join("docker/workshop/Dockerfile"))
-        .args([
-            "--tag",
-            tag,
-            "--build-arg",
-            &format!("AGENTS_IMAGE={agents}"),
-        ])
-        .arg(dir);
-    run_command(command).await
+    Ok(tag)
 }
 
 /// Runs the runtime's build of `build` in the folder `dir`.
@@ -320,14 +268,13 @@ mod tests {
         assert_eq!(last_lines(raw, 9).lines().count(), 3);
     }
     #[test]
-    fn workshop_cache_matches_the_library_template() {
+    fn mathlib_matches_the_library_template() {
         let template: toml::Value =
             toml::from_str(include_str!("../../../lean/template/lakefile.toml")).unwrap();
         let version = template["require"][0]["rev"].as_str().unwrap();
-        assert!(WORKSHOP_DOCKERFILE.contains(&format!("ARG MATHLIB_VERSION={version}")));
+        assert!(DOCKERFILE.contains(&format!("ARG MATHLIB_VERSION={version}")));
         let dir = tempfile::tempdir().unwrap();
         write_context(dir.path()).unwrap();
-        assert!(dir.path().join("docker/workshop/Dockerfile").is_file());
         assert!(
             dir.path()
                 .join("lean/template/lake-manifest.json")
@@ -337,7 +284,7 @@ mod tests {
     #[test]
     fn builds_this_versions_image() {
         let build = Build {
-            tag: "stemma-agents:1.2.3".into(),
+            tag: "stemma/stemma:1.2.3".into(),
             source: Source::Git,
             toolchain: "leanprover/lean4:v4.35.0\n".into(),
             version: "1.2.3".into(),
@@ -348,9 +295,9 @@ mod tests {
             [
                 "build",
                 "--file",
-                "/tmp/x/docker/agents/Dockerfile",
+                "/tmp/x/docker/images/stemma/Dockerfile",
                 "--tag",
-                "stemma-agents:1.2.3",
+                "stemma/stemma:1.2.3",
                 "--build-arg",
                 "STEMMA_VERSION=1.2.3",
                 "--build-arg",
@@ -362,7 +309,11 @@ mod tests {
         );
         let dir = tempfile::tempdir().unwrap();
         write_context(dir.path()).unwrap();
-        assert!(dir.path().join("docker/agents/entrypoint.sh").is_file());
+        assert!(
+            dir.path()
+                .join("docker/images/stemma/entrypoint.sh")
+                .is_file()
+        );
         // The image has every runner, and `stemma`, whose versions are
         // explicit.
         for wanted in [
@@ -370,6 +321,7 @@ mod tests {
             "ARG CODEX_VERSION=",
             "ARG OPENCODE_VERSION=",
             "ARG ELAN_VERSION=",
+            "/opt/stemma/mathlib",
             "/usr/local/bin/stemma",
             "USER",
         ] {

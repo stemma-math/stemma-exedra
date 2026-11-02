@@ -16,8 +16,9 @@ paper, becomes a build that one member's computer runs and reports.
    fetch only that repository and report only that build.
 4. **Checkout.** Under the group's `builds/` folder, the computer fetches
    exactly the requested commit.
-5. **The build**, in a container from the workshop image, with no model
-   sign-in or agent credential at all:
+5. **The build**, in a container from the computer's image, or on the
+   computer without isolation, with no model sign-in or agent credential
+   at all:
    - **library**: `lake build`, then the inspection;
    - **paper**: `latexmk` on `main.tex`, producing the PDF.
 6. **The result.** The log, with secrets hidden and cut to its last
@@ -46,15 +47,15 @@ the git orchestrator's review read.
 
 ## Mathlib, once
 
-The workshop image holds Mathlib's sources and compiled cache. When a
-group's library pins the same Mathlib, the build seeds its checkout from
-the image, so nothing is downloaded or compiled. A library on another
-version still builds, but fetches its own.
+Stemma's image holds Mathlib's sources and compiled cache. When a group's
+library pins the same Mathlib, the build seeds its checkout from the
+image, so nothing is downloaded or compiled. A library on another version,
+or a build without isolation, still builds, but fetches its own.
 
 ## Failing well
 
-- **A machine that cannot build** declines: at its limit, or without
-  isolation or the workshop image. The hub records which machine and why,
+- **A machine that cannot build** declines: at its limit, or without its
+  image or container runtime. The hub records which machine and why,
   and does not offer that build to it again.
 - **A lost lease**, after 60 seconds without a heartbeat or on disconnect,
   queues the build again. After three lost leases, it fails.

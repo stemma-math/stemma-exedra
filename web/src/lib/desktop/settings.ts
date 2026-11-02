@@ -15,8 +15,6 @@ const NAMES: Record<string, string> = {
   priority: "Priority",
   attachments: "Read attachments",
   concurrency: "Answers at once",
-  isolation: "Isolation",
-  image: "Image",
   workspace: "Workspace",
   command: "Command",
   model: "Model",
@@ -24,7 +22,14 @@ const NAMES: Record<string, string> = {
   timeout_minutes: "Time limit, in minutes",
   "container.env": "Variables",
   "container.files": "Files",
-  "container.command": "Command in the container",
+};
+
+/** What each of the machine's settings is called. */
+const MACHINE: Record<string, string> = {
+  isolation: "Isolation",
+  image: "Image",
+  cpus: "CPUs",
+  memory: "Memory",
 };
 
 /** What a setting is called. */
@@ -39,12 +44,10 @@ export function nameOf(key: string): string {
           others: "Other people's requests",
           concurrency: "Processes at once",
           build_concurrency: "Builds at once",
-          image: "Image",
-          cpus: "CPUs",
-          memory: "Memory",
         } as Record<string, string>
       )[key.slice("workshop.".length)] ?? key
     );
+  if (key.startsWith("machine.")) return MACHINE[key.slice("machine.".length)] ?? key;
   const runner = RUNNERS.find((r) => key.startsWith(`agents.${r.key}.`));
   const rest = runner ? key.slice(`agents.${runner.key}.`.length) : key.slice("agents.".length);
   return NAMES[rest] ?? rest;

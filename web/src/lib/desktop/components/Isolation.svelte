@@ -6,12 +6,13 @@
 
   let { controls, data }: { controls: MachineControls; data: Snapshot } = $props();
 
-  const isolation = $derived(setting(data, "agents.isolation"));
+  const isolation = $derived(setting(data, "machine.isolation"));
   const contained = $derived(isolation !== undefined && isolation.value !== "none");
-  const image = $derived(check(data, "Agents' image"));
-  const imageSetting = $derived(setting(data, "agents.image"));
-  /** An image of the person's own, which Stemma does not build. */
-  const ownImage = $derived(imageSetting !== undefined && imageSetting.value !== data.stemma_image);
+  const image = $derived(check(data, "Image"));
+  const imageSetting = $derived(setting(data, "machine.image"));
+  const limits = $derived(
+    ["machine.cpus", "machine.memory"].flatMap((key) => setting(data, key) ?? []),
+  );
   /** The values being typed, by variable, until they are kept. */
   let typed = $state<Record<string, string>>({});
 
@@ -97,91 +98,78 @@
 {/snippet}
 
 <p class="quiet">
-  With a container, an answer runs with no limits inside one of its own, which holds only the
-  group's workspace and the agent's own sign-in. Without, it runs here and only reads: it cannot run
-  commands.
+  Answers and the workshop run with no limits, each in a container of its own, which holds only the
+  group's workspace and the agent's own sign-in. Without isolation, they run on this computer, as
+  you.
 </p>
 <ul class="card row-list">
   {#if isolation}
-    <SettingField {controls} setting={isolation} description="Where answers run." />
+    <SettingField
+      {controls}
+      setting={isolation}
+      description="Where answers and the workshop run."
+    />
   {/if}
   {#if contained && imageSetting}
-    <li>
-      <details class="row-list__item">
-        <summary>
-          <span class="row-list__text">
-            <span class="row-list__name">Image</span>
-            <span class="row-list__description identifier">{imageSetting.value}</span>
-            {#if image?.remedy}
-              <span class="row-list__description">{image.remedy}</span>
-            {/if}
-          </span>
-          <span class="row-list__control">
-            <!-- While it builds, an image already there says nothing of the new one. -->
-            {#if controls.saving("image:")}
-              <span class="chip chip--small chip--info chip--live"
-                ><span class="chip__dot" aria-hidden="true"></span>Building</span
-              >
-            {:else if !image || controls.checking}
-              <!-- Not checked yet, or being checked again after a change: the
-                   state from before would say what is no longer known. -->
-              {#if controls.checking}
-                <span class="spinner" role="status" aria-label="Checking the image"></span>
-              {/if}
-            {:else if image.status === "success"}
-              <span class="chip chip--small chip--success">{ownImage ? "Ready" : "Built"}</span>
-            {:else}
-              <span class="chip chip--small chip--warning"
-                >{ownImage ? "Not ready" : "Not built"}</span
-              >
-            {/if}
-          </span>
-        </summary>
-        <div class="row-list__body">
-          {#if ownImage}
-            <p class="quiet">
-              Your own image: Stemma does not build it. It needs
-              <span class="identifier">stemma</span>
-              and the agents' programs; the checks say if something is missing. Go back to Stemma's
-              image with the reset beside its name.
-            </p>
-            <SettingField {controls} setting={imageSetting} as="field" name="Your own image" />
-          {:else}
-            <p class="quiet">
-              Stemma's image has the agents, Lean, LaTeX, git and this version of
-              <span class="identifier">stemma</span>. Build it again after Stemma is updated.
-            </p>
-            <button
-              type="button"
-              class="button"
-              disabled={controls.saving("image:")}
-              onclick={() =>
-                controls.save({ kind: "image", group: controls.scope || null }, "Images built.")}
-            >
-              {#if controls.saving("image:")}
-                <span class="spinner" aria-hidden="true"></span>
-              {/if}
-              Build images
-            </button>
-            <details class="disclosure">
-              <summary>Use your own image</summary>
-              <div class="stack">
-                <p class="quiet">
-                  An image on this computer, built from Stemma's (<span class="identifier"
-                    >FROM {data.stemma_image}</span
-                  >) with what you add. Stemma does not build it, and checks that it has
-                  <span class="identifier">stemma</span>
-                  and the agents' programs.
-                </p>
-                <SettingField {controls} setting={imageSetting} as="field" name="Your own image" />
-              </div>
-            </details>
+    <li class="row-list__item">
+      <span class="row-list__text">
+        <span class="row-list__name">Image</span>
+        <span class="row-list__description identifier">{imageSetting.value}</span>
+        <span class="row-list__description"
+          >Lean with Mathlib, LaTeX, git, the agents and this version of Stemma. Build it again
+          after Stemma is updated.</span
+        >
+      </span>
+      <span class="row-list__control">
+        <!-- While it builds, an image already there says nothing of the new one. -->
+        {#if controls.saving("image:")}
+          <span class="chip chip--small chip--info chip--live"
+            ><span class="chip__dot" aria-hidden="true"></span>Building</span
+          >
+        {:else if !image || controls.checking}
+          <!-- Not checked yet, or being checked again after a change: the
+               state from before would say what is no longer known. -->
+          {#if controls.checking}
+            <span class="spinner" role="status" aria-label="Checking the image"></span>
           {/if}
-        </div>
-      </details>
+        {:else if image.status === "success"}
+          <span class="chip chip--small chip--success">Built</span>
+        {:else}
+          <span class="chip chip--small chip--warning">Not built</span>
+        {/if}
+        <button
+          type="button"
+          class="button button--small"
+          disabled={controls.saving("image:")}
+          onclick={() =>
+            controls.save({ kind: "image", group: controls.scope || null }, "Image built.")}
+        >
+          {#if controls.saving("image:")}
+            <span class="spinner" aria-hidden="true"></span>
+          {/if}
+          Build
+        </button>
+      </span>
     </li>
+    {#each limits as limit (limit.key)}
+      <SettingField
+        {controls}
+        setting={limit}
+        description={limit.key === "machine.cpus"
+          ? "The most each container may use."
+          : "The most each container may use, such as 8g."}
+      />
+    {/each}
   {/if}
 </ul>
+{#if isolation && !contained}
+  <p class="message message--warning">
+    <span class="message__text"
+      >Not recommended: agents run commands with everything you can reach, your files and sign-ins
+      included. Choose Docker, or Podman, once one is installed.</span
+    >
+  </p>
+{/if}
 
 {#if contained}
   <section class="stack" aria-label="Sign-ins">
@@ -191,6 +179,7 @@
         {@const signIn = check(data, `${runner.name} in a container`)}
         {@const env = setting(data, `agents.${runner.key}.container.env`)}
         {@const names = Array.isArray(env?.value) ? (env.value as string[]) : []}
+        {@const files = setting(data, `agents.${runner.key}.container.files`)}
         <li>
           <details class="row-list__item">
             <summary>
@@ -291,19 +280,14 @@
                   ) as name (name)}
                     {@render secret(name)}
                   {/each}
-                  {#each ["files", "command"] as key (key)}
-                    {@const value = setting(data, `agents.${runner.key}.container.${key}`)}
-                    {#if value}
-                      <SettingField
-                        {controls}
-                        setting={value}
-                        as="field"
-                        description={key === "files"
-                          ? "One per line: the file here, or the file here → where it goes in the container."
-                          : "The agent's program in the image."}
-                      />
-                    {/if}
-                  {/each}
+                  {#if files}
+                    <SettingField
+                      {controls}
+                      setting={files}
+                      as="field"
+                      description="One per line: the file here, or the file here → where it goes in the container."
+                    />
+                  {/if}
                 </div>
               </details>
             </div>

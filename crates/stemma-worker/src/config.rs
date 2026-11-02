@@ -31,20 +31,17 @@ impl WorkerConfig {
     ) -> anyhow::Result<Self> {
         let get = |key: &str| settings.get(key, group).map(|v| v.value);
         let mut runners = Runners::default();
+        let isolation_setting = get("machine.isolation")?;
+        let cpus = get("machine.cpus")?;
         let mut isolation = IsolationConfig {
-            runtime: Some(match get("agents.isolation")?.as_str().unwrap() {
-                "docker" => Runtime::Docker,
-                "podman" => Runtime::Podman,
-                _ => Runtime::Host,
-            }),
-            image: Some(get("agents.image")?.as_str().unwrap().into()),
-            memory: Some(get("agents.memory")?.as_str().unwrap().into()),
-            cpus: Some(
-                get("agents.cpus")?
-                    .as_float()
-                    .or_else(|| get("agents.cpus").ok()?.as_integer().map(|n| n as f64))
-                    .unwrap(),
-            ),
+            runtime: Runtime::parse(isolation_setting.as_str().unwrap()).unwrap_or_default(),
+            image: Some(stemma_client::config::image_tag(
+                get("machine.image")?.as_str().unwrap(),
+            )?),
+            memory: Some(get("machine.memory")?.as_str().unwrap().into()),
+            cpus: cpus
+                .as_float()
+                .or_else(|| cpus.as_integer().map(|n| n as f64)),
             ..Default::default()
         };
         for (handle, runner) in [
@@ -68,7 +65,6 @@ impl WorkerConfig {
                 crate::isolation::AgentSignIn {
                     env: value("container.env")?.try_into()?,
                     files: value("container.files")?.try_into()?,
-                    command: Some(value("container.command")?.as_str().unwrap().into()),
                 },
             );
         }

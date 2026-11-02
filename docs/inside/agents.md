@@ -21,10 +21,13 @@ plugins, is the person's.
 4. **The launch.** In a private folder outside the workspace, the computer
    writes the job's token, the MCP configuration, the prompt and the
    skills. Then it starts the agent:
-   - **with isolation**, in a container from the agents' image, with the
-     group's folder read-write, the job's folder read-only, and the
+   - **with isolation**, in a container from the computer's image, with
+     the group's folder read-write, the job's folder read-only, and the
      agent's container sign-in;
-   - **without isolation**, on the computer, in read-only mode.
+   - **without isolation**, on the computer, as its person, with the
+     agent's own sign-in.
+
+   Either way it has all its tools, without asking.
 5. **The answer.** The agent reads, perhaps builds, and ends with its
    answer as plain text. The computer sends it to the hub with the run's
    usage: tokens, cache and cost, read from the agent's own JSON output.
@@ -101,8 +104,7 @@ agent how to write a recipe.
 | | Claude Code | Codex | OpenCode |
 | --- | --- | --- | --- |
 | Runs as | `claude -p` | `codex exec` | `opencode run` |
-| Without isolation | Only Stemma's tools | A read-only sandbox | No tools that edit or run commands |
-| In a container | All its tools, without asking | All its tools, without asking | All its tools, without asking |
+| Tools | All, without asking | All, without asking (`danger-full-access`) | All, without asking |
 | Container sign-in | A token from `claude setup-token` | Its own login folder | Its own login folder, or API keys |
 | Usage reported | Tokens and cost | Tokens | Tokens and cost |
 

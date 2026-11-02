@@ -1,4 +1,5 @@
-//! Processes run in exclusive checkouts and containers, using the same runners
+//! Processes run in exclusive checkouts, in the machine's image or, if it
+//! runs its jobs unisolated, on the machine itself, using the same runners
 //! and sign-in mounts as answers, with a distinct leased process token.
 use crate::{
     isolation::{self, Isolator, Sandbox},
@@ -99,38 +100,14 @@ async fn execute(context: &Context, spec: &ProcessSpec) -> anyhow::Result<crate:
         .as_ref()
         .map(|r| u64::from(r.front.timeout_minutes));
     config.runners.set(runner, configured);
-    config.isolation.image = Some(
-        settings
-            .get("workshop.image", Some(&spec.offer.group.slug))?
-            .value
-            .as_str()
-            .unwrap()
-            .into(),
-    );
-    config.isolation.memory = Some(
-        settings
-            .get("workshop.memory", Some(&spec.offer.group.slug))?
-            .value
-            .as_str()
-            .unwrap()
-            .into(),
-    );
-    let cpus = settings
-        .get("workshop.cpus", Some(&spec.offer.group.slug))?
-        .value;
-    config.isolation.cpus = cpus
-        .as_float()
-        .or_else(|| cpus.as_integer().map(|v| v as f64));
-    let Isolator::Containers(containers) = isolation::resolve(
+    let isolator = isolation::resolve(
         &config.isolation,
         &context.hub,
         std::env::var_os("PATH").as_deref(),
     )
     .await
-    .map_err(anyhow::Error::msg)?
-    else {
-        anyhow::bail!("The workshop requires isolation");
-    };
+    .map_err(anyhow::Error::msg)?;
+    let host = context.host();
     let agent =
         AgentProfile::default_for(handle).ok_or_else(|| anyhow::anyhow!("Unknown runner"))?;
     let job = JobSpec {
@@ -267,32 +244,47 @@ async fn execute(context: &Context, spec: &ProcessSpec) -> anyhow::Result<crate:
                 "remote",
                 "set-url",
                 "origin",
-                &format!("{}{}", containers.hub, repo.path),
+                &format!(
+                    "{}{}",
+                    match &isolator {
+                        Isolator::Containers(containers) => &containers.hub,
+                        Isolator::Host => &context.hub,
+                    },
+                    repo.path
+                ),
             ],
         )
         .await?;
         repositories.push((path, name == "library", repo));
     }
-    let (env, mut files) = containers.sign_in(runner, dirs::home_dir().as_deref())?;
+    let mut container = None;
+    // The agent's sign-in for containers, held while it works.
     let mut _held = None;
-    if let Some(handle) = crate::sign_in::handle_of(runner) {
-        files.extend(crate::sign_in::mounts(&context.config.paths, handle));
-        _held = crate::sign_in::hold(&context.config.paths, handle).await?;
+    if let Isolator::Containers(containers) = &isolator {
+        let (env, mut files) = containers.sign_in(runner, dirs::home_dir().as_deref())?;
+        if let Some(handle) = crate::sign_in::handle_of(runner) {
+            files.extend(crate::sign_in::mounts(&context.config.paths, handle));
+            _held = crate::sign_in::hold(&context.config.paths, handle).await?;
+        }
+        let mut container_spec = containers.spec(
+            spec.offer.process,
+            isolation::owner_of(&root.0),
+            crate::job::answer_mounts(&root.0, &dir.path, files),
+            env,
+            Duration::from_millis((spec.deadline - crate::approvals::now()).max(1) as u64)
+                + Duration::from_secs(60),
+        );
+        container_spec.pass_values = crate::sign_in::values(&container_spec.pass_env);
+        container = Some(containers.start(&container_spec, &root.0).await?);
     }
-    let mut container_spec = containers.spec(
-        spec.offer.process,
-        isolation::owner_of(&root.0),
-        crate::job::answer_mounts(&root.0, &dir.path, files),
-        env,
-        Duration::from_millis((spec.deadline - crate::approvals::now()).max(1) as u64)
-            + Duration::from_secs(60),
-    );
-    container_spec.pass_values = crate::sign_in::values(&container_spec.pass_env);
-    let sandbox = containers.start(&container_spec, &root.0).await?;
+    let sandbox: &dyn Sandbox = match &container {
+        Some(container) => container,
+        None => &host,
+    };
     let mut contract = String::new();
     for (path, library, repo) in &repositories {
         if *library {
-            crate::builds::seed_mathlib(&sandbox, path, &log).await?;
+            crate::builds::seed_mathlib(sandbox, path, &log).await?;
         }
         if repo.force_push {
             contract.push_str(
@@ -320,9 +312,7 @@ async fn execute(context: &Context, spec: &ProcessSpec) -> anyhow::Result<crate:
     };
     let work = crate::runners::Work {
         dir: &root.0,
-        root: &root.0,
-        sandbox: &sandbox,
-        contained_program: containers.program(runner),
+        sandbox,
     };
     let (send, _receive) = tokio::sync::mpsc::unbounded_channel();
     let progress = Progress::new(spec.offer.process, send);

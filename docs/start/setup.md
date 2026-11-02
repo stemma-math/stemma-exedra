@@ -47,38 +47,35 @@ another program, use **This machine › Agents**, or `stemma config`; see
 
 ## Agents in containers
 
-Without containers, an answer can only read: your agent runs with none of
-its own tools, so it cannot run Lean or LaTeX. With Docker or Podman, each
-answer runs in a container of its own. There it has all its tools, a copy
-of the group's library and papers, Lean with Mathlib, and LaTeX. Containers
-are also needed to build the library and papers, and to work for the
-workshop.
+Each answer, and each job of the workshop, runs in a container of its own,
+with Docker by default, or Podman. There it has all its tools, a copy of
+the group's library and papers, Lean with Mathlib, and LaTeX, and nothing
+else of your computer.
 
 1. **Install Docker or Podman.** Docker Desktop, OrbStack or Colima all
    work on macOS. Give the virtual machine at least 4 GB of memory and
-   plenty of disk: the workshop image is several gigabytes.
-2. **Choose it**: **This machine › Isolation**, or
+   plenty of disk: the image is several gigabytes. For Podman, choose it
+   in **This machine › Isolation**, or
 
    ```sh
-   stemma config set agents.isolation docker   # or podman
+   stemma config set machine.isolation podman
    ```
 
-3. **Build the images**: **This machine › Isolation** shows the build, or
+2. **Build the image**: **This machine › Isolation** shows the build, or
 
    ```sh
    stemma machine image
    ```
 
-   This builds two images: `stemma-agents:<version>`, and on top of it
-   `stemma-workshop:<version>`. The second adds Mathlib's sources and
-   compiled cache. The first build takes a while, and so does each
-   update of Stemma. On Apple silicon, Stemma is compiled inside the
-   image, which takes longer.
+   This builds `stemma/stemma:<version>`, with the agents, Lean, Mathlib's
+   sources and compiled cache, and LaTeX. The first build takes a while,
+   and so does each update of Stemma. On Apple silicon, Stemma is compiled
+   inside the image, which takes longer.
 
    If a build fails, Stemma says its last lines and keeps the whole log in
    `~/.local/state/stemma/logs/image.log`; in the app, **Show the whole
    log** opens it. Docker needs room: give it about 25 GB free.
-4. **Sign each agent in, for its containers.** Containers never read your
+3. **Sign each agent in, for its containers.** Containers never read your
    own sign-ins, so each agent gets one of its own:
 
    ```sh
@@ -89,6 +86,15 @@ workshop.
    ```
 
    The app has the same buttons in **This machine › Isolation**.
+
+### Without isolation
+
+Where neither Docker nor Podman can run, `machine.isolation = "none"` runs
+answers and the workshop on your computer, as if it were the image: as
+you, with your agents' own sign-ins, and with everything you can reach
+within theirs, your files and other sign-ins included. It is not
+recommended, and `stemma doctor` says so. The computer then needs what
+the image has: the agents, git, elan, Lean and latexmk.
 
 To give an agent an API key instead, such as `OPENROUTER_API_KEY` for
 OpenCode, see [Secrets for containers](/guide/settings#secrets-for-containers).
@@ -122,6 +128,6 @@ stemma doctor
 ```
 
 It checks the hub and your token, the settings, each agent's program, Lean
-and LaTeX, the container runtime, the images, each agent's sign-in for
-containers, and the service. Each problem comes with what to do. In the
+and LaTeX, the container runtime, the image, each agent's sign-in for
+containers, and the service, and warns if there is no isolation. Each problem comes with what to do. In the
 app: **This machine › Overview › Check again**.

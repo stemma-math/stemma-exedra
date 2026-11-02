@@ -31,8 +31,6 @@ export interface Snapshot {
   /** The agents signed in for their containers. */
   signed_in: string[];
   checks: Check[];
-  /** The name of Stemma's own agents' image; another is the person's own. */
-  stemma_image: string;
 }
 export const snapshot = (group: string | null = null) => invoke<Snapshot>("snapshot", { group });
 export const action = (action: object) => invoke<Explained | null>("action", { action });

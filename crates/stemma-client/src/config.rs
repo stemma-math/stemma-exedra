@@ -276,17 +276,18 @@ impl Settings {
     ) -> anyhow::Result<Self> {
         let mut defaults = BTreeMap::new();
         for (key, value) in [
-            ("enabled", Value::Boolean(true)),
-            ("concurrency", Value::Integer(1)),
+            ("isolation", Value::String("docker".into())),
+            ("image", Value::String(default_image())),
             ("cpus", Value::Float(4.0)),
             ("memory", Value::String("8g".into())),
+        ] {
+            defaults.insert(format!("machine.{key}"), value);
+        }
+        for (key, value) in [
+            ("enabled", Value::Boolean(true)),
+            ("concurrency", Value::Integer(1)),
             ("priority", Value::String("normal".into())),
-            ("isolation", Value::String("none".into())),
             ("attachments", Value::String("mine".into())),
-            (
-                "image",
-                Value::String(format!("stemma-agents:{}", env!("CARGO_PKG_VERSION"))),
-            ),
             (
                 "workspace",
                 Value::String(paths.data.join("groups").to_string_lossy().into()),
@@ -301,12 +302,6 @@ impl Settings {
             ("others", Value::String("ask".into())),
             ("build_concurrency", Value::Integer(1)),
             ("concurrency", Value::Integer(1)),
-            (
-                "image",
-                Value::String(format!("stemma-workshop:{}", env!("CARGO_PKG_VERSION"))),
-            ),
-            ("cpus", Value::Float(4.0)),
-            ("memory", Value::String("8g".into())),
         ] {
             defaults.insert(format!("workshop.{key}"), value);
         }
@@ -329,10 +324,6 @@ impl Settings {
                     }),
                 ),
                 ("container.files", Value::Array(vec![])),
-                (
-                    "container.command",
-                    Value::String(if runner == "claude" { "claude" } else { runner }.into()),
-                ),
             ] {
                 defaults.insert(format!("agents.{runner}.{key}"), value);
             }
@@ -394,7 +385,7 @@ impl Settings {
             anyhow::ensure!(self.defaults.contains_key(key), "unknown key {key}");
             validate(key, value)?;
         }
-        let mut explained: Vec<Explained> = self
+        let explained: Vec<Explained> = self
             .defaults
             .iter()
             .map(|(key, default)| {
@@ -427,33 +418,7 @@ impl Settings {
                 })
             })
             .collect::<anyhow::Result<_>>()?;
-        for limit in ["cpus", "memory"] {
-            let inherited = explained
-                .iter()
-                .find(|v| v.key == format!("agents.{limit}"))
-                .unwrap()
-                .clone();
-            let workshop = explained
-                .iter_mut()
-                .find(|v| v.key == format!("workshop.{limit}"))
-                .unwrap();
-            if workshop.source == Source::Default {
-                workshop.value = inherited.value;
-            }
-        }
         Ok(explained)
-    }
-
-    /// The workshop always runs in containers, independently of answers being enabled.
-    pub fn workshop_problem(&self, group: Option<&str>) -> anyhow::Result<Option<String>> {
-        let on = self
-            .get("workshop.enabled", group)?
-            .value
-            .as_bool()
-            .unwrap()
-            || self.get("workshop.build", group)?.value.as_bool().unwrap();
-        Ok((on && self.get("agents.isolation", group)?.value.as_str() == Some("none"))
-            .then(|| "The workshop requires isolation: set agents.isolation to docker or podman before enabling workshop.enabled or workshop.build".into()))
     }
 
     pub fn get(&self, key: &str, group: Option<&str>) -> anyhow::Result<Explained> {
@@ -542,18 +507,12 @@ impl Settings {
         } else {
             table.remove(last);
         }
-        let updated = Self::parse(
+        Self::parse(
             self.path.clone(),
             &doc.to_string(),
             &Paths::discover()?,
             self.env.clone(),
         )?;
-        if matches!(key, "workshop.enabled" | "workshop.build")
-            && updated.get(key, group)?.value.as_bool() == Some(true)
-            && let Some(why) = updated.workshop_problem(group)?
-        {
-            anyhow::bail!(why);
-        }
         private_write(&self.path, doc.to_string().as_bytes())
     }
 }
@@ -570,13 +529,17 @@ fn flatten(prefix: &str, value: &Value, out: &mut BTreeMap<String, Value>) {
             if value.as_table().is_some_and(|t| t.is_empty()) {
                 if key == "agents"
                     || key == "workshop"
+                    || key == "machine"
                     || key == "groups"
                     || ["claude", "codex", "opencode"].iter().any(|r| {
                         key.ends_with(&format!("agents.{r}"))
                             || key.ends_with(&format!("agents.{r}.container"))
                     })
                     || key.strip_prefix("groups.").is_some_and(|s| {
-                        !s.contains('.') || s.ends_with(".agents") || s.ends_with(".workshop")
+                        !s.contains('.')
+                            || s.ends_with(".agents")
+                            || s.ends_with(".workshop")
+                            || s.ends_with(".machine")
                     })
                 {
                     continue;
@@ -714,13 +677,62 @@ fn validate(key: &str, value: &Value) -> anyhow::Result<()> {
             .parse::<stemma_core::api::AttachmentRule>()
             .map_err(anyhow::Error::msg)?;
     }
-    if key == "agents.isolation" {
+    if key == "machine.isolation" {
         anyhow::ensure!(
             matches!(value.as_str(), Some("none" | "docker" | "podman")),
-            "isolation must be none, docker or podman"
+            "isolation must be docker, podman or none"
+        );
+    }
+    if key == "machine.image" {
+        image_tag(value.as_str().unwrap())?;
+    }
+    if key == "machine.memory" {
+        let memory = value.as_str().unwrap();
+        anyhow::ensure!(
+            memory
+                .trim_end_matches(['b', 'k', 'm', 'g', 'B', 'K', 'M', 'G'])
+                .parse::<u64>()
+                .is_ok_and(|n| n > 0),
+            "the memory is a number with a unit, such as 8g: {memory}"
         );
     }
     Ok(())
+}
+
+/// The images Stemma builds itself, as `stemma/<name>-<version>` names
+/// them; each is `docker/images/<name>` in Stemma's repository.
+pub const BUILT_IN_IMAGES: &[&str] = &["stemma"];
+
+/// The image a machine runs everything in unless told otherwise: Stemma's
+/// own, of this version.
+pub fn default_image() -> String {
+    format!("stemma/stemma-{}", env!("CARGO_PKG_VERSION"))
+}
+
+/// The runtime's tag for the image `reference` names, as `machine.image`
+/// does: `stemma/<name>-<version>`, one of Stemma's own images of this
+/// version, tagged `stemma/<name>:<version>`. A group's own images, under
+/// `group/`, are yet to come.
+pub fn image_tag(reference: &str) -> anyhow::Result<String> {
+    if reference.starts_with("group/") {
+        anyhow::bail!("a group's own images ({reference}) are not available yet");
+    }
+    let version = env!("CARGO_PKG_VERSION");
+    let built_in = reference
+        .strip_prefix("stemma/")
+        .and_then(|rest| rest.strip_suffix(&format!("-{version}")))
+        .filter(|name| BUILT_IN_IMAGES.contains(name));
+    match built_in {
+        Some(name) => Ok(format!("stemma/{name}:{version}")),
+        None => anyhow::bail!(
+            "{reference} is not an image this Stemma has: it has {}",
+            BUILT_IN_IMAGES
+                .iter()
+                .map(|name| format!("stemma/{name}-{version}"))
+                .collect::<Vec<_>>()
+                .join(", ")
+        ),
+    }
 }
 
 pub fn expand_home(text: &str) -> anyhow::Result<PathBuf> {
@@ -746,9 +758,9 @@ mod tests {
         (temp, paths)
     }
     #[test]
-    fn workshop_settings_have_independent_layers_limits_and_isolation() {
+    fn workshop_settings_have_independent_layers() {
         let (_temp, paths) = fixture();
-        let text = "# Workshop settings\n[agents]\ncpus = 2\nisolation = 'docker'\n[workshop]\nenabled = true # General\nbuild = true\n[groups.algebra.workshop]\nbuild = false\n";
+        let text = "# Workshop settings\n[machine]\ncpus = 2\n[workshop]\nenabled = true # General\nbuild = true\n[groups.algebra.workshop]\nbuild = false\n";
         let settings = Settings::parse(
             paths.config.join("config.toml"),
             text,
@@ -768,10 +780,7 @@ mod tests {
             Value::Boolean(false)
         );
         assert_eq!(
-            settings
-                .get("workshop.cpus", Some("algebra"))
-                .unwrap()
-                .value,
+            settings.get("machine.cpus", Some("algebra")).unwrap().value,
             Value::Integer(2)
         );
         assert_eq!(
@@ -781,7 +790,6 @@ mod tests {
                 .value,
             Value::Integer(3)
         );
-        assert!(settings.workshop_problem(None).unwrap().is_none());
         std::fs::create_dir_all(&paths.config).unwrap();
         std::fs::write(&settings.path, text).unwrap();
         settings
@@ -789,43 +797,57 @@ mod tests {
             .unwrap();
         let saved = std::fs::read_to_string(&settings.path).unwrap();
         assert!(saved.contains("# General") && saved.contains("# Workshop settings"));
-        std::fs::write(&settings.path, "[workshop]\nenabled = true\nbuild = true\n").unwrap();
-        let invalid = Settings::load_from(&paths, BTreeMap::new()).unwrap();
-        invalid
-            .write("workshop.enabled", Some("false"), None)
-            .unwrap();
-        let invalid = Settings::load_from(&paths, BTreeMap::new()).unwrap();
-        invalid
-            .write("workshop.build", Some("false"), None)
-            .unwrap();
-        assert!(
-            Settings::load_from(&paths, BTreeMap::new())
-                .unwrap()
-                .workshop_problem(None)
-                .unwrap()
-                .is_none()
-        );
         for bad in [
             "[workshop]\nunknown = true",
+            "[workshop]\nimage = 'stemma/stemma'",
             "[groups.algebra.workshop]\nbuild_concurrency = 0",
-            "[workshop]\ncpus = -1",
+            "[machine]\ncpus = -1",
+            "[machine]\nmemory = 'lots'",
         ] {
             assert!(Settings::parse(settings.path.clone(), bad, &paths, BTreeMap::new()).is_err());
         }
-        let settings = Settings::parse(
-            settings.path.clone(),
-            "[workshop]\nenabled = true",
-            &paths,
-            BTreeMap::new(),
-        )
-        .unwrap();
-        assert!(
+    }
+    #[test]
+    fn a_machine_runs_stemmas_own_image_in_docker_by_default() {
+        let (_temp, paths) = fixture();
+        let parse = |text| {
+            Settings::parse(
+                paths.config.join("config.toml"),
+                text,
+                &paths,
+                BTreeMap::new(),
+            )
+        };
+        let settings = parse("").unwrap();
+        assert_eq!(
             settings
-                .workshop_problem(None)
+                .get("machine.isolation", None)
                 .unwrap()
-                .unwrap()
-                .contains("requires isolation")
+                .value
+                .as_str(),
+            Some("docker")
         );
+        let image = settings.get("machine.image", None).unwrap().value;
+        let version = env!("CARGO_PKG_VERSION");
+        assert_eq!(image.as_str().unwrap(), format!("stemma/stemma-{version}"));
+        assert_eq!(
+            image_tag(image.as_str().unwrap()).unwrap(),
+            format!("stemma/stemma:{version}")
+        );
+        assert!(parse("[machine]\nisolation = 'none'").is_ok());
+        for wrong in [
+            "[machine]\nisolation = 'chroot'",
+            "[machine]\nimage = 'stemma/stemma-0.0.1'",
+            "[machine]\nimage = 'stemma/other-0.0.1'",
+            "[machine]\nimage = 'debian:bookworm'",
+        ] {
+            assert!(parse(wrong).is_err(), "{wrong}");
+        }
+        let error = format!(
+            "{:#}",
+            parse("[machine]\nimage = 'group/lean'").unwrap_err()
+        );
+        assert!(error.contains("not available yet"), "{error}");
     }
     #[test]
     fn folders_use_xdg_on_macos_too_and_explicit_folders_win() {
