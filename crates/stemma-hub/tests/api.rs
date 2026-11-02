@@ -1964,6 +1964,20 @@ async fn admins_change_roles() {
 
     // But never leaves the group without an admin.
     assert_eq!(set(&ada, ada_id, "guest").await, StatusCode::CONFLICT);
+
+    // Another admin's role is theirs alone to give up, and so is their place.
+    assert_eq!(set(&ada, bob_id, "admin").await, StatusCode::NO_CONTENT);
+    assert_eq!(set(&ada, bob_id, "member").await, StatusCode::FORBIDDEN);
+    let remove = hub
+        .call(
+            &ada,
+            Method::DELETE,
+            &format!("/groups/geometry/members/{bob_id}"),
+            None,
+        )
+        .await;
+    assert_eq!(remove.status, StatusCode::FORBIDDEN);
+    assert_eq!(set(&bob, bob_id, "member").await, StatusCode::NO_CONTENT);
 }
 
 // ── People's agents and machines ──────────────────────────────────────

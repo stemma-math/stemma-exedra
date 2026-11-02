@@ -210,6 +210,11 @@ pub async fn update_member(
     let group = Membership::of(&state, &viewer, &slug).await?;
     group.require_admin()?;
     let current = role_of(&state, group.group_id, user_id).await?;
+    if current == Role::Admin && user_id != viewer.id {
+        return Err(ApiError::forbidden(
+            "Only an admin can stop being one, never another admin for them",
+        ));
+    }
     if current == Role::Admin
         && body.role != Role::Admin
         && admin_count(&state, group.group_id).await? == 1
@@ -233,7 +238,8 @@ pub async fn update_member(
     Ok(StatusCode::NO_CONTENT)
 }
 
-/// Removes a member: an admin removes anyone, a member only leaves.
+/// Removes a member: an admin removes anyone but another admin, and anyone
+/// leaves.
 pub async fn remove_member(
     State(state): State<AppState>,
     viewer: Viewer,
@@ -245,6 +251,11 @@ pub async fn remove_member(
         group.require_admin()?;
     }
     let role = role_of(&state, group.group_id, user_id).await?;
+    if role == Role::Admin && user_id != viewer.id {
+        return Err(ApiError::forbidden(
+            "An admin leaves the group themselves, never removed by another admin",
+        ));
+    }
     if role == Role::Admin && admin_count(&state, group.group_id).await? == 1 {
         return Err(ApiError::conflict("A group needs at least one admin"));
     }
