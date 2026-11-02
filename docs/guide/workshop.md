@@ -108,7 +108,9 @@ saying a key is needed.
 ## Recipes
 
 A group's recipes are folders in its `recipes` repository: what each takes
-and delivers, the `run.sh` a process runs, and its files. Every group starts
-with one, **Anything else** (`general`), for any task: one agent works on it
-for up to a day, and delivers pull requests and messages. See
+and delivers, the `run.sh` a process runs, and its files. Every group always
+has one, **Anything else** (`general`), for any task: one agent works on it
+for up to a day, and delivers pull requests and messages. The hub provides
+it, unless the group's `recipes` repository has its own `general/` folder,
+which replaces it. See
 [Writing recipes](/guide/recipes) to add your own.
