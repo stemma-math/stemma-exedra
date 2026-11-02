@@ -368,5 +368,52 @@ fn environment(paths: &Paths) -> anyhow::Result<Vec<(String, String)>> {
     if let Ok(hub) = std::env::var("STEMMA_HUB") {
         variables.push(("STEMMA_HUB".into(), hub));
     }
+    variables.extend(certificates(|name| std::env::var(name).ok()));
     Ok(variables)
+}
+
+/// Where the programs a job runs find the authorities they trust, as the
+/// environment the service is installed from says. A service starts
+/// without the person's shell: without these, an agent that reads them,
+/// such as Nix's Claude Code, or one behind a proxy with its own
+/// authority, cannot verify its provider. They name files, never secrets.
+pub const CERTIFICATES: [&str; 6] = [
+    "SSL_CERT_FILE",
+    "SSL_CERT_DIR",
+    "NIX_SSL_CERT_FILE",
+    "NODE_EXTRA_CA_CERTS",
+    "CURL_CA_BUNDLE",
+    "GIT_SSL_CAINFO",
+];
+
+fn certificates(var: impl Fn(&str) -> Option<String>) -> Vec<(String, String)> {
+    CERTIFICATES
+        .iter()
+        .filter_map(|name| {
+            var(name)
+                .filter(|value| !value.trim().is_empty())
+                .map(|value| ((*name).to_owned(), value))
+        })
+        .collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn the_service_keeps_where_certificates_are() {
+        let env = std::collections::BTreeMap::from([
+            ("NIX_SSL_CERT_FILE", "/etc/ssl/certs/ca-certificates.crt"),
+            ("SSL_CERT_DIR", " "),
+            ("HOME", "/Users/ada"),
+        ]);
+        assert_eq!(
+            certificates(|name| env.get(name).map(|v| (*v).to_owned())),
+            [(
+                "NIX_SSL_CERT_FILE".to_owned(),
+                "/etc/ssl/certs/ca-certificates.crt".to_owned()
+            )]
+        );
+    }
 }

@@ -39,6 +39,13 @@ closed.
 - In a terminal: `stemma machine start`, and `stemma machine stop` to turn
   it off. `stemma machine run` runs it in the foreground instead.
 
+The service starts without your shell. It keeps the `PATH` it was installed
+with, and where your system's certificates are, if your shell says so
+(`SSL_CERT_FILE`, `NIX_SSL_CERT_FILE`, `NODE_EXTRA_CA_CERTS` and the like):
+agents need them to reach their providers. If you change them, install the
+service again from a terminal, with `stemma machine stop` and
+`stemma machine start`.
+
 Stemma looks for `claude`, `codex` and `opencode` on your `PATH`. Install
 and sign in to the ones you want to use. Stemma never stores those
 sign-ins: your agents use them as they are. To choose models, arguments or
