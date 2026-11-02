@@ -43,7 +43,7 @@ workshop offers. It keeps the group's folders, runs the agents, and talks
 to Docker or Podman.
 
 **The app** is a Tauri window around the same SvelteKit interface as the
-browser. It adds **This machine**: settings, the service, images,
+browser. It adds **This machine**: settings, the service, the image,
 sign-ins for containers, and workshop approvals, which exist only on the
 computer itself.
 

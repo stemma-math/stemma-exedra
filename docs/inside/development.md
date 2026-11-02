@@ -20,7 +20,7 @@ opening a pull request.
 | `crates/` | The `stemma` binary, the hub, the machine service, the client and its tools, what they share, and stand-ins for Forgejo and a model provider used in tests |
 | `web/` | The web app, in SvelteKit, which also builds the desktop app's interface |
 | `desktop/` | The desktop app's Tauri crate and its configuration |
-| `docker/` | The hub's image and compose file, and the agents' and workshop's images |
+| `docker/` | The hub's image and compose file, and, under `images/`, Stemma's image for answers and the workshop |
 | `lean/` | The library template, a test library, and the inspection program |
 | `latex/template/` | The working paper template |
 | `recipes/template/` | The recipes a new group starts with |
