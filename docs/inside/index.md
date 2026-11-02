@@ -72,7 +72,7 @@ the running. Each kind of work has its own path:
 | A session | That person, in a terminal | That computer | [How an agent runs](/inside/agents) |
 | A build | A new commit of `main` | Any member's computer that builds | [Builds](/inside/builds) |
 | A process | A workshop request | A member's computer, with approval | [Workshop processes](/inside/processes) |
-| A turn or review | A request, a process ending, a PR | The hub, calling the group's model | [The orchestrators](/inside/orchestrators) |
+| A turn, or a merge's preparation | A request, a process ending, a pull request, `main` moving | The hub, calling the group's model only for turns and conflicts | [The orchestrators](/inside/orchestrators) |
 
 ## The machine protocol
 
