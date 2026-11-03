@@ -73,6 +73,18 @@ pub fn root_module(slug: &str) -> String {
     name
 }
 
+/// A package's name as Lake writes it in its manifest: within «» unless it is
+/// an identifier, as `number-theory` is not.
+fn lean_name(slug: &str) -> String {
+    let identifier = slug.starts_with(|c: char| c.is_ascii_alphabetic() || c == '_')
+        && slug.chars().all(|c| c.is_ascii_alphanumeric() || c == '_');
+    if identifier {
+        slug.to_owned()
+    } else {
+        format!("«{slug}»")
+    }
+}
+
 /// The files a group's library starts with: the template, for the group.
 pub fn template(slug: &str, name: &str) -> Vec<(String, String)> {
     let root = root_module(slug);
@@ -81,6 +93,7 @@ pub fn template(slug: &str, name: &str) -> Vec<(String, String)> {
         .map(|(file, text)| {
             let file = file.replace("Library", &root);
             let text = text
+                .replace("{{package_name}}", &lean_name(slug))
                 .replace("{{package}}", slug)
                 .replace("{{Library}}", &root)
                 .replace("{{name}}", name);
@@ -418,7 +431,7 @@ pub(crate) async fn store_report(
 
 #[cfg(test)]
 mod tests {
-    use super::root_module;
+    use super::{lean_name, root_module, template};
 
     #[test]
     fn root_modules() {
@@ -426,5 +439,26 @@ mod tests {
         assert_eq!(root_module("number-theory-2"), "NumberTheory2");
         assert_eq!(root_module("2-adic"), "Group2Adic");
         assert_eq!(root_module("mathlib"), "MathlibLibrary");
+    }
+
+    #[test]
+    fn lake_reads_the_manifests_name() {
+        assert_eq!(lean_name("geometry"), "geometry");
+        assert_eq!(lean_name("number-theory"), "«number-theory»");
+        assert_eq!(lean_name("2adic"), "«2adic»");
+        let files = template("number-theory", "Number theory");
+        let manifest = &files
+            .iter()
+            .find(|(file, _)| file == "lake-manifest.json")
+            .unwrap()
+            .1;
+        let manifest: serde_json::Value = serde_json::from_str(manifest).unwrap();
+        assert_eq!(manifest["name"], "«number-theory»");
+        let lakefile = &files
+            .iter()
+            .find(|(file, _)| file == "lakefile.toml")
+            .unwrap()
+            .1;
+        assert!(lakefile.starts_with("name = \"number-theory\""));
     }
 }
