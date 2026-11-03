@@ -760,7 +760,7 @@ async fn a_queued_process_about_to_expire_wakes_once() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
-async fn thinking_cannot_launch_a_scheduled_recipe_early() {
+async fn a_request_with_its_recipe_waits_for_its_time_without_the_model() {
     let model = stemma_fake_model::FakeModel::start().await;
     let (hub, ada) = setup(&model).await;
     key(&hub, &ada, "openai", 1000).await;
@@ -786,7 +786,16 @@ async fn thinking_cannot_launch_a_scheduled_recipe_early() {
     )
     .await;
     assert!(req["processes"].as_array().unwrap().is_empty());
-    assert_eq!(req["waiting"], "Waiting for the scheduled time");
+    assert_eq!(req["waiting"], "Waiting for its time");
+    assert!(model.requests().is_empty(), "nothing has happened to think about");
+    let thread = call(&hub, &ada, "GET", "/groups/geometry/threads/1", None).await;
+    assert!(
+        thread["messages"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .all(|m| m["author"]["username"] != "workshop")
+    );
 }
 #[tokio::test(flavor = "multi_thread")]
 async fn a_turn_posts_once() {

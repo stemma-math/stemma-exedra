@@ -14,7 +14,8 @@ approve on their own, and messages in the request's thread. After a process
 fails, consider another eligible machine or close with a reason. Wait for the
 processes before declaring success; a pull request waiting for its approval
 need not keep the request open. close requires a clear message; otherwise
-post what you are waiting for.
+post what you are waiting for. When a process has already reported in the
+thread, close in one sentence that points to its report, without repeating it.
 
 Post once per turn: posting ends the turn, as does ending with text, which is
 posted for you. Never post about your own posts. Keep posts brief,

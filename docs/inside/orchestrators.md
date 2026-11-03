@@ -47,7 +47,9 @@ posted only when nothing else was.
 - a process ending, or a pull request merging;
 - a request about to expire.
 
-Other members can discuss without waking it, and nobody can mention it.
+A request that names its recipe launches on its own, without a turn; the
+orchestrator wakes only for what happens next. Other members can discuss
+without waking it, and nobody can mention it.
 Wakes are recorded in the database, so none is lost on restart. One turn
 runs per request at a time, and at most three per group.
 
@@ -91,6 +93,8 @@ approved.
   for its approval need not keep the request open.
 - `close` needs a clear message. Otherwise it posts what it is waiting
   for, once per turn, and never about its own posts.
+- When a process has already reported in the thread, it closes in one
+  sentence pointing to that report.
 - Posts are brief, in English, free of secrets, and never mention or
   impersonate a person.
 - Recurring requests wait for their next slot instead of closing, and
