@@ -198,7 +198,9 @@ fn download<R: tauri::Runtime>(
 ) -> bool {
     static SAVING: std::sync::Mutex<Vec<(String, std::path::PathBuf)>> =
         std::sync::Mutex::new(Vec::new());
-    let mut saving = SAVING.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+    let mut saving = SAVING
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
     match event {
         tauri::webview::DownloadEvent::Requested { url, destination } => {
             if !page::from_hub(&url) {
@@ -223,7 +225,10 @@ fn download<R: tauri::Runtime>(
 }
 fn reveal(path: &std::path::Path) -> std::io::Result<()> {
     #[cfg(target_os = "macos")]
-    std::process::Command::new("open").arg("-R").arg(path).spawn()?;
+    std::process::Command::new("open")
+        .arg("-R")
+        .arg(path)
+        .spawn()?;
     #[cfg(target_os = "linux")]
     if let Some(folder) = path.parent() {
         std::process::Command::new("xdg-open").arg(folder).spawn()?;

@@ -787,7 +787,10 @@ async fn a_request_with_its_recipe_waits_for_its_time_without_the_model() {
     .await;
     assert!(req["processes"].as_array().unwrap().is_empty());
     assert_eq!(req["waiting"], "Waiting for its time");
-    assert!(model.requests().is_empty(), "nothing has happened to think about");
+    assert!(
+        model.requests().is_empty(),
+        "nothing has happened to think about"
+    );
     let thread = call(&hub, &ada, "GET", "/groups/geometry/threads/1", None).await;
     assert!(
         thread["messages"]
