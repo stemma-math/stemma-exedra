@@ -485,7 +485,9 @@ pub async fn ask(
          WHERE thread_id = ?",
     )
     .bind(free || has_key)
-    .bind(free || has_key)
+    // A request with its recipe launches on its own: the orchestrator wakes
+    // for it only when something happens, never to say it is queued.
+    .bind(free)
     .bind(free.then_some(now + i64::from(ask.wait_hours) * 3_600_000))
     .bind(thread)
     .execute(&mut *tx)

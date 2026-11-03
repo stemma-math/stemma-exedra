@@ -17,6 +17,12 @@ pub fn same_origin(url: &tauri::Url, origin: &tauri::Url) -> bool {
     url.origin() == origin.origin()
 }
 
+/// The hub, as the page reaches it: `hub:` on macOS and Linux,
+/// `http://hub.localhost` on Windows.
+pub fn from_hub(url: &tauri::Url) -> bool {
+    url.scheme() == "hub" || (url.scheme() == "http" && url.host_str() == Some("hub.localhost"))
+}
+
 pub fn capability(origin: &tauri::Url) -> serde_json::Value {
     let mut capability: serde_json::Value =
         serde_json::from_str(include_str!("../capabilities/local.json")).expect("local capability");
@@ -101,6 +107,18 @@ async fn asset(
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn only_the_hubs_files_download() {
+        for (url, expected) in [
+            ("hub://localhost/api/v1/attachments/1", true),
+            ("http://hub.localhost/api/v1/attachments/1", true),
+            ("https://hub.localhost/file", false),
+            ("https://example.org/file.pdf", false),
+            ("http://127.0.0.1:4000/file", false),
+        ] {
+            assert_eq!(from_hub(&url.parse().unwrap()), expected, "{url}");
+        }
+    }
     #[test]
     fn only_the_exact_interface_origin_gets_commands() {
         let origin: tauri::Url = "http://127.0.0.1:12345/".parse().unwrap();
