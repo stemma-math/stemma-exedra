@@ -190,6 +190,51 @@ async fn test_sign_in(
     sign_in::test(&agent, group.as_deref()).await.map_err(error)
 }
 
+/// Attachments save to the Downloads folder, under a name not taken yet,
+/// and show in the file manager when done. Only the hub's files download.
+fn download<R: tauri::Runtime>(
+    _: tauri::Webview<R>,
+    event: tauri::webview::DownloadEvent<'_>,
+) -> bool {
+    static SAVING: std::sync::Mutex<Vec<(String, std::path::PathBuf)>> =
+        std::sync::Mutex::new(Vec::new());
+    let mut saving = SAVING.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+    match event {
+        tauri::webview::DownloadEvent::Requested { url, destination } => {
+            if !page::from_hub(&url) {
+                return false;
+            }
+            saving.push((url.to_string(), destination.clone()));
+            true
+        }
+        tauri::webview::DownloadEvent::Finished { url, path, success } => {
+            let url = url.to_string();
+            let saved = saving
+                .iter()
+                .position(|(u, _)| *u == url)
+                .map(|i| saving.remove(i).1);
+            if success && let Some(path) = path.filter(|p| p.is_file()).or(saved) {
+                let _ = reveal(&path);
+            }
+            true
+        }
+        _ => true,
+    }
+}
+fn reveal(path: &std::path::Path) -> std::io::Result<()> {
+    #[cfg(target_os = "macos")]
+    std::process::Command::new("open").arg("-R").arg(path).spawn()?;
+    #[cfg(target_os = "linux")]
+    if let Some(folder) = path.parent() {
+        std::process::Command::new("xdg-open").arg(folder).spawn()?;
+    }
+    #[cfg(target_os = "windows")]
+    std::process::Command::new("explorer")
+        .arg(format!("/select,{}", path.display()))
+        .spawn()?;
+    Ok(())
+}
+
 #[tauri::command]
 async fn open_external(window: WebviewWindow, url: String) -> Result<()> {
     local(&window)?;
@@ -490,6 +535,7 @@ fn main() {
                     tauri::webview::NewWindowResponse::Deny
                 })
                 .on_navigation(move |url| page::same_origin(url, &allowed_origin))
+                .on_download(download)
                 .build()?;
             let menu = Menu::default(app.handle())?;
             let item = MenuItem::with_id(app, "settings", "Settings…", true, Some("CmdOrCtrl+,"))?;
